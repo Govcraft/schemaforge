@@ -47,21 +47,29 @@ pub async fn run(
     // 4. Dispatch: single-shot with description, or interactive
     match &args.description {
         Some(description) => {
-            // Single-shot generation
+            // Single-shot generation with reliable DSL extraction
             output.status("Generating schema...");
-            let result = agent.generate(description).await.map_err(|e| CliError::Ai {
-                message: e.to_string(),
-            })?;
+            let result = agent
+                .generate_dsl(description)
+                .await
+                .map_err(|e| CliError::Ai {
+                    message: e.to_string(),
+                })?;
+
+            output.status(&format!(
+                "Extracted {} schema(s) via {} source",
+                result.schema_count, result.source,
+            ));
 
             // Write output
             if let Some(ref path) = args.output {
-                std::fs::write(path, &result).map_err(|e| CliError::Io {
+                std::fs::write(path, &result.dsl).map_err(|e| CliError::Io {
                     path: path.clone(),
                     source: e,
                 })?;
                 output.success(&format!("Schema written to {}", path.display()));
             } else {
-                println!("{result}");
+                println!("{}", result.dsl);
             }
         }
         None => {

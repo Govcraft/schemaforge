@@ -6,7 +6,7 @@ pub mod prompt;
 pub mod tools;
 
 // Re-exports for convenience
-pub use agent::SchemaForgeAgent;
+pub use agent::{DslSource, GenerateResult, SchemaForgeAgent};
 pub use cli::run_interactive_cli;
 pub use endpoint::{generate_handler, GenerateRequest, GenerateResponse};
 pub use error::ForgeAiError;

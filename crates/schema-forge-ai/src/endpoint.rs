@@ -26,26 +26,30 @@ pub struct GenerateResponse {
     pub status: String,
     /// The generated response text from the LLM.
     pub response: String,
+    /// The extracted DSL source (validated when possible).
+    pub dsl: String,
+    /// Where the DSL was extracted from (registry, tool_arguments, response_text, raw_text).
+    pub source: String,
+    /// Number of schemas found in the extracted DSL.
+    pub schema_count: usize,
 }
 
 /// Axum handler for POST /forge/generate.
 ///
 /// Sends the description to the SchemaForge agent and returns the response.
+/// Uses `generate_dsl()` to reliably extract validated DSL from the LLM output.
 pub async fn generate_handler(
     State(agent): State<Arc<SchemaForgeAgent>>,
     Json(request): Json<GenerateRequest>,
 ) -> Result<Json<GenerateResponse>, ForgeAiError> {
-    let response_text = if let Some(ref provider) = request.provider {
-        agent
-            .generate_with_provider(&request.description, provider)
-            .await?
-    } else {
-        agent.generate(&request.description).await?
-    };
+    let result = agent.generate_dsl(&request.description).await?;
 
     Ok(Json(GenerateResponse {
         status: "ok".to_string(),
-        response: response_text,
+        response: result.assistant_text,
+        dsl: result.dsl,
+        source: result.source.to_string(),
+        schema_count: result.schema_count,
     }))
 }
 
@@ -89,18 +93,25 @@ mod tests {
         let resp = GenerateResponse {
             status: "ok".to_string(),
             response: "Created schema Contact".to_string(),
+            dsl: "schema Contact {\n    name: text required\n}".to_string(),
+            source: "registry".to_string(),
+            schema_count: 1,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("ok"));
         assert!(json.contains("Created schema Contact"));
+        assert!(json.contains("registry"));
+        assert!(json.contains("schema_count"));
     }
 
     #[test]
     fn generate_response_deserialization() {
-        let json = r#"{"status": "ok", "response": "Done"}"#;
+        let json = r#"{"status": "ok", "response": "Done", "dsl": "schema X { name: text }", "source": "raw_text", "schema_count": 0}"#;
         let resp: GenerateResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.status, "ok");
         assert_eq!(resp.response, "Done");
+        assert_eq!(resp.source, "raw_text");
+        assert_eq!(resp.schema_count, 0);
     }
 
     #[tokio::test]

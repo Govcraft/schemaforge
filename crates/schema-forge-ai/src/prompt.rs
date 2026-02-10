@@ -95,6 +95,13 @@ FLOAT          = /-?[0-9]+\.[0-9]+/ ;
 - Schema names must start with an uppercase letter
 - Field names must start with a lowercase letter
 
+## IMPORTANT: Always Use Tools
+
+You MUST call `validate_schema` with your generated DSL before presenting it.
+If validation fails, fix the errors and call `validate_schema` again until it succeeds.
+After validation succeeds, call `apply_schema` to register the schemas.
+Do NOT skip tool calls — the tools are the only way to ensure correctness.
+
 ## Tool Usage Instructions
 
 - **validate_schema**: Always call this before apply_schema. Pass the complete DSL source as the `dsl` parameter. If it returns errors, fix them and validate again.
