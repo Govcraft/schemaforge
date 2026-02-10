@@ -10,7 +10,7 @@ use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::Query;
-use schema_forge_core::types::{EntityId, SchemaDefinition, SchemaName};
+use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName};
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
 
@@ -140,6 +140,56 @@ impl SurrealBackend {
             other => Ok(vec![other]),
         }
     }
+
+    /// Build SET clause assignments for entity fields, resolving relation fields
+    /// to proper SurrealDB record reference literals.
+    async fn build_field_assignments(&self, entity: &Entity) -> Result<String, BackendError> {
+        let field_map = entity_to_surreal_map(entity);
+
+        // Look up schema to resolve relation target table names
+        let schema_def = self
+            .load_schema_metadata(&entity.schema)
+            .await
+            .ok()
+            .flatten();
+
+        let mut assignments = Vec::new();
+        for (k, v) in &field_map {
+            if k == "id" {
+                continue;
+            }
+
+            let literal =
+                match (entity.fields.get(k.as_str()), schema_def.as_ref().and_then(|s| s.field(k)))
+                {
+                    // Ref with known target table → record reference literal
+                    (Some(DynamicValue::Ref(ref_id)), Some(fd)) => {
+                        if let FieldType::Relation { target, .. } = &fd.field_type {
+                            format!("{}:`{}`", target.as_str(), ref_id.as_str())
+                        } else {
+                            field_surreal_value_to_literal(v)
+                        }
+                    }
+                    // RefArray with known target table → array of record references
+                    (Some(DynamicValue::RefArray(ref_ids)), Some(fd)) => {
+                        if let FieldType::Relation { target, .. } = &fd.field_type {
+                            let refs: Vec<String> = ref_ids
+                                .iter()
+                                .map(|id| format!("{}:`{}`", target.as_str(), id.as_str()))
+                                .collect();
+                            format!("[{}]", refs.join(", "))
+                        } else {
+                            field_surreal_value_to_literal(v)
+                        }
+                    }
+                    _ => field_surreal_value_to_literal(v),
+                };
+
+            assignments.push(format!("{k} = {literal}"));
+        }
+
+        Ok(assignments.join(", "))
+    }
 }
 
 impl SchemaBackend for SurrealBackend {
@@ -246,18 +296,7 @@ impl EntityStore for SurrealBackend {
         let table = entity.schema.as_str();
         let id_str = entity.id.as_str();
 
-        // Build field assignments
-        let field_map = entity_to_surreal_map(entity);
-        let mut assignments = Vec::new();
-        for (k, v) in &field_map {
-            if k == "id" {
-                continue;
-            }
-            let literal = field_surreal_value_to_literal(v);
-            assignments.push(format!("{k} = {literal}"));
-        }
-
-        let set_clause = assignments.join(", ");
+        let set_clause = self.build_field_assignments(entity).await?;
         let sql = format!("CREATE {table}:`{id_str}` SET {set_clause};");
 
         let rows = self.execute_and_take_rows(&sql).await?;
@@ -292,17 +331,7 @@ impl EntityStore for SurrealBackend {
         let table = entity.schema.as_str();
         let id_str = entity.id.as_str();
 
-        let field_map = entity_to_surreal_map(entity);
-        let mut assignments = Vec::new();
-        for (k, v) in &field_map {
-            if k == "id" {
-                continue;
-            }
-            let literal = field_surreal_value_to_literal(v);
-            assignments.push(format!("{k} = {literal}"));
-        }
-
-        let set_clause = assignments.join(", ");
+        let set_clause = self.build_field_assignments(entity).await?;
         let sql = format!("UPDATE {table}:`{id_str}` SET {set_clause};");
 
         let rows = self.execute_and_take_rows(&sql).await?;
@@ -338,26 +367,20 @@ impl EntityStore for SurrealBackend {
     }
 
     async fn query(&self, query: &Query) -> Result<QueryResult, BackendError> {
-        // Resolve schema name from the query's SchemaId.
-        // The query stores a SchemaId; we need a table name.
-        // For now, we use the SchemaId's string representation.
-        // In a full system, we would look up the SchemaName from the SchemaId.
-        let table = query.schema.as_str();
+        // Resolve the table name from the SchemaId by scanning schema metadata.
+        let all_schemas = self.list_schema_metadata().await?;
+        let schema_def = all_schemas
+            .iter()
+            .find(|s| s.id == query.schema)
+            .ok_or_else(|| BackendError::QueryError {
+                message: format!("no schema found for id '{}'", query.schema.as_str()),
+            })?;
 
-        // For SurrealDB, we use the SchemaId prefix as a table name hint.
-        // But SchemaId is "schema_<uuid>", which is not a valid table name.
-        // The caller should provide the table name via a helper.
-        // For now, we generate the SQL and execute it.
+        let table = schema_def.name.as_str();
         let sql = query_to_surql(query, table);
-
         let rows = self.execute_and_take_rows(&sql).await?;
 
-        // We cannot easily determine the SchemaName from a SchemaId here.
-        // For queries that go through the EntityStore, the caller knows the schema name.
-        // We'll construct entities with a placeholder name parsed from the query table.
-        let schema_name =
-            SchemaName::new(table).unwrap_or_else(|_| SchemaName::new("Unknown").unwrap());
-
+        let schema_name = schema_def.name.clone();
         let mut entities = Vec::new();
         for row in &rows {
             entities.push(surreal_row_to_entity(&schema_name, row)?);

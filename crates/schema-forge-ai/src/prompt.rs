@@ -35,7 +35,7 @@ field_type     = "text" [ "(" text_params ")" ]
                | "json"
                | "->" PASCAL_IDENT                  (* relation to-one *)
                | "->" PASCAL_IDENT "[]"             (* relation to-many *)
-               | "[" field_type "]"                 (* array *)
+               | field_type "[]"                    (* array suffix *)
                | "composite" "{" { field_def } "}"  (* inline composite *)
                ;
 
@@ -76,7 +76,7 @@ FLOAT          = /-?[0-9]+\.[0-9]+/ ;
 | `enum("A", "B")` | One of listed variants | At least 1 variant, no duplicates |
 | `-> SchemaB` | Relation to one (to-one) | Target schema name in PascalCase |
 | `-> SchemaB[]` | Relation to many (to-many) | Target schema name in PascalCase |
-| `[type]` | Array of any field type | Wraps any field type |
+| `type[]` | Array of any field type | Suffix `[]` on any type, e.g. `text[]` |
 | `composite { ... }` | Inline nested fields | Contains field definitions |
 | `json` | Arbitrary JSON value | None |
 
@@ -139,7 +139,7 @@ schema Contact {
     phone: text(max: 20)
     status: enum("active", "inactive", "lead") default("lead")
     company: -> Company
-    tags: [text]
+    tags: text[]
     notes: richtext
 }
 ```

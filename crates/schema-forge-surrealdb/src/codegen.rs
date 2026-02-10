@@ -49,7 +49,13 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
             transform: _,
         } => {
             let surql_type = field_type_to_surql(new_type);
-            vec![format!("DEFINE FIELD {name} ON {table} TYPE {surql_type};")]
+            let assertions = field_assertions(new_type);
+            let mut stmt = format!("DEFINE FIELD OVERWRITE {name} ON {table} TYPE {surql_type}");
+            if !assertions.is_empty() {
+                stmt.push_str(&format!(" ASSERT {}", assertions.join(" AND ")));
+            }
+            stmt.push(';');
+            vec![stmt]
         }
         MigrationStep::AddIndex { field } => {
             let idx_name = format!("idx_{table}_{field}");
@@ -98,22 +104,22 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
             // Re-define the field with a NOT NONE assertion.
             // Since we do not have the full field type here, use a flexible assertion.
             vec![format!(
-                "DEFINE FIELD {field} ON {table} ASSERT $value != NONE;"
+                "DEFINE FIELD OVERWRITE {field} ON {table} ASSERT $value != NONE;"
             )]
         }
         MigrationStep::RemoveRequired { field } => {
             // Re-define the field without the assertion. Use `any` type to be permissive.
-            vec![format!("DEFINE FIELD {field} ON {table} TYPE any;")]
+            vec![format!("DEFINE FIELD OVERWRITE {field} ON {table} TYPE any;")]
         }
         MigrationStep::SetDefault { field, value } => {
             let literal = default_value_to_surql(value);
             vec![format!(
-                "DEFINE FIELD {field} ON {table} VALUE $value OR {literal};"
+                "DEFINE FIELD OVERWRITE {field} ON {table} VALUE $value OR {literal};"
             )]
         }
         MigrationStep::RemoveDefault { field } => {
             // Re-define without VALUE clause.
-            vec![format!("DEFINE FIELD {field} ON {table} TYPE any;")]
+            vec![format!("DEFINE FIELD OVERWRITE {field} ON {table} TYPE any;")]
         }
         _ => {
             // Future MigrationStep variants -- produce a no-op comment.
@@ -184,7 +190,15 @@ pub fn field_assertions(field_type: &FieldType) -> Vec<String> {
 /// Generate a complete DEFINE FIELD statement (possibly multiple for composites).
 fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
     let name = &field.name;
-    let surql_type = field_type_to_surql(&field.field_type);
+    let base_type = field_type_to_surql(&field.field_type);
+
+    // Non-required fields use option<type> so SurrealDB SCHEMAFULL tables accept NONE
+    let surql_type = if !field.is_required() && !base_type.starts_with("option<") {
+        format!("option<{base_type}>")
+    } else {
+        base_type
+    };
+
     let mut parts = Vec::new();
 
     // Build base DEFINE FIELD
@@ -278,8 +292,9 @@ mod tests {
         };
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(stmts[0], "DEFINE TABLE Contact SCHEMAFULL;");
-        assert!(stmts[1].contains("DEFINE FIELD name ON Contact TYPE string;"));
-        assert!(stmts[2].contains("DEFINE FIELD email ON Contact TYPE string;"));
+        // Non-required fields get option<> wrapper
+        assert!(stmts[1].contains("DEFINE FIELD name ON Contact TYPE option<string>;"));
+        assert!(stmts[2].contains("DEFINE FIELD email ON Contact TYPE option<string>;"));
         assert_eq!(stmts.len(), 3);
     }
 
@@ -298,7 +313,10 @@ mod tests {
             field: text_field("phone"),
         };
         let stmts = migration_step_to_surql("Contact", &step);
-        assert_eq!(stmts, vec!["DEFINE FIELD phone ON Contact TYPE string;"]);
+        assert_eq!(
+            stmts,
+            vec!["DEFINE FIELD phone ON Contact TYPE option<string>;"]
+        );
     }
 
     #[test]
@@ -309,7 +327,7 @@ mod tests {
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(
             stmts,
-            vec!["DEFINE FIELD email ON Contact TYPE string ASSERT string::len($value) <= 255;"]
+            vec!["DEFINE FIELD email ON Contact TYPE option<string> ASSERT string::len($value) <= 255;"]
         );
     }
 
@@ -324,7 +342,7 @@ mod tests {
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(
             stmts,
-            vec!["DEFINE FIELD score ON Contact TYPE int ASSERT $value >= 0 AND $value <= 100;"]
+            vec!["DEFINE FIELD score ON Contact TYPE option<int> ASSERT $value >= 0 AND $value <= 100;"]
         );
     }
 
@@ -334,7 +352,10 @@ mod tests {
             field: FieldDefinition::new(FieldName::new("active").unwrap(), FieldType::Boolean),
         };
         let stmts = migration_step_to_surql("Contact", &step);
-        assert_eq!(stmts, vec!["DEFINE FIELD active ON Contact TYPE bool;"]);
+        assert_eq!(
+            stmts,
+            vec!["DEFINE FIELD active ON Contact TYPE option<bool>;"]
+        );
     }
 
     #[test]
@@ -351,7 +372,7 @@ mod tests {
         assert_eq!(
             stmts,
             vec![
-                "DEFINE FIELD status ON Contact TYPE string ASSERT $value IN ['Active', 'Inactive'];"
+                "DEFINE FIELD status ON Contact TYPE option<string> ASSERT $value IN ['Active', 'Inactive'];"
             ]
         );
     }
@@ -386,7 +407,7 @@ mod tests {
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(
             stmts,
-            vec!["DEFINE FIELD status ON Contact TYPE string VALUE $value OR 'active';"]
+            vec!["DEFINE FIELD status ON Contact TYPE option<string> VALUE $value OR 'active';"]
         );
     }
 
@@ -401,7 +422,7 @@ mod tests {
         };
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(stmts.len(), 2);
-        assert_eq!(stmts[0], "DEFINE FIELD email ON Contact TYPE string;");
+        assert_eq!(stmts[0], "DEFINE FIELD email ON Contact TYPE option<string>;");
         assert_eq!(
             stmts[1],
             "DEFINE INDEX idx_Contact_email ON Contact FIELDS email;"
@@ -501,5 +522,55 @@ mod tests {
         assert!(stmts[0].contains("DEFINE FIELD full_name"));
         assert!(stmts[1].contains("UPDATE Contact SET full_name = name"));
         assert!(stmts[2].contains("REMOVE FIELD name"));
+    }
+
+    #[test]
+    fn change_type_enum_includes_assertion() {
+        let step = MigrationStep::ChangeType {
+            name: FieldName::new("status").unwrap(),
+            old_type: FieldType::Enum(
+                EnumVariants::new(vec!["active".into(), "inactive".into()]).unwrap(),
+            ),
+            new_type: FieldType::Enum(
+                EnumVariants::new(vec!["active".into(), "inactive".into(), "archived".into()])
+                    .unwrap(),
+            ),
+            transform: schema_forge_core::migration::ValueTransform::Identity,
+        };
+        let stmts = migration_step_to_surql("Contact", &step);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(
+            stmts[0],
+            "DEFINE FIELD OVERWRITE status ON Contact TYPE string ASSERT $value IN ['active', 'inactive', 'archived'];"
+        );
+    }
+
+    #[test]
+    fn change_type_text_with_max_includes_assertion() {
+        let step = MigrationStep::ChangeType {
+            name: FieldName::new("name").unwrap(),
+            old_type: FieldType::Text(TextConstraints::unconstrained()),
+            new_type: FieldType::Text(TextConstraints::with_max_length(100)),
+            transform: schema_forge_core::migration::ValueTransform::Identity,
+        };
+        let stmts = migration_step_to_surql("Contact", &step);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(
+            stmts[0],
+            "DEFINE FIELD OVERWRITE name ON Contact TYPE string ASSERT string::len($value) <= 100;"
+        );
+    }
+
+    #[test]
+    fn change_type_plain_no_assertion() {
+        let step = MigrationStep::ChangeType {
+            name: FieldName::new("score").unwrap(),
+            old_type: FieldType::Integer(IntegerConstraints::unconstrained()),
+            new_type: FieldType::Float(FloatConstraints::unconstrained()),
+            transform: schema_forge_core::migration::ValueTransform::Identity,
+        };
+        let stmts = migration_step_to_surql("Contact", &step);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts[0], "DEFINE FIELD OVERWRITE score ON Contact TYPE float;");
     }
 }

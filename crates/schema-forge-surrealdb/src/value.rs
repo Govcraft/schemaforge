@@ -94,6 +94,14 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
             }
             Ok(DynamicValue::Composite(map))
         }
+        SurrealValue::Thing(thing) => {
+            // Record reference from a relation field
+            let id_str = thing.id.to_raw();
+            match EntityId::parse(&id_str) {
+                Ok(entity_id) => Ok(DynamicValue::Ref(entity_id)),
+                Err(_) => Ok(DynamicValue::Text(format!("{}:{}", thing.tb, id_str))),
+            }
+        }
         _ => {
             // Fallback: convert to JSON representation
             let json_str = value.to_string();
@@ -256,6 +264,25 @@ mod tests {
         let sv = dynamic_to_surreal(&dv);
         let back = surreal_to_dynamic(&sv).unwrap();
         assert_eq!(back, DynamicValue::Composite(map));
+    }
+
+    #[test]
+    fn thing_converts_to_ref() {
+        use surrealdb::sql::{Id, Thing};
+        let entity_id = EntityId::new();
+        let thing = Thing::from(("Project", Id::String(entity_id.as_str().to_string())));
+        let sv = SurrealValue::Thing(thing);
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert!(matches!(back, DynamicValue::Ref(ref id) if id.as_str() == entity_id.as_str()));
+    }
+
+    #[test]
+    fn thing_non_entity_id_converts_to_text() {
+        use surrealdb::sql::{Id, Thing};
+        let thing = Thing::from(("SomeTable", Id::String("not_an_entity_id".to_string())));
+        let sv = SurrealValue::Thing(thing);
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert_eq!(back, DynamicValue::Text("SomeTable:not_an_entity_id".into()));
     }
 
     #[test]

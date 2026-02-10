@@ -5,7 +5,9 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use schema_forge_backend::entity::Entity;
-use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName};
+use schema_forge_core::types::{
+    Cardinality, DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ForgeError;
@@ -155,6 +157,43 @@ fn convert_json_with_type_hint(
             _ => Err(format!("expected enum string, got {value}")),
         },
         FieldType::Json => Ok(DynamicValue::Json(value.clone())),
+        FieldType::Relation {
+            target: _,
+            cardinality,
+        } => match value {
+            serde_json::Value::String(s) => {
+                let entity_id = EntityId::parse(s)
+                    .map_err(|e| format!("invalid entity reference '{s}': {e}"))?;
+                Ok(DynamicValue::Ref(entity_id))
+            }
+            serde_json::Value::Array(arr) if matches!(cardinality, Cardinality::Many) => {
+                let ids = arr
+                    .iter()
+                    .map(|v| {
+                        if let serde_json::Value::String(s) = v {
+                            EntityId::parse(s)
+                                .map_err(|e| format!("invalid entity reference '{s}': {e}"))
+                        } else {
+                            Err(format!("expected string entity reference, got {v}"))
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(DynamicValue::RefArray(ids))
+            }
+            serde_json::Value::Null => Ok(DynamicValue::Null),
+            _ => Err(format!("expected entity reference string, got {value}")),
+        },
+        FieldType::Array(inner) => match value {
+            serde_json::Value::Array(arr) => {
+                let items = arr
+                    .iter()
+                    .map(|v| convert_json_with_type_hint(v, inner))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(DynamicValue::Array(items))
+            }
+            serde_json::Value::Null => Ok(DynamicValue::Null),
+            _ => Err(format!("expected array, got {value}")),
+        },
         _ => convert_json_untyped(value),
     }
 }
@@ -401,7 +440,7 @@ pub async fn delete_entity(
 mod tests {
     use super::*;
     use schema_forge_core::types::{
-        FieldDefinition, FieldModifier, FieldName, SchemaId, TextConstraints,
+        Cardinality, FieldDefinition, FieldModifier, FieldName, SchemaId, TextConstraints,
     };
 
     fn make_test_schema() -> SchemaDefinition {
@@ -551,5 +590,49 @@ mod tests {
     fn convert_json_untyped_object() {
         let result = convert_json_untyped(&serde_json::json!({"key": "value"})).unwrap();
         assert!(matches!(result, DynamicValue::Composite(map) if map.len() == 1));
+    }
+
+    #[test]
+    fn convert_relation_ref_from_json() {
+        let entity_id = EntityId::new();
+        let id_str = entity_id.as_str().to_string();
+        let field_type = FieldType::Relation {
+            target: SchemaName::new("Project").unwrap(),
+            cardinality: Cardinality::One,
+        };
+        let result =
+            convert_json_with_type_hint(&serde_json::json!(id_str), &field_type).unwrap();
+        assert!(matches!(result, DynamicValue::Ref(ref id) if id.as_str() == id_str));
+    }
+
+    #[test]
+    fn convert_relation_ref_null() {
+        let field_type = FieldType::Relation {
+            target: SchemaName::new("Project").unwrap(),
+            cardinality: Cardinality::One,
+        };
+        let result = convert_json_with_type_hint(&serde_json::json!(null), &field_type).unwrap();
+        assert_eq!(result, DynamicValue::Null);
+    }
+
+    #[test]
+    fn convert_relation_ref_array() {
+        let id1 = EntityId::new();
+        let id2 = EntityId::new();
+        let field_type = FieldType::Relation {
+            target: SchemaName::new("Tag").unwrap(),
+            cardinality: Cardinality::Many,
+        };
+        let json = serde_json::json!([id1.as_str(), id2.as_str()]);
+        let result = convert_json_with_type_hint(&json, &field_type).unwrap();
+        assert!(matches!(result, DynamicValue::RefArray(ids) if ids.len() == 2));
+    }
+
+    #[test]
+    fn convert_array_with_type_hint() {
+        let field_type = FieldType::Array(Box::new(FieldType::Boolean));
+        let json = serde_json::json!([true, false, true]);
+        let result = convert_json_with_type_hint(&json, &field_type).unwrap();
+        assert!(matches!(result, DynamicValue::Array(arr) if arr.len() == 3));
     }
 }
