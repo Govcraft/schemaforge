@@ -1,5 +1,5 @@
-use axum::routing::get;
-use axum::Router;
+use acton_service::service_builder::ServiceBuilder;
+use acton_service::versioning::{ApiVersion, VersionedApiBuilder};
 use schema_forge_acton::SchemaForgeExtension;
 use schema_forge_core::migration::DiffEngine;
 
@@ -12,8 +12,7 @@ use crate::output::OutputContext;
 /// Run the `serve` command: start the SchemaForge HTTP server.
 ///
 /// Loads configuration, parses schemas, connects to SurrealDB,
-/// builds the axum router with forge routes and a health endpoint,
-/// and serves until Ctrl+C.
+/// builds versioned routes via acton-service, and serves until Ctrl+C.
 pub async fn run(
     args: ServeArgs,
     global: &GlobalOpts,
@@ -91,61 +90,64 @@ pub async fn run(
         output.warn("--watch is not yet implemented; schemas will not auto-reload.");
     }
 
-    // 7. Build the router
-    let router = build_router(&extension);
+    // 7. Build versioned routes via acton-service
+    let routes = build_versioned_routes(&extension);
 
-    // 8. Bind and serve
+    // 8. Configure and serve via acton-service
+    let mut svc_config = acton_service::config::Config::<()>::default();
+    svc_config.service.port = args.port;
+    svc_config.service.name = "schema-forge".to_string();
+
     let bind_addr = format!("{}:{}", args.host, args.port);
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
-        .await
-        .map_err(|e| CliError::Server {
-            message: format!("failed to bind to {bind_addr}: {e}"),
-        })?;
-
     output.success(&format!(
         "SchemaForge server listening on http://{bind_addr}"
     ));
     output.status("  Routes:");
     output.status("    GET  /health");
-    output.status("    POST /forge/schemas");
-    output.status("    GET  /forge/schemas");
-    output.status("    GET  /forge/schemas/:name");
-    output.status("    PUT  /forge/schemas/:name");
-    output.status("    DEL  /forge/schemas/:name");
-    output.status("    POST /forge/schemas/:schema/entities");
-    output.status("    GET  /forge/schemas/:schema/entities");
-    output.status("    GET  /forge/schemas/:schema/entities/:id");
-    output.status("    PUT  /forge/schemas/:schema/entities/:id");
-    output.status("    DEL  /forge/schemas/:schema/entities/:id");
+    output.status("    GET  /ready");
+    output.status("    POST /api/v1/forge/schemas");
+    output.status("    GET  /api/v1/forge/schemas");
+    output.status("    GET  /api/v1/forge/schemas/:name");
+    output.status("    PUT  /api/v1/forge/schemas/:name");
+    output.status("    DEL  /api/v1/forge/schemas/:name");
+    output.status("    POST /api/v1/forge/schemas/:schema/entities");
+    output.status("    GET  /api/v1/forge/schemas/:schema/entities");
+    output.status("    GET  /api/v1/forge/schemas/:schema/entities/:id");
+    output.status("    PUT  /api/v1/forge/schemas/:schema/entities/:id");
+    output.status("    DEL  /api/v1/forge/schemas/:schema/entities/:id");
     output.status("  Press Ctrl+C to stop.");
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|e| CliError::Server {
-            message: format!("server error: {e}"),
-        })?;
+    let service = ServiceBuilder::new()
+        .with_config(svc_config)
+        .with_routes(routes)
+        .build();
+
+    service.serve().await.map_err(|e| CliError::Server {
+        message: format!("server error: {e}"),
+    })?;
 
     output.success("Server shut down gracefully.");
     Ok(())
 }
 
-/// Build the axum router with forge routes and health endpoint.
-fn build_router(extension: &SchemaForgeExtension) -> Router {
-    let router = Router::new().route("/health", get(health_handler));
-    extension.register_routes(router)
+/// Build versioned routes using acton-service's VersionedApiBuilder.
+///
+/// Nests SchemaForge's routes under `/api/v1/forge/`.
+fn build_versioned_routes(
+    extension: &SchemaForgeExtension,
+) -> acton_service::service_builder::VersionedRoutes {
+    VersionedApiBuilder::new()
+        .with_base_path("/api")
+        .add_version(ApiVersion::V1, |router| {
+            extension.register_versioned_routes(router)
+        })
+        .build_routes()
 }
 
-/// Health check handler.
-async fn health_handler() -> &'static str {
-    "ok"
-}
-
-/// Wait for Ctrl+C to signal graceful shutdown.
-async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install Ctrl+C handler");
+/// Build a test router using `register_routes()` directly (no acton-service layer).
+#[cfg(test)]
+fn build_test_router(extension: &SchemaForgeExtension) -> axum::Router {
+    extension.register_routes(axum::Router::new())
 }
 
 #[cfg(test)]
@@ -157,7 +159,7 @@ mod tests {
     use tower::ServiceExt;
 
     /// Build a test router backed by an in-memory SurrealDB.
-    async fn test_router() -> Router {
+    async fn test_router() -> axum::Router {
         let backend = SurrealBackend::connect_memory("test", "serve_test")
             .await
             .expect("in-memory backend");
@@ -166,28 +168,7 @@ mod tests {
             .build()
             .await
             .expect("extension");
-        build_router(&extension)
-    }
-
-    #[tokio::test]
-    async fn health_endpoint_returns_ok() {
-        let router = test_router().await;
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .uri("/health")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(&body[..], b"ok");
+        build_test_router(&extension)
     }
 
     #[tokio::test]
@@ -216,14 +197,10 @@ mod tests {
     }
 
     #[test]
-    fn health_handler_is_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<std::pin::Pin<Box<dyn std::future::Future<Output = &'static str> + Send>>>();
-    }
-
-    #[test]
-    fn build_router_returns_router() {
-        // Compile-time verification that build_router produces a Router
-        let _: fn(&SchemaForgeExtension) -> Router = build_router;
+    fn build_versioned_routes_is_callable() {
+        // Compile-time verification that build_versioned_routes has the right signature
+        let _: fn(
+            &SchemaForgeExtension,
+        ) -> acton_service::service_builder::VersionedRoutes = build_versioned_routes;
     }
 }

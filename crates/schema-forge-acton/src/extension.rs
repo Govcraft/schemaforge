@@ -91,6 +91,31 @@ impl SchemaForgeExtension {
         router.nest("/forge", forge_router)
     }
 
+    /// Register SchemaForge routes into a VersionedApiBuilder.
+    ///
+    /// Nests forge routes (schemas + entities CRUD) under `/forge` within the
+    /// specified API version. The `ForgeState` is applied internally, so the
+    /// returned router is compatible with any `AppState<T>`.
+    ///
+    /// ```rust,ignore
+    /// let routes = VersionedApiBuilder::new()
+    ///     .with_base_path("/api")
+    ///     .add_version(ApiVersion::V1, |router| {
+    ///         extension.register_versioned_routes(router)
+    ///     })
+    ///     .build_routes();
+    /// ```
+    pub fn register_versioned_routes<T>(
+        &self,
+        router: Router<acton_service::state::AppState<T>>,
+    ) -> Router<acton_service::state::AppState<T>>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Clone + Default + Send + Sync + 'static,
+    {
+        let forge_router: Router<()> = forge_routes().with_state(self.state.clone());
+        router.nest_service("/forge", forge_router)
+    }
+
     /// Get a reference to the schema registry.
     pub fn registry(&self) -> &SchemaRegistry {
         &self.state.registry
