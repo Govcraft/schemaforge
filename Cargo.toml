@@ -1,3 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/schema-forge-core", "crates/schema-forge-dsl"]
+members = [
+    "crates/schema-forge-core",
+    "crates/schema-forge-dsl",
+    "crates/schema-forge-backend",
+    "crates/schema-forge-surrealdb",
+]
