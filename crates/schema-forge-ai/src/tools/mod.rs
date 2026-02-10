@@ -22,8 +22,9 @@ pub struct SchemaForgeTools {
 }
 
 /// Type alias for boxed tool executor closures.
-type BoxedToolExecutor =
-    Box<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> + Send + Sync>;
+type BoxedToolExecutor = Box<
+    dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> + Send + Sync,
+>;
 
 impl SchemaForgeTools {
     /// Creates a new `SchemaForgeTools` with the given registry and backend.
@@ -138,10 +139,7 @@ mod tests {
         ) -> Result<(), BackendError> {
             Ok(())
         }
-        async fn store_schema_metadata(
-            &self,
-            _def: &SchemaDefinition,
-        ) -> Result<(), BackendError> {
+        async fn store_schema_metadata(&self, _def: &SchemaDefinition) -> Result<(), BackendError> {
             Ok(())
         }
         async fn load_schema_metadata(

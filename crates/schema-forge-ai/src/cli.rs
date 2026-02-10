@@ -78,8 +78,7 @@ mod tests {
     fn function_returns_result() {
         // The function is `async fn(&SchemaForgeAgent) -> Result<(), ForgeAiError>`.
         // We verify it compiles with the expected return type by referencing it.
-        let _fn_ref: fn(&SchemaForgeAgent) -> _ = |_agent| {
-            Box::pin(async { Ok::<(), ForgeAiError>(()) })
-        };
+        let _fn_ref: fn(&SchemaForgeAgent) -> _ =
+            |_agent| Box::pin(async { Ok::<(), ForgeAiError>(()) });
     }
 }

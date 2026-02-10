@@ -193,11 +193,9 @@ impl From<ActonAIError> for ForgeAiError {
                 Self::Configuration { field, reason }
             }
             ActonAIErrorKind::ProviderError { reason } => Self::ProviderError { reason },
-            ActonAIErrorKind::RuntimeShutdown => {
-                Self::RuntimeError {
-                    reason: "runtime has been shut down".to_string(),
-                }
-            }
+            ActonAIErrorKind::RuntimeShutdown => Self::RuntimeError {
+                reason: "runtime has been shut down".to_string(),
+            },
             ActonAIErrorKind::LaunchFailed { reason }
             | ActonAIErrorKind::PromptFailed { reason }
             | ActonAIErrorKind::StreamError { reason } => Self::RuntimeError { reason },
@@ -358,8 +356,7 @@ mod tests {
 
     #[test]
     fn is_std_error() {
-        let err: Box<dyn std::error::Error> =
-            Box::new(ForgeAiError::schema_not_found("Contact"));
+        let err: Box<dyn std::error::Error> = Box::new(ForgeAiError::schema_not_found("Contact"));
         assert!(err.to_string().contains("Contact"));
     }
 

@@ -88,9 +88,7 @@ pub fn apply_schema_executor(
                     }));
                 } else {
                     // Apply migration
-                    if let Err(e) =
-                        backend.apply_migration(&schema.name, &plan.steps).await
-                    {
+                    if let Err(e) = backend.apply_migration(&schema.name, &plan.steps).await {
                         return Ok(json!({
                             "status": "error",
                             "schema": name,
@@ -204,11 +202,7 @@ mod tests {
             })
         }
 
-        async fn delete(
-            &self,
-            _schema: &SchemaName,
-            _id: &EntityId,
-        ) -> Result<(), BackendError> {
+        async fn delete(&self, _schema: &SchemaName, _id: &EntityId) -> Result<(), BackendError> {
             Ok(())
         }
 

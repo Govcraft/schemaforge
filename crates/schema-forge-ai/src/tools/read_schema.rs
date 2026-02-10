@@ -117,6 +117,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["status"], "error");
-        assert!(result["message"].as_str().unwrap().contains("Failed to read"));
+        assert!(result["message"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to read"));
     }
 }

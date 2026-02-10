@@ -35,10 +35,7 @@ pub fn validate_schema_executor(
             let dsl = args["dsl"]
                 .as_str()
                 .ok_or_else(|| {
-                    ToolError::validation_failed(
-                        "validate_schema",
-                        "missing required field 'dsl'",
-                    )
+                    ToolError::validation_failed("validate_schema", "missing required field 'dsl'")
                 })?
                 .to_string();
 
@@ -53,7 +50,11 @@ pub fn validate_schema_executor(
                                 .fields
                                 .iter()
                                 .filter_map(|f| {
-                                    if let schema_forge_core::types::FieldType::Relation { target, .. } = &f.field_type {
+                                    if let schema_forge_core::types::FieldType::Relation {
+                                        target,
+                                        ..
+                                    } = &f.field_type
+                                    {
                                         Some(format!("{} -> {}", s.name.as_str(), target.as_str()))
                                     } else {
                                         None

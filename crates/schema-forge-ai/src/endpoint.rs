@@ -110,10 +110,7 @@ mod tests {
                 ForgeAiError::parse_failed(vec!["e".into()]),
                 StatusCode::UNPROCESSABLE_ENTITY,
             ),
-            (
-                ForgeAiError::schema_not_found("X"),
-                StatusCode::NOT_FOUND,
-            ),
+            (ForgeAiError::schema_not_found("X"), StatusCode::NOT_FOUND),
             (
                 ForgeAiError::file_read_failed("p", "r"),
                 StatusCode::BAD_REQUEST,
@@ -122,10 +119,7 @@ mod tests {
                 ForgeAiError::runtime_error("x"),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
-            (
-                ForgeAiError::provider_error("x"),
-                StatusCode::BAD_GATEWAY,
-            ),
+            (ForgeAiError::provider_error("x"), StatusCode::BAD_GATEWAY),
         ];
 
         for (err, expected_status) in test_cases {

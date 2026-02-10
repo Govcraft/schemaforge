@@ -29,9 +29,7 @@ impl SchemaForgeAgent {
         registry: SchemaRegistry,
         backend: Arc<dyn DynForgeBackend>,
     ) -> Result<Self, ForgeAiError> {
-        let builder = ActonAI::builder()
-            .app_name("schema-forge")
-            .ollama(model);
+        let builder = ActonAI::builder().app_name("schema-forge").ollama(model);
         build_agent(builder, registry, backend).await
     }
 
@@ -53,9 +51,7 @@ impl SchemaForgeAgent {
         registry: SchemaRegistry,
         backend: Arc<dyn DynForgeBackend>,
     ) -> Result<Self, ForgeAiError> {
-        let builder = ActonAI::builder()
-            .app_name("schema-forge")
-            .openai(api_key);
+        let builder = ActonAI::builder().app_name("schema-forge").openai(api_key);
         build_agent(builder, registry, backend).await
     }
 
