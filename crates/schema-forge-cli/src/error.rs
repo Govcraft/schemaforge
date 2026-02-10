@@ -20,6 +20,8 @@ pub enum ExitCode {
     ParseError = 3,
     ConnectionError = 10,
     MigrationError = 11,
+    AiError = 12,
+    ServerError = 13,
 }
 
 /// Errors returned by CLI command handlers.
@@ -71,6 +73,14 @@ pub enum CliError {
     #[error("destructive changes require --force in non-interactive mode")]
     RequiresForce,
 
+    /// AI provider or generation errors.
+    #[error("AI error: {message}")]
+    Ai { message: String },
+
+    /// HTTP server errors.
+    #[error("server error: {message}")]
+    Server { message: String },
+
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
@@ -85,6 +95,8 @@ impl CliError {
             Self::Backend(BackendError::MigrationFailed { .. }) => ExitCode::MigrationError,
             Self::Backend(_) => ExitCode::GeneralError,
             Self::Config { .. } | Self::NoSchemaFiles { .. } => ExitCode::InvalidArguments,
+            Self::Ai { .. } => ExitCode::AiError,
+            Self::Server { .. } => ExitCode::ServerError,
             Self::Io { .. }
             | Self::Cancelled
             | Self::SchemaNotFound { .. }
@@ -119,6 +131,14 @@ impl CliError {
             }),
             Self::Config { message } => serde_json::json!({
                 "error": "config_error",
+                "message": message,
+            }),
+            Self::Ai { message } => serde_json::json!({
+                "error": "ai_error",
+                "message": message,
+            }),
+            Self::Server { message } => serde_json::json!({
+                "error": "server_error",
                 "message": message,
             }),
             other => serde_json::json!({
@@ -272,6 +292,60 @@ mod tests {
     }
 
     #[test]
+    fn ai_error_exit_code() {
+        let err = CliError::Ai {
+            message: "provider failed".into(),
+        };
+        assert_eq!(err.exit_code(), ExitCode::AiError);
+    }
+
+    #[test]
+    fn server_error_exit_code() {
+        let err = CliError::Server {
+            message: "bind failed".into(),
+        };
+        assert_eq!(err.exit_code(), ExitCode::ServerError);
+    }
+
+    #[test]
+    fn display_ai_error() {
+        let err = CliError::Ai {
+            message: "model not found".into(),
+        };
+        assert!(err.to_string().contains("AI error"));
+        assert!(err.to_string().contains("model not found"));
+    }
+
+    #[test]
+    fn display_server_error() {
+        let err = CliError::Server {
+            message: "port in use".into(),
+        };
+        assert!(err.to_string().contains("server error"));
+        assert!(err.to_string().contains("port in use"));
+    }
+
+    #[test]
+    fn to_json_ai_error() {
+        let err = CliError::Ai {
+            message: "timeout".into(),
+        };
+        let json = err.to_json();
+        assert_eq!(json["error"], "ai_error");
+        assert_eq!(json["message"], "timeout");
+    }
+
+    #[test]
+    fn to_json_server_error() {
+        let err = CliError::Server {
+            message: "shutdown".into(),
+        };
+        let json = err.to_json();
+        assert_eq!(json["error"], "server_error");
+        assert_eq!(json["message"], "shutdown");
+    }
+
+    #[test]
     fn exit_code_values() {
         assert_eq!(ExitCode::Success as i32, 0);
         assert_eq!(ExitCode::GeneralError as i32, 1);
@@ -279,5 +353,7 @@ mod tests {
         assert_eq!(ExitCode::ParseError as i32, 3);
         assert_eq!(ExitCode::ConnectionError as i32, 10);
         assert_eq!(ExitCode::MigrationError as i32, 11);
+        assert_eq!(ExitCode::AiError as i32, 12);
+        assert_eq!(ExitCode::ServerError as i32, 13);
     }
 }

@@ -5028,9 +5028,10 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
+ "axum 0.8.8",
  "clap",
  "clap_complete",
  "console",
@@ -5051,6 +5052,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
+ "tower 0.5.3",
 ]
 
 [[package]]
