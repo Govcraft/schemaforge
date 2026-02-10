@@ -1,0 +1,33 @@
+[package]
+name = "schema-forge-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "schema-forge"
+path = "src/main.rs"
+
+[dependencies]
+schema-forge-core = { path = "../schema-forge-core" }
+schema-forge-dsl = { path = "../schema-forge-dsl" }
+schema-forge-backend = { path = "../schema-forge-backend" }
+schema-forge-surrealdb = { path = "../schema-forge-surrealdb" }
+schema-forge-acton = { path = "../schema-forge-acton" }
+schema-forge-ai = { path = "../schema-forge-ai" }
+clap = { version = "4", features = ["derive", "env", "string"] }
+clap_complete = "4"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+miette = { version = "7", features = ["fancy"] }
+indicatif = "0.17"
+console = "0.15"
+dialoguer = "0.11"
+glob = "0.3"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
