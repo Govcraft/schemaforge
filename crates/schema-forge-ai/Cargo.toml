@@ -8,7 +8,7 @@ schema-forge-core = { path = "../schema-forge-core" }
 schema-forge-dsl = { path = "../schema-forge-dsl" }
 schema-forge-acton = { path = "../schema-forge-acton" }
 schema-forge-backend = { path = "../schema-forge-backend" }
-acton-ai = "0.25.1"
+acton-ai = "0.26"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "io-util", "io-std", "macros"] }

@@ -10,9 +10,9 @@ checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
 
 [[package]]
 name = "acton-ai"
-version = "0.25.1"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07ec1cbd3d838081a8844efd2637069106ca9385107ef8ed2b7e2f7dba4e8b98"
+checksum = "7d0936aa69c8a9e3ec77a4153125176711ec357856de913e9b9e5305c3d8a8d0"
 dependencies = [
  "acton-reactive",
  "async-stream",

@@ -123,8 +123,13 @@ impl SchemaForgeAgent {
     ///
     /// Sends the description to the LLM with the SchemaForge system prompt
     /// and all tools attached. The LLM may call tools during generation.
+    /// Uses low temperature (0.3) for deterministic tool usage.
     pub async fn generate(&self, description: &str) -> Result<String, ForgeAiError> {
-        let mut builder = self.runtime.prompt(description).system(FORGE_SYSTEM_PROMPT);
+        let mut builder = self
+            .runtime
+            .prompt(description)
+            .system(FORGE_SYSTEM_PROMPT)
+            .temperature(0.3);
         builder = self.tools.attach_to(builder);
         let response = builder
             .collect()
@@ -142,8 +147,14 @@ impl SchemaForgeAgent {
     /// 2. **Tool arguments** — DSL from the last successful `validate_schema`/`apply_schema` call
     /// 3. **Response text** — parsed from the LLM's final text (including markdown code blocks)
     /// 4. **Raw text** — unparseable fallback
+    ///
+    /// Uses low temperature (0.3) for deterministic tool usage.
     pub async fn generate_dsl(&self, description: &str) -> Result<GenerateResult, ForgeAiError> {
-        let mut builder = self.runtime.prompt(description).system(FORGE_SYSTEM_PROMPT);
+        let mut builder = self
+            .runtime
+            .prompt(description)
+            .system(FORGE_SYSTEM_PROMPT)
+            .temperature(0.3);
         builder = self.tools.attach_to(builder);
         let response = builder
             .collect()
