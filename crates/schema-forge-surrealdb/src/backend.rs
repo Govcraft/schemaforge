@@ -60,6 +60,27 @@ impl SurrealBackend {
         Ok(Self { db })
     }
 
+    /// Connect to a remote SurrealDB instance.
+    ///
+    /// Supports ws://, wss://, http://, https://, and mem:// schemes.
+    /// After connecting, selects the given namespace and database.
+    pub async fn connect(url: &str, ns: &str, db_name: &str) -> Result<Self, BackendError> {
+        let db = surrealdb::engine::any::connect(url)
+            .await
+            .map_err(|e| BackendError::ConnectionError {
+                message: format!("failed to connect to {url}: {e}"),
+            })?;
+
+        db.use_ns(ns)
+            .use_db(db_name)
+            .await
+            .map_err(|e| BackendError::ConnectionError {
+                message: format!("failed to select namespace/database: {e}"),
+            })?;
+
+        Ok(Self { db })
+    }
+
     /// Execute a raw SurrealQL statement, returning the response.
     async fn execute_raw(&self, sql: &str) -> Result<surrealdb::Response, BackendError> {
         self.db
@@ -398,6 +419,26 @@ fn field_surreal_value_to_literal(value: &surrealdb::sql::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn connect_memory_via_url() {
+        let result = SurrealBackend::connect("mem://", "test", "test").await;
+        assert!(result.is_ok(), "connect(\"mem://\") should succeed");
+    }
+
+    #[tokio::test]
+    async fn connect_invalid_url() {
+        let result = SurrealBackend::connect("badscheme://x", "a", "b").await;
+        assert!(result.is_err(), "connect with invalid scheme should fail");
+        if let Err(BackendError::ConnectionError { message }) = result {
+            assert!(
+                message.contains("badscheme"),
+                "error should mention the bad scheme"
+            );
+        } else {
+            panic!("expected ConnectionError");
+        }
+    }
 
     #[test]
     fn extract_id_from_thing() {
