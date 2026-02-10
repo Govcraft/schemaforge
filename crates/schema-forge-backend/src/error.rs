@@ -8,27 +8,15 @@ use std::fmt;
 #[non_exhaustive]
 pub enum BackendError {
     /// Entity not found by ID within a given schema table.
-    EntityNotFound {
-        schema: String,
-        entity_id: String,
-    },
+    EntityNotFound { schema: String, entity_id: String },
     /// Schema table not found by name.
-    SchemaNotFound {
-        schema: String,
-    },
+    SchemaNotFound { schema: String },
     /// Schema table already exists when attempting creation.
-    SchemaAlreadyExists {
-        schema: String,
-    },
+    SchemaAlreadyExists { schema: String },
     /// Pre-write validation failed for a specific field.
-    ValidationFailed {
-        field: String,
-        reason: String,
-    },
+    ValidationFailed { field: String, reason: String },
     /// A required field was not provided.
-    RequiredFieldMissing {
-        field: String,
-    },
+    RequiredFieldMissing { field: String },
     /// The provided value type does not match the field's expected type.
     TypeMismatch {
         field: String,
@@ -36,32 +24,20 @@ pub enum BackendError {
         actual: String,
     },
     /// A migration step could not be applied.
-    MigrationFailed {
-        step: String,
-        reason: String,
-    },
+    MigrationFailed { step: String, reason: String },
     /// Connection or transport-level error.
-    ConnectionError {
-        message: String,
-    },
+    ConnectionError { message: String },
     /// Query execution error.
-    QueryError {
-        message: String,
-    },
+    QueryError { message: String },
     /// Internal or unexpected error.
-    Internal {
-        message: String,
-    },
+    Internal { message: String },
 }
 
 impl fmt::Display for BackendError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EntityNotFound { schema, entity_id } => {
-                write!(
-                    f,
-                    "entity '{entity_id}' not found in schema '{schema}'"
-                )
+                write!(f, "entity '{entity_id}' not found in schema '{schema}'")
             }
             Self::SchemaNotFound { schema } => {
                 write!(f, "schema '{schema}' not found")
@@ -70,10 +46,7 @@ impl fmt::Display for BackendError {
                 write!(f, "schema '{schema}' already exists")
             }
             Self::ValidationFailed { field, reason } => {
-                write!(
-                    f,
-                    "validation failed for field '{field}': {reason}"
-                )
+                write!(f, "validation failed for field '{field}': {reason}")
             }
             Self::RequiredFieldMissing { field } => {
                 write!(f, "required field '{field}' is missing")

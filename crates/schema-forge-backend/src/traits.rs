@@ -60,10 +60,7 @@ pub trait EntityStore: Send + Sync {
     ///
     /// The entity's `id` and `schema` determine where it is stored.
     /// Returns the created entity (which may have backend-generated fields).
-    fn create(
-        &self,
-        entity: &Entity,
-    ) -> impl Future<Output = Result<Entity, BackendError>> + Send;
+    fn create(&self, entity: &Entity) -> impl Future<Output = Result<Entity, BackendError>> + Send;
 
     /// Retrieve an entity by schema name and entity ID.
     ///
@@ -79,10 +76,7 @@ pub trait EntityStore: Send + Sync {
     /// The entity's `id` and `schema` determine which record to update.
     /// All fields in `entity.fields` replace the existing fields.
     /// Returns the updated entity.
-    fn update(
-        &self,
-        entity: &Entity,
-    ) -> impl Future<Output = Result<Entity, BackendError>> + Send;
+    fn update(&self, entity: &Entity) -> impl Future<Output = Result<Entity, BackendError>> + Send;
 
     /// Delete an entity by schema name and entity ID.
     ///

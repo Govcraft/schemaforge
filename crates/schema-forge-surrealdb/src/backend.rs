@@ -72,12 +72,12 @@ impl SchemaBackend for SurrealBackend {
         for step in steps {
             let statements = migration_step_to_surql(table, step);
             for stmt in &statements {
-                self.execute_raw(stmt).await.map_err(|e| {
-                    BackendError::MigrationFailed {
+                self.execute_raw(stmt)
+                    .await
+                    .map_err(|e| BackendError::MigrationFailed {
                         step: step.to_string(),
                         reason: e.to_string(),
-                    }
-                })?;
+                    })?;
             }
         }
         Ok(())
@@ -105,9 +105,7 @@ impl SchemaBackend for SurrealBackend {
         name: &SchemaName,
     ) -> Result<Option<SchemaDefinition>, BackendError> {
         let name_str = name.as_str();
-        let sql = format!(
-            "SELECT definition FROM {SCHEMA_META_TABLE}:`{name_str}`;"
-        );
+        let sql = format!("SELECT definition FROM {SCHEMA_META_TABLE}:`{name_str}`;");
         let mut response = self.execute_raw(&sql).await?;
 
         let rows: Vec<serde_json::Value> =
@@ -134,9 +132,7 @@ impl SchemaBackend for SurrealBackend {
         Ok(Some(definition))
     }
 
-    async fn list_schema_metadata(
-        &self,
-    ) -> Result<Vec<SchemaDefinition>, BackendError> {
+    async fn list_schema_metadata(&self) -> Result<Vec<SchemaDefinition>, BackendError> {
         let sql = format!("SELECT definition FROM {SCHEMA_META_TABLE};");
         let mut response = self.execute_raw(&sql).await?;
 
@@ -166,10 +162,7 @@ impl SchemaBackend for SurrealBackend {
 }
 
 impl EntityStore for SurrealBackend {
-    async fn create(
-        &self,
-        entity: &Entity,
-    ) -> Result<Entity, BackendError> {
+    async fn create(&self, entity: &Entity) -> Result<Entity, BackendError> {
         let table = entity.schema.as_str();
         let id_str = entity.id.as_str();
 
@@ -185,9 +178,7 @@ impl EntityStore for SurrealBackend {
         }
 
         let set_clause = assignments.join(", ");
-        let sql = format!(
-            "CREATE {table}:`{id_str}` SET {set_clause};"
-        );
+        let sql = format!("CREATE {table}:`{id_str}` SET {set_clause};");
 
         let mut response = self.execute_raw(&sql).await?;
         let rows: Vec<serde_json::Value> =
@@ -204,11 +195,7 @@ impl EntityStore for SurrealBackend {
         json_row_to_entity(&entity.schema, &rows[0])
     }
 
-    async fn get(
-        &self,
-        schema: &SchemaName,
-        id: &EntityId,
-    ) -> Result<Entity, BackendError> {
+    async fn get(&self, schema: &SchemaName, id: &EntityId) -> Result<Entity, BackendError> {
         let table = schema.as_str();
         let id_str = id.as_str();
         let sql = format!("SELECT * FROM {table}:`{id_str}`;");
@@ -229,10 +216,7 @@ impl EntityStore for SurrealBackend {
         json_row_to_entity(schema, &rows[0])
     }
 
-    async fn update(
-        &self,
-        entity: &Entity,
-    ) -> Result<Entity, BackendError> {
+    async fn update(&self, entity: &Entity) -> Result<Entity, BackendError> {
         let table = entity.schema.as_str();
         let id_str = entity.id.as_str();
 
@@ -247,9 +231,7 @@ impl EntityStore for SurrealBackend {
         }
 
         let set_clause = assignments.join(", ");
-        let sql = format!(
-            "UPDATE {table}:`{id_str}` SET {set_clause};"
-        );
+        let sql = format!("UPDATE {table}:`{id_str}` SET {set_clause};");
 
         let mut response = self.execute_raw(&sql).await?;
         let rows: Vec<serde_json::Value> =
@@ -267,11 +249,7 @@ impl EntityStore for SurrealBackend {
         json_row_to_entity(&entity.schema, &rows[0])
     }
 
-    async fn delete(
-        &self,
-        schema: &SchemaName,
-        id: &EntityId,
-    ) -> Result<(), BackendError> {
+    async fn delete(&self, schema: &SchemaName, id: &EntityId) -> Result<(), BackendError> {
         let table = schema.as_str();
         let id_str = id.as_str();
 
@@ -295,10 +273,7 @@ impl EntityStore for SurrealBackend {
         Ok(())
     }
 
-    async fn query(
-        &self,
-        query: &Query,
-    ) -> Result<QueryResult, BackendError> {
+    async fn query(&self, query: &Query) -> Result<QueryResult, BackendError> {
         // Resolve schema name from the query's SchemaId.
         // The query stores a SchemaId; we need a table name.
         // For now, we use the SchemaId's string representation.

@@ -104,15 +104,8 @@ pub fn filter_to_surql(filter: &Filter) -> String {
             )
         }
         Filter::In { path, values } => {
-            let literals: Vec<String> = values
-                .iter()
-                .map(dynamic_value_to_surql_literal)
-                .collect();
-            format!(
-                "{} IN [{}]",
-                field_path_to_surql(path),
-                literals.join(", ")
-            )
+            let literals: Vec<String> = values.iter().map(dynamic_value_to_surql_literal).collect();
+            format!("{} IN [{}]", field_path_to_surql(path), literals.join(", "))
         }
         Filter::And { filters } => {
             if filters.is_empty() {
@@ -230,10 +223,7 @@ mod tests {
     #[test]
     fn select_with_and_filter() {
         let q = Query::new(SchemaId::new()).with_filter(Filter::and(vec![
-            Filter::eq(
-                FieldPath::single("name"),
-                DynamicValue::Text("Jane".into()),
-            ),
+            Filter::eq(FieldPath::single("name"), DynamicValue::Text("Jane".into())),
             Filter::gt(FieldPath::single("age"), DynamicValue::Integer(25)),
         ]));
         let sql = query_to_surql(&q, "Contact");
@@ -269,18 +259,13 @@ mod tests {
             DynamicValue::Boolean(true),
         )));
         let sql = query_to_surql(&q, "Contact");
-        assert_eq!(
-            sql,
-            "SELECT * FROM Contact WHERE !(deleted = true);"
-        );
+        assert_eq!(sql, "SELECT * FROM Contact WHERE !(deleted = true);");
     }
 
     #[test]
     fn select_with_contains() {
-        let q = Query::new(SchemaId::new()).with_filter(Filter::contains(
-            FieldPath::single("email"),
-            "example.com",
-        ));
+        let q = Query::new(SchemaId::new())
+            .with_filter(Filter::contains(FieldPath::single("email"), "example.com"));
         let sql = query_to_surql(&q, "Contact");
         assert_eq!(
             sql,
@@ -290,10 +275,8 @@ mod tests {
 
     #[test]
     fn select_with_starts_with() {
-        let q = Query::new(SchemaId::new()).with_filter(Filter::starts_with(
-            FieldPath::single("name"),
-            "J",
-        ));
+        let q = Query::new(SchemaId::new())
+            .with_filter(Filter::starts_with(FieldPath::single("name"), "J"));
         let sql = query_to_surql(&q, "Contact");
         assert_eq!(
             sql,
@@ -323,10 +306,7 @@ mod tests {
             .with_sort(FieldPath::single("name"), SortOrder::Ascending)
             .with_sort(FieldPath::single("age"), SortOrder::Descending);
         let sql = query_to_surql(&q, "Contact");
-        assert_eq!(
-            sql,
-            "SELECT * FROM Contact ORDER BY name ASC, age DESC;"
-        );
+        assert_eq!(sql, "SELECT * FROM Contact ORDER BY name ASC, age DESC;");
     }
 
     #[test]
@@ -391,10 +371,7 @@ mod tests {
         let q = Query::new(SchemaId::new())
             .with_filter(Filter::and(vec![
                 Filter::gt(FieldPath::single("age"), DynamicValue::Integer(25)),
-                Filter::eq(
-                    FieldPath::single("active"),
-                    DynamicValue::Boolean(true),
-                ),
+                Filter::eq(FieldPath::single("active"), DynamicValue::Boolean(true)),
             ]))
             .with_sort(FieldPath::single("name"), SortOrder::Ascending)
             .with_limit(10)

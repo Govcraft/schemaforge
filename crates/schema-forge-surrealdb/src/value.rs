@@ -34,14 +34,19 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
         DynamicValue::Composite(map) => {
             let mut obj = surrealdb::Object::new();
             for (k, v) in map {
-                obj.insert(k.clone(), surrealdb::Value::from_inner(dynamic_to_surreal(v)));
+                obj.insert(
+                    k.clone(),
+                    surrealdb::Value::from_inner(dynamic_to_surreal(v)),
+                );
             }
             SurrealValue::Object(obj.into_inner())
         }
         DynamicValue::Ref(id) => SurrealValue::from(id.as_str()),
         DynamicValue::RefArray(ids) => {
-            let items: Vec<SurrealValue> =
-                ids.iter().map(|id| SurrealValue::from(id.as_str())).collect();
+            let items: Vec<SurrealValue> = ids
+                .iter()
+                .map(|id| SurrealValue::from(id.as_str()))
+                .collect();
             SurrealValue::from(items)
         }
         _ => {
@@ -233,18 +238,12 @@ mod tests {
 
     #[test]
     fn array_round_trip() {
-        let dv = DynamicValue::Array(vec![
-            DynamicValue::Integer(1),
-            DynamicValue::Integer(2),
-        ]);
+        let dv = DynamicValue::Array(vec![DynamicValue::Integer(1), DynamicValue::Integer(2)]);
         let sv = dynamic_to_surreal(&dv);
         let back = surreal_to_dynamic(&sv).unwrap();
         assert_eq!(
             back,
-            DynamicValue::Array(vec![
-                DynamicValue::Integer(1),
-                DynamicValue::Integer(2),
-            ])
+            DynamicValue::Array(vec![DynamicValue::Integer(1), DynamicValue::Integer(2),])
         );
     }
 

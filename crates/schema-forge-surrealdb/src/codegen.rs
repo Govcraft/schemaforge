@@ -33,19 +33,12 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         MigrationStep::RemoveField { name } => {
             vec![format!("REMOVE FIELD {name} ON {table};")]
         }
-        MigrationStep::RenameField {
-            old_name,
-            new_name,
-        } => {
+        MigrationStep::RenameField { old_name, new_name } => {
             // SurrealDB does not have a native RENAME FIELD command.
             // We define the new field, copy data, then remove the old one.
             vec![
-                format!(
-                    "DEFINE FIELD {new_name} ON {table} TYPE any;"
-                ),
-                format!(
-                    "UPDATE {table} SET {new_name} = {old_name};"
-                ),
+                format!("DEFINE FIELD {new_name} ON {table} TYPE any;"),
+                format!("UPDATE {table} SET {new_name} = {old_name};"),
                 format!("REMOVE FIELD {old_name} ON {table};"),
             ]
         }
@@ -56,9 +49,7 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
             transform: _,
         } => {
             let surql_type = field_type_to_surql(new_type);
-            vec![format!(
-                "DEFINE FIELD {name} ON {table} TYPE {surql_type};"
-            )]
+            vec![format!("DEFINE FIELD {name} ON {table} TYPE {surql_type};")]
         }
         MigrationStep::AddIndex { field } => {
             let idx_name = format!("idx_{table}_{field}");
@@ -112,9 +103,7 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         }
         MigrationStep::RemoveRequired { field } => {
             // Re-define the field without the assertion. Use `any` type to be permissive.
-            vec![format!(
-                "DEFINE FIELD {field} ON {table} TYPE any;"
-            )]
+            vec![format!("DEFINE FIELD {field} ON {table} TYPE any;")]
         }
         MigrationStep::SetDefault { field, value } => {
             let literal = default_value_to_surql(value);
@@ -124,9 +113,7 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         }
         MigrationStep::RemoveDefault { field } => {
             // Re-define without VALUE clause.
-            vec![format!(
-                "DEFINE FIELD {field} ON {table} TYPE any;"
-            )]
+            vec![format!("DEFINE FIELD {field} ON {table} TYPE any;")]
         }
         _ => {
             // Future MigrationStep variants -- produce a no-op comment.
@@ -229,9 +216,7 @@ fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
     // If indexed, emit DEFINE INDEX
     if field.is_indexed() {
         let idx_name = format!("idx_{table}_{name}");
-        parts.push(format!(
-            "DEFINE INDEX {idx_name} ON {table} FIELDS {name};"
-        ));
+        parts.push(format!("DEFINE INDEX {idx_name} ON {table} FIELDS {name};"));
     }
 
     // If composite, emit nested DEFINE FIELD statements
@@ -244,8 +229,7 @@ fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
 
             let nested_assertions = field_assertions(&sub.field_type);
             if !nested_assertions.is_empty() {
-                nested_stmt
-                    .push_str(&format!(" ASSERT {}", nested_assertions.join(" AND ")));
+                nested_stmt.push_str(&format!(" ASSERT {}", nested_assertions.join(" AND ")));
             }
 
             nested_stmt.push(';');
@@ -270,9 +254,7 @@ fn default_value_to_surql(value: &schema_forge_core::types::DefaultValue) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schema_forge_core::types::{
-        DefaultValue, EnumVariants, FieldName, SchemaName,
-    };
+    use schema_forge_core::types::{DefaultValue, EnumVariants, FieldName, SchemaName};
 
     fn text_field(name: &str) -> FieldDefinition {
         FieldDefinition::new(
@@ -349,10 +331,7 @@ mod tests {
     #[test]
     fn add_field_boolean() {
         let step = MigrationStep::AddField {
-            field: FieldDefinition::new(
-                FieldName::new("active").unwrap(),
-                FieldType::Boolean,
-            ),
+            field: FieldDefinition::new(FieldName::new("active").unwrap(), FieldType::Boolean),
         };
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(stmts, vec!["DEFINE FIELD active ON Contact TYPE bool;"]);
@@ -422,10 +401,7 @@ mod tests {
         };
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(stmts.len(), 2);
-        assert_eq!(
-            stmts[0],
-            "DEFINE FIELD email ON Contact TYPE string;"
-        );
+        assert_eq!(stmts[0], "DEFINE FIELD email ON Contact TYPE string;");
         assert_eq!(
             stmts[1],
             "DEFINE INDEX idx_Contact_email ON Contact FIELDS email;"
@@ -459,10 +435,7 @@ mod tests {
             field: FieldName::new("email").unwrap(),
         };
         let stmts = migration_step_to_surql("Contact", &step);
-        assert_eq!(
-            stmts,
-            vec!["REMOVE INDEX idx_Contact_email ON Contact;"]
-        );
+        assert_eq!(stmts, vec!["REMOVE INDEX idx_Contact_email ON Contact;"]);
     }
 
     #[test]
