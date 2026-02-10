@@ -118,10 +118,9 @@ fn scenario_add_fields_to_contact() {
         .steps
         .iter()
         .any(|s| matches!(s, MigrationStep::AddField { field } if field.name.as_str() == "phone")));
-    assert!(plan
-        .steps
-        .iter()
-        .any(|s| matches!(s, MigrationStep::AddField { field } if field.name.as_str() == "status")));
+    assert!(plan.steps.iter().any(
+        |s| matches!(s, MigrationStep::AddField { field } if field.name.as_str() == "status")
+    ));
 }
 
 /// Scenario: Remove an obsolete field from the Contact schema.

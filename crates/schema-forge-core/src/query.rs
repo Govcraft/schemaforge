@@ -153,32 +153,20 @@ pub enum Filter {
         value: DynamicValue,
     },
     /// Field contains the given substring.
-    Contains {
-        path: FieldPath,
-        value: String,
-    },
+    Contains { path: FieldPath, value: String },
     /// Field starts with the given prefix.
-    StartsWith {
-        path: FieldPath,
-        value: String,
-    },
+    StartsWith { path: FieldPath, value: String },
     /// Field value is one of the given values.
     In {
         path: FieldPath,
         values: Vec<DynamicValue>,
     },
     /// All sub-filters must match (logical AND).
-    And {
-        filters: Vec<Filter>,
-    },
+    And { filters: Vec<Filter> },
     /// At least one sub-filter must match (logical OR).
-    Or {
-        filters: Vec<Filter>,
-    },
+    Or { filters: Vec<Filter> },
     /// The sub-filter must NOT match (logical NOT).
-    Not {
-        filter: Box<Filter>,
-    },
+    Not { filter: Box<Filter> },
 }
 
 impl Filter {
@@ -581,10 +569,7 @@ mod tests {
 
     #[test]
     fn filter_eq_display() {
-        let f = Filter::eq(
-            FieldPath::single("name"),
-            DynamicValue::Text("Jane".into()),
-        );
+        let f = Filter::eq(FieldPath::single("name"), DynamicValue::Text("Jane".into()));
         assert_eq!(f.to_string(), "name = \"Jane\"");
     }
 
@@ -630,10 +615,7 @@ mod tests {
     #[test]
     fn filter_and_display() {
         let f = Filter::and(vec![
-            Filter::eq(
-                FieldPath::single("name"),
-                DynamicValue::Text("Jane".into()),
-            ),
+            Filter::eq(FieldPath::single("name"), DynamicValue::Text("Jane".into())),
             Filter::gt(FieldPath::single("age"), DynamicValue::Integer(25)),
         ]);
         assert_eq!(f.to_string(), "(name = \"Jane\" AND age > 25)");
@@ -686,10 +668,7 @@ mod tests {
 
     #[test]
     fn filter_serde_roundtrip_eq() {
-        let f = Filter::eq(
-            FieldPath::single("name"),
-            DynamicValue::Text("Jane".into()),
-        );
+        let f = Filter::eq(FieldPath::single("name"), DynamicValue::Text("Jane".into()));
         let json = serde_json::to_string(&f).unwrap();
         let back: Filter = serde_json::from_str(&json).unwrap();
         assert_eq!(f, back);
@@ -757,7 +736,10 @@ mod tests {
     fn query_full_display() {
         let schema_id = SchemaId::new();
         let q = Query::new(schema_id)
-            .with_filter(Filter::gt(FieldPath::single("age"), DynamicValue::Integer(25)))
+            .with_filter(Filter::gt(
+                FieldPath::single("age"),
+                DynamicValue::Integer(25),
+            ))
             .with_sort(FieldPath::single("name"), SortOrder::Ascending)
             .with_limit(10)
             .with_offset(0);

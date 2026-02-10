@@ -4,8 +4,8 @@ use schema_forge_core::migration::{
 };
 use schema_forge_core::query::{FieldPath, Filter, Query, SortOrder};
 use schema_forge_core::types::{
-    DefaultValue, DynamicValue, FieldDefinition, FieldName, FieldType,
-    SchemaDefinition, SchemaId, SchemaName, TextConstraints,
+    DefaultValue, DynamicValue, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId,
+    SchemaName, TextConstraints,
 };
 
 // ---------------------------------------------------------------------------
@@ -24,10 +24,7 @@ fn field_path_segment_strategy() -> impl Strategy<Value = String> {
     "[a-z][a-z0-9_]{0,10}"
 }
 
-fn unique_field_definitions(
-    min: usize,
-    max: usize,
-) -> impl Strategy<Value = Vec<FieldDefinition>> {
+fn unique_field_definitions(min: usize, max: usize) -> impl Strategy<Value = Vec<FieldDefinition>> {
     prop::collection::vec(field_name_strategy(), min..=max).prop_map(|names| {
         let mut seen = std::collections::HashSet::new();
         let mut fields = Vec::new();

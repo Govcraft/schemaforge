@@ -146,17 +146,11 @@ pub enum MigrationStep {
         fields: Vec<FieldDefinition>,
     },
     /// Drop an entire schema table.
-    DropSchema {
-        name: SchemaName,
-    },
+    DropSchema { name: SchemaName },
     /// Add a new field to an existing schema.
-    AddField {
-        field: FieldDefinition,
-    },
+    AddField { field: FieldDefinition },
     /// Remove a field from an existing schema.
-    RemoveField {
-        name: FieldName,
-    },
+    RemoveField { name: FieldName },
     /// Rename a field.
     RenameField {
         old_name: FieldName,
@@ -170,13 +164,9 @@ pub enum MigrationStep {
         transform: ValueTransform,
     },
     /// Add an index on a field.
-    AddIndex {
-        field: FieldName,
-    },
+    AddIndex { field: FieldName },
     /// Remove an index from a field.
-    RemoveIndex {
-        field: FieldName,
-    },
+    RemoveIndex { field: FieldName },
     /// Add a relation field.
     AddRelation {
         name: FieldName,
@@ -184,31 +174,23 @@ pub enum MigrationStep {
         cardinality: Cardinality,
     },
     /// Remove a relation field.
-    RemoveRelation {
-        name: FieldName,
-    },
+    RemoveRelation { name: FieldName },
     /// Backfill a newly required field with a default value.
     BackfillRequired {
         field: FieldName,
         default_value: DynamicValue,
     },
     /// Add a required modifier to an existing field.
-    AddRequired {
-        field: FieldName,
-    },
+    AddRequired { field: FieldName },
     /// Remove a required modifier from an existing field.
-    RemoveRequired {
-        field: FieldName,
-    },
+    RemoveRequired { field: FieldName },
     /// Set or change a default value for a field.
     SetDefault {
         field: FieldName,
         value: DefaultValue,
     },
     /// Remove a default value from a field.
-    RemoveDefault {
-        field: FieldName,
-    },
+    RemoveDefault { field: FieldName },
 }
 
 impl MigrationStep {
@@ -229,9 +211,9 @@ impl MigrationStep {
             | Self::BackfillRequired { .. }
             | Self::AddRequired { .. } => MigrationSafety::RequiresConfirmation,
 
-            Self::DropSchema { .. }
-            | Self::RemoveField { .. }
-            | Self::RemoveRelation { .. } => MigrationSafety::Destructive,
+            Self::DropSchema { .. } | Self::RemoveField { .. } | Self::RemoveRelation { .. } => {
+                MigrationSafety::Destructive
+            }
         }
     }
 }
@@ -268,10 +250,7 @@ impl fmt::Display for MigrationStep {
                 target,
                 cardinality,
             } => {
-                write!(
-                    f,
-                    "ADD RELATION '{name}' -> {target} ({cardinality})"
-                )
+                write!(f, "ADD RELATION '{name}' -> {target} ({cardinality})")
             }
             Self::RemoveRelation { name } => write!(f, "REMOVE RELATION '{name}'"),
             Self::BackfillRequired {
@@ -309,11 +288,7 @@ pub struct MigrationPlan {
 
 impl MigrationPlan {
     /// Creates a new migration plan.
-    pub fn new(
-        schema_id: SchemaId,
-        schema_name: SchemaName,
-        steps: Vec<MigrationStep>,
-    ) -> Self {
+    pub fn new(schema_id: SchemaId, schema_name: SchemaName, steps: Vec<MigrationStep>) -> Self {
         Self {
             id: MigrationId::new(),
             schema_id,
@@ -359,7 +334,9 @@ impl MigrationPlan {
 
     /// Returns true if any step is destructive.
     pub fn has_destructive_steps(&self) -> bool {
-        self.steps.iter().any(|s| s.safety() == MigrationSafety::Destructive)
+        self.steps
+            .iter()
+            .any(|s| s.safety() == MigrationSafety::Destructive)
     }
 }
 
@@ -523,10 +500,7 @@ impl DiffEngine {
     }
 
     fn emit_remove_field(field: &FieldDefinition, steps: &mut Vec<MigrationStep>) {
-        if matches!(
-            field.field_type,
-            FieldType::Relation { .. }
-        ) {
+        if matches!(field.field_type, FieldType::Relation { .. }) {
             steps.push(MigrationStep::RemoveRelation {
                 name: field.name.clone(),
             });
@@ -590,13 +564,9 @@ pub enum MigrationError {
     /// The migration ID string could not be parsed.
     InvalidMigrationId(String),
     /// Attempted to apply a destructive migration without confirmation.
-    DestructiveWithoutConfirmation {
-        step_description: String,
-    },
+    DestructiveWithoutConfirmation { step_description: String },
     /// A required field was added without a default value for backfill.
-    RequiredFieldWithoutDefault {
-        field_name: String,
-    },
+    RequiredFieldWithoutDefault { field_name: String },
     /// Type conversion is not supported between the given types.
     UnsupportedTypeConversion {
         field_name: String,
@@ -892,11 +862,7 @@ mod tests {
 
     #[test]
     fn plan_overall_safety_empty() {
-        let plan = MigrationPlan::new(
-            SchemaId::new(),
-            SchemaName::new("Test").unwrap(),
-            vec![],
-        );
+        let plan = MigrationPlan::new(SchemaId::new(), SchemaName::new("Test").unwrap(), vec![]);
         assert!(plan.is_empty());
         assert_eq!(plan.overall_safety(), MigrationSafety::Safe);
         assert!(plan.is_safe());
@@ -978,10 +944,7 @@ mod tests {
 
     #[test]
     fn diff_identical_schemas_produces_empty_plan() {
-        let schema = make_schema(
-            "Contact",
-            vec![make_field("name"), make_field("email")],
-        );
+        let schema = make_schema("Contact", vec![make_field("name"), make_field("email")]);
         let plan = DiffEngine::diff(&schema, &schema);
         assert!(plan.is_empty());
     }
@@ -989,25 +952,23 @@ mod tests {
     #[test]
     fn diff_detects_added_field() {
         let old = make_schema("Contact", vec![make_field("name")]);
-        let new = make_schema(
-            "Contact",
-            vec![make_field("name"), make_field("email")],
-        );
+        let new = make_schema("Contact", vec![make_field("name"), make_field("email")]);
         let plan = DiffEngine::diff(&old, &new);
         assert_eq!(plan.len(), 1);
-        assert!(matches!(&plan.steps[0], MigrationStep::AddField { field } if field.name.as_str() == "email"));
+        assert!(
+            matches!(&plan.steps[0], MigrationStep::AddField { field } if field.name.as_str() == "email")
+        );
     }
 
     #[test]
     fn diff_detects_removed_field() {
-        let old = make_schema(
-            "Contact",
-            vec![make_field("name"), make_field("email")],
-        );
+        let old = make_schema("Contact", vec![make_field("name"), make_field("email")]);
         let new = make_schema("Contact", vec![make_field("name")]);
         let plan = DiffEngine::diff(&old, &new);
         assert_eq!(plan.len(), 1);
-        assert!(matches!(&plan.steps[0], MigrationStep::RemoveField { name } if name.as_str() == "email"));
+        assert!(
+            matches!(&plan.steps[0], MigrationStep::RemoveField { name } if name.as_str() == "email")
+        );
     }
 
     #[test]
@@ -1054,10 +1015,9 @@ mod tests {
         );
         let plan = DiffEngine::diff(&old, &new);
         assert_eq!(plan.len(), 2);
-        assert!(plan
-            .steps
-            .iter()
-            .any(|s| matches!(s, MigrationStep::AddRequired { field } if field.as_str() == "email")));
+        assert!(plan.steps.iter().any(
+            |s| matches!(s, MigrationStep::AddRequired { field } if field.as_str() == "email")
+        ));
         assert!(plan
             .steps
             .iter()
@@ -1173,10 +1133,7 @@ mod tests {
 
     #[test]
     fn create_new_produces_single_create_step() {
-        let schema = make_schema(
-            "Contact",
-            vec![make_field("name"), make_field("email")],
-        );
+        let schema = make_schema("Contact", vec![make_field("name"), make_field("email")]);
         let plan = DiffEngine::create_new(&schema);
         assert_eq!(plan.len(), 1);
         assert!(matches!(
@@ -1224,14 +1181,12 @@ mod tests {
         let plan = DiffEngine::diff(&old, &new);
         // Should detect: add phone, add status, add index on email
         assert_eq!(plan.len(), 3);
-        assert!(plan
-            .steps
-            .iter()
-            .any(|s| matches!(s, MigrationStep::AddField { field } if field.name.as_str() == "phone")));
-        assert!(plan
-            .steps
-            .iter()
-            .any(|s| matches!(s, MigrationStep::AddField { field } if field.name.as_str() == "status")));
+        assert!(plan.steps.iter().any(
+            |s| matches!(s, MigrationStep::AddField { field } if field.name.as_str() == "phone")
+        ));
+        assert!(plan.steps.iter().any(
+            |s| matches!(s, MigrationStep::AddField { field } if field.name.as_str() == "status")
+        ));
         assert!(plan
             .steps
             .iter()
@@ -1279,8 +1234,7 @@ mod tests {
 
     #[test]
     fn migration_error_is_std_error() {
-        let err: Box<dyn std::error::Error> =
-            Box::new(MigrationError::EmptyMigrationPlan);
+        let err: Box<dyn std::error::Error> = Box::new(MigrationError::EmptyMigrationPlan);
         assert!(err.to_string().contains("no steps"));
     }
 
