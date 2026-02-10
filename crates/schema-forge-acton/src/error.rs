@@ -53,7 +53,10 @@ impl fmt::Display for ForgeError {
                 )
             }
             Self::InvalidEntityId { id } => {
-                write!(f, "invalid entity ID '{id}': must be a valid TypeID with 'entity' prefix")
+                write!(
+                    f,
+                    "invalid entity ID '{id}': must be a valid TypeID with 'entity' prefix"
+                )
             }
             Self::InvalidQuery { message } => {
                 write!(f, "invalid query: {message}")
@@ -140,9 +143,7 @@ impl From<BackendError> for ForgeError {
             BackendError::MigrationFailed { step, reason } => Self::Internal {
                 message: format!("migration step failed ({step}): {reason}"),
             },
-            BackendError::ConnectionError { message } => {
-                Self::BackendUnavailable { message }
-            }
+            BackendError::ConnectionError { message } => Self::BackendUnavailable { message },
             BackendError::QueryError { message } => Self::BackendUnavailable { message },
             BackendError::Internal { message } => Self::Internal { message },
             _ => Self::Internal {
@@ -187,7 +188,10 @@ mod tests {
     #[test]
     fn display_validation_failed() {
         let err = ForgeError::ValidationFailed {
-            details: vec!["field 'email': required".into(), "field 'name': too short".into()],
+            details: vec![
+                "field 'email': required".into(),
+                "field 'name': too short".into(),
+            ],
         };
         let msg = err.to_string();
         assert!(msg.contains("email"));
@@ -353,7 +357,9 @@ mod tests {
             reason: "too long".into(),
         };
         let forge_err: ForgeError = backend_err.into();
-        assert!(matches!(forge_err, ForgeError::ValidationFailed { details } if details.len() == 1));
+        assert!(
+            matches!(forge_err, ForgeError::ValidationFailed { details } if details.len() == 1)
+        );
     }
 
     #[test]

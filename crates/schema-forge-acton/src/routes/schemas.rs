@@ -201,10 +201,9 @@ pub async fn create_schema(
     Json(body): Json<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     // 1. Validate schema name
-    let schema_name =
-        SchemaName::new(&body.name).map_err(|_| ForgeError::InvalidSchemaName {
-            name: body.name.clone(),
-        })?;
+    let schema_name = SchemaName::new(&body.name).map_err(|_| ForgeError::InvalidSchemaName {
+        name: body.name.clone(),
+    })?;
 
     // 2. Check for conflict in registry
     if state.registry.get(schema_name.as_str()).await.is_some() {
@@ -307,10 +306,9 @@ pub async fn update_schema(
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
 
     // 2. Validate the updated schema name matches the path
-    let schema_name =
-        SchemaName::new(&body.name).map_err(|_| ForgeError::InvalidSchemaName {
-            name: body.name.clone(),
-        })?;
+    let schema_name = SchemaName::new(&body.name).map_err(|_| ForgeError::InvalidSchemaName {
+        name: body.name.clone(),
+    })?;
 
     if schema_name.as_str() != name {
         return Err(ForgeError::ValidationFailed {
@@ -436,8 +434,7 @@ mod tests {
 
     #[test]
     fn parse_field_type_structured() {
-        let result =
-            parse_field_type(&serde_json::json!({"type": "Text", "data": {}})).unwrap();
+        let result = parse_field_type(&serde_json::json!({"type": "Text", "data": {}})).unwrap();
         assert!(matches!(result, FieldType::Text(_)));
     }
 
@@ -512,6 +509,8 @@ mod tests {
         assert_eq!(response.fields.len(), 2);
         assert_eq!(response.fields[0].name, "name");
         assert_eq!(response.fields[1].name, "email");
-        assert!(response.fields[1].modifiers.contains(&"required".to_string()));
+        assert!(response.fields[1]
+            .modifiers
+            .contains(&"required".to_string()));
     }
 }

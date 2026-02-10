@@ -55,7 +55,8 @@ impl SchemaForgeExtensionBuilder {
     /// Returns an error if no backend was provided or if loading fails.
     pub async fn build(self) -> Result<SchemaForgeExtension, ForgeError> {
         let backend = self.backend.ok_or_else(|| ForgeError::Internal {
-            message: "SchemaForgeExtensionBuilder requires a backend (call .with_backend())".to_string(),
+            message: "SchemaForgeExtensionBuilder requires a backend (call .with_backend())"
+                .to_string(),
         })?;
 
         let registry = SchemaRegistry::new();

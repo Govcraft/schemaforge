@@ -272,9 +272,7 @@ mod tests {
     async fn registry_insert_and_get() {
         let registry = SchemaRegistry::new();
         let schema = make_test_schema("Contact");
-        registry
-            .insert("Contact".to_string(), schema.clone())
-            .await;
+        registry.insert("Contact".to_string(), schema.clone()).await;
         let retrieved = registry.get("Contact").await;
         assert_eq!(retrieved, Some(schema));
     }

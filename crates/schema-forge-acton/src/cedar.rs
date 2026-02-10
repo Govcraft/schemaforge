@@ -34,9 +34,7 @@ pub fn generate_cedar_policies(schema: &SchemaDefinition) -> Vec<CedarPolicy> {
 /// Any authenticated user can read entities of this schema.
 fn read_policy(schema_name: &str) -> CedarPolicy {
     CedarPolicy {
-        description: format!(
-            "Allow any authenticated user to read {schema_name} entities"
-        ),
+        description: format!("Allow any authenticated user to read {schema_name} entities"),
         cedar_text: format!(
             r#"permit (
     principal,
@@ -54,9 +52,7 @@ fn read_policy(schema_name: &str) -> CedarPolicy {
 /// Only the entity owner (resource.created_by == principal.id) can create/update.
 fn owner_write_policy(schema_name: &str) -> CedarPolicy {
     CedarPolicy {
-        description: format!(
-            "Allow the entity owner to create and update {schema_name} entities"
-        ),
+        description: format!("Allow the entity owner to create and update {schema_name} entities"),
         cedar_text: format!(
             r#"permit (
     principal,
@@ -75,9 +71,7 @@ fn owner_write_policy(schema_name: &str) -> CedarPolicy {
 /// Only members of Group::"admin" can delete entities.
 fn admin_delete_policy(schema_name: &str) -> CedarPolicy {
     CedarPolicy {
-        description: format!(
-            "Allow admin group members to delete {schema_name} entities"
-        ),
+        description: format!("Allow admin group members to delete {schema_name} entities"),
         cedar_text: format!(
             r#"permit (
     principal,
@@ -96,9 +90,7 @@ fn admin_delete_policy(schema_name: &str) -> CedarPolicy {
 /// Only members of Group::"schema-admin" can modify the schema itself.
 fn schema_admin_policy(schema_name: &str) -> CedarPolicy {
     CedarPolicy {
-        description: format!(
-            "Allow schema-admin group members to modify the {schema_name} schema"
-        ),
+        description: format!("Allow schema-admin group members to modify the {schema_name} schema"),
         cedar_text: format!(
             r#"permit (
     principal,
@@ -167,7 +159,9 @@ mod tests {
         let schema = make_test_schema();
         let policies = generate_cedar_policies(&schema);
         let write = &policies[1];
-        assert!(write.cedar_text.contains("resource.created_by == principal.id"));
+        assert!(write
+            .cedar_text
+            .contains("resource.created_by == principal.id"));
         assert!(write.cedar_text.contains("CreateContact"));
         assert!(write.cedar_text.contains("UpdateContact"));
     }

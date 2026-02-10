@@ -82,10 +82,9 @@ impl SurrealBackend {
         sql: &str,
     ) -> Result<Vec<surrealdb::sql::Value>, BackendError> {
         let mut response = self.execute_raw(sql).await?;
-        let value: surrealdb::Value =
-            response.take(0).map_err(|e| BackendError::QueryError {
-                message: e.to_string(),
-            })?;
+        let value: surrealdb::Value = response.take(0).map_err(|e| BackendError::QueryError {
+            message: e.to_string(),
+        })?;
         let core_val = value.into_inner();
         match core_val {
             surrealdb::sql::Value::Array(arr) => Ok(arr.0),

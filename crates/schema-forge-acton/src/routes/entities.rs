@@ -5,9 +5,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use schema_forge_backend::entity::Entity;
-use schema_forge_core::types::{
-    DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName,
-};
+use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ForgeError;
@@ -255,19 +253,18 @@ pub async fn create_entity(
     let schema_name = validate_schema_name(&schema)?;
 
     // Look up schema in registry
-    let schema_def = state
-        .registry
-        .get(schema_name.as_str())
-        .await
-        .ok_or(ForgeError::SchemaNotFound {
-            name: schema_name.as_str().to_string(),
-        })?;
+    let schema_def =
+        state
+            .registry
+            .get(schema_name.as_str())
+            .await
+            .ok_or(ForgeError::SchemaNotFound {
+                name: schema_name.as_str().to_string(),
+            })?;
 
     // Convert JSON fields to DynamicValue fields
-    let fields =
-        json_to_entity_fields(&schema_def, &body.fields).map_err(|errors| {
-            ForgeError::ValidationFailed { details: errors }
-        })?;
+    let fields = json_to_entity_fields(&schema_def, &body.fields)
+        .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
     // Create the entity
     let entity = Entity::new(schema_name, fields);
@@ -289,13 +286,14 @@ pub async fn list_entities(
     let schema_name = validate_schema_name(&schema)?;
 
     // Verify schema exists
-    let schema_def = state
-        .registry
-        .get(schema_name.as_str())
-        .await
-        .ok_or(ForgeError::SchemaNotFound {
-            name: schema_name.as_str().to_string(),
-        })?;
+    let schema_def =
+        state
+            .registry
+            .get(schema_name.as_str())
+            .await
+            .ok_or(ForgeError::SchemaNotFound {
+                name: schema_name.as_str().to_string(),
+            })?;
 
     // Build a query
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
@@ -330,9 +328,8 @@ pub async fn get_entity(
     let schema_name = validate_schema_name(&schema)?;
 
     // Parse the entity ID
-    let entity_id = EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId {
-        id: id.clone(),
-    })?;
+    let entity_id =
+        EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
     let entity = state
         .backend
@@ -352,24 +349,22 @@ pub async fn update_entity(
     let schema_name = validate_schema_name(&schema)?;
 
     // Parse the entity ID
-    let entity_id = EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId {
-        id: id.clone(),
-    })?;
+    let entity_id =
+        EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
     // Look up schema
-    let schema_def = state
-        .registry
-        .get(schema_name.as_str())
-        .await
-        .ok_or(ForgeError::SchemaNotFound {
-            name: schema_name.as_str().to_string(),
-        })?;
+    let schema_def =
+        state
+            .registry
+            .get(schema_name.as_str())
+            .await
+            .ok_or(ForgeError::SchemaNotFound {
+                name: schema_name.as_str().to_string(),
+            })?;
 
     // Convert JSON fields
-    let fields =
-        json_to_entity_fields(&schema_def, &body.fields).map_err(|errors| {
-            ForgeError::ValidationFailed { details: errors }
-        })?;
+    let fields = json_to_entity_fields(&schema_def, &body.fields)
+        .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
     // Build entity with specific ID
     let entity = Entity::with_id(entity_id, schema_name, fields);
@@ -390,9 +385,8 @@ pub async fn delete_entity(
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
 
-    let entity_id = EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId {
-        id: id.clone(),
-    })?;
+    let entity_id =
+        EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
     state
         .backend
@@ -426,10 +420,7 @@ mod tests {
                         schema_forge_core::types::IntegerConstraints::unconstrained(),
                     ),
                 ),
-                FieldDefinition::new(
-                    FieldName::new("active").unwrap(),
-                    FieldType::Boolean,
-                ),
+                FieldDefinition::new(FieldName::new("active").unwrap(), FieldType::Boolean),
             ],
             vec![],
         )
@@ -445,7 +436,10 @@ mod tests {
         json_fields.insert("active".into(), serde_json::json!(true));
 
         let result = json_to_entity_fields(&schema, &json_fields).unwrap();
-        assert_eq!(result.get("name"), Some(&DynamicValue::Text("Alice".into())));
+        assert_eq!(
+            result.get("name"),
+            Some(&DynamicValue::Text("Alice".into()))
+        );
         assert_eq!(result.get("age"), Some(&DynamicValue::Integer(30)));
         assert_eq!(result.get("active"), Some(&DynamicValue::Boolean(true)));
     }
@@ -458,7 +452,9 @@ mod tests {
         let result = json_to_entity_fields(&schema, &json_fields);
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("required") && e.contains("name")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("required") && e.contains("name")));
     }
 
     #[test]
@@ -518,7 +514,10 @@ mod tests {
         let response = entity_to_response(&entity);
         assert_eq!(response.schema, "Contact");
         assert!(response.id.starts_with("entity_"));
-        assert_eq!(response.fields.get("name"), Some(&serde_json::json!("Alice")));
+        assert_eq!(
+            response.fields.get("name"),
+            Some(&serde_json::json!("Alice"))
+        );
         assert_eq!(response.fields.get("age"), Some(&serde_json::json!(30)));
     }
 
@@ -550,8 +549,7 @@ mod tests {
 
     #[test]
     fn convert_json_untyped_object() {
-        let result =
-            convert_json_untyped(&serde_json::json!({"key": "value"})).unwrap();
+        let result = convert_json_untyped(&serde_json::json!({"key": "value"})).unwrap();
         assert!(matches!(result, DynamicValue::Composite(map) if map.len() == 1));
     }
 }
