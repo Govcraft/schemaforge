@@ -1,15 +1,19 @@
 [package]
-name = "schema-forge-surrealdb"
-version = "0.2.0"
+name = "schema-forge-acton"
+version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 schema-forge-core = { path = "../schema-forge-core" }
 schema-forge-backend = { path = "../schema-forge-backend" }
-surrealdb = { version = "2", features = ["kv-mem"] }
+axum = { version = "0.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
+schema-forge-surrealdb = { path = "../schema-forge-surrealdb" }
 tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5" }
+http-body-util = "0.1"

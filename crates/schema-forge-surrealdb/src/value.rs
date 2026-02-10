@@ -218,12 +218,12 @@ mod tests {
 
     #[test]
     fn float_round_trip() {
-        let dv = DynamicValue::Float(3.14);
+        let dv = DynamicValue::Float(42.5);
         let sv = dynamic_to_surreal(&dv);
         let back = surreal_to_dynamic(&sv).unwrap();
         // Float comparison -- check it came back as Float
         match back {
-            DynamicValue::Float(f) => assert!((f - 3.14).abs() < f64::EPSILON),
+            DynamicValue::Float(f) => assert!((f - 42.5).abs() < f64::EPSILON),
             other => panic!("expected Float, got {other:?}"),
         }
     }

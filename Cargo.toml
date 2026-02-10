@@ -5,4 +5,5 @@ members = [
     "crates/schema-forge-dsl",
     "crates/schema-forge-backend",
     "crates/schema-forge-surrealdb",
+    "crates/schema-forge-acton",
 ]
