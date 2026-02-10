@@ -64,7 +64,10 @@ mod tests {
 
     #[test]
     fn display_variants() {
-        assert_eq!(DefaultValue::String("hello".into()).to_string(), "\"hello\"");
+        assert_eq!(
+            DefaultValue::String("hello".into()).to_string(),
+            "\"hello\""
+        );
         assert_eq!(DefaultValue::Integer(42).to_string(), "42");
         assert_eq!(DefaultValue::Boolean(true).to_string(), "true");
     }

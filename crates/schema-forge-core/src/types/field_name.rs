@@ -73,7 +73,15 @@ mod tests {
 
     #[test]
     fn invalid_names() {
-        for name in ["", "Name", "UPPER", "123field", "_leading", "has-dash", "has space"] {
+        for name in [
+            "",
+            "Name",
+            "UPPER",
+            "123field",
+            "_leading",
+            "has-dash",
+            "has space",
+        ] {
             assert!(FieldName::new(name).is_err(), "expected invalid: {name}");
         }
     }

@@ -112,10 +112,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_array() {
-        let v = DynamicValue::Array(vec![
-            DynamicValue::Integer(1),
-            DynamicValue::Integer(2),
-        ]);
+        let v = DynamicValue::Array(vec![DynamicValue::Integer(1), DynamicValue::Integer(2)]);
         let json = serde_json::to_string(&v).unwrap();
         let back: DynamicValue = serde_json::from_str(&json).unwrap();
         assert_eq!(v, back);

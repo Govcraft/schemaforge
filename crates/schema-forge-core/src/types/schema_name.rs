@@ -73,7 +73,14 @@ mod tests {
 
     #[test]
     fn invalid_names() {
-        for name in ["", "contact", "my_schema", "123Schema", "My Schema", "my-schema"] {
+        for name in [
+            "",
+            "contact",
+            "my_schema",
+            "123Schema",
+            "My Schema",
+            "my-schema",
+        ] {
             assert!(SchemaName::new(name).is_err(), "expected invalid: {name}");
         }
     }

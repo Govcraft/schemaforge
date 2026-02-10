@@ -1,0 +1,11 @@
+[package]
+name = "schema-forge-dsl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+schema-forge-core = { path = "../schema-forge-core" }
+logos = "0.15"
+
+[dev-dependencies]
+proptest = "1"

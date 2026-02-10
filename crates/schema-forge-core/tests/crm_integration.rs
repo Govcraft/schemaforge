@@ -70,7 +70,10 @@ fn crm_schema_dynamic_values_roundtrip() {
 
     // Build a sample record for the CRM Contact schema using DynamicValue
     let mut address = BTreeMap::new();
-    address.insert("street".to_string(), DynamicValue::Text("123 Main St".into()));
+    address.insert(
+        "street".to_string(),
+        DynamicValue::Text("123 Main St".into()),
+    );
     address.insert("city".to_string(), DynamicValue::Text("Springfield".into()));
     address.insert("zip".to_string(), DynamicValue::Text("62701".into()));
 
@@ -88,7 +91,10 @@ fn crm_schema_dynamic_values_roundtrip() {
             ]),
         ),
         ("address", DynamicValue::Composite(address)),
-        ("metadata", DynamicValue::Json(serde_json::json!({"source": "import"}))),
+        (
+            "metadata",
+            DynamicValue::Json(serde_json::json!({"source": "import"})),
+        ),
         ("active", DynamicValue::Boolean(true)),
     ];
 
@@ -98,10 +104,7 @@ fn crm_schema_dynamic_values_roundtrip() {
             .unwrap_or_else(|e| panic!("Failed to serialize {name}: {e}"));
         let back: DynamicValue = serde_json::from_str(&json)
             .unwrap_or_else(|e| panic!("Failed to deserialize {name}: {e}"));
-        assert_eq!(
-            value, &back,
-            "Roundtrip failed for field '{name}'"
-        );
+        assert_eq!(value, &back, "Roundtrip failed for field '{name}'");
     }
 }
 
@@ -132,12 +135,8 @@ fn build_crm_contact_schema() -> SchemaDefinition {
             FieldDefinition::with_modifiers(
                 FieldName::new("status").unwrap(),
                 FieldType::Enum(
-                    EnumVariants::new(vec![
-                        "Active".into(),
-                        "Inactive".into(),
-                        "Lead".into(),
-                    ])
-                    .unwrap(),
+                    EnumVariants::new(vec!["Active".into(), "Inactive".into(), "Lead".into()])
+                        .unwrap(),
                 ),
                 vec![FieldModifier::Default {
                     value: DefaultValue::String("Lead".into()),

@@ -32,10 +32,16 @@ impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidSchemaName(s) => {
-                write!(f, "invalid schema name '{s}': must be PascalCase [A-Z][a-zA-Z0-9]*")
+                write!(
+                    f,
+                    "invalid schema name '{s}': must be PascalCase [A-Z][a-zA-Z0-9]*"
+                )
             }
             Self::InvalidFieldName(s) => {
-                write!(f, "invalid field name '{s}': must be snake_case [a-z][a-z0-9_]*")
+                write!(
+                    f,
+                    "invalid field name '{s}': must be snake_case [a-z][a-z0-9_]*"
+                )
             }
             Self::InvalidSchemaVersion(v) => {
                 write!(f, "invalid schema version {v}: must be >= 1")
@@ -77,8 +83,14 @@ mod tests {
                 SchemaError::InvalidSchemaVersion(0),
                 "invalid schema version 0",
             ),
-            (SchemaError::EmptyEnumVariants, "enum variants must not be empty"),
-            (SchemaError::EmptyEnumVariant, "enum variant must not be an empty string"),
+            (
+                SchemaError::EmptyEnumVariants,
+                "enum variants must not be empty",
+            ),
+            (
+                SchemaError::EmptyEnumVariant,
+                "enum variant must not be an empty string",
+            ),
             (
                 SchemaError::DuplicateEnumVariant("Active".into()),
                 "duplicate enum variant 'Active'",
@@ -99,7 +111,10 @@ mod tests {
                 SchemaError::DuplicateAnnotation("version".into()),
                 "duplicate annotation 'version'",
             ),
-            (SchemaError::EmptyFields, "schema must have at least one field"),
+            (
+                SchemaError::EmptyFields,
+                "schema must have at least one field",
+            ),
         ];
 
         for (error, expected_prefix) in cases {
@@ -113,8 +128,7 @@ mod tests {
 
     #[test]
     fn error_is_std_error() {
-        let err: Box<dyn std::error::Error> =
-            Box::new(SchemaError::InvalidSchemaName("x".into()));
+        let err: Box<dyn std::error::Error> = Box::new(SchemaError::InvalidSchemaName("x".into()));
         assert!(err.to_string().contains("invalid schema name"));
     }
 }
