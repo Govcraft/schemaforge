@@ -10,13 +10,13 @@ use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::Query;
-use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaName};
+use schema_forge_core::types::{EntityId, SchemaDefinition, SchemaName};
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
 
 use crate::codegen::migration_step_to_surql;
 use crate::query::query_to_surql;
-use crate::value::entity_to_surreal_map;
+use crate::value::{entity_to_surreal_map, surreal_to_dynamic};
 
 /// The schema metadata table name used to store `SchemaDefinition` records.
 const SCHEMA_META_TABLE: &str = "_schema_metadata";
@@ -30,6 +30,15 @@ pub struct SurrealBackend {
 }
 
 impl SurrealBackend {
+    /// Create a SurrealBackend from an existing connected client.
+    ///
+    /// Use this when the connection is managed externally (e.g., by acton-service's
+    /// connection pooling). The caller is responsible for ensuring the client
+    /// has the correct namespace and database selected.
+    pub fn from_client(db: Surreal<Any>) -> Self {
+        Self { db }
+    }
+
     /// Connect to an in-memory SurrealDB instance for testing.
     ///
     /// Uses the `kv-mem` engine. The namespace and database are created
@@ -59,6 +68,31 @@ impl SurrealBackend {
             .map_err(|e| BackendError::QueryError {
                 message: e.to_string(),
             })
+    }
+
+    /// Execute a raw SurrealQL statement and extract the result as a list of
+    /// `surrealdb::sql::Value` objects.
+    ///
+    /// Uses `response.take::<surrealdb::Value>(0)` which bypasses serde
+    /// deserialization (the SDK has a special `QueryResult<Value>` impl that
+    /// wraps the core value directly). We then unwrap the `Array` variant
+    /// manually to get individual row values.
+    async fn execute_and_take_rows(
+        &self,
+        sql: &str,
+    ) -> Result<Vec<surrealdb::sql::Value>, BackendError> {
+        let mut response = self.execute_raw(sql).await?;
+        let value: surrealdb::Value =
+            response.take(0).map_err(|e| BackendError::QueryError {
+                message: e.to_string(),
+            })?;
+        let core_val = value.into_inner();
+        match core_val {
+            surrealdb::sql::Value::Array(arr) => Ok(arr.0),
+            surrealdb::sql::Value::None | surrealdb::sql::Value::Null => Ok(Vec::new()),
+            // Single object result (e.g. from CREATE)
+            other => Ok(vec![other]),
+        }
     }
 }
 
@@ -189,11 +223,7 @@ impl EntityStore for SurrealBackend {
             "CREATE {table}:`{id_str}` SET {set_clause};"
         );
 
-        let mut response = self.execute_raw(&sql).await?;
-        let rows: Vec<serde_json::Value> =
-            response.take(0).map_err(|e| BackendError::QueryError {
-                message: e.to_string(),
-            })?;
+        let rows = self.execute_and_take_rows(&sql).await?;
 
         if rows.is_empty() {
             return Err(BackendError::Internal {
@@ -201,7 +231,7 @@ impl EntityStore for SurrealBackend {
             });
         }
 
-        json_row_to_entity(&entity.schema, &rows[0])
+        surreal_row_to_entity(&entity.schema, &rows[0])
     }
 
     async fn get(
@@ -213,11 +243,7 @@ impl EntityStore for SurrealBackend {
         let id_str = id.as_str();
         let sql = format!("SELECT * FROM {table}:`{id_str}`;");
 
-        let mut response = self.execute_raw(&sql).await?;
-        let rows: Vec<serde_json::Value> =
-            response.take(0).map_err(|e| BackendError::QueryError {
-                message: e.to_string(),
-            })?;
+        let rows = self.execute_and_take_rows(&sql).await?;
 
         if rows.is_empty() {
             return Err(BackendError::EntityNotFound {
@@ -226,7 +252,7 @@ impl EntityStore for SurrealBackend {
             });
         }
 
-        json_row_to_entity(schema, &rows[0])
+        surreal_row_to_entity(schema, &rows[0])
     }
 
     async fn update(
@@ -251,11 +277,7 @@ impl EntityStore for SurrealBackend {
             "UPDATE {table}:`{id_str}` SET {set_clause};"
         );
 
-        let mut response = self.execute_raw(&sql).await?;
-        let rows: Vec<serde_json::Value> =
-            response.take(0).map_err(|e| BackendError::QueryError {
-                message: e.to_string(),
-            })?;
+        let rows = self.execute_and_take_rows(&sql).await?;
 
         if rows.is_empty() {
             return Err(BackendError::EntityNotFound {
@@ -264,7 +286,7 @@ impl EntityStore for SurrealBackend {
             });
         }
 
-        json_row_to_entity(&entity.schema, &rows[0])
+        surreal_row_to_entity(&entity.schema, &rows[0])
     }
 
     async fn delete(
@@ -277,11 +299,7 @@ impl EntityStore for SurrealBackend {
 
         // First check if it exists
         let check_sql = format!("SELECT * FROM {table}:`{id_str}`;");
-        let mut response = self.execute_raw(&check_sql).await?;
-        let rows: Vec<serde_json::Value> =
-            response.take(0).map_err(|e| BackendError::QueryError {
-                message: e.to_string(),
-            })?;
+        let rows = self.execute_and_take_rows(&check_sql).await?;
 
         if rows.is_empty() {
             return Err(BackendError::EntityNotFound {
@@ -311,11 +329,7 @@ impl EntityStore for SurrealBackend {
         // For now, we generate the SQL and execute it.
         let sql = query_to_surql(query, table);
 
-        let mut response = self.execute_raw(&sql).await?;
-        let rows: Vec<serde_json::Value> =
-            response.take(0).map_err(|e| BackendError::QueryError {
-                message: e.to_string(),
-            })?;
+        let rows = self.execute_and_take_rows(&sql).await?;
 
         // We cannot easily determine the SchemaName from a SchemaId here.
         // For queries that go through the EntityStore, the caller knows the schema name.
@@ -325,99 +339,63 @@ impl EntityStore for SurrealBackend {
 
         let mut entities = Vec::new();
         for row in &rows {
-            entities.push(json_row_to_entity(&schema_name, row)?);
+            entities.push(surreal_row_to_entity(&schema_name, row)?);
         }
 
         Ok(QueryResult::new(entities, None))
     }
 }
 
-/// Convert a SurrealDB JSON response row to an `Entity`.
-fn json_row_to_entity(
-    schema: &SchemaName,
-    row: &serde_json::Value,
-) -> Result<Entity, BackendError> {
-    let obj = row.as_object().ok_or_else(|| BackendError::Internal {
-        message: "expected JSON object in query result".to_string(),
-    })?;
-
-    // Extract ID
-    let id_value = obj.get("id").ok_or_else(|| BackendError::Internal {
-        message: "query result row missing 'id' field".to_string(),
-    })?;
-
-    let id_str = extract_id_from_json(id_value);
-    let entity_id = EntityId::parse(&id_str).map_err(|e| BackendError::Internal {
-        message: format!("failed to parse entity ID '{id_str}': {e}"),
-    })?;
-
-    // Convert remaining fields
-    let mut fields = BTreeMap::new();
-    for (k, v) in obj {
-        if k == "id" {
-            continue;
-        }
-        fields.insert(k.clone(), json_value_to_dynamic(v));
-    }
-
-    Ok(Entity::with_id(entity_id, schema.clone(), fields))
-}
-
-/// Extract entity ID from a SurrealDB JSON id field.
+/// Convert a `surrealdb::sql::Value` response row to an `Entity`.
 ///
-/// SurrealDB returns IDs in various formats:
-/// - String: `"entity_xxx"` (when we set it explicitly)
-/// - Object: `{"String": "entity_xxx"}` or `{"tb": "table", "id": {"String": "xxx"}}`
-fn extract_id_from_json(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(s) => {
-            // May be "Table:entity_xxx" format
-            if let Some((_table, id)) = s.split_once(':') {
-                id.to_string()
-            } else {
-                s.clone()
+/// This is the primary deserialization path. It works directly with
+/// `surrealdb::sql::Value` (the core value type) which handles `Thing`
+/// record IDs natively, avoiding the serialization errors that occur
+/// when trying to deserialize SurrealDB internal types through serde.
+fn surreal_row_to_entity(
+    schema: &SchemaName,
+    row: &surrealdb::sql::Value,
+) -> Result<Entity, BackendError> {
+    match row {
+        surrealdb::sql::Value::Object(obj) => {
+            // Extract ID
+            let id_value = obj.get("id").ok_or_else(|| BackendError::Internal {
+                message: "SurrealDB record missing 'id' field".to_string(),
+            })?;
+
+            let id_str = extract_id_from_surreal(id_value);
+            let entity_id = EntityId::parse(&id_str).map_err(|e| BackendError::Internal {
+                message: format!("failed to parse entity ID '{id_str}': {e}"),
+            })?;
+
+            // Convert remaining fields
+            let mut fields = BTreeMap::new();
+            for (k, v) in obj.iter() {
+                if k == "id" {
+                    continue;
+                }
+                fields.insert(k.clone(), surreal_to_dynamic(v)?);
             }
+
+            Ok(Entity::with_id(entity_id, schema.clone(), fields))
         }
-        serde_json::Value::Object(map) => {
-            // Try "String" key first (SurrealDB's Id::String representation)
-            if let Some(serde_json::Value::String(s)) = map.get("String") {
-                return s.clone();
-            }
-            // Try "id" key for nested Thing format
-            if let Some(id_val) = map.get("id") {
-                return extract_id_from_json(id_val);
-            }
-            value.to_string()
-        }
-        other => other.to_string(),
+        other => Err(BackendError::Internal {
+            message: format!("expected Object in query result, got: {other}"),
+        }),
     }
 }
 
-/// Convert a JSON value from a SurrealDB response to a DynamicValue.
-fn json_value_to_dynamic(value: &serde_json::Value) -> DynamicValue {
+/// Extract entity ID string from a `surrealdb::sql::Value`.
+///
+/// SurrealDB returns IDs as `Thing` (table:id), `Strand` (string), or other formats.
+fn extract_id_from_surreal(value: &surrealdb::sql::Value) -> String {
     match value {
-        serde_json::Value::Null => DynamicValue::Null,
-        serde_json::Value::Bool(b) => DynamicValue::Boolean(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                DynamicValue::Integer(i)
-            } else if let Some(f) = n.as_f64() {
-                DynamicValue::Float(f)
-            } else {
-                DynamicValue::Text(n.to_string())
-            }
+        surrealdb::sql::Value::Thing(thing) => {
+            // thing.id is the record's unique part
+            thing.id.to_raw()
         }
-        serde_json::Value::String(s) => DynamicValue::Text(s.clone()),
-        serde_json::Value::Array(arr) => {
-            DynamicValue::Array(arr.iter().map(json_value_to_dynamic).collect())
-        }
-        serde_json::Value::Object(map) => {
-            let mut btree = BTreeMap::new();
-            for (k, v) in map {
-                btree.insert(k.clone(), json_value_to_dynamic(v));
-            }
-            DynamicValue::Composite(btree)
-        }
+        surrealdb::sql::Value::Strand(s) => s.0.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -427,7 +405,7 @@ fn field_surreal_value_to_literal(value: &surrealdb::sql::Value) -> String {
         surrealdb::sql::Value::None | surrealdb::sql::Value::Null => "NONE".to_string(),
         surrealdb::sql::Value::Bool(b) => b.to_string(),
         surrealdb::sql::Value::Number(n) => n.to_string(),
-        surrealdb::sql::Value::Strand(s) => format!("'{}'", s.to_string().replace('\'', "\\'")),
+        surrealdb::sql::Value::Strand(s) => format!("'{}'", s.as_str().replace('\'', "\\'")),
         surrealdb::sql::Value::Array(arr) => {
             let items: Vec<String> = arr.iter().map(field_surreal_value_to_literal).collect();
             format!("[{}]", items.join(", "))
@@ -448,40 +426,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_id_from_plain_string() {
-        let val = serde_json::json!("entity_abc123");
-        assert_eq!(extract_id_from_json(&val), "entity_abc123");
+    fn extract_id_from_thing() {
+        use surrealdb::sql::{Id, Thing};
+        let thing = Thing::from(("Contact", Id::String("entity_abc123".into())));
+        let thing_val = surrealdb::sql::Value::Thing(thing);
+        assert_eq!(extract_id_from_surreal(&thing_val), "entity_abc123");
     }
 
     #[test]
-    fn extract_id_from_table_colon_id() {
-        let val = serde_json::json!("Contact:entity_abc123");
-        assert_eq!(extract_id_from_json(&val), "entity_abc123");
-    }
-
-    #[test]
-    fn extract_id_from_string_object() {
-        let val = serde_json::json!({"String": "entity_abc123"});
-        assert_eq!(extract_id_from_json(&val), "entity_abc123");
-    }
-
-    #[test]
-    fn json_value_to_dynamic_primitives() {
-        assert_eq!(
-            json_value_to_dynamic(&serde_json::json!(null)),
-            DynamicValue::Null
-        );
-        assert_eq!(
-            json_value_to_dynamic(&serde_json::json!(true)),
-            DynamicValue::Boolean(true)
-        );
-        assert_eq!(
-            json_value_to_dynamic(&serde_json::json!(42)),
-            DynamicValue::Integer(42)
-        );
-        assert_eq!(
-            json_value_to_dynamic(&serde_json::json!("hello")),
-            DynamicValue::Text("hello".into())
-        );
+    fn extract_id_from_strand() {
+        let strand = surrealdb::sql::Strand::from("entity_abc123");
+        let strand_val = surrealdb::sql::Value::Strand(strand);
+        assert_eq!(extract_id_from_surreal(&strand_val), "entity_abc123");
     }
 }
