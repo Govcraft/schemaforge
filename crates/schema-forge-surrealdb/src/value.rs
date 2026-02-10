@@ -22,7 +22,8 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
         DynamicValue::Float(f) => SurrealValue::from(*f),
         DynamicValue::Boolean(b) => SurrealValue::from(*b),
         DynamicValue::DateTime(dt) => {
-            // Store as ISO 8601 string -- SurrealDB will accept this for datetime fields.
+            // Store as ISO 8601 string — the literal serializer in backend.rs
+            // will wrap it with d'...' for SurrealQL datetime fields.
             SurrealValue::from(dt.to_rfc3339())
         }
         DynamicValue::Enum(s) => SurrealValue::from(s.as_str()),

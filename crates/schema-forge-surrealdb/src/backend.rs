@@ -426,7 +426,15 @@ fn field_surreal_value_to_literal(value: &surrealdb::sql::Value) -> String {
         surrealdb::sql::Value::None | surrealdb::sql::Value::Null => "NONE".to_string(),
         surrealdb::sql::Value::Bool(b) => b.to_string(),
         surrealdb::sql::Value::Number(n) => n.to_string(),
-        surrealdb::sql::Value::Strand(s) => format!("'{}'", s.as_str().replace('\'', "\\'")),
+        surrealdb::sql::Value::Strand(s) => {
+            // Detect ISO 8601 datetime strings and use SurrealQL d'...' literal
+            if chrono::DateTime::parse_from_rfc3339(s.as_str()).is_ok() {
+                format!("d'{}'", s.as_str())
+            } else {
+                format!("'{}'", s.as_str().replace('\'', "\\'"))
+            }
+        }
+        surrealdb::sql::Value::Datetime(dt) => format!("d'{}'", dt.0.to_rfc3339()),
         surrealdb::sql::Value::Array(arr) => {
             let items: Vec<String> = arr.iter().map(field_surreal_value_to_literal).collect();
             format!("[{}]", items.join(", "))
