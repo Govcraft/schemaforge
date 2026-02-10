@@ -2,14 +2,12 @@ use axum::routing::get;
 use axum::Router;
 use schema_forge_acton::SchemaForgeExtension;
 use schema_forge_core::migration::DiffEngine;
-use schema_forge_surrealdb::SurrealBackend;
 
 use crate::cli::{GlobalOpts, ServeArgs};
 use crate::commands::parse::parse_all_schemas;
 use crate::config::{load_config, resolve_db_params};
 use crate::error::CliError;
 use crate::output::OutputContext;
-use crate::progress;
 
 /// Run the `serve` command: start the SchemaForge HTTP server.
 ///
@@ -40,43 +38,7 @@ pub async fn run(
     };
 
     // 3. Connect to SurrealDB (try remote, fall back to in-memory)
-    let spinner = if output.show_progress() {
-        Some(progress::create_spinner("Connecting to backend..."))
-    } else {
-        None
-    };
-
-    let backend =
-        match SurrealBackend::connect(&db_params.url, &db_params.namespace, &db_params.database)
-            .await
-        {
-            Ok(b) => {
-                if let Some(sp) = &spinner {
-                    progress::finish_spinner(
-                        sp,
-                        &format!("Connected to {}", db_params.url),
-                    );
-                }
-                b
-            }
-            Err(e) => {
-                if let Some(sp) = &spinner {
-                    progress::finish_spinner_error(
-                        sp,
-                        &format!("Remote connection failed: {e}"),
-                    );
-                }
-                output.warn(&format!(
-                    "Could not connect to {}; falling back to in-memory backend.",
-                    db_params.url
-                ));
-                SurrealBackend::connect_memory(&db_params.namespace, &db_params.database)
-                    .await
-                    .map_err(|e| CliError::Server {
-                        message: format!("in-memory backend failed: {e}"),
-                    })?
-            }
-        };
+    let backend = super::connect_backend(&db_params, output).await?;
 
     // 4. Build the SchemaForge extension
     let extension = SchemaForgeExtension::builder()

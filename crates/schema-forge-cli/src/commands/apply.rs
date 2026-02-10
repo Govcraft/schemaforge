@@ -1,14 +1,12 @@
 use console::Term;
 use schema_forge_backend::SchemaBackend;
 use schema_forge_core::migration::{DiffEngine, MigrationSafety};
-use schema_forge_surrealdb::SurrealBackend;
 
 use crate::cli::{ApplyArgs, GlobalOpts};
 use crate::commands::parse::parse_all_schemas;
 use crate::config::{load_config, resolve_db_params};
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
-use crate::progress;
 
 /// Run the `apply` command: parse schemas and apply to backend.
 pub async fn run(
@@ -23,24 +21,7 @@ pub async fn run(
     let config = load_config(global.config.as_deref())?;
     let db_params = resolve_db_params(&config, global);
 
-    let spinner = if output.show_progress() {
-        Some(progress::create_spinner("Connecting to backend..."))
-    } else {
-        None
-    };
-
-    let backend = SurrealBackend::connect_memory(&db_params.namespace, &db_params.database)
-        .await
-        .map_err(|e| {
-            if let Some(sp) = &spinner {
-                progress::finish_spinner_error(sp, "connection failed");
-            }
-            CliError::Backend(e)
-        })?;
-
-    if let Some(sp) = &spinner {
-        progress::finish_spinner(sp, "Connected.");
-    }
+    let backend = super::connect_backend(&db_params, output).await?;
 
     let mut total_steps = 0usize;
     let mut applied_schemas = 0usize;

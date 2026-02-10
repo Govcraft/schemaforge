@@ -68,17 +68,17 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         } => match cardinality {
             Cardinality::One => {
                 vec![format!(
-                    "DEFINE FIELD {name} ON {table} TYPE record<{target}>;"
+                    "DEFINE FIELD {name} ON {table} TYPE option<record<{target}>>;"
                 )]
             }
             Cardinality::Many => {
                 vec![format!(
-                    "DEFINE FIELD {name} ON {table} TYPE array<record<{target}>>;"
+                    "DEFINE FIELD {name} ON {table} TYPE option<array<record<{target}>>>;"
                 )]
             }
             _ => {
                 vec![format!(
-                    "DEFINE FIELD {name} ON {table} TYPE record<{target}>;"
+                    "DEFINE FIELD {name} ON {table} TYPE option<record<{target}>>;"
                 )]
             }
         },
@@ -136,9 +136,9 @@ pub fn field_type_to_surql(field_type: &FieldType) -> String {
             target,
             cardinality,
         } => match cardinality {
-            Cardinality::One => format!("record<{target}>"),
-            Cardinality::Many => format!("array<record<{target}>>"),
-            _ => format!("record<{target}>"),
+            Cardinality::One => format!("option<record<{target}>>"),
+            Cardinality::Many => format!("option<array<record<{target}>>>"),
+            _ => format!("option<record<{target}>>"),
         },
         FieldType::Array(inner) => {
             let inner_type = field_type_to_surql(inner);
@@ -448,7 +448,7 @@ mod tests {
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(
             stmts,
-            vec!["DEFINE FIELD company ON Contact TYPE record<Company>;"]
+            vec!["DEFINE FIELD company ON Contact TYPE option<record<Company>>;"]
         );
     }
 
@@ -462,7 +462,7 @@ mod tests {
         let stmts = migration_step_to_surql("Company", &step);
         assert_eq!(
             stmts,
-            vec!["DEFINE FIELD contacts ON Company TYPE array<record<Contact>>;"]
+            vec!["DEFINE FIELD contacts ON Company TYPE option<array<record<Contact>>>;"]
         );
     }
 

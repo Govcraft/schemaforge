@@ -63,13 +63,39 @@ impl SurrealBackend {
     /// Connect to a remote SurrealDB instance.
     ///
     /// Supports ws://, wss://, http://, https://, and mem:// schemes.
-    /// After connecting, selects the given namespace and database.
+    /// After connecting, optionally authenticates with root credentials,
+    /// then selects the given namespace and database.
     pub async fn connect(url: &str, ns: &str, db_name: &str) -> Result<Self, BackendError> {
+        Self::connect_with_auth(url, ns, db_name, None, None).await
+    }
+
+    /// Connect to a remote SurrealDB instance with optional authentication.
+    ///
+    /// If username and password are provided, signs in as root before
+    /// selecting the namespace and database.
+    pub async fn connect_with_auth(
+        url: &str,
+        ns: &str,
+        db_name: &str,
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Self, BackendError> {
         let db = surrealdb::engine::any::connect(url)
             .await
             .map_err(|e| BackendError::ConnectionError {
                 message: format!("failed to connect to {url}: {e}"),
             })?;
+
+        if let (Some(user), Some(pass)) = (username, password) {
+            db.signin(surrealdb::opt::auth::Root {
+                username: user,
+                password: pass,
+            })
+            .await
+            .map_err(|e| BackendError::ConnectionError {
+                message: format!("authentication failed: {e}"),
+            })?;
+        }
 
         db.use_ns(ns)
             .use_db(db_name)

@@ -80,6 +80,8 @@ pub struct DbParams {
     pub url: String,
     pub namespace: String,
     pub database: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
 }
 
 /// Discovery order for config file:
@@ -151,6 +153,8 @@ pub fn resolve_db_params(config: &CliConfig, global: &GlobalOpts) -> DbParams {
             .db_name
             .clone()
             .unwrap_or_else(|| config.database.database.clone()),
+        username: std::env::var("SCHEMA_FORGE_DB_USER").ok(),
+        password: std::env::var("SCHEMA_FORGE_DB_PASS").ok(),
     }
 }
 
