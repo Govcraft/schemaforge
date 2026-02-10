@@ -29,9 +29,7 @@ impl fmt::Display for Span {
 #[non_exhaustive]
 pub enum DslError {
     /// The lexer encountered a token that does not match any rule.
-    InvalidToken {
-        span: Span,
-    },
+    InvalidToken { span: Span },
 
     /// The parser encountered an unexpected token.
     UnexpectedToken {
@@ -41,75 +39,40 @@ pub enum DslError {
     },
 
     /// The parser reached the end of input when more tokens were expected.
-    UnexpectedEndOfInput {
-        expected: String,
-    },
+    UnexpectedEndOfInput { expected: String },
 
     /// A schema name failed PascalCase validation.
-    InvalidSchemaName {
-        name: String,
-        span: Span,
-    },
+    InvalidSchemaName { name: String, span: Span },
 
     /// A field name failed snake_case validation.
-    InvalidFieldName {
-        name: String,
-        span: Span,
-    },
+    InvalidFieldName { name: String, span: Span },
 
     /// A duplicate field name was found within a schema or composite.
-    DuplicateFieldName {
-        name: String,
-        span: Span,
-    },
+    DuplicateFieldName { name: String, span: Span },
 
     /// A duplicate annotation kind was found on a schema.
-    DuplicateAnnotation {
-        kind: String,
-        span: Span,
-    },
+    DuplicateAnnotation { kind: String, span: Span },
 
     /// A schema declaration has no fields.
-    EmptySchema {
-        name: String,
-        span: Span,
-    },
+    EmptySchema { name: String, span: Span },
 
     /// An integer literal could not be parsed.
-    InvalidIntegerLiteral {
-        text: String,
-        span: Span,
-    },
+    InvalidIntegerLiteral { text: String, span: Span },
 
     /// A float literal could not be parsed.
-    InvalidFloatLiteral {
-        text: String,
-        span: Span,
-    },
+    InvalidFloatLiteral { text: String, span: Span },
 
     /// An error propagated from schema-forge-core validation.
-    CoreSchemaError {
-        source: SchemaError,
-        span: Span,
-    },
+    CoreSchemaError { source: SchemaError, span: Span },
 
     /// Enum variant list was empty.
-    EmptyEnumVariants {
-        span: Span,
-    },
+    EmptyEnumVariants { span: Span },
 
     /// Duplicate enum variant found.
-    DuplicateEnumVariant {
-        variant: String,
-        span: Span,
-    },
+    DuplicateEnumVariant { variant: String, span: Span },
 
     /// Integer constraint min > max.
-    InvalidIntegerRange {
-        min: i64,
-        max: i64,
-        span: Span,
-    },
+    InvalidIntegerRange { min: i64, max: i64, span: Span },
 }
 
 impl fmt::Display for DslError {

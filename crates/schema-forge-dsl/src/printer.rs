@@ -141,9 +141,7 @@ fn print_type(field_type: &FieldType, output: &mut String, depth: usize) {
     }
 }
 
-fn build_integer_params(
-    constraints: &schema_forge_core::types::IntegerConstraints,
-) -> Vec<String> {
+fn build_integer_params(constraints: &schema_forge_core::types::IntegerConstraints) -> Vec<String> {
     let mut params = Vec::new();
     if let Some(min) = constraints.min {
         params.push(format!("min: {min}"));
@@ -221,7 +219,10 @@ mod tests {
     fn print_minimal_schema() {
         let schema = make_schema(
             "Contact",
-            vec![make_field("name", FieldType::Text(TextConstraints::unconstrained()))],
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
             vec![],
         );
         let output = print(&schema);
@@ -442,7 +443,10 @@ mod tests {
     fn print_annotations() {
         let schema = make_schema(
             "Deal",
-            vec![make_field("name", FieldType::Text(TextConstraints::unconstrained()))],
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
             vec![
                 Annotation::Version {
                     version: SchemaVersion::new(2).unwrap(),
@@ -480,12 +484,18 @@ mod tests {
         let schemas = vec![
             make_schema(
                 "Contact",
-                vec![make_field("name", FieldType::Text(TextConstraints::unconstrained()))],
+                vec![make_field(
+                    "name",
+                    FieldType::Text(TextConstraints::unconstrained()),
+                )],
                 vec![],
             ),
             make_schema(
                 "Company",
-                vec![make_field("name", FieldType::Text(TextConstraints::unconstrained()))],
+                vec![make_field(
+                    "name",
+                    FieldType::Text(TextConstraints::unconstrained()),
+                )],
                 vec![],
             ),
         ];

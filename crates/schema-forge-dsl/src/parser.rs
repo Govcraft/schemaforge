@@ -59,15 +59,13 @@ impl Parser {
     }
 
     fn current_span(&self) -> Span {
-        self.peek()
-            .map(|st| st.span.clone())
-            .unwrap_or_else(|| {
-                // Point to end of last token, or 0..0 if empty
-                self.tokens
-                    .last()
-                    .map(|st| Span::new(st.span.end, st.span.end))
-                    .unwrap_or(Span::new(0, 0))
-            })
+        self.peek().map(|st| st.span.clone()).unwrap_or_else(|| {
+            // Point to end of last token, or 0..0 if empty
+            self.tokens
+                .last()
+                .map(|st| Span::new(st.span.end, st.span.end))
+                .unwrap_or(Span::new(0, 0))
+        })
     }
 
     // -- Grammar productions --
@@ -126,12 +124,11 @@ impl Parser {
         self.expect(&Token::Schema)?;
 
         let name_tok = self.expect_ident("schema name")?;
-        let schema_name = SchemaName::new(&name_tok.text).map_err(|_| {
-            DslError::InvalidSchemaName {
+        let schema_name =
+            SchemaName::new(&name_tok.text).map_err(|_| DslError::InvalidSchemaName {
                 name: name_tok.text.clone(),
                 span: name_tok.span.clone(),
-            }
-        })?;
+            })?;
 
         self.expect(&Token::LBrace)?;
 
@@ -195,24 +192,20 @@ impl Parser {
         let annotation = match name_tok.text.as_str() {
             "version" => {
                 let value_tok = self.expect_integer_literal()?;
-                let version_num =
-                    parse_i64(&value_tok.text, &value_tok.span)? as u32;
-                let version = SchemaVersion::new(version_num).map_err(|e| {
-                    DslError::CoreSchemaError {
+                let version_num = parse_i64(&value_tok.text, &value_tok.span)? as u32;
+                let version =
+                    SchemaVersion::new(version_num).map_err(|e| DslError::CoreSchemaError {
                         source: e,
                         span: value_tok.span.clone(),
-                    }
-                })?;
+                    })?;
                 Annotation::Version { version }
             }
             "display" => {
                 let value_tok = self.expect_string_literal()?;
                 let field_str = unquote_string(&value_tok.text);
-                let field = FieldName::new(&field_str).map_err(|_| {
-                    DslError::InvalidFieldName {
-                        name: field_str.clone(),
-                        span: value_tok.span.clone(),
-                    }
+                let field = FieldName::new(&field_str).map_err(|_| DslError::InvalidFieldName {
+                    name: field_str.clone(),
+                    span: value_tok.span.clone(),
                 })?;
                 Annotation::Display { field }
             }
@@ -241,12 +234,11 @@ impl Parser {
     /// field_def = IDENT ":" type_expr modifier*
     fn parse_field(&mut self) -> Result<FieldDefinition, DslError> {
         let name_tok = self.expect_ident("field name")?;
-        let field_name = FieldName::new(&name_tok.text).map_err(|_| {
-            DslError::InvalidFieldName {
+        let field_name =
+            FieldName::new(&name_tok.text).map_err(|_| DslError::InvalidFieldName {
                 name: name_tok.text.clone(),
                 span: name_tok.span.clone(),
-            }
-        })?;
+            })?;
 
         self.expect(&Token::Colon)?;
 
@@ -257,9 +249,7 @@ impl Parser {
             Ok(FieldDefinition::new(field_name, field_type))
         } else {
             Ok(FieldDefinition::with_modifiers(
-                field_name,
-                field_type,
-                modifiers,
+                field_name, field_type, modifiers,
             ))
         }
     }
@@ -286,9 +276,11 @@ impl Parser {
     /// primitive_type = "text" params? | "richtext" | "integer" params? | "float" params?
     ///                | "boolean" | "datetime" | "enum" "(" string_list ")" | "json"
     fn parse_primitive_type(&mut self) -> Result<FieldType, DslError> {
-        let tok = self.advance().ok_or_else(|| DslError::UnexpectedEndOfInput {
-            expected: "type name".to_string(),
-        })?;
+        let tok = self
+            .advance()
+            .ok_or_else(|| DslError::UnexpectedEndOfInput {
+                expected: "type name".to_string(),
+            })?;
 
         match tok.token {
             Token::Text => {
@@ -423,9 +415,11 @@ impl Parser {
             let key_tok = self.expect_ident("parameter name")?;
             self.expect(&Token::Colon)?;
 
-            let value_tok = self.advance().ok_or_else(|| DslError::UnexpectedEndOfInput {
-                expected: "parameter value".to_string(),
-            })?;
+            let value_tok = self
+                .advance()
+                .ok_or_else(|| DslError::UnexpectedEndOfInput {
+                    expected: "parameter value".to_string(),
+                })?;
 
             let value_str = match value_tok.token {
                 Token::IntegerLiteral | Token::FloatLiteral | Token::Ident => {
@@ -437,11 +431,7 @@ impl Parser {
                 _ => {
                     return Err(DslError::UnexpectedToken {
                         expected: "parameter value".to_string(),
-                        found: format!(
-                            "{} ('{}')",
-                            value_tok.token.description(),
-                            value_tok.text
-                        ),
+                        found: format!("{} ('{}')", value_tok.token.description(), value_tok.text),
                         span: value_tok.span,
                     });
                 }
@@ -498,11 +488,9 @@ impl Parser {
 
         self.expect(&Token::RParen)?;
 
-        let enum_variants = EnumVariants::new(variants).map_err(|e| {
-            DslError::CoreSchemaError {
-                source: e,
-                span: paren_span,
-            }
+        let enum_variants = EnumVariants::new(variants).map_err(|e| DslError::CoreSchemaError {
+            source: e,
+            span: paren_span,
         })?;
 
         Ok(FieldType::Enum(enum_variants))
@@ -512,12 +500,11 @@ impl Parser {
     fn parse_relation_type(&mut self) -> Result<FieldType, DslError> {
         self.expect(&Token::Arrow)?;
         let target_tok = self.expect_ident("relation target schema name")?;
-        let target = SchemaName::new(&target_tok.text).map_err(|_| {
-            DslError::InvalidSchemaName {
+        let target =
+            SchemaName::new(&target_tok.text).map_err(|_| DslError::InvalidSchemaName {
                 name: target_tok.text.clone(),
                 span: target_tok.span.clone(),
-            }
-        })?;
+            })?;
 
         let cardinality = if self.peek_token() == Some(&Token::LBracket) {
             self.advance(); // [
@@ -588,14 +575,14 @@ impl Parser {
     fn parse_default_value(&mut self) -> Result<DefaultValue, DslError> {
         self.expect(&Token::LParen)?;
 
-        let tok = self.advance().ok_or_else(|| DslError::UnexpectedEndOfInput {
-            expected: "default value".to_string(),
-        })?;
+        let tok = self
+            .advance()
+            .ok_or_else(|| DslError::UnexpectedEndOfInput {
+                expected: "default value".to_string(),
+            })?;
 
         let value = match tok.token {
-            Token::StringLiteral => {
-                DefaultValue::String(unquote_string(&tok.text))
-            }
+            Token::StringLiteral => DefaultValue::String(unquote_string(&tok.text)),
             Token::IntegerLiteral => {
                 let n = parse_i64(&tok.text, &tok.span)?;
                 DefaultValue::Integer(n)
@@ -716,10 +703,11 @@ fn unquote_string(s: &str) -> String {
 }
 
 fn parse_i64(text: &str, span: &Span) -> Result<i64, DslError> {
-    text.parse::<i64>().map_err(|_| DslError::InvalidIntegerLiteral {
-        text: text.to_string(),
-        span: span.clone(),
-    })
+    text.parse::<i64>()
+        .map_err(|_| DslError::InvalidIntegerLiteral {
+            text: text.to_string(),
+            span: span.clone(),
+        })
 }
 
 fn extract_i64_param(
@@ -731,10 +719,11 @@ fn extract_i64_param(
         .iter()
         .find(|(k, _)| k == key)
         .map(|(_, v)| {
-            v.parse::<i64>().map_err(|_| DslError::InvalidIntegerLiteral {
-                text: v.clone(),
-                span: span.clone(),
-            })
+            v.parse::<i64>()
+                .map_err(|_| DslError::InvalidIntegerLiteral {
+                    text: v.clone(),
+                    span: span.clone(),
+                })
         })
         .transpose()
 }
@@ -865,9 +854,7 @@ mod tests {
 
     #[test]
     fn parse_enum() {
-        let schema = parse_one(
-            r#"schema S { status: enum("active", "inactive", "pending") }"#,
-        );
+        let schema = parse_one(r#"schema S { status: enum("active", "inactive", "pending") }"#);
         match &schema.fields[0].field_type {
             FieldType::Enum(variants) => {
                 assert_eq!(variants.as_slice(), &["active", "inactive", "pending"]);
@@ -1185,7 +1172,11 @@ mod tests {
         let errors = result.unwrap_err();
         assert!(matches!(
             &errors[0],
-            DslError::InvalidIntegerRange { min: 100, max: 0, .. }
+            DslError::InvalidIntegerRange {
+                min: 100,
+                max: 0,
+                ..
+            }
         ));
     }
 

@@ -153,9 +153,7 @@ mod tests {
     use super::*;
 
     fn lex(input: &str) -> Vec<Token> {
-        Token::lexer(input)
-            .map(|r| r.expect("lex error"))
-            .collect()
+        Token::lexer(input).map(|r| r.expect("lex error")).collect()
     }
 
     #[test]
@@ -242,10 +240,7 @@ mod tests {
     #[test]
     fn identifiers() {
         let tokens = lex("Contact first_name MySchema123");
-        assert_eq!(
-            tokens,
-            vec![Token::Ident, Token::Ident, Token::Ident]
-        );
+        assert_eq!(tokens, vec![Token::Ident, Token::Ident, Token::Ident]);
     }
 
     #[test]

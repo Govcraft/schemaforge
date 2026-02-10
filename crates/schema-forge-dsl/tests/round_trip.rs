@@ -53,11 +53,7 @@ fn assert_round_trip(source: &str) {
             s1.name
         );
         for (a1, a2) in s1.annotations.iter().zip(s2.annotations.iter()) {
-            assert_eq!(
-                a1, a2,
-                "annotation mismatch in schema '{}'",
-                s1.name
-            );
+            assert_eq!(a1, a2, "annotation mismatch in schema '{}'", s1.name);
         }
     }
 }

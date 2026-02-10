@@ -55,7 +55,11 @@ schema Deal {
 #[test]
 fn parse_full_crm_schema() {
     let schemas = parse(CRM_SCHEMA).expect("CRM schema should parse successfully");
-    assert_eq!(schemas.len(), 3, "expected 3 schemas: Contact, Company, Deal");
+    assert_eq!(
+        schemas.len(),
+        3,
+        "expected 3 schemas: Contact, Company, Deal"
+    );
 
     // --- Contact ---
     let contact = &schemas[0];
@@ -104,7 +108,10 @@ fn parse_full_crm_schema() {
     // company relation one
     let company = contact.field("company").expect("Contact.company");
     match &company.field_type {
-        FieldType::Relation { target, cardinality } => {
+        FieldType::Relation {
+            target,
+            cardinality,
+        } => {
             assert_eq!(target.as_str(), "Company");
             assert_eq!(*cardinality, Cardinality::One);
         }
@@ -114,7 +121,10 @@ fn parse_full_crm_schema() {
     // deals relation many
     let deals = contact.field("deals").expect("Contact.deals");
     match &deals.field_type {
-        FieldType::Relation { target, cardinality } => {
+        FieldType::Relation {
+            target,
+            cardinality,
+        } => {
             assert_eq!(target.as_str(), "Deal");
             assert_eq!(*cardinality, Cardinality::Many);
         }
@@ -123,14 +133,18 @@ fn parse_full_crm_schema() {
 
     // tags array
     let tags = contact.field("tags").expect("Contact.tags");
-    assert!(matches!(&tags.field_type, FieldType::Array(inner) if matches!(inner.as_ref(), FieldType::Text(_))));
+    assert!(
+        matches!(&tags.field_type, FieldType::Array(inner) if matches!(inner.as_ref(), FieldType::Text(_)))
+    );
 
     // notes richtext
     let notes = contact.field("notes").expect("Contact.notes");
     assert!(matches!(notes.field_type, FieldType::RichText));
 
     // last_contacted datetime
-    let lc = contact.field("last_contacted").expect("Contact.last_contacted");
+    let lc = contact
+        .field("last_contacted")
+        .expect("Contact.last_contacted");
     assert!(matches!(lc.field_type, FieldType::DateTime));
 
     // score integer
@@ -144,7 +158,9 @@ fn parse_full_crm_schema() {
     }
 
     // annual_revenue float
-    let rev = contact.field("annual_revenue").expect("Contact.annual_revenue");
+    let rev = contact
+        .field("annual_revenue")
+        .expect("Contact.annual_revenue");
     match &rev.field_type {
         FieldType::Float(c) => assert_eq!(c.precision, Some(2)),
         other => panic!("expected Float, got {other:?}"),
