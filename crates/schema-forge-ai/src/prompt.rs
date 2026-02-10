@@ -22,24 +22,28 @@ Follow these steps when a user asks you to create or modify schemas:
 
 ```ebnf
 program        = { schema_def } ;
-schema_def     = "schema" PASCAL_IDENT "{" { field_def } { annotation } "}" ;
+schema_def     = { annotation } "schema" PASCAL_IDENT "{" { field_def } "}" ;
 field_def      = SNAKE_IDENT ":" field_type { modifier } ;
 
 field_type     = "text" [ "(" text_params ")" ]
                | "richtext" [ "(" text_params ")" ]
-               | "integer"
-               | "float"
+               | "integer" [ "(" int_params ")" ]
+               | "float" [ "(" float_params ")" ]
                | "boolean"
                | "datetime"
                | "enum" "(" enum_variants ")"
                | "json"
-               | PASCAL_IDENT "->" PASCAL_IDENT     (* relation *)
+               | "->" PASCAL_IDENT                  (* relation to-one *)
+               | "->" PASCAL_IDENT "[]"             (* relation to-many *)
                | "[" field_type "]"                 (* array *)
                | "composite" "{" { field_def } "}"  (* inline composite *)
                ;
 
 text_params    = text_param { "," text_param } ;
 text_param     = "min" ":" INTEGER | "max" ":" INTEGER ;
+int_params     = int_param { "," int_param } ;
+int_param      = "min" ":" INTEGER | "max" ":" INTEGER ;
+float_params   = "precision" ":" INTEGER ;
 enum_variants  = STRING { "," STRING } ;
 
 modifier       = "required"
@@ -49,7 +53,8 @@ modifier       = "required"
 
 default_value  = STRING | INTEGER | FLOAT | "true" | "false" ;
 
-annotation     = "@" IDENT "(" STRING ")" ;
+annotation     = "@version" "(" INTEGER ")"
+               | "@display" "(" STRING ")" ;
 
 PASCAL_IDENT   = /[A-Z][a-zA-Z0-9]*/ ;
 SNAKE_IDENT    = /[a-z][a-z0-9_]*/ ;
@@ -69,7 +74,8 @@ FLOAT          = /-?[0-9]+\.[0-9]+/ ;
 | `boolean` | True/false value | None |
 | `datetime` | ISO 8601 timestamp | None |
 | `enum("A", "B")` | One of listed variants | At least 1 variant, no duplicates |
-| `SchemaA -> SchemaB` | Relation to another schema | Target schema name in PascalCase |
+| `-> SchemaB` | Relation to one (to-one) | Target schema name in PascalCase |
+| `-> SchemaB[]` | Relation to many (to-many) | Target schema name in PascalCase |
 | `[type]` | Array of any field type | Wraps any field type |
 | `composite { ... }` | Inline nested fields | Contains field definitions |
 | `json` | Arbitrary JSON value | None |
@@ -100,17 +106,8 @@ FLOAT          = /-?[0-9]+\.[0-9]+/ ;
 ## Example: CRM Schemas
 
 ```schemadsl
-schema Contact {
-    first_name: text(max: 100) required
-    last_name: text(max: 100) required
-    email: text(max: 255) required indexed
-    phone: text(max: 20)
-    status: enum("active", "inactive", "lead") default("lead")
-    company: Contact -> Company
-    tags: [text]
-    notes: richtext
-}
-
+@version(1)
+@display("name")
 schema Company {
     name: text(max: 200) required indexed
     website: text(max: 500)
@@ -124,6 +121,19 @@ schema Company {
         zip: text(max: 20)
         country: text(max: 100) default("US")
     }
+}
+
+@version(1)
+@display("email")
+schema Contact {
+    first_name: text(max: 100) required
+    last_name: text(max: 100) required
+    email: text(max: 255) required indexed
+    phone: text(max: 20)
+    status: enum("active", "inactive", "lead") default("lead")
+    company: -> Company
+    tags: [text]
+    notes: richtext
 }
 ```
 "#;
@@ -162,5 +172,8 @@ mod tests {
     fn prompt_contains_example() {
         assert!(FORGE_SYSTEM_PROMPT.contains("schema Contact"));
         assert!(FORGE_SYSTEM_PROMPT.contains("schema Company"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("company: -> Company"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("@version(1)"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("@display("));
     }
 }
