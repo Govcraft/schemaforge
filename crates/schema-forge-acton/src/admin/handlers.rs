@@ -170,13 +170,12 @@ pub async fn dashboard(
 
     let mut entries = Vec::new();
     for schema in &schemas {
-        let query = schema_forge_core::query::Query::new(schema.id.clone()).with_limit(1);
-        let result = state
+        let query = schema_forge_core::query::Query::new(schema.id.clone());
+        let entity_count = state
             .backend
-            .query(&query)
+            .count(&query)
             .await
             .map_err(AdminError::from)?;
-        let entity_count = result.total_count.unwrap_or(result.entities.len());
 
         entries.push(DashboardEntry {
             schema: SchemaView::from_definition(schema),

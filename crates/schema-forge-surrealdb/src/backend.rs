@@ -397,6 +397,30 @@ impl EntityStore for SurrealBackend {
 
         Ok(QueryResult::new(entities, None))
     }
+
+    async fn count(&self, query: &Query) -> Result<usize, BackendError> {
+        let all_schemas = self.list_schema_metadata().await?;
+        let schema_def = all_schemas
+            .iter()
+            .find(|s| s.id == query.schema)
+            .ok_or_else(|| BackendError::QueryError {
+                message: format!("no schema found for id '{}'", query.schema.as_str()),
+            })?;
+
+        let table = schema_def.name.as_str();
+        let sql = crate::query::count_to_surql(query, table);
+        let rows = self.execute_and_take_rows(&sql).await?;
+
+        // SurrealDB returns [{ "count": N }] for GROUP ALL, or [] if no rows.
+        if let Some(row) = rows.first() {
+            if let surrealdb::sql::Value::Object(obj) = row {
+                if let Some(surrealdb::sql::Value::Number(n)) = obj.get("count") {
+                    return Ok(n.as_usize());
+                }
+            }
+        }
+        Ok(0)
+    }
 }
 
 /// Convert a `surrealdb::sql::Value` response row to an `Entity`.

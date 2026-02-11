@@ -117,6 +117,12 @@ pub trait DynEntityStore: Send + Sync {
         &'a self,
         query: &'a Query,
     ) -> Pin<Box<dyn Future<Output = Result<QueryResult, BackendError>> + Send + 'a>>;
+
+    /// Count entities matching a query (ignoring limit/offset).
+    fn count<'a>(
+        &'a self,
+        query: &'a Query,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + 'a>>;
 }
 
 /// Blanket impl: any concrete `EntityStore` automatically implements `DynEntityStore`.
@@ -156,6 +162,13 @@ impl<T: EntityStore + 'static> DynEntityStore for T {
         query: &'a Query,
     ) -> Pin<Box<dyn Future<Output = Result<QueryResult, BackendError>> + Send + 'a>> {
         Box::pin(EntityStore::query(self, query))
+    }
+
+    fn count<'a>(
+        &'a self,
+        query: &'a Query,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + 'a>> {
+        Box::pin(EntityStore::count(self, query))
     }
 }
 

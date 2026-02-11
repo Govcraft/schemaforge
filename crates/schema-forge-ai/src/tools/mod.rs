@@ -226,6 +226,10 @@ mod tests {
                 total_count: Some(0),
             })
         }
+
+        async fn count(&self, _q: &Query) -> Result<usize, BackendError> {
+            Ok(0)
+        }
     }
 
     fn make_tools() -> SchemaForgeTools {

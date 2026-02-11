@@ -44,6 +44,20 @@ pub fn query_to_surql(query: &Query, table: &str) -> String {
     sql
 }
 
+/// Compile a `Query` to a SurrealQL `SELECT count() ... GROUP ALL` statement.
+///
+/// Ignores limit, offset, and sort — only applies the filter.
+pub fn count_to_surql(query: &Query, table: &str) -> String {
+    let mut sql = format!("SELECT count() FROM {table}");
+
+    if let Some(filter) = &query.filter {
+        sql.push_str(&format!(" WHERE {}", filter_to_surql(filter)));
+    }
+
+    sql.push_str(" GROUP ALL;");
+    sql
+}
+
 /// Compile a `Filter` to a SurrealQL WHERE clause fragment (no leading WHERE).
 pub fn filter_to_surql(filter: &Filter) -> String {
     match filter {
@@ -383,5 +397,35 @@ mod tests {
         assert!(sql.contains("ORDER BY name ASC"));
         assert!(sql.contains("LIMIT 10"));
         assert!(sql.contains("START 0"));
+    }
+
+    #[test]
+    fn count_all() {
+        let q = Query::new(SchemaId::new());
+        let sql = count_to_surql(&q, "Contact");
+        assert_eq!(sql, "SELECT count() FROM Contact GROUP ALL;");
+    }
+
+    #[test]
+    fn count_with_filter() {
+        let q = Query::new(SchemaId::new()).with_filter(Filter::eq(
+            FieldPath::single("active"),
+            DynamicValue::Boolean(true),
+        ));
+        let sql = count_to_surql(&q, "Contact");
+        assert_eq!(
+            sql,
+            "SELECT count() FROM Contact WHERE active = true GROUP ALL;"
+        );
+    }
+
+    #[test]
+    fn count_ignores_limit_and_sort() {
+        let q = Query::new(SchemaId::new())
+            .with_limit(10)
+            .with_offset(20)
+            .with_sort(FieldPath::single("name"), SortOrder::Ascending);
+        let sql = count_to_surql(&q, "Contact");
+        assert_eq!(sql, "SELECT count() FROM Contact GROUP ALL;");
     }
 }

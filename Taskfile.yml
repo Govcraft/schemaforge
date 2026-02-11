@@ -1,0 +1,86 @@
+version: '3'
+
+vars:
+  FEATURES: admin-ui
+  PORT: 3000
+  ADMIN_PASSWORD: changeme
+  BASE_URL: "http://127.0.0.1:{{.PORT}}"
+  CSS_INPUT: crates/schema-forge-acton/static/css/input.css
+  CSS_OUTPUT: crates/schema-forge-acton/static/css/admin.css
+  CSS_CONTENT: "crates/schema-forge-acton/templates/**/*.html"
+
+tasks:
+  build:
+    desc: Build the schema-forge-cli binary
+    cmds:
+      - cargo build -p schema-forge-cli --features {{.FEATURES}}
+
+  serve:
+    desc: Start the SchemaForge server (Ctrl+C to stop)
+    cmds:
+      - cargo run -p schema-forge-cli --features {{.FEATURES}} -- serve --admin-password {{.ADMIN_PASSWORD}}
+
+  seed:
+    desc: Seed demo data (expects server already running)
+    cmds:
+      - bash scripts/seed-demo-data.sh
+    env:
+      BASE_URL: "{{.BASE_URL}}"
+
+  demo:
+    desc: Build, start server with in-memory DB, seed demo data, then keep running
+    cmds:
+      - |
+        set -euo pipefail
+
+        # Build first
+        cargo build -p schema-forge-cli --features {{.FEATURES}}
+
+        # Start server in background with in-memory DB
+        ./target/debug/schema-forge serve --admin-password {{.ADMIN_PASSWORD}} --db-url "mem://" &
+        SERVER_PID=$!
+        trap 'kill $SERVER_PID 2>/dev/null' EXIT
+
+        # Wait for health endpoint (30s timeout)
+        echo "Waiting for server to start..."
+        for i in $(seq 1 30); do
+          if curl -sf http://127.0.0.1:{{.PORT}}/health > /dev/null 2>&1; then
+            echo "Server is ready."
+            break
+          fi
+          if [ "$i" -eq 30 ]; then
+            echo "ERROR: Server failed to start within 30 seconds."
+            exit 1
+          fi
+          sleep 1
+        done
+
+        # Seed demo data
+        BASE_URL="{{.BASE_URL}}" bash scripts/seed-demo-data.sh
+
+        echo ""
+        echo "Demo server running at {{.BASE_URL}}"
+        echo "Admin UI: {{.BASE_URL}}/admin/"
+        echo "Press Ctrl+C to stop."
+        wait $SERVER_PID
+
+  css:
+    desc: Build Tailwind CSS
+    cmds:
+      - npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}'
+
+  css:watch:
+    desc: Watch and rebuild Tailwind CSS
+    cmds:
+      - npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}' --watch
+
+  test:
+    desc: Run all workspace tests
+    cmds:
+      - cargo test --workspace
+
+  check:
+    desc: Run clippy and format checks
+    cmds:
+      - cargo clippy --workspace --all-targets --features {{.FEATURES}} -- -D warnings
+      - cargo fmt --all -- --check

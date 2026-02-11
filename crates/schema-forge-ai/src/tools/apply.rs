@@ -215,6 +215,10 @@ mod tests {
                 total_count: Some(0),
             })
         }
+
+        async fn count(&self, _query: &Query) -> Result<usize, BackendError> {
+            Ok(0)
+        }
     }
 
     fn mock_backend() -> Arc<dyn DynForgeBackend> {
