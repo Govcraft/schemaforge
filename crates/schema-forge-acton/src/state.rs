@@ -255,6 +255,9 @@ pub struct ForgeState {
     /// [`AuthContext`](schema_forge_backend::auth::AuthContext) into extensions.
     /// When `None`, requests pass through without authentication (open access).
     pub auth_provider: Option<Arc<dyn crate::auth::AuthProvider>>,
+    /// Tenant configuration derived from `@tenant` annotations.
+    /// `None` when multi-tenancy is not configured.
+    pub tenant_config: Option<schema_forge_backend::tenant::TenantConfig>,
     /// SurrealDB client for auth queries (admin UI only).
     #[cfg(feature = "admin-ui")]
     pub surreal_client: Option<
