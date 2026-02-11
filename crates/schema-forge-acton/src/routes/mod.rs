@@ -9,7 +9,8 @@ use crate::state::ForgeState;
 /// Build the SchemaForge router with all schema and entity CRUD routes.
 ///
 /// The router is returned without state applied -- the caller (extension.rs)
-/// provides the `ForgeState`.
+/// provides the `ForgeState`. Auth middleware is applied externally when the
+/// state is available (see [`SchemaForgeExtension::register_routes`]).
 pub fn forge_routes() -> Router<ForgeState> {
     Router::new()
         // Schema management

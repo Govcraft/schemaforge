@@ -22,15 +22,26 @@ async fn test_state() -> ForgeState {
     ForgeState {
         registry,
         backend: Arc::new(backend),
+        auth_provider: None,
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     }
 }
 
-/// Create a test router with ForgeState applied.
+/// Create a test router with ForgeState and auth middleware applied.
 async fn test_app() -> Router {
     let state = test_state().await;
-    forge_routes().with_state(state)
+    test_app_with_state(state)
+}
+
+/// Create a test router with a specific ForgeState and auth middleware applied.
+fn test_app_with_state(state: ForgeState) -> Router {
+    forge_routes()
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            schema_forge_acton::middleware::auth_middleware,
+        ))
+        .with_state(state)
 }
 
 /// Helper to send a JSON request to the test app and get a response.
@@ -523,4 +534,73 @@ async fn extension_register_routes_nests_under_forge() {
 
     let response = router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// Auth middleware integration tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn request_with_noop_auth_succeeds() {
+    use schema_forge_acton::auth::NoopAuthProvider;
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+    let registry = SchemaRegistry::new();
+    let state = ForgeState {
+        registry,
+        backend: Arc::new(backend),
+        auth_provider: Some(Arc::new(NoopAuthProvider::admin())),
+        #[cfg(feature = "admin-ui")]
+        surreal_client: None,
+    };
+    let app = test_app_with_state(state);
+
+    // Create a schema to verify the request goes through
+    let body = serde_json::json!({
+        "name": "Contact",
+        "fields": [{"name": "name", "field_type": "Text"}]
+    });
+    let (status, json) = json_request(&app, Method::POST, "/schemas", Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(json["name"], "Contact");
+}
+
+#[tokio::test]
+async fn request_with_failing_auth_returns_401() {
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use schema_forge_acton::auth::AuthProvider;
+    use schema_forge_backend::auth::{AuthContext, AuthError};
+
+    /// An auth provider that always fails with MissingCredentials.
+    struct FailingAuthProvider;
+
+    impl AuthProvider for FailingAuthProvider {
+        fn authenticate<'a>(
+            &'a self,
+            _parts: &'a axum::http::request::Parts,
+        ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
+            Box::pin(async { Err(AuthError::MissingCredentials) })
+        }
+    }
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+    let registry = SchemaRegistry::new();
+    let state = ForgeState {
+        registry,
+        backend: Arc::new(backend),
+        auth_provider: Some(Arc::new(FailingAuthProvider)),
+        #[cfg(feature = "admin-ui")]
+        surreal_client: None,
+    };
+    let app = test_app_with_state(state);
+
+    let (status, json) = json_request(&app, Method::GET, "/schemas", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json["error"], "unauthorized");
 }

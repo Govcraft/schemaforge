@@ -30,6 +30,7 @@ pub struct SchemaForgeExtension {
 /// Builder for `SchemaForgeExtension`.
 pub struct SchemaForgeExtensionBuilder {
     backend: Option<Arc<dyn DynForgeBackend>>,
+    auth_provider: Option<Arc<dyn crate::auth::AuthProvider>>,
     #[cfg(feature = "admin-ui")]
     surreal_client: Option<
         schema_forge_surrealdb::surrealdb::Surreal<
@@ -45,6 +46,7 @@ impl SchemaForgeExtensionBuilder {
     fn new() -> Self {
         Self {
             backend: None,
+            auth_provider: None,
             #[cfg(feature = "admin-ui")]
             surreal_client: None,
             #[cfg(feature = "admin-ui")]
@@ -60,6 +62,21 @@ impl SchemaForgeExtensionBuilder {
         B: DynSchemaBackend + DynEntityStore + 'static,
     {
         self.backend = Some(Arc::new(backend));
+        self
+    }
+
+    /// Set the auth provider for API request authentication.
+    ///
+    /// When configured, the auth middleware will call the provider to
+    /// authenticate each request and inject an [`AuthContext`] into
+    /// request extensions.
+    ///
+    /// [`AuthContext`]: schema_forge_backend::auth::AuthContext
+    pub fn with_auth_provider<P: crate::auth::AuthProvider + 'static>(
+        mut self,
+        provider: P,
+    ) -> Self {
+        self.auth_provider = Some(Arc::new(provider));
         self
     }
 
@@ -124,6 +141,7 @@ impl SchemaForgeExtensionBuilder {
         let state = ForgeState {
             registry,
             backend,
+            auth_provider: self.auth_provider,
             #[cfg(feature = "admin-ui")]
             surreal_client: self.surreal_client,
         };
@@ -141,12 +159,18 @@ impl SchemaForgeExtension {
     /// Register SchemaForge routes onto an existing Router.
     ///
     /// Merges the forge routes (nested under `/forge`) and applies
-    /// `ForgeState` as a layer.
+    /// `ForgeState` as a layer. Auth middleware is applied to all forge routes
+    /// when `ForgeState::auth_provider` is configured.
     pub fn register_routes<S>(&self, router: Router<S>) -> Router<S>
     where
         S: Clone + Send + Sync + 'static,
     {
-        let forge_router = forge_routes().with_state(self.state.clone());
+        let forge_router = forge_routes()
+            .route_layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                crate::middleware::auth_middleware,
+            ))
+            .with_state(self.state.clone());
         router.nest("/forge", forge_router)
     }
 
@@ -171,7 +195,12 @@ impl SchemaForgeExtension {
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Clone + Default + Send + Sync + 'static,
     {
-        let forge_router: Router<()> = forge_routes().with_state(self.state.clone());
+        let forge_router: Router<()> = forge_routes()
+            .route_layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                crate::middleware::auth_middleware,
+            ))
+            .with_state(self.state.clone());
         router.nest_service("/forge", forge_router)
     }
 
