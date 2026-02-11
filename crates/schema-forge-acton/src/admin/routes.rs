@@ -21,10 +21,7 @@ pub fn admin_routes() -> Router<ForgeState> {
         // Schema editor: static paths first
         .route("/schemas/new", get(handlers::schema_create_form))
         .route("/schemas", post(handlers::schema_create))
-        .route(
-            "/schemas/_preview",
-            post(handlers::schema_preview),
-        )
+        .route("/schemas/_preview", post(handlers::schema_preview))
         .route(
             "/schemas/_field-row/{index}",
             get(handlers::field_row_fragment),
@@ -40,10 +37,7 @@ pub fn admin_routes() -> Router<ForgeState> {
                 .post(handlers::schema_update)
                 .delete(handlers::schema_delete),
         )
-        .route(
-            "/schemas/{name}/edit",
-            get(handlers::schema_edit_form),
-        )
+        .route("/schemas/{name}/edit", get(handlers::schema_edit_form))
         // Entity routes
         .route(
             "/schemas/{name}/entities",

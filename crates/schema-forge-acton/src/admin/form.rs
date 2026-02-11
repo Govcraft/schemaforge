@@ -46,7 +46,11 @@ pub fn form_to_entity_fields(
                 ..
             } => {
                 if let Some(vals) = grouped.get(name) {
-                    let non_empty: Vec<&str> = vals.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+                    let non_empty: Vec<&str> = vals
+                        .iter()
+                        .map(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                        .collect();
                     if non_empty.is_empty() {
                         // Don't insert if all empty
                     } else {
@@ -54,7 +58,9 @@ pub fn form_to_entity_fields(
                         for v in &non_empty {
                             match EntityId::parse(v) {
                                 Ok(id) => ids.push(id),
-                                Err(e) => errors.push(format!("field '{name}': invalid entity reference '{v}': {e}")),
+                                Err(e) => errors.push(format!(
+                                    "field '{name}': invalid entity reference '{v}': {e}"
+                                )),
                             }
                         }
                         if errors.is_empty() || !ids.is_empty() {
@@ -72,9 +78,16 @@ pub fn form_to_entity_fields(
                         if let Some(val) = vals.last() {
                             if !val.is_empty() {
                                 // Find the sub-field type
-                                let sub_def = sub_fields.iter().find(|f| f.name.as_str() == sub_key);
-                                match parse_single_value(sub_key, val, sub_def.map(|d| &d.field_type)) {
-                                    Ok(dv) => { composite.insert(sub_key.to_string(), dv); }
+                                let sub_def =
+                                    sub_fields.iter().find(|f| f.name.as_str() == sub_key);
+                                match parse_single_value(
+                                    sub_key,
+                                    val,
+                                    sub_def.map(|d| &d.field_type),
+                                ) {
+                                    Ok(dv) => {
+                                        composite.insert(sub_key.to_string(), dv);
+                                    }
                                     Err(e) => errors.push(format!("field '{name}.{sub_key}': {e}")),
                                 }
                             }
@@ -92,7 +105,9 @@ pub fn form_to_entity_fields(
                             // Skip empty non-required fields
                         } else {
                             match parse_single_value(name, val, Some(other)) {
-                                Ok(dv) => { fields.insert(name.to_string(), dv); }
+                                Ok(dv) => {
+                                    fields.insert(name.to_string(), dv);
+                                }
                                 Err(e) => errors.push(e),
                             }
                         }
@@ -191,10 +206,7 @@ pub fn form_to_schema_definition(
         let field_name = match FieldName::new(&field_name_str) {
             Ok(name) => name,
             Err(e) => {
-                errors.push(format!(
-                    "Invalid field name '{}': {}",
-                    field_name_str, e
-                ));
+                errors.push(format!("Invalid field name '{}': {}", field_name_str, e));
                 continue;
             }
         };
@@ -211,7 +223,13 @@ pub fn form_to_schema_definition(
             "text" => {
                 let max_len = form_map
                     .get(&format!("{prefix}text_max_length"))
-                    .and_then(|v| if v.is_empty() { None } else { v.parse::<u32>().ok() });
+                    .and_then(|v| {
+                        if v.is_empty() {
+                            None
+                        } else {
+                            v.parse::<u32>().ok()
+                        }
+                    });
                 match max_len {
                     Some(max) => FieldType::Text(TextConstraints::with_max_length(max)),
                     None => FieldType::Text(TextConstraints::unconstrained()),
@@ -219,22 +237,28 @@ pub fn form_to_schema_definition(
             }
             "richtext" => FieldType::RichText,
             "integer" => {
-                let min = form_map
-                    .get(&format!("{prefix}integer_min"))
-                    .and_then(|v| if v.is_empty() { None } else { v.parse::<i64>().ok() });
-                let max = form_map
-                    .get(&format!("{prefix}integer_max"))
-                    .and_then(|v| if v.is_empty() { None } else { v.parse::<i64>().ok() });
-                match (min, max) {
-                    (Some(mn), Some(mx)) => {
-                        match IntegerConstraints::with_range(mn, mx) {
-                            Ok(c) => FieldType::Integer(c),
-                            Err(e) => {
-                                errors.push(format!("Field '{}': {}", field_name_str, e));
-                                continue;
-                            }
-                        }
+                let min = form_map.get(&format!("{prefix}integer_min")).and_then(|v| {
+                    if v.is_empty() {
+                        None
+                    } else {
+                        v.parse::<i64>().ok()
                     }
+                });
+                let max = form_map.get(&format!("{prefix}integer_max")).and_then(|v| {
+                    if v.is_empty() {
+                        None
+                    } else {
+                        v.parse::<i64>().ok()
+                    }
+                });
+                match (min, max) {
+                    (Some(mn), Some(mx)) => match IntegerConstraints::with_range(mn, mx) {
+                        Ok(c) => FieldType::Integer(c),
+                        Err(e) => {
+                            errors.push(format!("Field '{}': {}", field_name_str, e));
+                            continue;
+                        }
+                    },
                     (Some(mn), None) => FieldType::Integer(IntegerConstraints::with_min(mn)),
                     (None, Some(mx)) => FieldType::Integer(IntegerConstraints::with_max(mx)),
                     (None, None) => FieldType::Integer(IntegerConstraints::unconstrained()),
@@ -243,7 +267,13 @@ pub fn form_to_schema_definition(
             "float" => {
                 let precision = form_map
                     .get(&format!("{prefix}float_precision"))
-                    .and_then(|v| if v.is_empty() { None } else { v.parse::<u32>().ok() });
+                    .and_then(|v| {
+                        if v.is_empty() {
+                            None
+                        } else {
+                            v.parse::<u32>().ok()
+                        }
+                    });
                 match precision {
                     Some(p) => FieldType::Float(FloatConstraints::with_precision(p)),
                     None => FieldType::Float(FloatConstraints::unconstrained()),
@@ -385,19 +415,13 @@ fn parse_single_value(
                 Ok(DynamicValue::DateTime(dt))
             } else if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M")
             {
-                Ok(DynamicValue::DateTime(
-                    naive.and_utc(),
-                ))
+                Ok(DynamicValue::DateTime(naive.and_utc()))
             } else if let Ok(naive) =
                 chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
             {
-                Ok(DynamicValue::DateTime(
-                    naive.and_utc(),
-                ))
+                Ok(DynamicValue::DateTime(naive.and_utc()))
             } else {
-                Err(format!(
-                    "field '{name}': invalid datetime format '{value}'"
-                ))
+                Err(format!("field '{name}': invalid datetime format '{value}'"))
             }
         }
         Some(FieldType::Enum(_)) => Ok(DynamicValue::Enum(value.to_string())),
@@ -512,7 +536,10 @@ mod tests {
         let schema = make_schema(vec![make_field("created_at", FieldType::DateTime)]);
         let form = vec![("created_at".to_string(), "2024-01-15T10:30".to_string())];
         let result = form_to_entity_fields(&schema, &form).unwrap();
-        assert!(matches!(result.get("created_at"), Some(DynamicValue::DateTime(_))));
+        assert!(matches!(
+            result.get("created_at"),
+            Some(DynamicValue::DateTime(_))
+        ));
     }
 
     #[test]
@@ -530,12 +557,12 @@ mod tests {
     #[test]
     fn json_field() {
         let schema = make_schema(vec![make_field("metadata", FieldType::Json)]);
-        let form = vec![(
-            "metadata".to_string(),
-            r#"{"key": "value"}"#.to_string(),
-        )];
+        let form = vec![("metadata".to_string(), r#"{"key": "value"}"#.to_string())];
         let result = form_to_entity_fields(&schema, &form).unwrap();
-        assert!(matches!(result.get("metadata"), Some(DynamicValue::Json(_))));
+        assert!(matches!(
+            result.get("metadata"),
+            Some(DynamicValue::Json(_))
+        ));
     }
 
     #[test]
@@ -556,7 +583,9 @@ mod tests {
         let result = form_to_entity_fields(&schema, &form);
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("required") && e.contains("name")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("required") && e.contains("name")));
     }
 
     #[test]
@@ -576,7 +605,10 @@ mod tests {
             make_field("street", FieldType::Text(TextConstraints::unconstrained())),
             make_field("city", FieldType::Text(TextConstraints::unconstrained())),
         ];
-        let schema = make_schema(vec![make_field("address", FieldType::Composite(sub_fields))]);
+        let schema = make_schema(vec![make_field(
+            "address",
+            FieldType::Composite(sub_fields),
+        )]);
         let form = vec![
             ("address.street".to_string(), "123 Main St".to_string()),
             ("address.city".to_string(), "Springfield".to_string()),
@@ -607,10 +639,7 @@ mod tests {
                 cardinality: Cardinality::One,
             },
         )]);
-        let form = vec![(
-            "company".to_string(),
-            entity_id.as_str().to_string(),
-        )];
+        let form = vec![("company".to_string(), entity_id.as_str().to_string())];
         let result = form_to_entity_fields(&schema, &form).unwrap();
         assert!(matches!(result.get("company"), Some(DynamicValue::Ref(_))));
     }
@@ -682,11 +711,16 @@ mod tests {
 
         assert!(matches!(
             result.fields[0].field_type,
-            FieldType::Text(TextConstraints { max_length: Some(200) })
+            FieldType::Text(TextConstraints {
+                max_length: Some(200)
+            })
         ));
         assert!(matches!(
             result.fields[1].field_type,
-            FieldType::Integer(IntegerConstraints { min: Some(0), max: Some(100) })
+            FieldType::Integer(IntegerConstraints {
+                min: Some(0),
+                max: Some(100)
+            })
         ));
         assert!(matches!(
             result.fields[2].field_type,
@@ -771,8 +805,14 @@ mod tests {
             ("field_0_type".into(), "text".into()),
         ];
         let result = form_to_schema_definition(&form, None).unwrap();
-        let has_version = result.annotations.iter().any(|a| matches!(a, Annotation::Version { version } if version.get() == 2));
-        let has_display = result.annotations.iter().any(|a| matches!(a, Annotation::Display { field } if field.as_str() == "name"));
+        let has_version = result
+            .annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::Version { version } if version.get() == 2));
+        let has_display = result
+            .annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::Display { field } if field.as_str() == "name"));
         assert!(has_version);
         assert!(has_display);
     }
@@ -831,7 +871,10 @@ mod tests {
             ("schema_name".into(), "Test".into()),
             ("field_0_name".into(), "status".into()),
             ("field_0_type".into(), "enum".into()),
-            ("field_0_enum_variants".into(), "Active\nInactive\nPending".into()),
+            (
+                "field_0_enum_variants".into(),
+                "Active\nInactive\nPending".into(),
+            ),
         ];
         let result = form_to_schema_definition(&form, None).unwrap();
         if let FieldType::Enum(v) = &result.fields[0].field_type {
@@ -851,7 +894,11 @@ mod tests {
             ("field_0_relation_cardinality".into(), "one".into()),
         ];
         let result = form_to_schema_definition(&form, None).unwrap();
-        if let FieldType::Relation { target, cardinality } = &result.fields[0].field_type {
+        if let FieldType::Relation {
+            target,
+            cardinality,
+        } = &result.fields[0].field_type
+        {
             assert_eq!(target.as_str(), "Company");
             assert!(matches!(cardinality, Cardinality::One));
         } else {

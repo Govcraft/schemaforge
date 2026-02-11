@@ -80,11 +80,11 @@ impl SurrealBackend {
         username: Option<&str>,
         password: Option<&str>,
     ) -> Result<Self, BackendError> {
-        let db = surrealdb::engine::any::connect(url)
-            .await
-            .map_err(|e| BackendError::ConnectionError {
+        let db = surrealdb::engine::any::connect(url).await.map_err(|e| {
+            BackendError::ConnectionError {
                 message: format!("failed to connect to {url}: {e}"),
-            })?;
+            }
+        })?;
 
         if let (Some(user), Some(pass)) = (username, password) {
             db.signin(surrealdb::opt::auth::Root {
@@ -159,31 +159,32 @@ impl SurrealBackend {
                 continue;
             }
 
-            let literal =
-                match (entity.fields.get(k.as_str()), schema_def.as_ref().and_then(|s| s.field(k)))
-                {
-                    // Ref with known target table → record reference literal
-                    (Some(DynamicValue::Ref(ref_id)), Some(fd)) => {
-                        if let FieldType::Relation { target, .. } = &fd.field_type {
-                            format!("{}:`{}`", target.as_str(), ref_id.as_str())
-                        } else {
-                            field_surreal_value_to_literal(v)
-                        }
+            let literal = match (
+                entity.fields.get(k.as_str()),
+                schema_def.as_ref().and_then(|s| s.field(k)),
+            ) {
+                // Ref with known target table → record reference literal
+                (Some(DynamicValue::Ref(ref_id)), Some(fd)) => {
+                    if let FieldType::Relation { target, .. } = &fd.field_type {
+                        format!("{}:`{}`", target.as_str(), ref_id.as_str())
+                    } else {
+                        field_surreal_value_to_literal(v)
                     }
-                    // RefArray with known target table → array of record references
-                    (Some(DynamicValue::RefArray(ref_ids)), Some(fd)) => {
-                        if let FieldType::Relation { target, .. } = &fd.field_type {
-                            let refs: Vec<String> = ref_ids
-                                .iter()
-                                .map(|id| format!("{}:`{}`", target.as_str(), id.as_str()))
-                                .collect();
-                            format!("[{}]", refs.join(", "))
-                        } else {
-                            field_surreal_value_to_literal(v)
-                        }
+                }
+                // RefArray with known target table → array of record references
+                (Some(DynamicValue::RefArray(ref_ids)), Some(fd)) => {
+                    if let FieldType::Relation { target, .. } = &fd.field_type {
+                        let refs: Vec<String> = ref_ids
+                            .iter()
+                            .map(|id| format!("{}:`{}`", target.as_str(), id.as_str()))
+                            .collect();
+                        format!("[{}]", refs.join(", "))
+                    } else {
+                        field_surreal_value_to_literal(v)
                     }
-                    _ => field_surreal_value_to_literal(v),
-                };
+                }
+                _ => field_surreal_value_to_literal(v),
+            };
 
             assignments.push(format!("{k} = {literal}"));
         }

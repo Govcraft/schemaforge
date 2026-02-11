@@ -611,12 +611,7 @@ impl DiffEngine {
         new_field: &FieldDefinition,
         steps: &mut Vec<MigrationStep>,
     ) {
-        Self::emit_change_type_with_name(
-            new_field.name.clone(),
-            old_field,
-            new_field,
-            steps,
-        );
+        Self::emit_change_type_with_name(new_field.name.clone(), old_field, new_field, steps);
     }
 
     fn emit_change_type_with_name(
@@ -1289,7 +1284,10 @@ mod tests {
     #[test]
     fn diff_with_renames_detects_rename() {
         let old = make_schema("Contact", vec![make_field("name"), make_field("email")]);
-        let new = make_schema("Contact", vec![make_field("full_name"), make_field("email")]);
+        let new = make_schema(
+            "Contact",
+            vec![make_field("full_name"), make_field("email")],
+        );
         let renames = vec![(
             FieldName::new("name").unwrap(),
             FieldName::new("full_name").unwrap(),
@@ -1302,8 +1300,14 @@ mod tests {
             if old_name.as_str() == "name" && new_name.as_str() == "full_name"
         ));
         // Should NOT contain RemoveField or AddField
-        assert!(!plan.steps.iter().any(|s| matches!(s, MigrationStep::RemoveField { .. })));
-        assert!(!plan.steps.iter().any(|s| matches!(s, MigrationStep::AddField { .. })));
+        assert!(!plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, MigrationStep::RemoveField { .. })));
+        assert!(!plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, MigrationStep::AddField { .. })));
     }
 
     #[test]
@@ -1343,7 +1347,10 @@ mod tests {
     #[test]
     fn diff_with_renames_no_hint_still_deletes() {
         let old = make_schema("Contact", vec![make_field("name"), make_field("email")]);
-        let new = make_schema("Contact", vec![make_field("full_name"), make_field("email")]);
+        let new = make_schema(
+            "Contact",
+            vec![make_field("full_name"), make_field("email")],
+        );
         // No rename hints — should produce RemoveField + AddField
         let plan = DiffEngine::diff_with_renames(&old, &new, &[]);
         assert!(plan.steps.iter().any(|s| matches!(
@@ -1352,7 +1359,10 @@ mod tests {
         assert!(plan.steps.iter().any(|s| matches!(
             s, MigrationStep::AddField { field } if field.name.as_str() == "full_name"
         )));
-        assert!(!plan.steps.iter().any(|s| matches!(s, MigrationStep::RenameField { .. })));
+        assert!(!plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, MigrationStep::RenameField { .. })));
     }
 
     // -- MigrationError tests --

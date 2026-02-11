@@ -248,7 +248,9 @@ mod tests {
             build_agent(&args, registry, backend, &output).await
         });
 
-        let err = result.err().expect("expected error for missing ANTHROPIC_API_KEY");
+        let err = result
+            .err()
+            .expect("expected error for missing ANTHROPIC_API_KEY");
         assert!(matches!(err, CliError::Config { .. }));
         assert!(err.to_string().contains("ANTHROPIC_API_KEY"));
     }
@@ -282,7 +284,9 @@ mod tests {
             build_agent(&args, registry, backend, &output).await
         });
 
-        let err = result.err().expect("expected error for missing OPENAI_API_KEY");
+        let err = result
+            .err()
+            .expect("expected error for missing OPENAI_API_KEY");
         assert!(matches!(err, CliError::Config { .. }));
         assert!(err.to_string().contains("OPENAI_API_KEY"));
     }

@@ -109,7 +109,9 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         }
         MigrationStep::RemoveRequired { field } => {
             // Re-define the field without the assertion. Use `any` type to be permissive.
-            vec![format!("DEFINE FIELD OVERWRITE {field} ON {table} TYPE any;")]
+            vec![format!(
+                "DEFINE FIELD OVERWRITE {field} ON {table} TYPE any;"
+            )]
         }
         MigrationStep::SetDefault { field, value } => {
             let literal = default_value_to_surql(value);
@@ -119,7 +121,9 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         }
         MigrationStep::RemoveDefault { field } => {
             // Re-define without VALUE clause.
-            vec![format!("DEFINE FIELD OVERWRITE {field} ON {table} TYPE any;")]
+            vec![format!(
+                "DEFINE FIELD OVERWRITE {field} ON {table} TYPE any;"
+            )]
         }
         _ => {
             // Future MigrationStep variants -- produce a no-op comment.
@@ -422,7 +426,10 @@ mod tests {
         };
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(stmts.len(), 2);
-        assert_eq!(stmts[0], "DEFINE FIELD email ON Contact TYPE option<string>;");
+        assert_eq!(
+            stmts[0],
+            "DEFINE FIELD email ON Contact TYPE option<string>;"
+        );
         assert_eq!(
             stmts[1],
             "DEFINE INDEX idx_Contact_email ON Contact FIELDS email;"
@@ -571,6 +578,9 @@ mod tests {
         };
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(stmts.len(), 1);
-        assert_eq!(stmts[0], "DEFINE FIELD OVERWRITE score ON Contact TYPE float;");
+        assert_eq!(
+            stmts[0],
+            "DEFINE FIELD OVERWRITE score ON Contact TYPE float;"
+        );
     }
 }

@@ -600,8 +600,7 @@ mod tests {
             target: SchemaName::new("Project").unwrap(),
             cardinality: Cardinality::One,
         };
-        let result =
-            convert_json_with_type_hint(&serde_json::json!(id_str), &field_type).unwrap();
+        let result = convert_json_with_type_hint(&serde_json::json!(id_str), &field_type).unwrap();
         assert!(matches!(result, DynamicValue::Ref(ref id) if id.as_str() == id_str));
     }
 

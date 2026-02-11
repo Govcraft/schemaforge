@@ -88,13 +88,13 @@ async fn register_schema(state: &ForgeState, schema: &SchemaDefinition) {
 }
 
 /// Create an entity in the backend.
-async fn create_entity(state: &ForgeState, schema_name: &str, fields: BTreeMap<String, DynamicValue>) -> Entity {
+async fn create_entity(
+    state: &ForgeState,
+    schema_name: &str,
+    fields: BTreeMap<String, DynamicValue>,
+) -> Entity {
     let entity = Entity::new(SchemaName::new(schema_name).unwrap(), fields);
-    state
-        .backend
-        .create(&entity)
-        .await
-        .expect("create entity")
+    state.backend.create(&entity).await.expect("create entity")
 }
 
 /// Send a GET request and return (status, body string).
@@ -112,7 +112,11 @@ async fn get_html(app: &Router, path: &str) -> (StatusCode, String) {
 }
 
 /// Send a POST form request and return (status, headers, body string).
-async fn post_form(app: &Router, path: &str, form_data: &str) -> (StatusCode, axum::http::HeaderMap, String) {
+async fn post_form(
+    app: &Router,
+    path: &str,
+    form_data: &str,
+) -> (StatusCode, axum::http::HeaderMap, String) {
     let request = Request::builder()
         .method(Method::POST)
         .uri(path)
@@ -128,7 +132,11 @@ async fn post_form(app: &Router, path: &str, form_data: &str) -> (StatusCode, ax
 }
 
 /// Send a PUT form request and return (status, headers, body string).
-async fn put_form(app: &Router, path: &str, form_data: &str) -> (StatusCode, axum::http::HeaderMap, String) {
+async fn put_form(
+    app: &Router,
+    path: &str,
+    form_data: &str,
+) -> (StatusCode, axum::http::HeaderMap, String) {
     let request = Request::builder()
         .method(Method::PUT)
         .uri(path)
@@ -179,7 +187,10 @@ async fn dashboard_lists_registered_schemas() {
 
     let (status, body) = get_html(&app, "/").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("Contact"), "dashboard should show schema name");
+    assert!(
+        body.contains("Contact"),
+        "dashboard should show schema name"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +217,11 @@ async fn schema_detail_nonexistent_returns_error() {
     let (status, body) = get_html(&app, "/schemas/NonExistent").await;
     // AdminError returns HTML error page (500 for internal or custom status)
     assert_ne!(status, StatusCode::OK);
-    assert!(body.contains("not found") || body.contains("Error") || status == StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body.contains("not found")
+            || body.contains("Error")
+            || status == StatusCode::INTERNAL_SERVER_ERROR
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +238,10 @@ async fn entity_list_returns_200_empty() {
     let (status, body) = get_html(&app, "/schemas/Contact/entities").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Contact"), "should show schema name");
-    assert!(body.contains("No entities") || body.contains("Showing"), "should show empty state or table");
+    assert!(
+        body.contains("No entities") || body.contains("Showing"),
+        "should show empty state or table"
+    );
 }
 
 #[tokio::test]
@@ -281,7 +299,10 @@ async fn entity_table_fragment_returns_html() {
     assert_eq!(status, StatusCode::OK);
     // Fragment should contain table rows, not full page layout
     assert!(body.contains("Bob"), "fragment should contain entity data");
-    assert!(!body.contains("<!DOCTYPE"), "fragment should not be a full HTML page");
+    assert!(
+        !body.contains("<!DOCTYPE"),
+        "fragment should not be a full HTML page"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -314,19 +335,17 @@ async fn entity_create_redirects_on_success() {
     let schema = make_contact_schema();
     register_schema(&state, &schema).await;
 
-    let (status, headers, _body) = post_form(
-        &app,
-        "/schemas/Contact/entities",
-        "name=Alice&age=30",
-    )
-    .await;
+    let (status, headers, _body) =
+        post_form(&app, "/schemas/Contact/entities", "name=Alice&age=30").await;
 
     // Should redirect to entity detail
     assert!(
         status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
         "expected redirect, got {status}"
     );
-    let location = headers.get("location").expect("should have Location header");
+    let location = headers
+        .get("location")
+        .expect("should have Location header");
     let loc_str = location.to_str().unwrap();
     assert!(
         loc_str.starts_with("/admin/schemas/Contact/entities/entity_"),
@@ -342,15 +361,13 @@ async fn entity_create_validates_required_fields() {
     register_schema(&state, &schema).await;
 
     // Submit without required "name" field
-    let (status, _headers, body) = post_form(
-        &app,
-        "/schemas/Contact/entities",
-        "age=30",
-    )
-    .await;
+    let (status, _headers, body) = post_form(&app, "/schemas/Contact/entities", "age=30").await;
 
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(body.contains("name") || body.contains("required"), "should show validation error");
+    assert!(
+        body.contains("name") || body.contains("required"),
+        "should show validation error"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +403,11 @@ async fn entity_detail_nonexistent_returns_error() {
     let fake_id = schema_forge_core::types::EntityId::new();
     let path = format!("/schemas/Contact/entities/{}", fake_id.as_str());
     let (status, _body) = get_html(&app, &path).await;
-    assert_ne!(status, StatusCode::OK, "nonexistent entity should not return 200");
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "nonexistent entity should not return 200"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -432,18 +453,15 @@ async fn entity_update_redirects_on_success() {
     let eid = entity.id.as_str().to_string();
 
     let path = format!("/schemas/Contact/entities/{eid}");
-    let (status, headers, _body) = put_form(
-        &app,
-        &path,
-        "name=Eve+Updated&age=29",
-    )
-    .await;
+    let (status, headers, _body) = put_form(&app, &path, "name=Eve+Updated&age=29").await;
 
     assert!(
         status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
         "expected redirect, got {status}"
     );
-    let location = headers.get("location").expect("should have Location header");
+    let location = headers
+        .get("location")
+        .expect("should have Location header");
     let loc_str = location.to_str().unwrap();
     assert!(
         loc_str.contains(&eid),
@@ -463,15 +481,13 @@ async fn entity_update_validates_required_fields() {
     let entity = create_entity(&state, "Contact", fields).await;
 
     let path = format!("/schemas/Contact/entities/{}", entity.id.as_str());
-    let (status, _headers, body) = put_form(
-        &app,
-        &path,
-        "age=30",
-    )
-    .await;
+    let (status, _headers, body) = put_form(&app, &path, "age=30").await;
 
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(body.contains("name") || body.contains("required"), "should show validation error");
+    assert!(
+        body.contains("name") || body.contains("required"),
+        "should show validation error"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -622,8 +638,14 @@ async fn schema_create_form_returns_200() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Create Schema"), "should show create heading");
     assert!(body.contains("<form"), "should contain a form element");
-    assert!(body.contains("schema_name"), "should have schema name input");
-    assert!(body.contains("field_0_name"), "should have at least one field row");
+    assert!(
+        body.contains("schema_name"),
+        "should have schema name input"
+    );
+    assert!(
+        body.contains("field_0_name"),
+        "should have at least one field row"
+    );
 }
 
 #[tokio::test]
@@ -639,7 +661,9 @@ async fn schema_create_redirects_on_success() {
         status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
         "expected redirect, got {status}"
     );
-    let location = headers.get("location").expect("should have Location header");
+    let location = headers
+        .get("location")
+        .expect("should have Location header");
     let loc_str = location.to_str().unwrap();
     assert!(
         loc_str.contains("/schemas/Product"),
@@ -657,22 +681,21 @@ async fn schema_create_validates_name() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(body.contains("schema name") || body.contains("error") || body.contains("Error"),
-        "should show validation error");
+    assert!(
+        body.contains("schema name") || body.contains("error") || body.contains("Error"),
+        "should show validation error"
+    );
 }
 
 #[tokio::test]
 async fn schema_create_validates_empty_fields() {
     let (app, _state) = admin_test_app().await;
-    let (status, _headers, body) = post_form(
-        &app,
-        "/schemas",
-        "schema_name=Test",
-    )
-    .await;
+    let (status, _headers, body) = post_form(&app, "/schemas", "schema_name=Test").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert!(body.contains("field") || body.contains("required"),
-        "should show field error");
+    assert!(
+        body.contains("field") || body.contains("required"),
+        "should show field error"
+    );
 }
 
 #[tokio::test]
@@ -730,7 +753,9 @@ async fn schema_update_redirects_on_success() {
         status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
         "expected redirect, got {status}"
     );
-    let location = headers.get("location").expect("should have Location header");
+    let location = headers
+        .get("location")
+        .expect("should have Location header");
     assert!(location.to_str().unwrap().contains("Contact"));
 }
 
@@ -768,7 +793,10 @@ async fn schema_delete_removes_from_registry() {
         "expected redirect, got {status}"
     );
 
-    assert!(state.registry.get("Contact").await.is_none(), "schema should be removed");
+    assert!(
+        state.registry.get("Contact").await.is_none(),
+        "schema should be removed"
+    );
 }
 
 #[tokio::test]
@@ -794,7 +822,10 @@ async fn schema_preview_returns_dsl_fragment() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("schema Contact"), "should contain DSL text");
     assert!(body.contains("name"), "should contain field name");
-    assert!(!body.contains("<!DOCTYPE"), "should be a fragment, not full page");
+    assert!(
+        !body.contains("<!DOCTYPE"),
+        "should be a fragment, not full page"
+    );
 }
 
 #[tokio::test]
@@ -807,8 +838,10 @@ async fn schema_preview_returns_errors_on_invalid() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("schema name") || body.contains("error") || body.contains("Invalid"),
-        "should show errors in preview");
+    assert!(
+        body.contains("schema name") || body.contains("error") || body.contains("Invalid"),
+        "should show errors in preview"
+    );
 }
 
 #[tokio::test]
@@ -824,8 +857,10 @@ async fn schema_preview_with_migration() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("migration") || body.contains("ADD") || body.contains("REMOVE"),
-        "should show migration steps");
+    assert!(
+        body.contains("migration") || body.contains("ADD") || body.contains("REMOVE"),
+        "should show migration steps"
+    );
 }
 
 #[tokio::test]
@@ -833,7 +868,10 @@ async fn field_row_fragment_returns_html() {
     let (app, _state) = admin_test_app().await;
     let (status, body) = get_html(&app, "/schemas/_field-row/5").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("field_5_name"), "should contain correct field index");
+    assert!(
+        body.contains("field_5_name"),
+        "should contain correct field index"
+    );
     assert!(body.contains("field_5_type"), "should contain type select");
     assert!(!body.contains("<!DOCTYPE"), "should be a fragment");
 }
@@ -843,7 +881,10 @@ async fn type_constraints_text_fragment() {
     let (app, _state) = admin_test_app().await;
     let (status, body) = get_html(&app, "/schemas/_type-constraints/text?index=3").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("text_max_length"), "should contain text constraints");
+    assert!(
+        body.contains("text_max_length"),
+        "should contain text constraints"
+    );
     assert!(body.contains("field_3_"), "should use correct index");
 }
 
@@ -852,7 +893,10 @@ async fn type_constraints_enum_fragment() {
     let (app, _state) = admin_test_app().await;
     let (status, body) = get_html(&app, "/schemas/_type-constraints/enum?index=0").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("enum_variants"), "should contain enum variants textarea");
+    assert!(
+        body.contains("enum_variants"),
+        "should contain enum variants textarea"
+    );
 }
 
 #[tokio::test]
@@ -860,8 +904,14 @@ async fn type_constraints_relation_fragment() {
     let (app, _state) = admin_test_app().await;
     let (status, body) = get_html(&app, "/schemas/_type-constraints/relation?index=2").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("relation_target"), "should contain relation target input");
-    assert!(body.contains("relation_cardinality"), "should contain cardinality select");
+    assert!(
+        body.contains("relation_target"),
+        "should contain relation target input"
+    );
+    assert!(
+        body.contains("relation_cardinality"),
+        "should contain cardinality select"
+    );
 }
 
 #[tokio::test]
@@ -893,9 +943,16 @@ async fn create_schema_with_relation_field_roundtrip() {
     );
 
     let schema = state.registry.get("Employee").await.expect("should exist");
-    if let FieldType::Relation { target, cardinality } = &schema.fields[0].field_type {
+    if let FieldType::Relation {
+        target,
+        cardinality,
+    } = &schema.fields[0].field_type
+    {
         assert_eq!(target.as_str(), "Company");
-        assert!(matches!(cardinality, schema_forge_core::types::Cardinality::One));
+        assert!(matches!(
+            cardinality,
+            schema_forge_core::types::Cardinality::One
+        ));
     } else {
         panic!("expected relation field type");
     }
@@ -913,8 +970,10 @@ async fn form_preserves_values_on_validation_error() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     // Check that form values are preserved in re-rendered form
-    assert!(body.contains("not-valid") || body.contains("title"),
-        "should preserve form values on error");
+    assert!(
+        body.contains("not-valid") || body.contains("title"),
+        "should preserve form values on error"
+    );
 }
 
 #[tokio::test]
@@ -922,7 +981,10 @@ async fn dashboard_has_create_schema_button() {
     let (app, _state) = admin_test_app().await;
     let (status, body) = get_html(&app, "/").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("/schemas/new"), "dashboard should have create schema link");
+    assert!(
+        body.contains("/schemas/new"),
+        "dashboard should have create schema link"
+    );
 }
 
 #[tokio::test]
@@ -933,7 +995,10 @@ async fn schema_detail_has_edit_and_delete_buttons() {
 
     let (status, body) = get_html(&app, "/schemas/Contact").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("/schemas/Contact/edit"), "should have edit link");
+    assert!(
+        body.contains("/schemas/Contact/edit"),
+        "should have edit link"
+    );
     assert!(body.contains("hx-delete"), "should have delete button");
 }
 
@@ -1039,8 +1104,14 @@ async fn dashboard_graph_json_has_correct_nodes() {
 
     let (_status, body) = get_html(&app, "/").await;
     // The JSON is embedded in the script tag
-    assert!(body.contains("\"id\":\"Company\""), "JSON should contain Company node");
-    assert!(body.contains("\"id\":\"Employee\""), "JSON should contain Employee node");
+    assert!(
+        body.contains("\"id\":\"Company\""),
+        "JSON should contain Company node"
+    );
+    assert!(
+        body.contains("\"id\":\"Employee\""),
+        "JSON should contain Employee node"
+    );
 }
 
 #[tokio::test]
@@ -1075,10 +1146,19 @@ async fn dashboard_graph_json_has_correct_edges() {
     register_schema(&state, &article).await;
 
     let (_status, body) = get_html(&app, "/").await;
-    assert!(body.contains("\"from\":\"Article\""), "edge should come from Article");
+    assert!(
+        body.contains("\"from\":\"Article\""),
+        "edge should come from Article"
+    );
     assert!(body.contains("\"to\":\"Tag\""), "edge should go to Tag");
-    assert!(body.contains("\"label\":\"tags\""), "edge label should be field name");
-    assert!(body.contains("\"cardinality\":\"Many\""), "cardinality should be Many");
+    assert!(
+        body.contains("\"label\":\"tags\""),
+        "edge label should be field name"
+    );
+    assert!(
+        body.contains("\"cardinality\":\"Many\""),
+        "cardinality should be Many"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1103,13 +1183,18 @@ async fn schema_update_rename_field_preserves_data() {
         status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
         "expected redirect, got {status}"
     );
-    let location = headers.get("location").expect("should have Location header");
+    let location = headers
+        .get("location")
+        .expect("should have Location header");
     assert!(location.to_str().unwrap().contains("Contact"));
 
     // Verify updated schema in registry has the renamed field
     let updated = state.registry.get("Contact").await.expect("should exist");
     assert!(
-        updated.fields.iter().any(|f| f.name.as_str() == "full_name"),
+        updated
+            .fields
+            .iter()
+            .any(|f| f.name.as_str() == "full_name"),
         "schema should have renamed field 'full_name'"
     );
     assert!(

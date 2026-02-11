@@ -266,7 +266,9 @@ impl SchemaForgeAgent {
                 .system(FORGE_SYSTEM_PROMPT)
                 .temperature(0.3)
                 .max_tool_rounds(20);
-            retry_builder = self.tools.attach_generation_tools(retry_builder, capture.clone());
+            retry_builder = self
+                .tools
+                .attach_generation_tools(retry_builder, capture.clone());
 
             let retry_response = match retry_builder.collect().await {
                 Ok(r) => r,
@@ -555,9 +557,7 @@ fn collect_schemas_from_round(
     // Tier 2: Tool arguments — aggregate from all successful validate/apply calls
     let mut from_tools = Vec::new();
     for call in tool_calls {
-        if (call.name == "validate_schema" || call.name == "apply_schema")
-            && call.result.is_ok()
-        {
+        if (call.name == "validate_schema" || call.name == "apply_schema") && call.result.is_ok() {
             if let Some(dsl_str) = call.arguments["dsl"].as_str() {
                 if let Ok(parsed) = schema_forge_dsl::parse(dsl_str) {
                     from_tools.extend(parsed);
@@ -581,8 +581,7 @@ fn collect_schemas_from_round(
 
     // Merge: prefer tool schemas, add any text-only schemas not already present
     let mut combined = if !from_tools.is_empty() {
-        let tool_names: Vec<String> =
-            from_tools.iter().map(|s| s.name.to_string()).collect();
+        let tool_names: Vec<String> = from_tools.iter().map(|s| s.name.to_string()).collect();
         for s in from_text {
             if !tool_names.iter().any(|n| n == s.name.as_str()) {
                 from_tools.push(s);
@@ -700,7 +699,11 @@ fn build_continuation_prompt(
             "You have generated: {}. But the request also needs: {}. \
              Generate the `{}` schema now. Call `validate_schema` with the DSL.",
             generated_names.join(", "),
-            missing.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", "),
+            missing
+                .iter()
+                .map(|s| format!("`{s}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
             missing[0]
         )
     }
@@ -710,19 +713,76 @@ fn build_continuation_prompt(
 fn is_common_word(word: &str) -> bool {
     matches!(
         word,
-        "The" | "This" | "These" | "Those" | "They"
-            | "There" | "Their" | "Then" | "Than"
-            | "Include" | "Including" | "Create" | "Design" | "Build"
-            | "Each" | "All" | "Some" | "Any" | "Every" | "Both"
-            | "Products" | "Categories" | "Customers" | "Orders" | "Reviews"
-            | "Items" | "Users" | "Posts" | "Comments" | "Tags"
-            | "Has" | "Have" | "Had" | "Does" | "Did" | "Will" | "Would"
-            | "Can" | "Could" | "Should" | "May" | "Might" | "Must"
-            | "Are" | "Were" | "Was" | "Been" | "Being"
-            | "Not" | "But" | "And" | "For" | "With" | "From" | "Into"
-            | "About" | "After" | "Before" | "Between" | "Through"
-            | "During" | "Without" | "Within" | "Along" | "Among"
-            | "Upon" | "Against" | "Across" | "Behind" | "Beyond"
+        "The"
+            | "This"
+            | "These"
+            | "Those"
+            | "They"
+            | "There"
+            | "Their"
+            | "Then"
+            | "Than"
+            | "Include"
+            | "Including"
+            | "Create"
+            | "Design"
+            | "Build"
+            | "Each"
+            | "All"
+            | "Some"
+            | "Any"
+            | "Every"
+            | "Both"
+            | "Products"
+            | "Categories"
+            | "Customers"
+            | "Orders"
+            | "Reviews"
+            | "Items"
+            | "Users"
+            | "Posts"
+            | "Comments"
+            | "Tags"
+            | "Has"
+            | "Have"
+            | "Had"
+            | "Does"
+            | "Did"
+            | "Will"
+            | "Would"
+            | "Can"
+            | "Could"
+            | "Should"
+            | "May"
+            | "Might"
+            | "Must"
+            | "Are"
+            | "Were"
+            | "Was"
+            | "Been"
+            | "Being"
+            | "Not"
+            | "But"
+            | "And"
+            | "For"
+            | "With"
+            | "From"
+            | "Into"
+            | "About"
+            | "After"
+            | "Before"
+            | "Between"
+            | "Through"
+            | "During"
+            | "Without"
+            | "Within"
+            | "Along"
+            | "Among"
+            | "Upon"
+            | "Against"
+            | "Across"
+            | "Behind"
+            | "Beyond"
     )
 }
 
@@ -959,7 +1019,8 @@ mod tests {
 
     #[test]
     fn markdown_extracts_multiple_blocks() {
-        let text = "```\nschema A { name: text }\n```\nsome text\n```\nschema B { age: integer }\n```";
+        let text =
+            "```\nschema A { name: text }\n```\nsome text\n```\nschema B { age: integer }\n```";
         let blocks = extract_dsl_from_markdown(text);
         assert_eq!(blocks.len(), 2);
     }

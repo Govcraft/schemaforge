@@ -282,7 +282,10 @@ mod tests {
         let thing = Thing::from(("SomeTable", Id::String("not_an_entity_id".to_string())));
         let sv = SurrealValue::Thing(thing);
         let back = surreal_to_dynamic(&sv).unwrap();
-        assert_eq!(back, DynamicValue::Text("SomeTable:not_an_entity_id".into()));
+        assert_eq!(
+            back,
+            DynamicValue::Text("SomeTable:not_an_entity_id".into())
+        );
     }
 
     #[test]

@@ -219,8 +219,7 @@ mod tests {
     #[test]
     fn build_versioned_routes_is_callable() {
         // Compile-time verification that build_versioned_routes has the right signature
-        let _: fn(
-            &SchemaForgeExtension,
-        ) -> acton_service::service_builder::VersionedRoutes = build_versioned_routes;
+        let _: fn(&SchemaForgeExtension) -> acton_service::service_builder::VersionedRoutes =
+            build_versioned_routes;
     }
 }

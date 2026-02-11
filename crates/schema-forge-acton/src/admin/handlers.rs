@@ -158,16 +158,18 @@ async fn resolve_ref_display(
 }
 
 /// GET /admin/ — Dashboard with schema cards and entity counts.
-pub async fn dashboard(
-    State(state): State<ForgeState>,
-) -> Result<impl IntoResponse, AdminError> {
+pub async fn dashboard(State(state): State<ForgeState>) -> Result<impl IntoResponse, AdminError> {
     let schemas = state.registry.list().await;
     let names = schema_names(&state).await;
 
     let mut entries = Vec::new();
     for schema in &schemas {
         let query = schema_forge_core::query::Query::new(schema.id.clone()).with_limit(1);
-        let result = state.backend.query(&query).await.map_err(AdminError::from)?;
+        let result = state
+            .backend
+            .query(&query)
+            .await
+            .map_err(AdminError::from)?;
         let entity_count = result.total_count.unwrap_or(result.entities.len());
 
         entries.push(DashboardEntry {
@@ -224,7 +226,11 @@ pub async fn entity_list(
     let query = schema_forge_core::query::Query::new(schema_def.id.clone())
         .with_limit(limit)
         .with_offset(offset);
-    let result = state.backend.query(&query).await.map_err(AdminError::from)?;
+    let result = state
+        .backend
+        .query(&query)
+        .await
+        .map_err(AdminError::from)?;
 
     let total_count = result.total_count.unwrap_or(result.entities.len());
     let ref_display = resolve_ref_display(&state, &schema_def, &result.entities).await;
@@ -263,7 +269,11 @@ pub async fn entity_table_fragment(
     let query = schema_forge_core::query::Query::new(schema_def.id.clone())
         .with_limit(limit)
         .with_offset(offset);
-    let result = state.backend.query(&query).await.map_err(AdminError::from)?;
+    let result = state
+        .backend
+        .query(&query)
+        .await
+        .map_err(AdminError::from)?;
 
     let total_count = result.total_count.unwrap_or(result.entities.len());
     let ref_display = resolve_ref_display(&state, &schema_def, &result.entities).await;
@@ -322,14 +332,17 @@ pub async fn entity_create(
         .await
         .ok_or_else(|| AdminError::SchemaNotFound { name: name.clone() })?;
 
-    let schema_name = SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound {
-        name: name.clone(),
-    })?;
+    let schema_name =
+        SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound { name: name.clone() })?;
 
     match form_to_entity_fields(&schema_def, &form_data) {
         Ok(fields) => {
             let entity = Entity::new(schema_name, fields);
-            let created = state.backend.create(&entity).await.map_err(AdminError::from)?;
+            let created = state
+                .backend
+                .create(&entity)
+                .await
+                .map_err(AdminError::from)?;
             Ok(Redirect::to(&format!(
                 "/admin/schemas/{}/entities/{}",
                 name,
@@ -371,9 +384,8 @@ pub async fn entity_detail(
         .await
         .ok_or_else(|| AdminError::SchemaNotFound { name: name.clone() })?;
 
-    let schema_name = SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound {
-        name: name.clone(),
-    })?;
+    let schema_name =
+        SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound { name: name.clone() })?;
     let entity_id = EntityId::parse(&id).map_err(|_| AdminError::EntityNotFound {
         schema: name.clone(),
         entity_id: id.clone(),
@@ -408,9 +420,8 @@ pub async fn entity_edit_form(
         .await
         .ok_or_else(|| AdminError::SchemaNotFound { name: name.clone() })?;
 
-    let schema_name = SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound {
-        name: name.clone(),
-    })?;
+    let schema_name =
+        SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound { name: name.clone() })?;
     let entity_id = EntityId::parse(&id).map_err(|_| AdminError::EntityNotFound {
         schema: name.clone(),
         entity_id: id.clone(),
@@ -454,9 +465,8 @@ pub async fn entity_update(
         .await
         .ok_or_else(|| AdminError::SchemaNotFound { name: name.clone() })?;
 
-    let schema_name = SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound {
-        name: name.clone(),
-    })?;
+    let schema_name =
+        SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound { name: name.clone() })?;
     let entity_id = EntityId::parse(&id).map_err(|_| AdminError::EntityNotFound {
         schema: name.clone(),
         entity_id: id.clone(),
@@ -465,12 +475,12 @@ pub async fn entity_update(
     match form_to_entity_fields(&schema_def, &form_data) {
         Ok(fields) => {
             let entity = Entity::with_id(entity_id, schema_name, fields);
-            state.backend.update(&entity).await.map_err(AdminError::from)?;
-            Ok(Redirect::to(&format!(
-                "/admin/schemas/{}/entities/{}",
-                name, id
-            ))
-            .into_response())
+            state
+                .backend
+                .update(&entity)
+                .await
+                .map_err(AdminError::from)?;
+            Ok(Redirect::to(&format!("/admin/schemas/{}/entities/{}", name, id)).into_response())
         }
         Err(errors) => {
             // Re-render form with errors
@@ -500,9 +510,8 @@ pub async fn entity_delete(
     State(state): State<ForgeState>,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AdminError> {
-    let schema_name = SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound {
-        name: name.clone(),
-    })?;
+    let schema_name =
+        SchemaName::new(&name).map_err(|_| AdminError::SchemaNotFound { name: name.clone() })?;
     let entity_id = EntityId::parse(&id).map_err(|_| AdminError::EntityNotFound {
         schema: name.clone(),
         entity_id: id.clone(),
@@ -523,17 +532,21 @@ pub async fn relation_options(
     State(state): State<ForgeState>,
     Path((target, _field)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AdminError> {
-    let schema_def = state
-        .registry
-        .get(&target)
-        .await
-        .ok_or_else(|| AdminError::SchemaNotFound {
-            name: target.clone(),
-        })?;
+    let schema_def =
+        state
+            .registry
+            .get(&target)
+            .await
+            .ok_or_else(|| AdminError::SchemaNotFound {
+                name: target.clone(),
+            })?;
 
-    let query =
-        schema_forge_core::query::Query::new(schema_def.id.clone()).with_limit(100);
-    let result = state.backend.query(&query).await.map_err(AdminError::from)?;
+    let query = schema_forge_core::query::Query::new(schema_def.id.clone()).with_limit(100);
+    let result = state
+        .backend
+        .query(&query)
+        .await
+        .map_err(AdminError::from)?;
 
     // Find display field
     let display_field = schema_def.annotations.iter().find_map(|a| match a {
@@ -741,8 +754,7 @@ pub async fn schema_preview(
             let migration = if let Some(ref ename) = existing_name {
                 if let Some(old_schema) = state.registry.get(ename).await {
                     let renames = extract_renames(&form_data);
-                    let plan =
-                        DiffEngine::diff_with_renames(&old_schema, &schema_def, &renames);
+                    let plan = DiffEngine::diff_with_renames(&old_schema, &schema_def, &renames);
                     Some(MigrationPreviewView::from_plan(&plan))
                 } else {
                     None
@@ -772,9 +784,7 @@ pub struct TypeConstraintParams {
 }
 
 /// GET /admin/schemas/_field-row/{index} — New empty field row.
-pub async fn field_row_fragment(
-    Path(index): Path<usize>,
-) -> impl IntoResponse {
+pub async fn field_row_fragment(Path(index): Path<usize>) -> impl IntoResponse {
     HtmlTemplate::fragment(FieldEditorRowFragment {
         field: FieldEditorRow::empty(index),
     })
@@ -826,7 +836,8 @@ fn extract_renames(form_data: &[(String, String)]) -> Vec<(FieldName, FieldName)
 
 /// Reconstruct a `SchemaEditorView` from raw form data for re-rendering on error.
 fn editor_from_form_data(form_data: &[(String, String)], is_edit: bool) -> SchemaEditorView {
-    let mut form_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut form_map: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     for (key, value) in form_data {
         form_map.insert(key.clone(), value.clone());
     }
@@ -856,25 +867,56 @@ fn editor_from_form_data(form_data: &[(String, String)], is_edit: bool) -> Schem
             let prefix = format!("field_{idx}_");
             FieldEditorRow {
                 index: *idx,
-                name: form_map.get(&format!("{prefix}name")).cloned().unwrap_or_default(),
+                name: form_map
+                    .get(&format!("{prefix}name"))
+                    .cloned()
+                    .unwrap_or_default(),
                 old_name: form_map.get(&format!("{prefix}old_name")).cloned(),
-                field_type: form_map.get(&format!("{prefix}type")).cloned().unwrap_or_else(|| "text".to_string()),
-                required: form_map.get(&format!("{prefix}required")).is_some_and(|v| v == "true" || v == "on"),
-                indexed: form_map.get(&format!("{prefix}indexed")).is_some_and(|v| v == "true" || v == "on"),
+                field_type: form_map
+                    .get(&format!("{prefix}type"))
+                    .cloned()
+                    .unwrap_or_else(|| "text".to_string()),
+                required: form_map
+                    .get(&format!("{prefix}required"))
+                    .is_some_and(|v| v == "true" || v == "on"),
+                indexed: form_map
+                    .get(&format!("{prefix}indexed"))
+                    .is_some_and(|v| v == "true" || v == "on"),
                 default_enabled: false,
                 default_value: String::new(),
-                text_max_length: form_map.get(&format!("{prefix}text_max_length")).and_then(|v| v.parse().ok()),
-                integer_min: form_map.get(&format!("{prefix}integer_min")).and_then(|v| v.parse().ok()),
-                integer_max: form_map.get(&format!("{prefix}integer_max")).and_then(|v| v.parse().ok()),
-                float_precision: form_map.get(&format!("{prefix}float_precision")).and_then(|v| v.parse().ok()),
-                enum_variants: form_map.get(&format!("{prefix}enum_variants")).cloned().unwrap_or_default(),
-                relation_target: form_map.get(&format!("{prefix}relation_target")).cloned().unwrap_or_default(),
-                relation_cardinality: form_map.get(&format!("{prefix}relation_cardinality")).cloned().unwrap_or_else(|| "one".to_string()),
+                text_max_length: form_map
+                    .get(&format!("{prefix}text_max_length"))
+                    .and_then(|v| v.parse().ok()),
+                integer_min: form_map
+                    .get(&format!("{prefix}integer_min"))
+                    .and_then(|v| v.parse().ok()),
+                integer_max: form_map
+                    .get(&format!("{prefix}integer_max"))
+                    .and_then(|v| v.parse().ok()),
+                float_precision: form_map
+                    .get(&format!("{prefix}float_precision"))
+                    .and_then(|v| v.parse().ok()),
+                enum_variants: form_map
+                    .get(&format!("{prefix}enum_variants"))
+                    .cloned()
+                    .unwrap_or_default(),
+                relation_target: form_map
+                    .get(&format!("{prefix}relation_target"))
+                    .cloned()
+                    .unwrap_or_default(),
+                relation_cardinality: form_map
+                    .get(&format!("{prefix}relation_cardinality"))
+                    .cloned()
+                    .unwrap_or_else(|| "one".to_string()),
             }
         })
         .collect();
 
-    let existing_name = if is_edit { Some(schema_name.clone()) } else { None };
+    let existing_name = if is_edit {
+        Some(schema_name.clone())
+    } else {
+        None
+    };
 
     SchemaEditorView {
         schema_name,
