@@ -15,6 +15,10 @@ use crate::tools::SchemaForgeTools;
 /// With 5 rounds, the system can accumulate up to ~6 schemas (1 per round).
 const MAX_GENERATION_ROUNDS: usize = 5;
 
+/// Name of the syntax example schema in the system prompt.
+/// Filtered out of generated results since small models copy it verbatim.
+const EXAMPLE_SCHEMA_NAME: &str = "ExampleWidget";
+
 /// Default max output tokens for LLM responses.
 ///
 /// Schema generation with 5+ schemas, tool calls, and conversational text
@@ -185,17 +189,34 @@ impl SchemaForgeAgent {
         let mut accumulated = Vec::<schema_forge_core::types::SchemaDefinition>::new();
         let mut best_source = DslSource::RawText;
 
-        // Initial attempt
+        // Initial attempt — only attach generation tools (validate, apply, cedar)
+        // to prevent small models from wasting rounds on list_schemas loops.
+        // Allow 20 tool rounds since 5 schemas × (validate + apply) = 10+ calls.
         let mut builder = self
             .runtime
             .prompt(description)
             .system(FORGE_SYSTEM_PROMPT)
-            .temperature(0.3);
-        builder = self.tools.attach_to(builder);
-        let response = builder
-            .collect()
-            .await
-            .map_err(|e| ForgeAiError::runtime_error(e.to_string()))?;
+            .temperature(0.3)
+            .max_tool_rounds(20);
+        builder = self.tools.attach_generation_tools(builder);
+        let response = match builder.collect().await {
+            Ok(r) => r,
+            Err(e) => {
+                // Initial attempt failed (e.g. exceeded tool rounds).
+                // Check if apply_schema was called before the error.
+                let registry_schemas = registry.list().await;
+                if !registry_schemas.is_empty() {
+                    let dsl = schema_forge_dsl::print_all(&registry_schemas);
+                    return Ok(GenerateResult {
+                        schema_count: registry_schemas.len(),
+                        dsl,
+                        source: DslSource::Registry,
+                        assistant_text: String::new(),
+                    });
+                }
+                return Err(ForgeAiError::runtime_error(e.to_string()));
+            }
+        };
 
         // Check registry first (Tier 1) — if apply_schema was called, we're done
         let registry_schemas = registry.list().await;
@@ -238,8 +259,9 @@ impl SchemaForgeAgent {
                 .runtime
                 .continue_with(messages.clone())
                 .system(FORGE_SYSTEM_PROMPT)
-                .temperature(0.3);
-            retry_builder = self.tools.attach_to(retry_builder);
+                .temperature(0.3)
+                .max_tool_rounds(20);
+            retry_builder = self.tools.attach_generation_tools(retry_builder);
 
             let retry_response = match retry_builder.collect().await {
                 Ok(r) => r,
@@ -547,7 +569,7 @@ fn collect_schemas_from_round(
     }
 
     // Merge: prefer tool schemas, add any text-only schemas not already present
-    if !from_tools.is_empty() {
+    let mut combined = if !from_tools.is_empty() {
         let tool_names: Vec<String> =
             from_tools.iter().map(|s| s.name.to_string()).collect();
         for s in from_text {
@@ -555,12 +577,24 @@ fn collect_schemas_from_round(
                 from_tools.push(s);
             }
         }
-        (from_tools, DslSource::ToolArguments)
-    } else if !from_text.is_empty() {
-        (from_text, DslSource::ResponseText)
+        from_tools
     } else {
-        (Vec::new(), DslSource::RawText)
-    }
+        from_text
+    };
+
+    // Filter out the syntax example schema from the system prompt
+    combined.retain(|s| s.name.as_str() != EXAMPLE_SCHEMA_NAME);
+
+    let source = if !combined.is_empty() {
+        if !tool_calls.is_empty() {
+            DslSource::ToolArguments
+        } else {
+            DslSource::ResponseText
+        }
+    } else {
+        DslSource::RawText
+    };
+    (combined, source)
 }
 
 /// Merge new schemas into the accumulated set, skipping duplicates by name.

@@ -72,6 +72,30 @@ impl SchemaForgeTools {
             )
     }
 
+    /// Attach only generation-relevant tools to a `PromptBuilder`.
+    ///
+    /// Excludes `list_schemas` and `read_schema_file` which cause small models
+    /// to waste tool rounds. Only includes `validate_schema`, `apply_schema`,
+    /// and `generate_cedar`.
+    pub fn attach_generation_tools(
+        &self,
+        builder: acton_ai::prompt::PromptBuilder,
+    ) -> acton_ai::prompt::PromptBuilder {
+        builder
+            .with_tool(
+                validate::validate_schema_tool_definition(),
+                validate::validate_schema_executor(),
+            )
+            .with_tool(
+                apply::apply_schema_tool_definition(),
+                apply::apply_schema_executor(self.registry.clone(), self.backend.clone()),
+            )
+            .with_tool(
+                cedar::generate_cedar_tool_definition(),
+                cedar::generate_cedar_executor(self.registry.clone()),
+            )
+    }
+
     /// Returns the tool definitions for all 5 tools.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         vec![

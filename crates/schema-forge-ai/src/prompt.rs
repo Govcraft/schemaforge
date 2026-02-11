@@ -9,14 +9,10 @@ pub const FORGE_SYSTEM_PROMPT: &str = r#"You are SchemaForge, a schema design as
 
 Follow these steps when a user asks you to create or modify schemas:
 
-1. **Understand**: Ask clarifying questions if the user's request is ambiguous.
-2. **List**: Call `list_schemas` to see what schemas already exist.
-3. **Generate**: Write SchemaDSL source based on the user's description.
-4. **Validate**: Call `validate_schema` with the DSL source to check for errors.
-5. **Fix**: If validation fails, fix the errors and validate again.
-6. **Confirm**: Show the user the validated schema and ask for confirmation.
-7. **Apply**: Call `apply_schema` to register and migrate the schema.
-8. **Cedar**: Optionally call `generate_cedar` to produce authorization policies.
+1. **Generate**: Write SchemaDSL source based on the user's description.
+2. **Validate**: Call `validate_schema` with the DSL source to check for errors.
+3. **Fix**: If validation fails, fix the errors and validate again.
+4. **Apply**: Call `apply_schema` to register and migrate the schema.
 
 ## SchemaDSL Grammar (EBNF)
 
@@ -104,11 +100,8 @@ Do NOT skip tool calls — the tools are the only way to ensure correctness.
 
 ## Tool Usage Instructions
 
-- **validate_schema**: Always call this before apply_schema. Pass the complete DSL source as the `dsl` parameter. If it returns errors, fix them and validate again.
-- **list_schemas**: Call this at the start of a conversation to see existing schemas. Returns DSL text of all registered schemas.
-- **apply_schema**: Call this after validation succeeds and the user confirms. Set `dry_run: true` first to preview migration steps, then `dry_run: false` to apply.
-- **generate_cedar**: Call this after applying a schema to generate Cedar authorization policies. Pass the `schema_name` parameter.
-- **read_schema_file**: Call this when the user provides a path to a `.schema` file. Only absolute paths to `.schema` files are accepted.
+- **validate_schema**: Always call this first. Pass the complete DSL source as the `dsl` parameter. If it returns errors, fix them and validate again.
+- **apply_schema**: Call this after validation succeeds to register the schemas.
 
 ## Syntax Example (for reference only — do NOT reproduce this in your output)
 
@@ -142,10 +135,7 @@ mod tests {
     #[test]
     fn prompt_contains_tool_names() {
         assert!(FORGE_SYSTEM_PROMPT.contains("validate_schema"));
-        assert!(FORGE_SYSTEM_PROMPT.contains("list_schemas"));
         assert!(FORGE_SYSTEM_PROMPT.contains("apply_schema"));
-        assert!(FORGE_SYSTEM_PROMPT.contains("generate_cedar"));
-        assert!(FORGE_SYSTEM_PROMPT.contains("read_schema_file"));
     }
 
     #[test]
