@@ -1,15 +1,18 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use schema_forge_backend::auth::AuthContext;
 use schema_forge_backend::entity::Entity;
+use schema_forge_core::query::{validate_filter, FieldPath, Filter, SortOrder};
 use schema_forge_core::types::{
     Cardinality, DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName,
 };
 use serde::{Deserialize, Serialize};
 
+use super::query_params::{parse_filter_params, parse_sort_param};
 use crate::access::{
     check_schema_access, filter_entity_fields, inject_tenant_on_create, inject_tenant_scope,
     AccessAction, FieldFilterDirection, OptionalAuth,
@@ -51,13 +54,31 @@ pub struct ListEntitiesResponse {
     pub total_count: Option<usize>,
 }
 
-/// Query parameters for list_entities.
-#[derive(Debug, Deserialize, Default)]
-pub struct EntityQueryParams {
+/// Request body for POST query endpoint.
+#[derive(Debug, Deserialize)]
+pub struct EntityQueryBody {
+    /// Raw JSON filter — converted to `Filter` using schema type hints.
+    #[serde(default)]
+    pub filter: Option<serde_json::Value>,
+    /// Sort clauses.
+    #[serde(default)]
+    pub sort: Option<Vec<SortClause>>,
     /// Maximum number of entities to return.
+    #[serde(default)]
     pub limit: Option<usize>,
     /// Number of entities to skip.
+    #[serde(default)]
     pub offset: Option<usize>,
+}
+
+/// A single sort clause in a POST query body.
+#[derive(Debug, Deserialize)]
+pub struct SortClause {
+    /// Field name (supports dotted paths).
+    pub field: String,
+    /// Sort direction: "asc" or "desc". Defaults to "asc".
+    #[serde(default)]
+    pub order: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +304,188 @@ fn validate_schema_name(name: &str) -> Result<SchemaName, ForgeError> {
     })
 }
 
+/// Convert a raw JSON value into a `Filter` using schema type hints.
+///
+/// Accepts a JSON object with `"op"`, `"field"`, `"value"` / `"values"` / `"filters"` / `"filter"` keys.
+/// Values are plain JSON primitives — types are inferred from schema field definitions.
+pub fn json_to_filter(
+    value: &serde_json::Value,
+    schema: &SchemaDefinition,
+) -> Result<Filter, Vec<String>> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| vec!["filter must be a JSON object".to_string()])?;
+
+    let op = obj
+        .get("op")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| vec!["filter must have an 'op' field".to_string()])?;
+
+    match op {
+        "and" | "or" => {
+            let filters_val = obj
+                .get("filters")
+                .ok_or_else(|| vec![format!("'{op}' filter must have a 'filters' array")])?;
+            let arr = filters_val
+                .as_array()
+                .ok_or_else(|| vec![format!("'{op}' filter 'filters' must be an array")])?;
+            let mut filters = Vec::new();
+            let mut errors = Vec::new();
+            for item in arr {
+                match json_to_filter(item, schema) {
+                    Ok(f) => filters.push(f),
+                    Err(errs) => errors.extend(errs),
+                }
+            }
+            if !errors.is_empty() {
+                return Err(errors);
+            }
+            Ok(if op == "and" {
+                Filter::and(filters)
+            } else {
+                Filter::or(filters)
+            })
+        }
+        "not" => {
+            let inner = obj
+                .get("filter")
+                .ok_or_else(|| vec!["'not' filter must have a 'filter' field".to_string()])?;
+            let f = json_to_filter(inner, schema)?;
+            Ok(Filter::negate(f))
+        }
+        // Leaf operators
+        "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "contains" | "startswith" | "in" => {
+            let field_str = obj
+                .get("field")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| vec![format!("'{op}' filter must have a 'field' string")])?;
+            let path = FieldPath::parse(field_str)
+                .map_err(|e| vec![format!("invalid field path '{field_str}': {e}")])?;
+            let field_type = schema.field(path.root()).map(|fd| &fd.field_type);
+
+            match op {
+                "contains" => {
+                    let val = obj
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            vec!["'contains' filter 'value' must be a string".to_string()]
+                        })?;
+                    Ok(Filter::contains(path, val))
+                }
+                "startswith" => {
+                    let val = obj
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            vec!["'startswith' filter 'value' must be a string".to_string()]
+                        })?;
+                    Ok(Filter::starts_with(path, val))
+                }
+                "in" => {
+                    let values_val = obj
+                        .get("values")
+                        .or_else(|| obj.get("value"))
+                        .ok_or_else(|| {
+                            vec!["'in' filter must have a 'values' array".to_string()]
+                        })?;
+                    let arr = values_val.as_array().ok_or_else(|| {
+                        vec!["'in' filter 'values' must be an array".to_string()]
+                    })?;
+                    let mut values = Vec::new();
+                    let mut errors = Vec::new();
+                    for item in arr {
+                        match coerce_json_filter_value(item, field_type) {
+                            Ok(v) => values.push(v),
+                            Err(e) => errors.push(format!("field '{field_str}': {e}")),
+                        }
+                    }
+                    if !errors.is_empty() {
+                        return Err(errors);
+                    }
+                    Ok(Filter::in_set(path, values))
+                }
+                _ => {
+                    // eq, ne, gt, gte, lt, lte
+                    let raw = obj
+                        .get("value")
+                        .ok_or_else(|| vec![format!("'{op}' filter must have a 'value' field")])?;
+                    let dv = coerce_json_filter_value(raw, field_type)
+                        .map_err(|e| vec![format!("field '{field_str}': {e}")])?;
+                    Ok(match op {
+                        "eq" => Filter::eq(path, dv),
+                        "ne" => Filter::ne(path, dv),
+                        "gt" => Filter::gt(path, dv),
+                        "gte" => Filter::gte(path, dv),
+                        "lt" => Filter::lt(path, dv),
+                        "lte" => Filter::lte(path, dv),
+                        _ => unreachable!(),
+                    })
+                }
+            }
+        }
+        _ => Err(vec![format!("unknown filter operator '{op}'")]),
+    }
+}
+
+/// Coerce a JSON value to a `DynamicValue` for use in filter expressions.
+///
+/// Uses the field type hint when available, otherwise falls back to untyped conversion.
+fn coerce_json_filter_value(
+    value: &serde_json::Value,
+    field_type: Option<&FieldType>,
+) -> Result<DynamicValue, String> {
+    if let Some(ft) = field_type {
+        convert_json_with_type_hint(value, ft)
+    } else {
+        convert_json_untyped(value)
+    }
+}
+
+/// Execute a query with the standard access-control pipeline.
+///
+/// Shared by `list_entities` and `query_entities`.
+async fn execute_entity_query(
+    state: &ForgeState,
+    schema_def: &SchemaDefinition,
+    auth: Option<&AuthContext>,
+    query: &mut schema_forge_core::query::Query,
+) -> Result<ListEntitiesResponse, ForgeError> {
+    // Inject tenant scope filter
+    inject_tenant_scope(query, auth, &state.tenant_config);
+
+    let result = state
+        .backend
+        .query(query)
+        .await
+        .map_err(ForgeError::from)?;
+
+    // Record-level access filtering (e.g. @owner)
+    let visible_entities = if let (Some(ref policy), Some(auth_ctx)) = (&state.record_access_policy, auth) {
+        policy
+            .filter_visible(schema_def, auth_ctx, result.entities)
+            .await
+    } else {
+        result.entities
+    };
+
+    // Filter read-restricted fields from each entity
+    let entities: Vec<EntityResponse> = visible_entities
+        .into_iter()
+        .map(|mut e| {
+            filter_entity_fields(&mut e, schema_def, auth, FieldFilterDirection::Read);
+            entity_to_response(&e)
+        })
+        .collect();
+    let count = entities.len();
+
+    Ok(ListEntitiesResponse {
+        entities,
+        count,
+        total_count: result.total_count,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -343,11 +546,15 @@ pub async fn create_entity(
 }
 
 /// GET /schemas/{schema}/entities -- List/query entities.
+///
+/// Supports filter, sort, limit, and offset via query parameters.
+/// Filter params use Django-style syntax: `?field__op=value` (e.g. `?age__gt=25`).
+/// Sort uses `?sort=-age,name` (prefix `-` = descending) or `?sort=age:desc,name:asc`.
 pub async fn list_entities(
     State(state): State<ForgeState>,
     Path(schema): Path<String>,
     OptionalAuth(auth): OptionalAuth,
-    Query(params): Query<EntityQueryParams>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
 
@@ -366,52 +573,118 @@ pub async fn list_entities(
 
     // Build a query
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
-    if let Some(limit) = params.limit {
+
+    // Extract limit/offset
+    if let Some(limit_str) = params.get("limit") {
+        let limit = limit_str.parse::<usize>().map_err(|_| ForgeError::InvalidQuery {
+            message: format!("invalid limit value '{limit_str}'"),
+        })?;
         query = query.with_limit(limit);
     }
-    if let Some(offset) = params.offset {
+    if let Some(offset_str) = params.get("offset") {
+        let offset = offset_str.parse::<usize>().map_err(|_| ForgeError::InvalidQuery {
+            message: format!("invalid offset value '{offset_str}'"),
+        })?;
         query = query.with_offset(offset);
     }
 
-    // Inject tenant scope filter
-    inject_tenant_scope(&mut query, auth.as_ref(), &state.tenant_config);
+    // Parse sort
+    if let Some(sort_str) = params.get("sort") {
+        let sort_clauses = parse_sort_param(sort_str).map_err(|e| ForgeError::InvalidQuery {
+            message: e,
+        })?;
+        for (path, order) in sort_clauses {
+            query = query.with_sort(path, order);
+        }
+    }
 
-    let result = state
-        .backend
-        .query(&query)
-        .await
-        .map_err(ForgeError::from)?;
+    // Parse filter params
+    let filter = parse_filter_params(&params, &schema_def).map_err(|errors| {
+        ForgeError::InvalidQuery {
+            message: errors.join("; "),
+        }
+    })?;
+    if let Some(f) = &filter {
+        validate_filter(f, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
+            message: errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
+        })?;
+    }
+    if let Some(f) = filter {
+        query = query.with_filter(f);
+    }
 
-    // Record-level access filtering (e.g. @owner)
-    let visible_entities =
-        if let (Some(ref policy), Some(ref auth_ctx)) = (&state.record_access_policy, &auth) {
-            policy
-                .filter_visible(&schema_def, auth_ctx, result.entities)
-                .await
-        } else {
-            result.entities
-        };
+    let response = execute_entity_query(&state, &schema_def, auth.as_ref(), &mut query).await?;
+    Ok(Json(response))
+}
 
-    // Filter read-restricted fields from each entity
-    let entities: Vec<EntityResponse> = visible_entities
-        .into_iter()
-        .map(|mut e| {
-            filter_entity_fields(
-                &mut e,
-                &schema_def,
-                auth.as_ref(),
-                FieldFilterDirection::Read,
-            );
-            entity_to_response(&e)
-        })
-        .collect();
-    let count = entities.len();
+/// POST /schemas/{schema}/entities/query -- Advanced query with JSON body.
+///
+/// Accepts a full filter IR as JSON with plain values (schema-inferred types).
+pub async fn query_entities(
+    State(state): State<ForgeState>,
+    Path(schema): Path<String>,
+    OptionalAuth(auth): OptionalAuth,
+    Json(body): Json<EntityQueryBody>,
+) -> Result<impl IntoResponse, ForgeError> {
+    let schema_name = validate_schema_name(&schema)?;
 
-    Ok(Json(ListEntitiesResponse {
-        entities,
-        count,
-        total_count: result.total_count,
-    }))
+    // Verify schema exists
+    let schema_def =
+        state
+            .registry
+            .get(schema_name.as_str())
+            .await
+            .ok_or(ForgeError::SchemaNotFound {
+                name: schema_name.as_str().to_string(),
+            })?;
+
+    // Access check
+    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)?;
+
+    // Build a query
+    let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
+
+    if let Some(limit) = body.limit {
+        query = query.with_limit(limit);
+    }
+    if let Some(offset) = body.offset {
+        query = query.with_offset(offset);
+    }
+
+    // Parse sort clauses
+    if let Some(sort_clauses) = &body.sort {
+        for clause in sort_clauses {
+            let path = FieldPath::parse(&clause.field).map_err(|e| ForgeError::InvalidQuery {
+                message: format!("invalid sort field '{}': {e}", clause.field),
+            })?;
+            let order = match clause.order.as_deref() {
+                Some("desc") => SortOrder::Descending,
+                Some("asc") | None => SortOrder::Ascending,
+                Some(other) => {
+                    return Err(ForgeError::InvalidQuery {
+                        message: format!("invalid sort order '{other}', expected 'asc' or 'desc'"),
+                    });
+                }
+            };
+            query = query.with_sort(path, order);
+        }
+    }
+
+    // Parse filter
+    if let Some(filter_json) = &body.filter {
+        let filter = json_to_filter(filter_json, &schema_def).map_err(|errors| {
+            ForgeError::InvalidQuery {
+                message: errors.join("; "),
+            }
+        })?;
+        validate_filter(&filter, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
+            message: errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
+        })?;
+        query = query.with_filter(filter);
+    }
+
+    let response = execute_entity_query(&state, &schema_def, auth.as_ref(), &mut query).await?;
+    Ok(Json(response))
 }
 
 /// GET /schemas/{schema}/entities/{id} -- Get entity by ID.
@@ -782,5 +1055,133 @@ mod tests {
         let json = serde_json::json!([true, false, true]);
         let result = convert_json_with_type_hint(&json, &field_type).unwrap();
         assert!(matches!(result, DynamicValue::Array(arr) if arr.len() == 3));
+    }
+
+    // -- json_to_filter tests --
+
+    #[test]
+    fn json_to_filter_eq() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({"op": "eq", "field": "name", "value": "Alice"});
+        let filter = json_to_filter(&json, &schema).unwrap();
+        assert!(matches!(filter, Filter::Eq { .. }));
+    }
+
+    #[test]
+    fn json_to_filter_gt_integer() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({"op": "gt", "field": "age", "value": 25});
+        let filter = json_to_filter(&json, &schema).unwrap();
+        assert!(matches!(
+            filter,
+            Filter::Gt { ref value, .. } if *value == DynamicValue::Integer(25)
+        ));
+    }
+
+    #[test]
+    fn json_to_filter_and() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({
+            "op": "and",
+            "filters": [
+                {"op": "eq", "field": "name", "value": "Alice"},
+                {"op": "gt", "field": "age", "value": 25}
+            ]
+        });
+        let filter = json_to_filter(&json, &schema).unwrap();
+        assert!(matches!(filter, Filter::And { ref filters } if filters.len() == 2));
+    }
+
+    #[test]
+    fn json_to_filter_or() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({
+            "op": "or",
+            "filters": [
+                {"op": "eq", "field": "active", "value": true},
+                {"op": "eq", "field": "active", "value": false}
+            ]
+        });
+        let filter = json_to_filter(&json, &schema).unwrap();
+        assert!(matches!(filter, Filter::Or { .. }));
+    }
+
+    #[test]
+    fn json_to_filter_not() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({
+            "op": "not",
+            "filter": {"op": "eq", "field": "active", "value": false}
+        });
+        let filter = json_to_filter(&json, &schema).unwrap();
+        assert!(matches!(filter, Filter::Not { .. }));
+    }
+
+    #[test]
+    fn json_to_filter_contains() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({"op": "contains", "field": "name", "value": "lic"});
+        let filter = json_to_filter(&json, &schema).unwrap();
+        assert!(matches!(filter, Filter::Contains { .. }));
+    }
+
+    #[test]
+    fn json_to_filter_startswith() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({"op": "startswith", "field": "name", "value": "Al"});
+        let filter = json_to_filter(&json, &schema).unwrap();
+        assert!(matches!(filter, Filter::StartsWith { .. }));
+    }
+
+    #[test]
+    fn json_to_filter_in() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({"op": "in", "field": "age", "values": [20, 25, 30]});
+        let filter = json_to_filter(&json, &schema).unwrap();
+        assert!(matches!(filter, Filter::In { ref values, .. } if values.len() == 3));
+    }
+
+    #[test]
+    fn json_to_filter_unknown_op() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({"op": "regex", "field": "name", "value": ".*"});
+        let result = json_to_filter(&json, &schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn json_to_filter_missing_op() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({"field": "name", "value": "Alice"});
+        let result = json_to_filter(&json, &schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn json_to_filter_not_object() {
+        let schema = make_test_schema();
+        let json = serde_json::json!("not an object");
+        let result = json_to_filter(&json, &schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn json_to_filter_nested_and_or() {
+        let schema = make_test_schema();
+        let json = serde_json::json!({
+            "op": "and",
+            "filters": [
+                {"op": "eq", "field": "name", "value": "Alice"},
+                {
+                    "op": "or",
+                    "filters": [
+                        {"op": "gt", "field": "age", "value": 20},
+                        {"op": "eq", "field": "active", "value": true}
+                    ]
+                }
+            ]
+        });
+        let filter = json_to_filter(&json, &schema).unwrap();
+        assert!(matches!(filter, Filter::And { ref filters } if filters.len() == 2));
     }
 }

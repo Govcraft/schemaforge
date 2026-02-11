@@ -1,4 +1,5 @@
 pub mod entities;
+pub mod query_params;
 pub mod schemas;
 
 use axum::routing::{get, post};
@@ -28,6 +29,10 @@ pub fn forge_routes() -> Router<ForgeState> {
         .route(
             "/schemas/{schema}/entities",
             post(entities::create_entity).get(entities::list_entities),
+        )
+        .route(
+            "/schemas/{schema}/entities/query",
+            post(entities::query_entities),
         )
         .route(
             "/schemas/{schema}/entities/{id}",

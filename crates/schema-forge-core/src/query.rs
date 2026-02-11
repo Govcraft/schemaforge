@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{DynamicValue, SchemaId};
+use crate::types::{DynamicValue, FieldType, SchemaDefinition, SchemaId};
 
 // ---------------------------------------------------------------------------
 // FieldPath
@@ -445,6 +445,157 @@ impl fmt::Display for QueryError {
 impl std::error::Error for QueryError {}
 
 // ---------------------------------------------------------------------------
+// Filter validation
+// ---------------------------------------------------------------------------
+
+/// Validate that a filter only references fields that exist in the schema.
+///
+/// Recursively walks the `Filter` tree. For each leaf filter, checks that the
+/// root segment of the `FieldPath` exists in `schema.fields`. Returns all
+/// errors found rather than stopping at the first.
+pub fn validate_filter(filter: &Filter, schema: &SchemaDefinition) -> Result<(), Vec<QueryError>> {
+    let mut errors = Vec::new();
+    collect_filter_errors(filter, schema, &mut errors);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn collect_filter_errors(
+    filter: &Filter,
+    schema: &SchemaDefinition,
+    errors: &mut Vec<QueryError>,
+) {
+    match filter {
+        Filter::Eq { path, value }
+        | Filter::Ne { path, value }
+        | Filter::Gt { path, value }
+        | Filter::Gte { path, value }
+        | Filter::Lt { path, value }
+        | Filter::Lte { path, value } => {
+            check_field_exists(path, schema, errors);
+            if let Some(field_def) = schema.field(path.root()) {
+                if path.is_simple() {
+                    check_type_compat(path.root(), &field_def.field_type, value, errors);
+                }
+            }
+        }
+        Filter::Contains { path, .. } | Filter::StartsWith { path, .. } => {
+            check_field_exists(path, schema, errors);
+            if let Some(field_def) = schema.field(path.root()) {
+                if path.is_simple() && !is_text_like(&field_def.field_type) {
+                    errors.push(QueryError::TypeMismatch {
+                        field: path.root().to_string(),
+                        expected: "Text".to_string(),
+                        actual: field_type_name(&field_def.field_type),
+                    });
+                }
+            }
+        }
+        Filter::In { path, values } => {
+            check_field_exists(path, schema, errors);
+            if values.is_empty() {
+                errors.push(QueryError::EmptyInValues {
+                    field: path.as_dotted(),
+                });
+            }
+            if let Some(field_def) = schema.field(path.root()) {
+                if path.is_simple() {
+                    for v in values {
+                        check_type_compat(path.root(), &field_def.field_type, v, errors);
+                    }
+                }
+            }
+        }
+        Filter::And { filters } | Filter::Or { filters } => {
+            for f in filters {
+                collect_filter_errors(f, schema, errors);
+            }
+        }
+        Filter::Not { filter } => {
+            collect_filter_errors(filter, schema, errors);
+        }
+    }
+}
+
+fn check_field_exists(path: &FieldPath, schema: &SchemaDefinition, errors: &mut Vec<QueryError>) {
+    if schema.field(path.root()).is_none() {
+        errors.push(QueryError::UnknownField {
+            field: path.root().to_string(),
+            schema: schema.name.as_str().to_string(),
+        });
+    }
+}
+
+fn is_text_like(ft: &FieldType) -> bool {
+    matches!(ft, FieldType::Text(_) | FieldType::RichText | FieldType::Enum(_))
+}
+
+fn field_type_name(ft: &FieldType) -> String {
+    match ft {
+        FieldType::Text(_) => "Text",
+        FieldType::RichText => "RichText",
+        FieldType::Integer(_) => "Integer",
+        FieldType::Float(_) => "Float",
+        FieldType::Boolean => "Boolean",
+        FieldType::DateTime => "DateTime",
+        FieldType::Enum(_) => "Enum",
+        FieldType::Json => "Json",
+        FieldType::Relation { .. } => "Relation",
+        FieldType::Array(_) => "Array",
+        FieldType::Composite(_) => "Composite",
+    }
+    .to_string()
+}
+
+fn check_type_compat(
+    field_name: &str,
+    field_type: &FieldType,
+    value: &DynamicValue,
+    errors: &mut Vec<QueryError>,
+) {
+    if matches!(value, DynamicValue::Null) {
+        return; // null is always compatible
+    }
+    let compatible = match field_type {
+        FieldType::Text(_) | FieldType::RichText => matches!(value, DynamicValue::Text(_)),
+        FieldType::Integer(_) => matches!(value, DynamicValue::Integer(_)),
+        FieldType::Float(_) => matches!(value, DynamicValue::Float(_) | DynamicValue::Integer(_)),
+        FieldType::Boolean => matches!(value, DynamicValue::Boolean(_)),
+        FieldType::DateTime => matches!(value, DynamicValue::DateTime(_)),
+        FieldType::Enum(_) => matches!(value, DynamicValue::Enum(_) | DynamicValue::Text(_)),
+        _ => true, // Json, Relation, Array, Composite — accept anything
+    };
+    if !compatible {
+        errors.push(QueryError::TypeMismatch {
+            field: field_name.to_string(),
+            expected: field_type_name(field_type),
+            actual: dynamic_value_type_name(value),
+        });
+    }
+}
+
+fn dynamic_value_type_name(value: &DynamicValue) -> String {
+    match value {
+        DynamicValue::Null => "Null",
+        DynamicValue::Text(_) => "Text",
+        DynamicValue::Integer(_) => "Integer",
+        DynamicValue::Float(_) => "Float",
+        DynamicValue::Boolean(_) => "Boolean",
+        DynamicValue::DateTime(_) => "DateTime",
+        DynamicValue::Enum(_) => "Enum",
+        DynamicValue::Json(_) => "Json",
+        DynamicValue::Array(_) => "Array",
+        DynamicValue::Composite(_) => "Composite",
+        DynamicValue::Ref(_) => "Ref",
+        DynamicValue::RefArray(_) => "RefArray",
+    }
+    .to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -838,5 +989,164 @@ mod tests {
     fn query_error_is_std_error() {
         let err: Box<dyn std::error::Error> = Box::new(QueryError::EmptyFieldPath);
         assert!(err.to_string().contains("field path"));
+    }
+
+    // -- validate_filter tests --
+
+    use crate::types::{
+        FieldDefinition, FieldModifier, FieldName, IntegerConstraints, SchemaName,
+        TextConstraints,
+    };
+
+    fn test_schema() -> SchemaDefinition {
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Contact").unwrap(),
+            vec![
+                FieldDefinition::with_modifiers(
+                    FieldName::new("name").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                    vec![FieldModifier::Required],
+                ),
+                FieldDefinition::new(
+                    FieldName::new("age").unwrap(),
+                    FieldType::Integer(IntegerConstraints::unconstrained()),
+                ),
+                FieldDefinition::new(FieldName::new("active").unwrap(), FieldType::Boolean),
+            ],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn validate_filter_known_field_passes() {
+        let schema = test_schema();
+        let f = Filter::eq(FieldPath::single("name"), DynamicValue::Text("Jane".into()));
+        assert!(validate_filter(&f, &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_filter_unknown_field_fails() {
+        let schema = test_schema();
+        let f = Filter::eq(
+            FieldPath::single("nonexistent"),
+            DynamicValue::Text("x".into()),
+        );
+        let errs = validate_filter(&f, &schema).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(&errs[0], QueryError::UnknownField { field, .. } if field == "nonexistent"));
+    }
+
+    #[test]
+    fn validate_filter_type_mismatch() {
+        let schema = test_schema();
+        let f = Filter::eq(
+            FieldPath::single("age"),
+            DynamicValue::Text("not a number".into()),
+        );
+        let errs = validate_filter(&f, &schema).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, QueryError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn validate_filter_null_always_compatible() {
+        let schema = test_schema();
+        let f = Filter::eq(FieldPath::single("age"), DynamicValue::Null);
+        assert!(validate_filter(&f, &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_filter_and_propagates() {
+        let schema = test_schema();
+        let f = Filter::and(vec![
+            Filter::eq(FieldPath::single("name"), DynamicValue::Text("Jane".into())),
+            Filter::eq(FieldPath::single("bogus"), DynamicValue::Integer(1)),
+        ]);
+        let errs = validate_filter(&f, &schema).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, QueryError::UnknownField { field, .. } if field == "bogus")));
+    }
+
+    #[test]
+    fn validate_filter_or_propagates() {
+        let schema = test_schema();
+        let f = Filter::or(vec![
+            Filter::eq(FieldPath::single("missing1"), DynamicValue::Integer(1)),
+            Filter::eq(FieldPath::single("missing2"), DynamicValue::Integer(2)),
+        ]);
+        let errs = validate_filter(&f, &schema).unwrap_err();
+        assert_eq!(errs.len(), 2);
+    }
+
+    #[test]
+    fn validate_filter_not_propagates() {
+        let schema = test_schema();
+        let f = Filter::negate(Filter::eq(
+            FieldPath::single("nope"),
+            DynamicValue::Boolean(true),
+        ));
+        assert!(validate_filter(&f, &schema).is_err());
+    }
+
+    #[test]
+    fn validate_filter_contains_on_non_text_fails() {
+        let schema = test_schema();
+        let f = Filter::contains(FieldPath::single("age"), "something");
+        let errs = validate_filter(&f, &schema).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, QueryError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn validate_filter_contains_on_text_passes() {
+        let schema = test_schema();
+        let f = Filter::contains(FieldPath::single("name"), "Jane");
+        assert!(validate_filter(&f, &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_filter_empty_in_values() {
+        let schema = test_schema();
+        let f = Filter::in_set(FieldPath::single("name"), vec![]);
+        let errs = validate_filter(&f, &schema).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, QueryError::EmptyInValues { .. })));
+    }
+
+    #[test]
+    fn validate_filter_dotted_path_unknown_root() {
+        let schema = test_schema();
+        let f = Filter::eq(
+            FieldPath::parse("unknown.sub").unwrap(),
+            DynamicValue::Text("x".into()),
+        );
+        let errs = validate_filter(&f, &schema).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, QueryError::UnknownField { .. })));
+    }
+
+    #[test]
+    fn validate_filter_dotted_path_known_root_skips_type_check() {
+        let schema = test_schema();
+        // Deep path — we only validate root existence, not nested type
+        let f = Filter::eq(
+            FieldPath::parse("name.sub").unwrap(),
+            DynamicValue::Integer(42),
+        );
+        assert!(validate_filter(&f, &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_filter_float_field_accepts_integer() {
+        // Float fields should accept Integer values (widening)
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Metric").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("score").unwrap(),
+                FieldType::Float(crate::types::FloatConstraints::unconstrained()),
+            )],
+            vec![],
+        )
+        .unwrap();
+        let f = Filter::eq(FieldPath::single("score"), DynamicValue::Integer(42));
+        assert!(validate_filter(&f, &schema).is_ok());
     }
 }
