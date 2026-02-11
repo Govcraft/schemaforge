@@ -35,6 +35,7 @@ async fn admin_test_state() -> ForgeState {
     ForgeState {
         registry,
         backend: Arc::new(backend),
+        auth_provider: None,
         surreal_client: None,
     }
 }

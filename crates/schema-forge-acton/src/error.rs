@@ -2,6 +2,7 @@ use std::fmt;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use schema_forge_backend::auth::AuthError;
 use schema_forge_backend::BackendError;
 
 /// Errors returned by SchemaForge HTTP endpoints.
@@ -25,6 +26,10 @@ pub enum ForgeError {
     InvalidEntityId { id: String },
     /// Invalid query parameters. Maps to 400.
     InvalidQuery { message: String },
+    /// Authentication failed. Maps to 401.
+    Unauthorized { message: String },
+    /// Insufficient permissions. Maps to 403.
+    Forbidden { message: String },
     /// Backend storage error. Maps to 502.
     BackendUnavailable { message: String },
     /// Internal error. Maps to 500.
@@ -61,6 +66,12 @@ impl fmt::Display for ForgeError {
             Self::InvalidQuery { message } => {
                 write!(f, "invalid query: {message}")
             }
+            Self::Unauthorized { message } => {
+                write!(f, "unauthorized: {message}")
+            }
+            Self::Forbidden { message } => {
+                write!(f, "forbidden: {message}")
+            }
             Self::BackendUnavailable { message } => {
                 write!(f, "backend unavailable: {message}")
             }
@@ -83,6 +94,8 @@ impl ForgeError {
             Self::InvalidSchemaName { .. }
             | Self::InvalidEntityId { .. }
             | Self::InvalidQuery { .. } => StatusCode::BAD_REQUEST,
+            Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
+            Self::Forbidden { .. } => StatusCode::FORBIDDEN,
             Self::BackendUnavailable { .. } => StatusCode::BAD_GATEWAY,
             Self::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -98,6 +111,8 @@ impl ForgeError {
             Self::InvalidSchemaName { .. } => "invalid_schema_name",
             Self::InvalidEntityId { .. } => "invalid_entity_id",
             Self::InvalidQuery { .. } => "invalid_query",
+            Self::Unauthorized { .. } => "unauthorized",
+            Self::Forbidden { .. } => "forbidden",
             Self::BackendUnavailable { .. } => "backend_unavailable",
             Self::Internal { .. } => "internal_error",
         }
@@ -146,6 +161,26 @@ impl From<BackendError> for ForgeError {
             BackendError::ConnectionError { message } => Self::BackendUnavailable { message },
             BackendError::QueryError { message } => Self::BackendUnavailable { message },
             BackendError::Internal { message } => Self::Internal { message },
+            _ => Self::Internal {
+                message: err.to_string(),
+            },
+        }
+    }
+}
+
+impl From<AuthError> for ForgeError {
+    fn from(err: AuthError) -> Self {
+        match err {
+            AuthError::MissingCredentials => Self::Unauthorized {
+                message: err.to_string(),
+            },
+            AuthError::InvalidCredentials { .. } => Self::Unauthorized {
+                message: err.to_string(),
+            },
+            AuthError::UserInactive { .. } => Self::Forbidden {
+                message: err.to_string(),
+            },
+            AuthError::Internal { message } => Self::Internal { message },
             _ => Self::Internal {
                 message: err.to_string(),
             },
@@ -398,5 +433,82 @@ mod tests {
             name: "Test".into(),
         });
         assert!(err.to_string().contains("Test"));
+    }
+
+    #[test]
+    fn display_unauthorized() {
+        let err = ForgeError::Unauthorized {
+            message: "token expired".into(),
+        };
+        assert!(err.to_string().contains("unauthorized"));
+        assert!(err.to_string().contains("token expired"));
+    }
+
+    #[test]
+    fn display_forbidden() {
+        let err = ForgeError::Forbidden {
+            message: "insufficient permissions".into(),
+        };
+        assert!(err.to_string().contains("forbidden"));
+        assert!(err.to_string().contains("insufficient permissions"));
+    }
+
+    #[test]
+    fn status_code_unauthorized() {
+        assert_eq!(
+            ForgeError::Unauthorized {
+                message: "X".into()
+            }
+            .status_code(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn status_code_forbidden() {
+        assert_eq!(
+            ForgeError::Forbidden {
+                message: "X".into()
+            }
+            .status_code(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[test]
+    fn from_auth_error_missing_credentials() {
+        let auth_err = AuthError::MissingCredentials;
+        let forge_err: ForgeError = auth_err.into();
+        assert!(matches!(forge_err, ForgeError::Unauthorized { .. }));
+    }
+
+    #[test]
+    fn from_auth_error_invalid_credentials() {
+        let auth_err = AuthError::InvalidCredentials {
+            reason: "bad token".into(),
+        };
+        let forge_err: ForgeError = auth_err.into();
+        assert!(matches!(forge_err, ForgeError::Unauthorized { .. }));
+    }
+
+    #[test]
+    fn from_auth_error_user_inactive() {
+        let auth_err = AuthError::UserInactive {
+            user_id: "user_123".into(),
+        };
+        let forge_err: ForgeError = auth_err.into();
+        assert!(matches!(forge_err, ForgeError::Forbidden { .. }));
+    }
+
+    #[test]
+    fn from_auth_error_internal() {
+        let auth_err = AuthError::Internal {
+            message: "db down".into(),
+        };
+        let forge_err: ForgeError = auth_err.into();
+        assert!(matches!(
+            forge_err,
+            ForgeError::Internal { message } if message == "db down"
+        ));
     }
 }

@@ -1,7 +1,9 @@
+pub mod auth;
 pub mod cedar;
 pub mod config;
 pub mod error;
 pub mod extension;
+pub mod middleware;
 pub mod routes;
 pub mod state;
 pub mod system;

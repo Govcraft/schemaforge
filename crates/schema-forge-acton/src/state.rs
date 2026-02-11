@@ -250,6 +250,11 @@ pub struct ForgeState {
     pub registry: SchemaRegistry,
     /// Dynamic dispatch backend for schema and entity operations.
     pub backend: Arc<dyn DynForgeBackend>,
+    /// Optional auth provider for API request authentication.
+    /// When `Some`, the auth middleware authenticates requests and injects
+    /// [`AuthContext`](schema_forge_backend::auth::AuthContext) into extensions.
+    /// When `None`, requests pass through without authentication (open access).
+    pub auth_provider: Option<Arc<dyn crate::auth::AuthProvider>>,
     /// SurrealDB client for auth queries (admin UI only).
     #[cfg(feature = "admin-ui")]
     pub surreal_client: Option<

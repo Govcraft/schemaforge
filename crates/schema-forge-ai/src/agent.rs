@@ -78,6 +78,7 @@ impl SchemaForgeAgent {
         ForgeState {
             registry: self.tools.registry().clone(),
             backend: self.tools.backend().clone(),
+            auth_provider: None,
             #[cfg(feature = "admin-ui")]
             surreal_client: None,
         }
