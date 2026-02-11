@@ -1,6 +1,12 @@
+use std::collections::BTreeMap;
+
 use schema_forge_backend::auth::AuthContext;
 use schema_forge_backend::entity::Entity;
-use schema_forge_core::types::{Annotation, FieldAnnotation, FieldDefinition, SchemaDefinition};
+use schema_forge_backend::tenant::TenantConfig;
+use schema_forge_core::query::{FieldPath, Filter, Query};
+use schema_forge_core::types::{
+    Annotation, DynamicValue, FieldAnnotation, FieldDefinition, SchemaDefinition,
+};
 
 use crate::error::ForgeError;
 
@@ -163,6 +169,67 @@ pub fn filter_entity_fields(
     }
 }
 
+/// Inject tenant scoping filter into a query.
+///
+/// Adds `_tenant = <tenant_id>` filter based on the deepest tenant in the
+/// auth context's tenant chain. No-ops when:
+/// - `tenant_config` is `None` or disabled
+/// - `auth` is `None` (open access)
+/// - user is admin (bypass)
+pub fn inject_tenant_scope(
+    query: &mut Query,
+    auth: Option<&AuthContext>,
+    tenant_config: &Option<TenantConfig>,
+) {
+    let _config = match tenant_config {
+        Some(c) if c.is_enabled() => c,
+        _ => return,
+    };
+    let auth = match auth {
+        Some(a) => a,
+        None => return,
+    };
+    if auth.is_admin() {
+        return;
+    }
+    if let Some(tenant_ref) = auth.tenant_chain.last() {
+        let tenant_filter = Filter::eq(
+            FieldPath::single("_tenant"),
+            DynamicValue::Text(tenant_ref.entity_id.as_str().to_string()),
+        );
+        query.filter = Some(match query.filter.take() {
+            Some(existing) => Filter::and(vec![existing, tenant_filter]),
+            None => tenant_filter,
+        });
+    }
+}
+
+/// Inject `_tenant` field into entity fields on creation.
+///
+/// Sets `_tenant` to the deepest tenant entity ID in the auth context's
+/// tenant chain. No-ops when tenancy is disabled, auth is `None`, or
+/// the tenant chain is empty.
+pub fn inject_tenant_on_create(
+    fields: &mut BTreeMap<String, DynamicValue>,
+    auth: Option<&AuthContext>,
+    tenant_config: &Option<TenantConfig>,
+) {
+    let _config = match tenant_config {
+        Some(c) if c.is_enabled() => c,
+        _ => return,
+    };
+    let auth = match auth {
+        Some(a) => a,
+        None => return,
+    };
+    if let Some(tenant_ref) = auth.tenant_chain.last() {
+        fields.insert(
+            "_tenant".to_string(),
+            DynamicValue::Text(tenant_ref.entity_id.as_str().to_string()),
+        );
+    }
+}
+
 /// Check if a single field is accessible to the given roles in the given direction.
 fn is_field_accessible(
     field: &FieldDefinition,
@@ -197,9 +264,10 @@ fn is_field_accessible(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use schema_forge_backend::auth::TenantRef;
     use schema_forge_core::types::{
-        EntityId, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaId, SchemaName,
-        TextConstraints,
+        Annotation, EntityId, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaId,
+        SchemaName, TenantKind, TextConstraints,
     };
     use std::collections::BTreeMap;
 
@@ -212,6 +280,29 @@ mod tests {
             tenant_chain: Vec::new(),
             attributes: BTreeMap::new(),
         }
+    }
+
+    fn make_auth_with_tenant(roles: &[&str], tenant_entity_id: EntityId) -> AuthContext {
+        AuthContext {
+            user_id: EntityId::new(),
+            roles: roles.iter().map(|r| r.to_string()).collect(),
+            tenant_chain: vec![TenantRef {
+                schema: SchemaName::new("Organization").unwrap(),
+                entity_id: tenant_entity_id,
+            }],
+            attributes: BTreeMap::new(),
+        }
+    }
+
+    fn make_enabled_tenant_config() -> Option<TenantConfig> {
+        let schemas = vec![SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Organization").unwrap(),
+            vec![make_field("name")],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        )
+        .unwrap()];
+        Some(TenantConfig::from_schemas(&schemas).unwrap())
     }
 
     fn make_field(name: &str) -> FieldDefinition {
@@ -550,5 +641,160 @@ mod tests {
         assert!(result.is_ok());
         let OptionalAuth(extracted) = result.unwrap();
         assert!(extracted.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // inject_tenant_scope tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inject_tenant_scope_adds_filter_when_enabled() {
+        let tenant_config = make_enabled_tenant_config();
+        let tenant_id = EntityId::new();
+        let auth = make_auth_with_tenant(&["member"], tenant_id.clone());
+        let mut query = Query::new(SchemaId::new());
+
+        inject_tenant_scope(&mut query, Some(&auth), &tenant_config);
+
+        assert!(query.filter.is_some());
+        let filter = query.filter.unwrap();
+        match filter {
+            Filter::Eq {
+                ref path,
+                ref value,
+            } => {
+                assert_eq!(path.root(), "_tenant");
+                assert_eq!(*value, DynamicValue::Text(tenant_id.as_str().to_string()));
+            }
+            _ => panic!("expected Eq filter, got: {filter:?}"),
+        }
+    }
+
+    #[test]
+    fn inject_tenant_scope_noop_when_disabled() {
+        let tenant_config: Option<TenantConfig> = None;
+        let tenant_id = EntityId::new();
+        let auth = make_auth_with_tenant(&["member"], tenant_id);
+        let mut query = Query::new(SchemaId::new());
+
+        inject_tenant_scope(&mut query, Some(&auth), &tenant_config);
+
+        assert!(query.filter.is_none());
+    }
+
+    #[test]
+    fn inject_tenant_scope_noop_for_admin() {
+        let tenant_config = make_enabled_tenant_config();
+        let tenant_id = EntityId::new();
+        let auth = make_auth_with_tenant(&["admin"], tenant_id);
+        let mut query = Query::new(SchemaId::new());
+
+        inject_tenant_scope(&mut query, Some(&auth), &tenant_config);
+
+        assert!(query.filter.is_none());
+    }
+
+    #[test]
+    fn inject_tenant_scope_noop_when_no_auth() {
+        let tenant_config = make_enabled_tenant_config();
+        let mut query = Query::new(SchemaId::new());
+
+        inject_tenant_scope(&mut query, None, &tenant_config);
+
+        assert!(query.filter.is_none());
+    }
+
+    #[test]
+    fn inject_tenant_scope_combines_with_existing_filter() {
+        let tenant_config = make_enabled_tenant_config();
+        let tenant_id = EntityId::new();
+        let auth = make_auth_with_tenant(&["member"], tenant_id.clone());
+
+        let existing_filter = Filter::eq(
+            FieldPath::single("status"),
+            DynamicValue::Text("active".to_string()),
+        );
+        let mut query = Query::new(SchemaId::new()).with_filter(existing_filter);
+
+        inject_tenant_scope(&mut query, Some(&auth), &tenant_config);
+
+        assert!(query.filter.is_some());
+        let filter = query.filter.unwrap();
+        match filter {
+            Filter::And { ref filters } => {
+                assert_eq!(filters.len(), 2);
+                // First filter is the original
+                match &filters[0] {
+                    Filter::Eq { path, .. } => assert_eq!(path.root(), "status"),
+                    other => panic!("expected Eq filter, got: {other:?}"),
+                }
+                // Second filter is the tenant filter
+                match &filters[1] {
+                    Filter::Eq { path, value } => {
+                        assert_eq!(path.root(), "_tenant");
+                        assert_eq!(*value, DynamicValue::Text(tenant_id.as_str().to_string()));
+                    }
+                    other => panic!("expected Eq filter, got: {other:?}"),
+                }
+            }
+            _ => panic!("expected And filter, got: {filter:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // inject_tenant_on_create tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inject_tenant_on_create_inserts_tenant_field() {
+        let tenant_config = make_enabled_tenant_config();
+        let tenant_id = EntityId::new();
+        let auth = make_auth_with_tenant(&["member"], tenant_id.clone());
+        let mut fields = BTreeMap::new();
+        fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
+
+        inject_tenant_on_create(&mut fields, Some(&auth), &tenant_config);
+
+        assert!(fields.contains_key("_tenant"));
+        assert_eq!(
+            fields["_tenant"],
+            DynamicValue::Text(tenant_id.as_str().to_string())
+        );
+    }
+
+    #[test]
+    fn inject_tenant_on_create_noop_when_disabled() {
+        let tenant_config: Option<TenantConfig> = None;
+        let tenant_id = EntityId::new();
+        let auth = make_auth_with_tenant(&["member"], tenant_id);
+        let mut fields = BTreeMap::new();
+        fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
+
+        inject_tenant_on_create(&mut fields, Some(&auth), &tenant_config);
+
+        assert!(!fields.contains_key("_tenant"));
+    }
+
+    #[test]
+    fn inject_tenant_on_create_noop_when_no_auth() {
+        let tenant_config = make_enabled_tenant_config();
+        let mut fields = BTreeMap::new();
+        fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
+
+        inject_tenant_on_create(&mut fields, None, &tenant_config);
+
+        assert!(!fields.contains_key("_tenant"));
+    }
+
+    #[test]
+    fn inject_tenant_on_create_noop_when_empty_tenant_chain() {
+        let tenant_config = make_enabled_tenant_config();
+        let auth = make_auth(&["member"]); // no tenant chain
+        let mut fields = BTreeMap::new();
+        fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
+
+        inject_tenant_on_create(&mut fields, Some(&auth), &tenant_config);
+
+        assert!(!fields.contains_key("_tenant"));
     }
 }

@@ -269,6 +269,21 @@ fn default_value_to_surql(value: &schema_forge_core::types::DefaultValue) -> Str
     }
 }
 
+/// Generate SurrealQL statements to define the `_tenant` field and index for a table.
+///
+/// Called by the backend after applying migration steps for `CreateSchema`
+/// when multi-tenancy is configured. Pure function, no I/O.
+///
+/// Returns two statements:
+/// 1. `DEFINE FIELD _tenant ON TABLE {table} TYPE option<string>;`
+/// 2. `DEFINE INDEX idx_{table}_tenant ON TABLE {table} COLUMNS _tenant;`
+pub fn tenant_ddl_statements(table: &str) -> Vec<String> {
+    vec![
+        format!("DEFINE FIELD _tenant ON TABLE {table} TYPE option<string>;"),
+        format!("DEFINE INDEX idx_{table}_tenant ON TABLE {table} COLUMNS _tenant;"),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +596,20 @@ mod tests {
         assert_eq!(
             stmts[0],
             "DEFINE FIELD OVERWRITE score ON Contact TYPE float;"
+        );
+    }
+
+    #[test]
+    fn tenant_ddl_statements_generates_correct_sql() {
+        let stmts = tenant_ddl_statements("Contact");
+        assert_eq!(stmts.len(), 2);
+        assert_eq!(
+            stmts[0],
+            "DEFINE FIELD _tenant ON TABLE Contact TYPE option<string>;"
+        );
+        assert_eq!(
+            stmts[1],
+            "DEFINE INDEX idx_Contact_tenant ON TABLE Contact COLUMNS _tenant;"
         );
     }
 }

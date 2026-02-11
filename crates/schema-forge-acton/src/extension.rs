@@ -138,10 +138,23 @@ impl SchemaForgeExtensionBuilder {
                 })?;
         }
 
+        // Build tenant config from all registered schemas
+        let all_schemas = registry.list().await;
+        let tenant_config = schema_forge_backend::tenant::TenantConfig::from_schemas(&all_schemas)
+            .map_err(|e| ForgeError::Internal {
+                message: format!("Invalid tenant configuration: {e}"),
+            })?;
+        let tenant_config = if tenant_config.is_enabled() {
+            Some(tenant_config)
+        } else {
+            None
+        };
+
         let state = ForgeState {
             registry,
             backend,
             auth_provider: self.auth_provider,
+            tenant_config,
             #[cfg(feature = "admin-ui")]
             surreal_client: self.surreal_client,
         };

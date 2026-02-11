@@ -11,7 +11,8 @@ use schema_forge_core::types::{
 use serde::{Deserialize, Serialize};
 
 use crate::access::{
-    check_schema_access, filter_entity_fields, AccessAction, FieldFilterDirection, OptionalAuth,
+    check_schema_access, filter_entity_fields, inject_tenant_on_create, inject_tenant_scope,
+    AccessAction, FieldFilterDirection, OptionalAuth,
 };
 use crate::error::ForgeError;
 use crate::state::ForgeState;
@@ -309,8 +310,11 @@ pub async fn create_entity(
     check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)?;
 
     // Convert JSON fields to DynamicValue fields
-    let fields = json_to_entity_fields(&schema_def, &body.fields)
+    let mut fields = json_to_entity_fields(&schema_def, &body.fields)
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
+
+    // Inject _tenant field from auth context
+    inject_tenant_on_create(&mut fields, auth.as_ref(), &state.tenant_config);
 
     // Create the entity, filtering write-restricted fields
     let mut entity = Entity::new(schema_name, fields);
@@ -368,6 +372,9 @@ pub async fn list_entities(
     if let Some(offset) = params.offset {
         query = query.with_offset(offset);
     }
+
+    // Inject tenant scope filter
+    inject_tenant_scope(&mut query, auth.as_ref(), &state.tenant_config);
 
     let result = state
         .backend
