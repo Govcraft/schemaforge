@@ -22,6 +22,8 @@ async fn test_state() -> ForgeState {
     ForgeState {
         registry,
         backend: Arc::new(backend),
+        #[cfg(feature = "admin-ui")]
+        surreal_client: None,
     }
 }
 

@@ -12,7 +12,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
-use schema_forge_acton::admin::routes::admin_routes;
+use schema_forge_acton::admin::routes::{protected_routes, public_routes};
 use schema_forge_acton::state::{ForgeState, SchemaRegistry};
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::{
@@ -35,13 +35,26 @@ async fn admin_test_state() -> ForgeState {
     ForgeState {
         registry,
         backend: Arc::new(backend),
+        surreal_client: None,
     }
 }
 
 /// Create an admin test router with ForgeState applied.
+///
+/// Uses routes without auth middleware for direct handler testing.
+/// A session layer is included so `TypedSession<AuthSession>` extraction works.
 async fn admin_test_app() -> (Router, ForgeState) {
     let state = admin_test_state().await;
-    let router = admin_routes().with_state(state.clone());
+    let session_config = acton_service::session::SessionConfig {
+        secure: false,
+        cookie_name: "test_session".to_string(),
+        ..Default::default()
+    };
+    let session_layer = acton_service::session::create_memory_session_layer(&session_config);
+    let router = protected_routes()
+        .merge(public_routes())
+        .layer(session_layer)
+        .with_state(state.clone());
     (router, state)
 }
 
@@ -602,7 +615,7 @@ async fn register_admin_routes_mounts_under_admin() {
     let router: Router = Router::new();
     let router = extension.register_admin_routes(router);
 
-    // Try both /admin and /admin/ — axum nest may or may not add trailing slash
+    // /admin redirects permanently to /admin/
     let request = Request::builder()
         .method(Method::GET)
         .uri("/admin")
@@ -610,20 +623,38 @@ async fn register_admin_routes_mounts_under_admin() {
         .unwrap();
 
     let response = router.clone().oneshot(request).await.unwrap();
-    let status_no_slash = response.status();
+    assert_eq!(
+        response.status(),
+        StatusCode::PERMANENT_REDIRECT,
+        "/admin should redirect to /admin/"
+    );
 
+    // /admin/ without auth should redirect to login
     let request = Request::builder()
         .method(Method::GET)
         .uri("/admin/")
         .body(Body::empty())
         .unwrap();
 
-    let response = router.oneshot(request).await.unwrap();
-    let status_with_slash = response.status();
-
+    let response = router.clone().oneshot(request).await.unwrap();
     assert!(
-        status_no_slash == StatusCode::OK || status_with_slash == StatusCode::OK,
-        "expected 200 from /admin or /admin/, got {status_no_slash} and {status_with_slash}"
+        response.status().is_redirection(),
+        "unauthenticated /admin/ should redirect to login, got {}",
+        response.status()
+    );
+
+    // /admin/login should be accessible without auth
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/admin/login")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "/admin/login should return 200"
     );
 }
 

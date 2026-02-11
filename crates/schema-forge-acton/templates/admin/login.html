@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>Login - SchemaForge Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body style="display: flex; align-items: center; justify-content: center; min-height: 100vh;">
+    <div class="card bg-base-200 shadow-xl" style="width: 24rem;">
+        <div class="card-body">
+            <h2 class="card-title text-2xl font-bold">SchemaForge</h2>
+            <p class="opacity-60">Admin Console Login</p>
+            {% if let Some(err) = error %}
+            <div class="alert alert-error mt-4">
+                <span>{{ err }}</span>
+            </div>
+            {% endif %}
+            <form method="post" action="/admin/login" class="mt-4">
+                <div class="form-control">
+                    <label class="label"><span class="label-text">Username</span></label>
+                    <input type="text" name="username" class="input input-bordered" required autofocus>
+                </div>
+                <div class="form-control mt-4">
+                    <label class="label"><span class="label-text">Password</span></label>
+                    <input type="password" name="password" class="input input-bordered" required>
+                </div>
+                <div class="form-control mt-6">
+                    <button type="submit" class="btn btn-primary">Login</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>

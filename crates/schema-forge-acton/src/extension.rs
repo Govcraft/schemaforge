@@ -30,12 +30,26 @@ pub struct SchemaForgeExtension {
 /// Builder for `SchemaForgeExtension`.
 pub struct SchemaForgeExtensionBuilder {
     backend: Option<Arc<dyn DynForgeBackend>>,
+    #[cfg(feature = "admin-ui")]
+    surreal_client: Option<
+        schema_forge_surrealdb::surrealdb::Surreal<
+            schema_forge_surrealdb::surrealdb::engine::any::Any,
+        >,
+    >,
+    #[cfg(feature = "admin-ui")]
+    admin_credentials: Option<(String, String)>,
 }
 
 impl SchemaForgeExtensionBuilder {
     /// Create a new builder.
     fn new() -> Self {
-        Self { backend: None }
+        Self {
+            backend: None,
+            #[cfg(feature = "admin-ui")]
+            surreal_client: None,
+            #[cfg(feature = "admin-ui")]
+            admin_credentials: None,
+        }
     }
 
     /// Set the backend for schema and entity operations.
@@ -46,6 +60,31 @@ impl SchemaForgeExtensionBuilder {
         B: DynSchemaBackend + DynEntityStore + 'static,
     {
         self.backend = Some(Arc::new(backend));
+        self
+    }
+
+    /// Set the SurrealDB client for authentication queries.
+    ///
+    /// The same client used for `SurrealBackend::from_client()` can be cloned
+    /// and passed here for auth queries against the `_forge_users` table.
+    #[cfg(feature = "admin-ui")]
+    pub fn with_surreal_client(
+        mut self,
+        client: schema_forge_surrealdb::surrealdb::Surreal<
+            schema_forge_surrealdb::surrealdb::engine::any::Any,
+        >,
+    ) -> Self {
+        self.surreal_client = Some(client);
+        self
+    }
+
+    /// Set bootstrap credentials for the initial admin user.
+    ///
+    /// If the `_forge_users` table is empty during `build()`, an admin user
+    /// will be created with these credentials.
+    #[cfg(feature = "admin-ui")]
+    pub fn with_admin_credentials(mut self, username: String, password: String) -> Self {
+        self.admin_credentials = Some((username, password));
         self
     }
 
@@ -67,7 +106,24 @@ impl SchemaForgeExtensionBuilder {
             .await
             .map_err(ForgeError::from)?;
 
-        let state = ForgeState { registry, backend };
+        // Bootstrap admin user if configured
+        #[cfg(feature = "admin-ui")]
+        if let (Some(ref db), Some((ref username, ref password))) =
+            (&self.surreal_client, &self.admin_credentials)
+        {
+            crate::admin::auth::bootstrap_admin(db, username, password)
+                .await
+                .map_err(|e| ForgeError::Internal {
+                    message: format!("Admin bootstrap failed: {e}"),
+                })?;
+        }
+
+        let state = ForgeState {
+            registry,
+            backend,
+            #[cfg(feature = "admin-ui")]
+            surreal_client: self.surreal_client,
+        };
 
         Ok(SchemaForgeExtension { state })
     }
@@ -121,6 +177,10 @@ impl SchemaForgeExtension {
     /// Only available when the `admin-ui` feature is enabled.
     /// Nests admin routes under `/admin/`, with a redirect from `/admin` to `/admin/`
     /// so both URL forms work correctly in browsers.
+    ///
+    /// Applies an in-memory session layer for session-based authentication.
+    /// Protected routes require authentication; unauthenticated requests are
+    /// redirected to `/admin/login`.
     #[cfg(feature = "admin-ui")]
     pub fn register_admin_routes<S>(&self, router: Router<S>) -> Router<S>
     where
@@ -129,7 +189,16 @@ impl SchemaForgeExtension {
         use axum::response::Redirect;
         use axum::routing::get;
 
-        let admin_router = crate::admin::routes::admin_routes().with_state(self.state.clone());
+        let session_config = acton_service::session::SessionConfig {
+            secure: false,
+            cookie_name: "forge_admin".to_string(),
+            ..Default::default()
+        };
+        let session_layer = acton_service::session::create_memory_session_layer(&session_config);
+
+        let admin_router = crate::admin::routes::admin_routes()
+            .layer(session_layer)
+            .with_state(self.state.clone());
         router
             .nest("/admin/", admin_router)
             .route("/admin", get(|| async { Redirect::permanent("/admin/") }))

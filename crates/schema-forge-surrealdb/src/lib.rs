@@ -4,3 +4,4 @@ pub mod query;
 pub mod value;
 
 pub use backend::SurrealBackend;
+pub use surrealdb;

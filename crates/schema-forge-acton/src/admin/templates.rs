@@ -1,9 +1,17 @@
 use acton_service::prelude::Template;
 
+use super::auth::CurrentUserView;
 use super::views::{
     DashboardEntry, EntityView, FieldEditorRow, FieldView, MigrationPreviewView, PaginationView,
     SchemaEditorView, SchemaGraphView, SchemaView,
 };
+
+/// Login page — standalone, no base.html.
+#[derive(Template)]
+#[template(path = "admin/login.html")]
+pub struct LoginTemplate {
+    pub error: Option<String>,
+}
 
 /// Dashboard page — lists all schemas with entity counts.
 #[derive(Template)]
@@ -12,6 +20,7 @@ pub struct DashboardTemplate {
     pub entries: Vec<DashboardEntry>,
     pub schema_names: Vec<String>,
     pub graph: SchemaGraphView,
+    pub current_user: Option<CurrentUserView>,
 }
 
 /// Schema detail page — shows field definitions.
@@ -20,6 +29,7 @@ pub struct DashboardTemplate {
 pub struct SchemaDetailTemplate {
     pub schema: SchemaView,
     pub schema_names: Vec<String>,
+    pub current_user: Option<CurrentUserView>,
 }
 
 /// Entity list page — paginated table of entities.
@@ -30,6 +40,7 @@ pub struct EntityListTemplate {
     pub entities: Vec<EntityView>,
     pub pagination: PaginationView,
     pub schema_names: Vec<String>,
+    pub current_user: Option<CurrentUserView>,
 }
 
 /// Entity create form.
@@ -41,6 +52,7 @@ pub struct EntityFormTemplate {
     pub entity_id: Option<String>,
     pub schema_names: Vec<String>,
     pub errors: Vec<String>,
+    pub current_user: Option<CurrentUserView>,
 }
 
 /// Entity detail page.
@@ -50,6 +62,7 @@ pub struct EntityDetailTemplate {
     pub schema: SchemaView,
     pub entity: EntityView,
     pub schema_names: Vec<String>,
+    pub current_user: Option<CurrentUserView>,
 }
 
 /// Entity table body fragment (for HTMX pagination).
@@ -83,6 +96,7 @@ pub struct SchemaEditorTemplate {
     pub editor: SchemaEditorView,
     pub schema_names: Vec<String>,
     pub errors: Vec<String>,
+    pub current_user: Option<CurrentUserView>,
 }
 
 /// Field editor row fragment — a single field row for HTMX append.

@@ -24,6 +24,15 @@
             <li><a href="/admin/schemas/{{ name }}">{{ name }}</a></li>
             {% endfor %}
         </ul>
+        {% if let Some(user) = current_user %}
+        <div class="border-t border-base-300 p-4">
+            <div class="text-sm font-medium">{{ user.display_name }}</div>
+            <div class="text-xs opacity-60">{{ user.username }}</div>
+            <form method="post" action="/admin/logout" class="mt-2">
+                <button type="submit" class="btn btn-ghost btn-sm btn-block">Logout</button>
+            </form>
+        </div>
+        {% endif %}
     </nav>
     <main class="main bg-base-100 min-h-screen">
         <div id="flash-messages"></div>

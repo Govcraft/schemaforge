@@ -250,6 +250,13 @@ pub struct ForgeState {
     pub registry: SchemaRegistry,
     /// Dynamic dispatch backend for schema and entity operations.
     pub backend: Arc<dyn DynForgeBackend>,
+    /// SurrealDB client for auth queries (admin UI only).
+    #[cfg(feature = "admin-ui")]
+    pub surreal_client: Option<
+        schema_forge_surrealdb::surrealdb::Surreal<
+            schema_forge_surrealdb::surrealdb::engine::any::Any,
+        >,
+    >,
 }
 
 #[cfg(test)]

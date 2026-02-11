@@ -3,20 +3,14 @@ use axum::Router;
 
 use crate::state::ForgeState;
 
-use super::handlers;
+use super::{auth, handlers};
 
-/// Build the admin UI router.
-///
-/// All routes expect `ForgeState` — the caller applies `.with_state()`.
-///
-/// The dashboard is mounted at both `/` and the empty path so that
-/// `/admin` and `/admin/` both resolve when nested via `nest("/admin", ...)`.
+/// Routes that require authentication.
 ///
 /// **Route ordering**: `/schemas/new` and `/schemas/_*` are registered before
 /// `/schemas/{name}` to avoid being captured as a name parameter.
-pub fn admin_routes() -> Router<ForgeState> {
+pub fn protected_routes() -> Router<ForgeState> {
     Router::new()
-        .route("/static/admin.css", get(handlers::admin_css))
         .route("/", get(handlers::dashboard))
         // Schema editor: static paths first
         .route("/schemas/new", get(handlers::schema_create_form))
@@ -65,4 +59,26 @@ pub fn admin_routes() -> Router<ForgeState> {
             "/schemas/{name}/relation-options/{field}",
             get(handlers::relation_options),
         )
+}
+
+/// Public routes that don't require authentication.
+pub fn public_routes() -> Router<ForgeState> {
+    Router::new()
+        .route("/static/admin.css", get(handlers::admin_css))
+        .route("/login", get(auth::login_page).post(auth::login_submit))
+        .route("/logout", post(auth::logout))
+}
+
+/// Build the admin UI router with authentication middleware.
+///
+/// Protected routes are wrapped with `require_auth` middleware that redirects
+/// unauthenticated requests to `/admin/login`. Public routes (login, logout,
+/// static assets) are accessible without auth.
+///
+/// A session layer must be applied externally (by `register_admin_routes`).
+pub fn admin_routes() -> Router<ForgeState> {
+    let protected = protected_routes()
+        .route_layer(axum::middleware::from_fn(auth::require_auth));
+
+    protected.merge(public_routes())
 }

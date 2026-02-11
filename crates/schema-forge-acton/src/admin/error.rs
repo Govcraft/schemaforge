@@ -1,12 +1,14 @@
 use std::fmt;
 
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 
 /// Errors returned by admin UI handlers.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum AdminError {
+    /// Unauthorized — redirect to login page.
+    Unauthorized,
     /// Schema not found by name. Maps to 404.
     SchemaNotFound { name: String },
     /// Entity not found. Maps to 404.
@@ -22,6 +24,7 @@ pub enum AdminError {
 impl fmt::Display for AdminError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Unauthorized => write!(f, "Unauthorized"),
             Self::SchemaNotFound { name } => write!(f, "Schema '{name}' not found"),
             Self::EntityNotFound { schema, entity_id } => {
                 write!(f, "Entity '{entity_id}' not found in schema '{schema}'")
@@ -40,6 +43,7 @@ impl std::error::Error for AdminError {}
 impl AdminError {
     fn status_code(&self) -> StatusCode {
         match self {
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::SchemaNotFound { .. } | Self::EntityNotFound { .. } => StatusCode::NOT_FOUND,
             Self::ValidationFailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::BackendError { .. } => StatusCode::BAD_GATEWAY,
@@ -50,6 +54,9 @@ impl AdminError {
 
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
+        if matches!(self, Self::Unauthorized) {
+            return Redirect::to("/admin/login").into_response();
+        }
         let status = self.status_code();
         let message = self.to_string();
         let html = format!(
@@ -101,6 +108,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn display_unauthorized() {
+        let err = AdminError::Unauthorized;
+        assert_eq!(err.to_string(), "Unauthorized");
+    }
+
+    #[test]
     fn display_schema_not_found() {
         let err = AdminError::SchemaNotFound {
             name: "Contact".into(),
@@ -127,6 +140,10 @@ mod tests {
 
     #[test]
     fn status_codes() {
+        assert_eq!(
+            AdminError::Unauthorized.status_code(),
+            StatusCode::UNAUTHORIZED
+        );
         assert_eq!(
             AdminError::SchemaNotFound { name: "X".into() }.status_code(),
             StatusCode::NOT_FOUND

@@ -14,9 +14,10 @@ tokio = { version = "1", features = ["sync"] }
 acton-service = { version = "0.16.0", default-features = false, features = ["http"] }
 askama = { version = "0.15.4", optional = true }
 schema-forge-dsl = { path = "../schema-forge-dsl", optional = true }
+schema-forge-surrealdb = { path = "../schema-forge-surrealdb", optional = true }
 
 [features]
-admin-ui = ["acton-service/htmx-full", "dep:askama", "dep:schema-forge-dsl"]
+admin-ui = ["acton-service/htmx-full", "dep:askama", "dep:schema-forge-dsl", "dep:schema-forge-surrealdb"]
 
 [dev-dependencies]
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb" }

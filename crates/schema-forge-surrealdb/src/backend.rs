@@ -39,6 +39,14 @@ impl SurrealBackend {
         Self { db }
     }
 
+    /// Get a reference to the underlying SurrealDB client.
+    ///
+    /// Useful when you need direct access to the client for queries not covered
+    /// by the `SchemaBackend` or `EntityStore` traits (e.g., auth queries).
+    pub fn client(&self) -> &Surreal<Any> {
+        &self.db
+    }
+
     /// Connect to an in-memory SurrealDB instance for testing.
     ///
     /// Uses the `kv-mem` engine. The namespace and database are created
