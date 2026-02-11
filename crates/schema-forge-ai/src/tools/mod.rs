@@ -6,11 +6,13 @@ pub mod validate;
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use acton_ai::prelude::{ToolDefinition, ToolError};
 use schema_forge_acton::state::{DynForgeBackend, SchemaRegistry};
 use serde_json::Value;
+
+pub use validate::ValidatedDslCapture;
 
 /// Holds all SchemaForge tool definitions and executors.
 ///
@@ -72,19 +74,28 @@ impl SchemaForgeTools {
             )
     }
 
+    /// Create a new capture buffer for validated DSL strings.
+    pub fn new_capture() -> ValidatedDslCapture {
+        Arc::new(Mutex::new(Vec::new()))
+    }
+
     /// Attach only generation-relevant tools to a `PromptBuilder`.
     ///
     /// Excludes `list_schemas` and `read_schema_file` which cause small models
     /// to waste tool rounds. Only includes `validate_schema`, `apply_schema`,
     /// and `generate_cedar`.
+    ///
+    /// The `capture` buffer receives successfully validated DSL strings from
+    /// `validate_schema`, enabling recovery when the tool loop is exhausted.
     pub fn attach_generation_tools(
         &self,
         builder: acton_ai::prompt::PromptBuilder,
+        capture: ValidatedDslCapture,
     ) -> acton_ai::prompt::PromptBuilder {
         builder
             .with_tool(
                 validate::validate_schema_tool_definition(),
-                validate::validate_schema_executor(),
+                validate::validate_schema_executor_with_capture(Some(capture)),
             )
             .with_tool(
                 apply::apply_schema_tool_definition(),

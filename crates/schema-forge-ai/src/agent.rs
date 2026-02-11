@@ -7,7 +7,7 @@ use schema_forge_acton::state::{DynForgeBackend, ForgeState, SchemaRegistry};
 
 use crate::error::ForgeAiError;
 use crate::prompt::FORGE_SYSTEM_PROMPT;
-use crate::tools::SchemaForgeTools;
+use crate::tools::{SchemaForgeTools, ValidatedDslCapture};
 
 /// Maximum number of generation rounds beyond the initial attempt.
 ///
@@ -182,6 +182,7 @@ impl SchemaForgeAgent {
     /// Uses low temperature (0.3) for deterministic tool usage.
     pub async fn generate_dsl(&self, description: &str) -> Result<GenerateResult, ForgeAiError> {
         let registry = self.tools.registry();
+        let capture = SchemaForgeTools::new_capture();
 
         // Accumulate schemas across multiple LLM rounds. Small models often
         // generate one schema per tool call and stop, requiring continuation
@@ -198,7 +199,7 @@ impl SchemaForgeAgent {
             .system(FORGE_SYSTEM_PROMPT)
             .temperature(0.3)
             .max_tool_rounds(20);
-        builder = self.tools.attach_generation_tools(builder);
+        builder = self.tools.attach_generation_tools(builder, capture.clone());
         let response = match builder.collect().await {
             Ok(r) => r,
             Err(e) => {
@@ -213,6 +214,10 @@ impl SchemaForgeAgent {
                         source: DslSource::Registry,
                         assistant_text: String::new(),
                     });
+                }
+                // Fall back to captured validated DSL from validate_schema calls
+                if let Some(result) = recover_from_capture(&capture) {
+                    return Ok(result);
                 }
                 return Err(ForgeAiError::runtime_error(e.to_string()));
             }
@@ -261,7 +266,7 @@ impl SchemaForgeAgent {
                 .system(FORGE_SYSTEM_PROMPT)
                 .temperature(0.3)
                 .max_tool_rounds(20);
-            retry_builder = self.tools.attach_generation_tools(retry_builder);
+            retry_builder = self.tools.attach_generation_tools(retry_builder, capture.clone());
 
             let retry_response = match retry_builder.collect().await {
                 Ok(r) => r,
@@ -269,7 +274,13 @@ impl SchemaForgeAgent {
                     // Round failed but we have schemas — return them
                     break;
                 }
-                Err(e) => return Err(ForgeAiError::runtime_error(e.to_string())),
+                Err(_) => {
+                    // Try to recover from capture before giving up
+                    if let Some(result) = recover_from_capture(&capture) {
+                        return Ok(result);
+                    }
+                    break;
+                }
             };
 
             // Check registry again
@@ -595,6 +606,46 @@ fn collect_schemas_from_round(
         DslSource::RawText
     };
     (combined, source)
+}
+
+/// Recover schemas from the validated DSL capture buffer.
+///
+/// When the tool loop is exhausted, `collect()` returns an error and discards
+/// all tool call data. But the validate executor has been storing successfully
+/// validated DSL in the capture buffer. This function parses those captured
+/// strings, deduplicates, filters the example schema, and returns a result.
+fn recover_from_capture(capture: &ValidatedDslCapture) -> Option<GenerateResult> {
+    let captured = capture.lock().ok()?;
+    if captured.is_empty() {
+        return None;
+    }
+
+    let mut schemas = Vec::new();
+    for dsl_str in captured.iter() {
+        if let Ok(parsed) = schema_forge_dsl::parse(dsl_str) {
+            for schema in parsed {
+                if schema.name.as_str() != EXAMPLE_SCHEMA_NAME
+                    && !schemas
+                        .iter()
+                        .any(|s: &schema_forge_core::types::SchemaDefinition| s.name == schema.name)
+                {
+                    schemas.push(schema);
+                }
+            }
+        }
+    }
+
+    if schemas.is_empty() {
+        return None;
+    }
+
+    let dsl = schema_forge_dsl::print_all(&schemas);
+    Some(GenerateResult {
+        schema_count: schemas.len(),
+        dsl,
+        source: DslSource::ToolArguments,
+        assistant_text: String::new(),
+    })
 }
 
 /// Merge new schemas into the accumulated set, skipping duplicates by name.
@@ -975,5 +1026,66 @@ mod tests {
     #[test]
     fn max_generation_rounds_constant() {
         assert_eq!(MAX_GENERATION_ROUNDS, 5);
+    }
+
+    // -- recover_from_capture tests --
+
+    #[test]
+    fn recover_from_empty_capture_returns_none() {
+        let capture = SchemaForgeTools::new_capture();
+        assert!(recover_from_capture(&capture).is_none());
+    }
+
+    #[test]
+    fn recover_from_capture_with_valid_dsl() {
+        let capture = SchemaForgeTools::new_capture();
+        capture
+            .lock()
+            .unwrap()
+            .push("schema Product {\n    name: text required\n}".to_string());
+
+        let result = recover_from_capture(&capture).unwrap();
+        assert_eq!(result.source, DslSource::ToolArguments);
+        assert_eq!(result.schema_count, 1);
+        assert!(result.dsl.contains("Product"));
+    }
+
+    #[test]
+    fn recover_from_capture_deduplicates() {
+        let capture = SchemaForgeTools::new_capture();
+        {
+            let mut buf = capture.lock().unwrap();
+            buf.push("schema Product {\n    name: text\n}".to_string());
+            buf.push("schema Product {\n    name: text required\n}".to_string());
+            buf.push("schema Category {\n    title: text\n}".to_string());
+        }
+
+        let result = recover_from_capture(&capture).unwrap();
+        assert_eq!(result.schema_count, 2); // Product + Category, not 3
+    }
+
+    #[test]
+    fn recover_from_capture_filters_example_widget() {
+        let capture = SchemaForgeTools::new_capture();
+        {
+            let mut buf = capture.lock().unwrap();
+            buf.push("schema ExampleWidget {\n    label: text\n}".to_string());
+        }
+
+        assert!(recover_from_capture(&capture).is_none());
+    }
+
+    #[test]
+    fn recover_from_capture_skips_invalid_dsl() {
+        let capture = SchemaForgeTools::new_capture();
+        {
+            let mut buf = capture.lock().unwrap();
+            buf.push("schema { broken".to_string());
+            buf.push("schema Valid {\n    name: text\n}".to_string());
+        }
+
+        let result = recover_from_capture(&capture).unwrap();
+        assert_eq!(result.schema_count, 1);
+        assert!(result.dsl.contains("Valid"));
     }
 }

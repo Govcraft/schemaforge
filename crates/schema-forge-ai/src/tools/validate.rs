@@ -1,8 +1,16 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use acton_ai::prelude::{ToolDefinition, ToolError};
 use serde_json::{json, Value};
+
+/// Shared buffer for capturing successfully validated DSL strings.
+///
+/// When the LLM calls `validate_schema` and it succeeds, the DSL is stored here.
+/// This allows `generate_dsl()` to recover validated schemas even when the tool
+/// loop exceeds its maximum rounds (since acton-ai discards partial results on error).
+pub type ValidatedDslCapture = Arc<Mutex<Vec<String>>>;
 
 /// Returns the tool definition for the `validate_schema` tool.
 pub fn validate_schema_tool_definition() -> ToolDefinition {
@@ -30,7 +38,23 @@ pub fn validate_schema_executor(
        + Send
        + Sync
        + 'static {
+    validate_schema_executor_with_capture(None)
+}
+
+/// Returns an executor closure that captures successfully validated DSL.
+///
+/// When `capture` is `Some`, each successful validation stores the DSL string
+/// in the shared buffer. This enables recovery when the tool loop exceeds its
+/// maximum rounds — the captured DSL can be read back even though `collect()`
+/// returns an error.
+pub fn validate_schema_executor_with_capture(
+    capture: Option<ValidatedDslCapture>,
+) -> impl Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>>
+       + Send
+       + Sync
+       + 'static {
     move |args: Value| {
+        let capture = capture.clone();
         Box::pin(async move {
             let dsl = args["dsl"]
                 .as_str()
@@ -41,6 +65,13 @@ pub fn validate_schema_executor(
 
             match schema_forge_dsl::parse(&dsl) {
                 Ok(schemas) => {
+                    // Capture successfully validated DSL for recovery on tool loop exhaustion
+                    if let Some(ref capture) = capture {
+                        if let Ok(mut buf) = capture.lock() {
+                            buf.push(dsl);
+                        }
+                    }
+
                     let schema_summaries: Vec<Value> = schemas
                         .iter()
                         .map(|s| {
@@ -162,5 +193,62 @@ mod tests {
         let args = json!({});
         let result = executor(args).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn capture_stores_valid_dsl() {
+        let capture: ValidatedDslCapture = Arc::new(Mutex::new(Vec::new()));
+        let executor = validate_schema_executor_with_capture(Some(capture.clone()));
+
+        let args = json!({
+            "dsl": "schema Contact {\n    name: text required\n}"
+        });
+        let result = executor(args).await.unwrap();
+        assert_eq!(result["status"], "valid");
+
+        let captured = capture.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert!(captured[0].contains("Contact"));
+    }
+
+    #[tokio::test]
+    async fn capture_ignores_invalid_dsl() {
+        let capture: ValidatedDslCapture = Arc::new(Mutex::new(Vec::new()));
+        let executor = validate_schema_executor_with_capture(Some(capture.clone()));
+
+        let args = json!({
+            "dsl": "schema { broken"
+        });
+        let result = executor(args).await.unwrap();
+        assert_eq!(result["status"], "parse_error");
+
+        let captured = capture.lock().unwrap();
+        assert!(captured.is_empty());
+    }
+
+    #[tokio::test]
+    async fn capture_accumulates_multiple_validations() {
+        let capture: ValidatedDslCapture = Arc::new(Mutex::new(Vec::new()));
+        let executor = validate_schema_executor_with_capture(Some(capture.clone()));
+
+        executor(json!({"dsl": "schema A {\n    name: text\n}"}))
+            .await
+            .unwrap();
+        executor(json!({"dsl": "schema B {\n    age: integer\n}"}))
+            .await
+            .unwrap();
+
+        let captured = capture.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn no_capture_still_works() {
+        let executor = validate_schema_executor_with_capture(None);
+        let args = json!({
+            "dsl": "schema Contact {\n    name: text required\n}"
+        });
+        let result = executor(args).await.unwrap();
+        assert_eq!(result["status"], "valid");
     }
 }
