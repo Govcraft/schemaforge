@@ -1,6 +1,6 @@
 use schema_forge_core::types::{
-    Annotation, Cardinality, DefaultValue, FieldDefinition, FieldModifier, FieldType,
-    SchemaDefinition,
+    Annotation, Cardinality, DefaultValue, FieldAnnotation, FieldDefinition, FieldModifier,
+    FieldType, SchemaDefinition, TenantKind,
 };
 
 /// Print a single schema definition to DSL text.
@@ -52,6 +52,39 @@ fn print_annotation(annotation: &Annotation, output: &mut String) {
         Annotation::Display { field } => {
             output.push_str(&format!("@display(\"{}\")", field.as_str()));
         }
+        Annotation::System => {
+            output.push_str("@system");
+        }
+        Annotation::Access {
+            read,
+            write,
+            delete,
+            cross_tenant_read,
+        } => {
+            output.push_str("@access(");
+            let mut first = true;
+            for (name, list) in [
+                ("read", read.as_slice()),
+                ("write", write.as_slice()),
+                ("delete", delete.as_slice()),
+                ("cross_tenant_read", cross_tenant_read.as_slice()),
+            ] {
+                if !list.is_empty() {
+                    if !first {
+                        output.push_str(", ");
+                    }
+                    first = false;
+                    print_named_string_list(name, list, output);
+                }
+            }
+            output.push(')');
+        }
+        Annotation::Tenant(kind) => match kind {
+            TenantKind::Root => output.push_str("@tenant(root)"),
+            TenantKind::Child { parent } => {
+                output.push_str(&format!("@tenant(parent: \"{}\")", parent.as_str()));
+            }
+        },
         _ => {
             // Future annotation kinds -- print as @unknown for forward compatibility
             output.push_str("@unknown");
@@ -67,6 +100,11 @@ fn print_field(field: &FieldDefinition, output: &mut String, depth: usize) {
     for modifier in &field.modifiers {
         output.push(' ');
         print_modifier(modifier, output);
+    }
+
+    for annotation in &field.annotations {
+        output.push(' ');
+        print_field_annotation(annotation, output);
     }
 }
 
@@ -179,6 +217,43 @@ fn print_default_value(value: &DefaultValue, output: &mut String) {
         DefaultValue::Float(s) => output.push_str(s),
         DefaultValue::Boolean(b) => output.push_str(if *b { "true" } else { "false" }),
     }
+}
+
+fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
+    match annotation {
+        FieldAnnotation::Owner => output.push_str("@owner"),
+        FieldAnnotation::FieldAccess { read, write } => {
+            output.push_str("@field_access(");
+            let mut first = true;
+            for (name, list) in [("read", read.as_slice()), ("write", write.as_slice())] {
+                if !list.is_empty() {
+                    if !first {
+                        output.push_str(", ");
+                    }
+                    first = false;
+                    print_named_string_list(name, list, output);
+                }
+            }
+            output.push(')');
+        }
+        _ => {
+            output.push_str("@unknown_field_annotation");
+        }
+    }
+}
+
+fn print_named_string_list(name: &str, list: &[String], output: &mut String) {
+    output.push_str(name);
+    output.push_str(": [");
+    for (i, item) in list.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        output.push('"');
+        output.push_str(item);
+        output.push('"');
+    }
+    output.push(']');
 }
 
 #[cfg(test)]
@@ -502,5 +577,140 @@ mod tests {
         let output = print_all(&schemas);
         assert!(output.contains("schema Contact {"));
         assert!(output.contains("schema Company {"));
+    }
+
+    // -- New annotation printing (Phase 1C) --
+
+    #[test]
+    fn print_system_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![Annotation::System],
+        );
+        let output = print(&schema);
+        assert!(output.starts_with("@system\nschema S {"));
+    }
+
+    #[test]
+    fn print_access_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![Annotation::Access {
+                read: vec!["admin".into(), "viewer".into()],
+                write: vec!["admin".into()],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            }],
+        );
+        let output = print(&schema);
+        assert!(output.contains(r#"@access(read: ["admin", "viewer"], write: ["admin"])"#));
+    }
+
+    #[test]
+    fn print_access_annotation_empty() {
+        let schema = make_schema(
+            "S",
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![Annotation::Access {
+                read: vec![],
+                write: vec![],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            }],
+        );
+        let output = print(&schema);
+        assert!(output.contains("@access()"));
+    }
+
+    #[test]
+    fn print_tenant_root() {
+        let schema = make_schema(
+            "S",
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        );
+        let output = print(&schema);
+        assert!(output.contains("@tenant(root)"));
+    }
+
+    #[test]
+    fn print_tenant_child() {
+        let schema = make_schema(
+            "S",
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![Annotation::Tenant(TenantKind::Child {
+                parent: SchemaName::new("Organization").unwrap(),
+            })],
+        );
+        let output = print(&schema);
+        assert!(output.contains("@tenant(parent: \"Organization\")"));
+    }
+
+    #[test]
+    fn print_field_with_owner_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("user_id").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Owner],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains("user_id: text @owner"));
+    }
+
+    #[test]
+    fn print_field_with_field_access_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("salary").unwrap(),
+                FieldType::Float(FloatConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::FieldAccess {
+                    read: vec!["hr".into()],
+                    write: vec!["hr".into()],
+                }],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains(r#"salary: float @field_access(read: ["hr"], write: ["hr"])"#));
+    }
+
+    #[test]
+    fn print_field_with_modifiers_and_annotations() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("user_id").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+                vec![FieldAnnotation::Owner],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains("user_id: text required @owner"));
     }
 }
