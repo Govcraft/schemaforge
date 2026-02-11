@@ -233,13 +233,12 @@ impl Parser {
                         self.expect(&Token::Colon)?;
                         let schema_tok = self.expect_string_literal()?;
                         let schema_str = unquote_string(&schema_tok.text);
-                        let parent =
-                            SchemaName::new(&schema_str).map_err(|_| {
-                                DslError::InvalidSchemaName {
-                                    name: schema_str,
-                                    span: schema_tok.span.clone(),
-                                }
-                            })?;
+                        let parent = SchemaName::new(&schema_str).map_err(|_| {
+                            DslError::InvalidSchemaName {
+                                name: schema_str,
+                                span: schema_tok.span.clone(),
+                            }
+                        })?;
                         TenantKind::Child { parent }
                     }
                     other => {
@@ -265,9 +264,7 @@ impl Parser {
     }
 
     /// Parse named string lists: `key: ["a", "b"], key2: ["c"]`
-    fn parse_named_string_lists(
-        &mut self,
-    ) -> Result<Vec<(String, Vec<String>)>, DslError> {
+    fn parse_named_string_lists(&mut self) -> Result<Vec<(String, Vec<String>)>, DslError> {
         let mut result = Vec::new();
         if self.peek_token() == Some(&Token::RParen) {
             return Ok(result);
@@ -1379,9 +1376,8 @@ mod tests {
 
     #[test]
     fn parse_access_annotation_partial() {
-        let schema = parse_one(
-            r#"@access(read: ["viewer"], write: ["editor"]) schema S { name: text }"#,
-        );
+        let schema =
+            parse_one(r#"@access(read: ["viewer"], write: ["editor"]) schema S { name: text }"#);
         match &schema.annotations[0] {
             Annotation::Access {
                 read,
@@ -1429,8 +1425,7 @@ mod tests {
 
     #[test]
     fn parse_tenant_child() {
-        let schema =
-            parse_one(r#"@tenant(parent: "Organization") schema S { name: text }"#);
+        let schema = parse_one(r#"@tenant(parent: "Organization") schema S { name: text }"#);
         match &schema.annotations[0] {
             Annotation::Tenant(TenantKind::Child { parent }) => {
                 assert_eq!(parent.as_str(), "Organization");
@@ -1452,9 +1447,8 @@ mod tests {
 
     #[test]
     fn parse_field_access() {
-        let schema = parse_one(
-            r#"schema S { salary: float @field_access(read: ["hr"], write: ["hr"]) }"#,
-        );
+        let schema =
+            parse_one(r#"schema S { salary: float @field_access(read: ["hr"], write: ["hr"]) }"#);
         match &schema.fields[0].annotations[0] {
             FieldAnnotation::FieldAccess { read, write } => {
                 assert_eq!(read, &["hr"]);
@@ -1466,9 +1460,7 @@ mod tests {
 
     #[test]
     fn parse_combined_schema_annotations() {
-        let schema = parse_one(
-            r#"@system @access(read: ["admin"]) schema S { name: text }"#,
-        );
+        let schema = parse_one(r#"@system @access(read: ["admin"]) schema S { name: text }"#);
         assert_eq!(schema.annotations.len(), 2);
         assert!(matches!(&schema.annotations[0], Annotation::System));
         assert!(matches!(&schema.annotations[1], Annotation::Access { .. }));

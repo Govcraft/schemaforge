@@ -254,9 +254,7 @@ fn round_trip_field_owner() {
 
 #[test]
 fn round_trip_field_access() {
-    assert_round_trip(
-        r#"schema S { salary: float @field_access(read: ["hr"], write: ["hr"]) }"#,
-    );
+    assert_round_trip(r#"schema S { salary: float @field_access(read: ["hr"], write: ["hr"]) }"#);
 }
 
 #[test]
