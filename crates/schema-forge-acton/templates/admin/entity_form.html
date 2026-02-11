@@ -1,0 +1,48 @@
+{% extends "admin/base.html" %}
+
+{% block title %}
+{% if let Some(id) = entity_id %}Edit Entity{% else %}Create {{ schema.name }}{% endif %} - SchemaForge Admin
+{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="/admin/">Dashboard</a> / <a href="/admin/schemas/{{ schema.url_name }}">{{ schema.name }}</a> / <a href="/admin/schemas/{{ schema.url_name }}/entities">Entities</a> / {% if let Some(id) = entity_id %}Edit{% else %}Create{% endif %}
+</div>
+<div class="page-header">
+    <h2>{% if let Some(id) = entity_id %}Edit Entity{% else %}Create {{ schema.name }}{% endif %}</h2>
+</div>
+
+{% if !errors.is_empty() %}
+<div class="flash flash-error">
+    <strong>Please fix the following errors:</strong>
+    <ul style="margin-top: 8px; padding-left: 20px;">
+        {% for error in errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<div class="card">
+    <form
+        {% if let Some(id) = entity_id %}
+        hx-put="/admin/schemas/{{ schema.url_name }}/entities/{{ id }}"
+        {% else %}
+        hx-post="/admin/schemas/{{ schema.url_name }}/entities"
+        {% endif %}
+        hx-target="body"
+        hx-push-url="true"
+    >
+        {% for field in fields %}
+        {% include "admin/fragments/field_input.html" %}
+        {% endfor %}
+
+        <div style="display: flex; gap: 12px; margin-top: 24px;">
+            <button type="submit" class="btn btn-primary">
+                {% if entity_id.is_some() %}Update{% else %}Create{% endif %}
+            </button>
+            <a href="/admin/schemas/{{ schema.url_name }}/entities" class="btn btn-outline">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

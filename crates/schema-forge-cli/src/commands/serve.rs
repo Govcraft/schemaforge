@@ -91,6 +91,9 @@ pub async fn run(
     }
 
     // 7. Build versioned routes via acton-service
+    #[cfg(feature = "admin-ui")]
+    let routes = build_versioned_routes_with_admin(&extension);
+    #[cfg(not(feature = "admin-ui"))]
     let routes = build_versioned_routes(&extension);
 
     // 8. Configure and serve via acton-service
@@ -115,6 +118,8 @@ pub async fn run(
     output.status("    GET  /api/v1/forge/schemas/:schema/entities/:id");
     output.status("    PUT  /api/v1/forge/schemas/:schema/entities/:id");
     output.status("    DEL  /api/v1/forge/schemas/:schema/entities/:id");
+    #[cfg(feature = "admin-ui")]
+    output.status("    GET  /admin/");
     output.status("  Press Ctrl+C to stop.");
 
     let service = ServiceBuilder::new()
@@ -133,6 +138,7 @@ pub async fn run(
 /// Build versioned routes using acton-service's VersionedApiBuilder.
 ///
 /// Nests SchemaForge's routes under `/api/v1/forge/`.
+#[cfg(not(feature = "admin-ui"))]
 fn build_versioned_routes(
     extension: &SchemaForgeExtension,
 ) -> acton_service::service_builder::VersionedRoutes {
@@ -141,6 +147,20 @@ fn build_versioned_routes(
         .add_version(ApiVersion::V1, |router| {
             extension.register_versioned_routes(router)
         })
+        .build_routes()
+}
+
+/// Build versioned routes with admin UI frontend routes.
+#[cfg(feature = "admin-ui")]
+fn build_versioned_routes_with_admin(
+    extension: &SchemaForgeExtension,
+) -> acton_service::service_builder::VersionedRoutes {
+    VersionedApiBuilder::new()
+        .with_base_path("/api")
+        .add_version(ApiVersion::V1, |router| {
+            extension.register_versioned_routes(router)
+        })
+        .with_frontend_routes(|router| extension.register_admin_routes(router))
         .build_routes()
 }
 

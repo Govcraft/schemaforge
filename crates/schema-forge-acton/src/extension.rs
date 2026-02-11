@@ -116,6 +116,19 @@ impl SchemaForgeExtension {
         router.nest_service("/forge", forge_router)
     }
 
+    /// Register admin UI routes onto an existing Router.
+    ///
+    /// Only available when the `admin-ui` feature is enabled.
+    /// Nests admin routes under `/admin`.
+    #[cfg(feature = "admin-ui")]
+    pub fn register_admin_routes<S>(&self, router: Router<S>) -> Router<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        let admin_router = crate::admin::routes::admin_routes().with_state(self.state.clone());
+        router.nest("/admin", admin_router)
+    }
+
     /// Get a reference to the schema registry.
     pub fn registry(&self) -> &SchemaRegistry {
         &self.state.registry

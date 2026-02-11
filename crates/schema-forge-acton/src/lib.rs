@@ -5,6 +5,9 @@ pub mod extension;
 pub mod routes;
 pub mod state;
 
+#[cfg(feature = "admin-ui")]
+pub mod admin;
+
 pub use acton_service;
 pub use config::SchemaForgeConfig;
 pub use error::ForgeError;

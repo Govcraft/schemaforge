@@ -1,0 +1,63 @@
+{% if entities.is_empty() %}
+<div class="empty-state">
+    <p>No entities yet.</p>
+    <a href="/admin/schemas/{{ schema.url_name }}/entities/new" class="btn btn-primary">Create First Entity</a>
+</div>
+{% else %}
+<table>
+    <thead>
+        <tr>
+            {% for field in schema.fields %}
+            <th>{{ field.label }}</th>
+            {% endfor %}
+            <th style="width: 120px;">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for entity in entities %}
+        <tr id="entity-{{ entity.id }}">
+            {% for (_, value) in entity.field_values %}
+            <td>{% if value.is_empty() %}<span style="color: var(--text-muted);">-</span>{% else %}{{ value }}{% endif %}</td>
+            {% endfor %}
+            <td>
+                <div class="actions">
+                    <a href="/admin/schemas/{{ schema.url_name }}/entities/{{ entity.id }}" class="btn btn-outline btn-sm">View</a>
+                    <a href="/admin/schemas/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="btn btn-outline btn-sm">Edit</a>
+                    <button
+                        class="btn btn-danger btn-sm"
+                        hx-delete="/admin/schemas/{{ schema.url_name }}/entities/{{ entity.id }}"
+                        hx-confirm="Delete this entity?"
+                        hx-target="#entity-{{ entity.id }}"
+                        hx-swap="delete"
+                    >Del</button>
+                </div>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+<div class="pagination" style="padding: 12px;">
+    <span>
+        Showing {{ pagination.offset + 1 }}-{{ pagination.end_showing() }}
+        of {{ pagination.total_count }}
+    </span>
+    <div class="pagination-links">
+        {% if pagination.has_previous %}
+        <a href="#"
+           class="btn btn-outline btn-sm"
+           hx-get="/admin/schemas/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.previous_offset() }}"
+           hx-target="#entity-table"
+           hx-swap="innerHTML"
+        >Previous</a>
+        {% endif %}
+        {% if pagination.has_next %}
+        <a href="#"
+           class="btn btn-outline btn-sm"
+           hx-get="/admin/schemas/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.next_offset() }}"
+           hx-target="#entity-table"
+           hx-swap="innerHTML"
+        >Next</a>
+        {% endif %}
+    </div>
+</div>
+{% endif %}

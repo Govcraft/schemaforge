@@ -1,0 +1,32 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Dashboard - SchemaForge Admin{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h2>Dashboard</h2>
+    </div>
+</div>
+
+{% if entries.is_empty() %}
+<div class="empty-state">
+    <p>No schemas registered yet.</p>
+    <p>Define schemas in <code>.forge</code> files and start the server with <code>schema-forge serve</code>.</p>
+</div>
+{% else %}
+<div class="card-grid">
+    {% for entry in entries %}
+    <a href="/admin/schemas/{{ entry.schema.url_name }}/entities" class="card schema-card" style="text-decoration: none; color: inherit;">
+        <h3>{{ entry.schema.name }}</h3>
+        <div class="meta">
+            {{ entry.schema.fields.len() }} fields
+            {% if let Some(v) = entry.schema.version %} &middot; v{{ v }}{% endif %}
+        </div>
+        <div class="count">{{ entry.entity_count }}</div>
+        <div class="count-label">entities</div>
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

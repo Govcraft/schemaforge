@@ -1,0 +1,51 @@
+{% extends "admin/base.html" %}
+
+{% block title %}{{ schema.name }} - SchemaForge Admin{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="/admin/">Dashboard</a> / {{ schema.name }}
+</div>
+<div class="page-header">
+    <div>
+        <h2>{{ schema.name }}</h2>
+        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+            {% if let Some(v) = schema.version %}Version {{ v }} &middot; {% endif %}
+            {{ schema.fields.len() }} fields
+            {% if let Some(df) = schema.display_field %} &middot; Display: {{ df }}{% endif %}
+        </div>
+    </div>
+    <a href="/admin/schemas/{{ schema.url_name }}/entities" class="btn btn-primary">View Entities</a>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Field</th>
+                <th>Type</th>
+                <th>Required</th>
+                <th>Default</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for field in schema.fields %}
+            <tr>
+                <td><code>{{ field.name }}</code></td>
+                <td><span class="type-badge">{{ field.type_label }}</span></td>
+                <td>
+                    {% if field.required %}
+                    <span class="modifier-badge">required</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if let Some(dv) = field.default_value %}
+                    <code>{{ dv }}</code>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

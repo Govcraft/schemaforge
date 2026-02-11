@@ -1,0 +1,104 @@
+{% if field.input_type == "text" %}
+<div class="form-group">
+    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
+    <input type="text" id="{{ field.name }}" name="{{ field.name }}"
+        {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
+        {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
+        {% if field.required %}required{% endif %}
+    >
+</div>
+
+{% else if field.input_type == "textarea" %}
+<div class="form-group">
+    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
+    <textarea id="{{ field.name }}" name="{{ field.name }}"
+        {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
+        {% if field.required %}required{% endif %}
+    >{% if let Some(val) = field.current_value %}{{ val }}{% endif %}</textarea>
+</div>
+
+{% else if field.input_type == "number" %}
+<div class="form-group">
+    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
+    <input type="number" id="{{ field.name }}" name="{{ field.name }}"
+        {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
+        {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
+        {% if field.required %}required{% endif %}
+    >
+</div>
+
+{% else if field.input_type == "checkbox" %}
+<div class="form-group">
+    <input type="hidden" name="{{ field.name }}" value="false">
+    <label style="display: flex; align-items: center; gap: 8px; text-transform: none; font-weight: normal; cursor: pointer;">
+        <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}" value="true"
+            {% if let Some(val) = field.current_value %}{% if val == "true" %}checked{% endif %}{% endif %}
+        >
+        {{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}
+    </label>
+</div>
+
+{% else if field.input_type == "datetime-local" %}
+<div class="form-group">
+    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
+    <input type="datetime-local" id="{{ field.name }}" name="{{ field.name }}"
+        {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
+        {% if field.required %}required{% endif %}
+    >
+</div>
+
+{% else if field.input_type == "select" %}
+<div class="form-group">
+    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
+    <select id="{{ field.name }}" name="{{ field.name }}"
+        {% if field.multiple %}multiple size="5"{% endif %}
+        {% if field.required %}required{% endif %}
+        {% if let Some(target) = field.relation_target %}
+        hx-get="/admin/schemas/{{ target }}/relation-options/{{ field.name }}"
+        hx-trigger="load"
+        hx-swap="innerHTML"
+        {% endif %}
+    >
+        {% if !field.multiple %}<option value="">-- Select --</option>{% endif %}
+        {% for (value, label) in field.options %}
+        <option value="{{ value }}"
+            {% if let Some(cv) = field.current_value %}{% if cv == value %}selected{% endif %}{% endif %}
+        >{{ label }}</option>
+        {% endfor %}
+    </select>
+</div>
+
+{% else if field.input_type == "json" %}
+<div class="form-group">
+    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
+    <textarea id="{{ field.name }}" name="{{ field.name }}"
+        {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
+        {% if field.required %}required{% endif %}
+        style="font-family: 'JetBrains Mono', monospace; font-size: 13px;"
+    >{% if let Some(val) = field.current_value %}{{ val }}{% endif %}</textarea>
+</div>
+
+{% else if field.input_type == "composite" %}
+<div class="form-group">
+    <label>{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
+    <div class="composite-group">
+        {% for child in field.children %}
+        <div class="form-group">
+            <label for="{{ field.name }}.{{ child.name }}">{{ child.label }}</label>
+            <input type="text" id="{{ field.name }}.{{ child.name }}" name="{{ field.name }}.{{ child.name }}"
+                {% if let Some(val) = child.current_value %}value="{{ val }}"{% endif %}
+            >
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+{% else %}
+<div class="form-group">
+    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
+    <input type="text" id="{{ field.name }}" name="{{ field.name }}"
+        {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
+        {% if field.required %}required{% endif %}
+    >
+</div>
+{% endif %}

@@ -1,0 +1,24 @@
+{% extends "admin/base.html" %}
+
+{% block title %}{{ schema.name }} Entities - SchemaForge Admin{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="/admin/">Dashboard</a> / <a href="/admin/schemas/{{ schema.url_name }}">{{ schema.name }}</a> / Entities
+</div>
+<div class="page-header">
+    <div>
+        <h2>{{ schema.name }} Entities</h2>
+        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+            {{ pagination.total_count }} total
+        </div>
+    </div>
+    <a href="/admin/schemas/{{ schema.url_name }}/entities/new" class="btn btn-primary">Create New</a>
+</div>
+
+<div class="card" style="padding: 0; overflow: hidden;">
+    <div id="entity-table">
+        {% include "admin/fragments/entity_table_body.html" %}
+    </div>
+</div>
+{% endblock %}
