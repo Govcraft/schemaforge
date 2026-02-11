@@ -5,8 +5,8 @@ use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::types::{
-    Cardinality, DefaultValue, DynamicValue, FieldDefinition, FieldModifier, FieldName, FieldType,
-    SchemaId, SchemaName,
+    Annotation, Cardinality, DefaultValue, DynamicValue, FieldDefinition, FieldModifier, FieldName,
+    FieldType, SchemaId, SchemaName,
 };
 
 // ---------------------------------------------------------------------------
@@ -402,6 +402,34 @@ impl DiffEngine {
         MigrationPlan::new(schema.id.clone(), schema.name.clone(), steps)
     }
 
+    /// Returns true if the schema has the `@system` annotation.
+    pub fn is_system_schema(schema: &crate::types::SchemaDefinition) -> bool {
+        schema
+            .annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::System))
+    }
+
+    /// Validates that a migration plan does not contain destructive operations on system schemas.
+    ///
+    /// Returns an error if any step would drop a system schema.
+    pub fn validate_system_schema_protection(
+        old: &crate::types::SchemaDefinition,
+        plan: &MigrationPlan,
+    ) -> Result<(), MigrationError> {
+        if !Self::is_system_schema(old) {
+            return Ok(());
+        }
+        for step in &plan.steps {
+            if matches!(step, MigrationStep::DropSchema { .. }) {
+                return Err(MigrationError::SystemSchemaProtected {
+                    name: old.name.as_str().to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn diff_fields_with_renames(
         old: &crate::types::SchemaDefinition,
         new: &crate::types::SchemaDefinition,
@@ -661,6 +689,8 @@ pub enum MigrationError {
     },
     /// The migration plan is empty (no steps to apply).
     EmptyMigrationPlan,
+    /// Cannot drop a system schema.
+    SystemSchemaProtected { name: String },
 }
 
 impl fmt::Display for MigrationError {
@@ -693,6 +723,12 @@ impl fmt::Display for MigrationError {
             }
             Self::EmptyMigrationPlan => {
                 write!(f, "migration plan has no steps to apply")
+            }
+            Self::SystemSchemaProtected { name } => {
+                write!(
+                    f,
+                    "cannot drop system schema '{name}': system schemas are protected from destructive operations"
+                )
             }
         }
     }
@@ -1408,6 +1444,94 @@ mod tests {
     fn migration_error_is_std_error() {
         let err: Box<dyn std::error::Error> = Box::new(MigrationError::EmptyMigrationPlan);
         assert!(err.to_string().contains("no steps"));
+    }
+
+    // -- System schema protection tests --
+
+    #[test]
+    fn is_system_schema_detects_system_annotation() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("User").unwrap(),
+            vec![make_field("email")],
+            vec![Annotation::System],
+        )
+        .unwrap();
+        assert!(DiffEngine::is_system_schema(&schema));
+    }
+
+    #[test]
+    fn is_system_schema_returns_false_without_annotation() {
+        let schema = make_schema("Contact", vec![make_field("name")]);
+        assert!(!DiffEngine::is_system_schema(&schema));
+    }
+
+    #[test]
+    fn validate_system_schema_protection_rejects_drop() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("User").unwrap(),
+            vec![make_field("email")],
+            vec![Annotation::System],
+        )
+        .unwrap();
+        let plan = MigrationPlan::new(
+            schema.id.clone(),
+            schema.name.clone(),
+            vec![MigrationStep::DropSchema {
+                name: schema.name.clone(),
+            }],
+        );
+        let result = DiffEngine::validate_system_schema_protection(&schema, &plan);
+        assert!(matches!(
+            result,
+            Err(MigrationError::SystemSchemaProtected { name }) if name == "User"
+        ));
+    }
+
+    #[test]
+    fn validate_system_schema_protection_allows_add_field() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("User").unwrap(),
+            vec![make_field("email")],
+            vec![Annotation::System],
+        )
+        .unwrap();
+        let plan = MigrationPlan::new(
+            schema.id.clone(),
+            schema.name.clone(),
+            vec![MigrationStep::AddField {
+                field: make_field("phone"),
+            }],
+        );
+        let result = DiffEngine::validate_system_schema_protection(&schema, &plan);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_system_schema_protection_allows_drop_on_non_system() {
+        let schema = make_schema("Contact", vec![make_field("name")]);
+        let plan = MigrationPlan::new(
+            schema.id.clone(),
+            schema.name.clone(),
+            vec![MigrationStep::DropSchema {
+                name: schema.name.clone(),
+            }],
+        );
+        let result = DiffEngine::validate_system_schema_protection(&schema, &plan);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn system_schema_protected_display() {
+        let err = MigrationError::SystemSchemaProtected {
+            name: "User".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("User"));
+        assert!(msg.contains("system schema"));
+        assert!(msg.contains("protected"));
     }
 
     // -- Test helpers --

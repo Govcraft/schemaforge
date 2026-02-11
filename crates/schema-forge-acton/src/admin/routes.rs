@@ -77,8 +77,7 @@ pub fn public_routes() -> Router<ForgeState> {
 ///
 /// A session layer must be applied externally (by `register_admin_routes`).
 pub fn admin_routes() -> Router<ForgeState> {
-    let protected = protected_routes()
-        .route_layer(axum::middleware::from_fn(auth::require_auth));
+    let protected = protected_routes().route_layer(axum::middleware::from_fn(auth::require_auth));
 
     protected.merge(public_routes())
 }

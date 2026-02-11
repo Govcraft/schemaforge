@@ -4,6 +4,7 @@ pub mod error;
 pub mod extension;
 pub mod routes;
 pub mod state;
+pub mod system;
 
 #[cfg(feature = "admin-ui")]
 pub mod admin;

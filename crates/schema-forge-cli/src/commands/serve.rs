@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forge_schemas_endpoint_returns_empty_list() {
+    async fn forge_schemas_endpoint_returns_system_schemas() {
         let router = test_router().await;
         let response = router
             .oneshot(
@@ -223,9 +223,10 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         // list_schemas returns { "schemas": [...], "count": N }
-        assert_eq!(json["count"], 0);
+        // After seeding, 4 system schemas should be present
+        assert_eq!(json["count"], 4);
         assert!(json["schemas"].is_array());
-        assert_eq!(json["schemas"].as_array().unwrap().len(), 0);
+        assert_eq!(json["schemas"].as_array().unwrap().len(), 4);
     }
 
     #[test]

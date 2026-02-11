@@ -106,6 +106,9 @@ impl SchemaForgeExtensionBuilder {
             .await
             .map_err(ForgeError::from)?;
 
+        // Seed system schemas (idempotent)
+        crate::system::seed_system_schemas(&registry, backend.as_ref()).await?;
+
         // Bootstrap admin user if configured
         #[cfg(feature = "admin-ui")]
         if let (Some(ref db), Some((ref username, ref password))) =

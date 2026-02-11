@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-acton"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -13,11 +13,11 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["sync"] }
 acton-service = { version = "0.16.0", default-features = false, features = ["http"] }
 askama = { version = "0.15.4", optional = true }
-schema-forge-dsl = { path = "../schema-forge-dsl", optional = true }
+schema-forge-dsl = { path = "../schema-forge-dsl" }
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb", optional = true }
 
 [features]
-admin-ui = ["acton-service/htmx-full", "dep:askama", "dep:schema-forge-dsl", "dep:schema-forge-surrealdb"]
+admin-ui = ["acton-service/htmx-full", "dep:askama", "dep:schema-forge-surrealdb"]
 
 [dev-dependencies]
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb" }

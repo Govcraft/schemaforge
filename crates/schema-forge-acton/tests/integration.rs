@@ -483,9 +483,17 @@ async fn extension_builder_with_backend_loads_schemas() {
         .await
         .expect("failed to build extension");
 
-    // Registry should be empty since no schemas exist yet
+    // Registry should contain exactly the 4 system schemas after seeding
     let schemas = extension.registry().list().await;
-    assert!(schemas.is_empty());
+    assert_eq!(schemas.len(), 4);
+    let names: Vec<String> = schemas
+        .iter()
+        .map(|s| s.name.as_str().to_string())
+        .collect();
+    assert!(names.contains(&"Permission".to_string()));
+    assert!(names.contains(&"Role".to_string()));
+    assert!(names.contains(&"User".to_string()));
+    assert!(names.contains(&"TenantMembership".to_string()));
 }
 
 #[tokio::test]
