@@ -10,6 +10,9 @@ use schema_forge_core::types::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::access::{
+    check_schema_access, filter_entity_fields, AccessAction, FieldFilterDirection, OptionalAuth,
+};
 use crate::error::ForgeError;
 use crate::state::ForgeState;
 
@@ -287,6 +290,7 @@ fn validate_schema_name(name: &str) -> Result<SchemaName, ForgeError> {
 pub async fn create_entity(
     State(state): State<ForgeState>,
     Path(schema): Path<String>,
+    OptionalAuth(auth): OptionalAuth,
     Json(body): Json<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -301,17 +305,35 @@ pub async fn create_entity(
                 name: schema_name.as_str().to_string(),
             })?;
 
+    // Access check
+    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)?;
+
     // Convert JSON fields to DynamicValue fields
     let fields = json_to_entity_fields(&schema_def, &body.fields)
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
-    // Create the entity
-    let entity = Entity::new(schema_name, fields);
-    let created = state
+    // Create the entity, filtering write-restricted fields
+    let mut entity = Entity::new(schema_name, fields);
+    filter_entity_fields(
+        &mut entity,
+        &schema_def,
+        auth.as_ref(),
+        FieldFilterDirection::Write,
+    );
+
+    let mut created = state
         .backend
         .create(&entity)
         .await
         .map_err(ForgeError::from)?;
+
+    // Filter read-restricted fields from response
+    filter_entity_fields(
+        &mut created,
+        &schema_def,
+        auth.as_ref(),
+        FieldFilterDirection::Read,
+    );
 
     Ok((StatusCode::CREATED, Json(entity_to_response(&created))))
 }
@@ -320,6 +342,7 @@ pub async fn create_entity(
 pub async fn list_entities(
     State(state): State<ForgeState>,
     Path(schema): Path<String>,
+    OptionalAuth(auth): OptionalAuth,
     Query(params): Query<EntityQueryParams>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -333,6 +356,9 @@ pub async fn list_entities(
             .ok_or(ForgeError::SchemaNotFound {
                 name: schema_name.as_str().to_string(),
             })?;
+
+    // Access check
+    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)?;
 
     // Build a query
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
@@ -349,7 +375,20 @@ pub async fn list_entities(
         .await
         .map_err(ForgeError::from)?;
 
-    let entities: Vec<EntityResponse> = result.entities.iter().map(entity_to_response).collect();
+    // Filter read-restricted fields from each entity
+    let entities: Vec<EntityResponse> = result
+        .entities
+        .into_iter()
+        .map(|mut e| {
+            filter_entity_fields(
+                &mut e,
+                &schema_def,
+                auth.as_ref(),
+                FieldFilterDirection::Read,
+            );
+            entity_to_response(&e)
+        })
+        .collect();
     let count = entities.len();
 
     Ok(Json(ListEntitiesResponse {
@@ -363,18 +402,40 @@ pub async fn list_entities(
 pub async fn get_entity(
     State(state): State<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
+    OptionalAuth(auth): OptionalAuth,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
+
+    // Look up schema for access check
+    let schema_def =
+        state
+            .registry
+            .get(schema_name.as_str())
+            .await
+            .ok_or(ForgeError::SchemaNotFound {
+                name: schema_name.as_str().to_string(),
+            })?;
+
+    // Access check
+    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)?;
 
     // Parse the entity ID
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
-    let entity = state
+    let mut entity = state
         .backend
         .get(&schema_name, &entity_id)
         .await
         .map_err(ForgeError::from)?;
+
+    // Filter read-restricted fields from response
+    filter_entity_fields(
+        &mut entity,
+        &schema_def,
+        auth.as_ref(),
+        FieldFilterDirection::Read,
+    );
 
     Ok(Json(entity_to_response(&entity)))
 }
@@ -383,6 +444,7 @@ pub async fn get_entity(
 pub async fn update_entity(
     State(state): State<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
+    OptionalAuth(auth): OptionalAuth,
     Json(body): Json<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -401,18 +463,35 @@ pub async fn update_entity(
                 name: schema_name.as_str().to_string(),
             })?;
 
+    // Access check
+    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)?;
+
     // Convert JSON fields
     let fields = json_to_entity_fields(&schema_def, &body.fields)
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
-    // Build entity with specific ID
-    let entity = Entity::with_id(entity_id, schema_name, fields);
+    // Build entity with specific ID, filtering write-restricted fields
+    let mut entity = Entity::with_id(entity_id, schema_name, fields);
+    filter_entity_fields(
+        &mut entity,
+        &schema_def,
+        auth.as_ref(),
+        FieldFilterDirection::Write,
+    );
 
-    let updated = state
+    let mut updated = state
         .backend
         .update(&entity)
         .await
         .map_err(ForgeError::from)?;
+
+    // Filter read-restricted fields from response
+    filter_entity_fields(
+        &mut updated,
+        &schema_def,
+        auth.as_ref(),
+        FieldFilterDirection::Read,
+    );
 
     Ok(Json(entity_to_response(&updated)))
 }
@@ -421,8 +500,22 @@ pub async fn update_entity(
 pub async fn delete_entity(
     State(state): State<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
+    OptionalAuth(auth): OptionalAuth,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
+
+    // Look up schema for access check
+    let schema_def =
+        state
+            .registry
+            .get(schema_name.as_str())
+            .await
+            .ok_or(ForgeError::SchemaNotFound {
+                name: schema_name.as_str().to_string(),
+            })?;
+
+    // Access check
+    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Delete)?;
 
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;

@@ -1,4 +1,4 @@
-use schema_forge_core::types::SchemaDefinition;
+use schema_forge_core::types::{Annotation, SchemaDefinition};
 
 /// A generated Cedar policy template.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,19 +14,34 @@ pub struct CedarPolicy {
 /// Pure function: takes a schema definition, returns policy templates.
 /// These are default templates -- administrators customize in `policies/custom/`.
 ///
-/// Generated policies:
+/// When the schema has an `@access` annotation, generates role-based policies
+/// derived from the annotation's role lists. Otherwise falls back to the
+/// default policy set:
 /// 1. Read access for any authenticated user
 /// 2. Create/update for the entity owner
 /// 3. Delete for admin group only
 /// 4. Schema modification for schema-admin group only
 pub fn generate_cedar_policies(schema: &SchemaDefinition) -> Vec<CedarPolicy> {
     let name = schema.name.as_str();
-    vec![
-        read_policy(name),
-        owner_write_policy(name),
-        admin_delete_policy(name),
-        schema_admin_policy(name),
-    ]
+
+    if let Some(Annotation::Access {
+        read,
+        write,
+        delete,
+        ..
+    }) = schema.access_annotation()
+    {
+        let mut policies = generate_annotation_policies(name, read, write, delete);
+        policies.push(schema_admin_policy(name));
+        policies
+    } else {
+        vec![
+            read_policy(name),
+            owner_write_policy(name),
+            admin_delete_policy(name),
+            schema_admin_policy(name),
+        ]
+    }
 }
 
 /// Render a single Cedar policy for read access.
@@ -82,6 +97,87 @@ fn admin_delete_policy(schema_name: &str) -> CedarPolicy {
     principal in Group::"admin"
 }};"#
         ),
+    }
+}
+
+/// Generate annotation-driven policies for a schema with `@access`.
+///
+/// For each action (read/write/delete):
+/// - If the role list is empty: generate a policy allowing any authenticated user.
+/// - If the role list is non-empty: generate one policy per role with a `when` clause
+///   requiring membership in the corresponding group.
+fn generate_annotation_policies(
+    schema_name: &str,
+    read_roles: &[String],
+    write_roles: &[String],
+    delete_roles: &[String],
+) -> Vec<CedarPolicy> {
+    let mut policies = Vec::new();
+
+    // Read policies
+    generate_action_policies(
+        &mut policies,
+        schema_name,
+        &format!("Read{schema_name}"),
+        "read",
+        read_roles,
+    );
+
+    // Write policies (create + update)
+    generate_action_policies(
+        &mut policies,
+        schema_name,
+        &format!("Create{schema_name}\", Action::\"Update{schema_name}"),
+        "write",
+        write_roles,
+    );
+
+    // Delete policies
+    generate_action_policies(
+        &mut policies,
+        schema_name,
+        &format!("Delete{schema_name}"),
+        "delete",
+        delete_roles,
+    );
+
+    policies
+}
+
+/// Generate Cedar policies for a single action with its role list.
+fn generate_action_policies(
+    policies: &mut Vec<CedarPolicy>,
+    schema_name: &str,
+    action_str: &str,
+    action_label: &str,
+    roles: &[String],
+) {
+    let action_clause = if action_str.contains("\", Action::\"") {
+        format!(r#"action in [Action::"{action_str}"]"#)
+    } else {
+        format!(r#"action == Action::"{action_str}""#)
+    };
+
+    if roles.is_empty() {
+        policies.push(CedarPolicy {
+            description: format!(
+                "Allow any authenticated user to {action_label} {schema_name} entities"
+            ),
+            cedar_text: format!(
+                "permit (\n    principal,\n    {action_clause},\n    resource is {schema_name}\n) when {{\n    principal is User\n}};",
+            ),
+        });
+    } else {
+        for role in roles {
+            policies.push(CedarPolicy {
+                description: format!(
+                    "Allow {role} group members to {action_label} {schema_name} entities"
+                ),
+                cedar_text: format!(
+                    "permit (\n    principal,\n    {action_clause},\n    resource is {schema_name}\n) when {{\n    principal is User &&\n    principal in Group::\"{role}\"\n}};",
+                ),
+            });
+        }
     }
 }
 
@@ -214,5 +310,84 @@ mod tests {
         assert!(contact_policies[0].cedar_text.contains("Contact"));
         assert!(company_policies[0].cedar_text.contains("Company"));
         assert_ne!(contact_policies, company_policies);
+    }
+
+    fn make_access_schema(read: &[&str], write: &[&str], delete: &[&str]) -> SchemaDefinition {
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Secured").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![Annotation::Access {
+                read: read.iter().map(|r| r.to_string()).collect(),
+                write: write.iter().map(|r| r.to_string()).collect(),
+                delete: delete.iter().map(|r| r.to_string()).collect(),
+                cross_tenant_read: vec![],
+            }],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cedar_generates_annotation_policies_for_access_schema() {
+        let schema = make_access_schema(&["viewer"], &["editor"], &["admin"]);
+        let policies = generate_cedar_policies(&schema);
+
+        // Should have: 1 read (viewer) + 1 write (editor) + 1 delete (admin) + 1 schema-admin = 4
+        assert_eq!(policies.len(), 4);
+
+        // Read policy for viewer
+        assert!(policies[0].cedar_text.contains("ReadSecured"));
+        assert!(policies[0].cedar_text.contains(r#"Group::"viewer""#));
+
+        // Write policy for editor
+        assert!(policies[1].cedar_text.contains("CreateSecured"));
+        assert!(policies[1].cedar_text.contains("UpdateSecured"));
+        assert!(policies[1].cedar_text.contains(r#"Group::"editor""#));
+
+        // Delete policy for admin
+        assert!(policies[2].cedar_text.contains("DeleteSecured"));
+        assert!(policies[2].cedar_text.contains(r#"Group::"admin""#));
+
+        // Schema admin always present
+        assert!(policies[3].cedar_text.contains("UpdateSchema"));
+        assert!(policies[3].cedar_text.contains(r#"Group::"schema-admin""#));
+    }
+
+    #[test]
+    fn cedar_generates_default_policies_for_no_access_schema() {
+        let schema = make_test_schema();
+        let policies = generate_cedar_policies(&schema);
+        // Default: read + owner_write + admin_delete + schema_admin = 4
+        assert_eq!(policies.len(), 4);
+        assert!(policies[0].cedar_text.contains("ReadContact"));
+        assert!(policies[1].cedar_text.contains("CreateContact"));
+        assert!(policies[2].cedar_text.contains("DeleteContact"));
+        assert!(policies[3].cedar_text.contains("UpdateSchema"));
+    }
+
+    #[test]
+    fn cedar_annotation_empty_read_roles_produces_any_user_policy() {
+        let schema = make_access_schema(&[], &["editor"], &["admin"]);
+        let policies = generate_cedar_policies(&schema);
+
+        // Empty read => "any authenticated user" policy (no Group clause)
+        let read_policy = &policies[0];
+        assert!(read_policy.cedar_text.contains("ReadSecured"));
+        assert!(read_policy.cedar_text.contains("principal is User"));
+        assert!(!read_policy.cedar_text.contains("Group::"));
+    }
+
+    #[test]
+    fn cedar_annotation_specific_roles_produces_per_role_policies() {
+        let schema = make_access_schema(&["viewer", "editor"], &["editor"], &["admin"]);
+        let policies = generate_cedar_policies(&schema);
+
+        // 2 read (viewer, editor) + 1 write (editor) + 1 delete (admin) + 1 schema-admin = 5
+        assert_eq!(policies.len(), 5);
+        assert!(policies[0].cedar_text.contains(r#"Group::"viewer""#));
+        assert!(policies[1].cedar_text.contains(r#"Group::"editor""#));
     }
 }
