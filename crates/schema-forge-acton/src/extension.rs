@@ -31,6 +31,7 @@ pub struct SchemaForgeExtension {
 pub struct SchemaForgeExtensionBuilder {
     backend: Option<Arc<dyn DynForgeBackend>>,
     auth_provider: Option<Arc<dyn crate::auth::AuthProvider>>,
+    record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
     #[cfg(feature = "admin-ui")]
     surreal_client: Option<
         schema_forge_surrealdb::surrealdb::Surreal<
@@ -47,6 +48,7 @@ impl SchemaForgeExtensionBuilder {
         Self {
             backend: None,
             auth_provider: None,
+            record_access_policy: None,
             #[cfg(feature = "admin-ui")]
             surreal_client: None,
             #[cfg(feature = "admin-ui")]
@@ -77,6 +79,21 @@ impl SchemaForgeExtensionBuilder {
         provider: P,
     ) -> Self {
         self.auth_provider = Some(Arc::new(provider));
+        self
+    }
+
+    /// Set the record-level access policy.
+    ///
+    /// When configured, entity handlers will check ownership before allowing
+    /// modifications and deletions, and will filter list results based on
+    /// the policy.
+    pub fn with_record_access_policy<
+        P: schema_forge_backend::auth::RecordAccessPolicy + 'static,
+    >(
+        mut self,
+        policy: P,
+    ) -> Self {
+        self.record_access_policy = Some(Arc::new(policy));
         self
     }
 
@@ -155,6 +172,7 @@ impl SchemaForgeExtensionBuilder {
             backend,
             auth_provider: self.auth_provider,
             tenant_config,
+            record_access_policy: self.record_access_policy,
             #[cfg(feature = "admin-ui")]
             surreal_client: self.surreal_client,
         };

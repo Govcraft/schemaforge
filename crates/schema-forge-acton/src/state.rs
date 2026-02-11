@@ -258,6 +258,9 @@ pub struct ForgeState {
     /// Tenant configuration derived from `@tenant` annotations.
     /// `None` when multi-tenancy is not configured.
     pub tenant_config: Option<schema_forge_backend::tenant::TenantConfig>,
+    /// Optional record-level access policy.
+    /// When `Some`, entity handlers check ownership before allowing modify/delete.
+    pub record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
     /// SurrealDB client for auth queries (admin UI only).
     #[cfg(feature = "admin-ui")]
     pub surreal_client: Option<

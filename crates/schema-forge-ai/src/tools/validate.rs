@@ -93,11 +93,15 @@ pub fn validate_schema_executor_with_capture(
                                 })
                                 .collect();
 
+                            let annotation_strs: Vec<String> =
+                                s.annotations.iter().map(|a| a.to_string()).collect();
+
                             json!({
                                 "name": s.name.as_str(),
                                 "field_count": s.fields.len(),
                                 "fields": field_names,
                                 "relations": relation_targets,
+                                "annotations": annotation_strs,
                             })
                         })
                         .collect();
@@ -250,5 +254,38 @@ mod tests {
         });
         let result = executor(args).await.unwrap();
         assert_eq!(result["status"], "valid");
+    }
+
+    #[tokio::test]
+    async fn validate_schema_includes_annotations() {
+        let executor = validate_schema_executor();
+        let args = json!({
+            "dsl": "@version(1)\nschema Contact {\n    name: text required\n}"
+        });
+        let result = executor(args).await.unwrap();
+        assert_eq!(result["status"], "valid");
+        let schemas = result["schemas"].as_array().unwrap();
+        let annotations = schemas[0]["annotations"].as_array().unwrap();
+        assert!(!annotations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn validate_schema_reports_access_annotation() {
+        let executor = validate_schema_executor();
+        let args = json!({
+            "dsl": "@access(read: [\"viewer\"], write: [\"editor\"])\nschema Article {\n    title: text required\n}"
+        });
+        let result = executor(args).await.unwrap();
+        assert_eq!(result["status"], "valid");
+        let schemas = result["schemas"].as_array().unwrap();
+        let annotations = schemas[0]["annotations"].as_array().unwrap();
+        assert!(
+            annotations.iter().any(|a| {
+                let s = a.as_str().unwrap_or("");
+                s.contains("@access")
+            }),
+            "expected @access annotation in output, got: {:?}",
+            annotations
+        );
     }
 }

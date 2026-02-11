@@ -5506,7 +5506,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-acton"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acton-service",
  "askama",
@@ -5525,7 +5525,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-ai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "acton-ai",
  "axum 0.8.8",
@@ -5541,11 +5541,12 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-backend"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "schema-forge-core",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
