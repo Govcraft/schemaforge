@@ -167,12 +167,21 @@ impl SchemaForgeExtensionBuilder {
             None
         };
 
+        // Build initial GraphQL schema
+        #[cfg(feature = "graphql")]
+        let graphql_schema = {
+            let gql_schema = crate::graphql::build_initial_schema(&all_schemas)?;
+            Arc::new(arc_swap::ArcSwap::new(Arc::new(gql_schema)))
+        };
+
         let state = ForgeState {
             registry,
             backend,
             auth_provider: self.auth_provider,
             tenant_config,
             record_access_policy: self.record_access_policy,
+            #[cfg(feature = "graphql")]
+            graphql_schema,
             #[cfg(feature = "admin-ui")]
             surreal_client: self.surreal_client,
         };
@@ -265,6 +274,30 @@ impl SchemaForgeExtension {
         router
             .nest("/admin/", admin_router)
             .route("/admin", get(|| async { Redirect::permanent("/admin/") }))
+    }
+
+    /// Register GraphQL routes onto an existing Router.
+    ///
+    /// Only available when the `graphql` feature is enabled.
+    /// Adds `POST /forge/graphql` (handler) and `GET /forge/graphql` (GraphiQL playground).
+    /// Auth middleware is applied so the GraphQL context gets the authenticated user.
+    #[cfg(feature = "graphql")]
+    pub fn register_graphql_routes<S>(&self, router: Router<S>) -> Router<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        let gql_router = Router::new()
+            .route(
+                "/graphql",
+                axum::routing::get(crate::graphql::graphql_playground)
+                    .post(crate::graphql::graphql_handler),
+            )
+            .route_layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                crate::middleware::auth_middleware,
+            ))
+            .with_state(self.state.clone());
+        router.nest("/forge", gql_router)
     }
 
     /// Get a reference to the schema registry.

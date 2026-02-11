@@ -274,6 +274,9 @@ pub struct ForgeState {
     /// Optional record-level access policy.
     /// When `Some`, entity handlers check ownership before allowing modify/delete.
     pub record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
+    /// Dynamic GraphQL schema, atomically swappable on schema changes.
+    #[cfg(feature = "graphql")]
+    pub graphql_schema: Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>>,
     /// SurrealDB client for auth queries (admin UI only).
     #[cfg(feature = "admin-ui")]
     pub surreal_client: Option<

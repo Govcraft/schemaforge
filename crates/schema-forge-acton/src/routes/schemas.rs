@@ -260,7 +260,11 @@ pub async fn create_schema(
         .insert(schema_name.as_str().to_string(), definition.clone())
         .await;
 
-    // 9. Return 201 Created
+    // 9. Rebuild GraphQL schema
+    #[cfg(feature = "graphql")]
+    crate::graphql::rebuild_graphql_schema(&state).await;
+
+    // 10. Return 201 Created
     let response = schema_to_response(&definition);
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -368,6 +372,10 @@ pub async fn update_schema(
         .insert(schema_name.as_str().to_string(), new_definition.clone())
         .await;
 
+    // 9. Rebuild GraphQL schema
+    #[cfg(feature = "graphql")]
+    crate::graphql::rebuild_graphql_schema(&state).await;
+
     Ok(Json(schema_to_response(&new_definition)))
 }
 
@@ -385,6 +393,10 @@ pub async fn delete_schema(
 
     // 2. Remove from registry cache
     state.registry.remove(&name).await;
+
+    // 3. Rebuild GraphQL schema
+    #[cfg(feature = "graphql")]
+    crate::graphql::rebuild_graphql_schema(&state).await;
 
     // Note: In a full implementation, we would also drop the backend table.
     // For now, we just remove the metadata and cache entry.

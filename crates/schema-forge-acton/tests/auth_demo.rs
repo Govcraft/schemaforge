@@ -34,6 +34,21 @@ use tower::ServiceExt;
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "graphql")]
+fn test_graphql_schema() -> Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>> {
+    use async_graphql::dynamic::{Field, FieldFuture, FieldValue, Object, Schema, TypeRef};
+    let query = Object::new("Query").field(Field::new(
+        "_empty",
+        TypeRef::named(TypeRef::BOOLEAN),
+        |_ctx| FieldFuture::new(async { Ok(None::<FieldValue>) }),
+    ));
+    let schema = Schema::build("Query", None, None)
+        .register(query)
+        .finish()
+        .expect("test GraphQL schema");
+    Arc::new(arc_swap::ArcSwap::new(Arc::new(schema)))
+}
+
 fn test_app_with_state(state: ForgeState) -> Router {
     forge_routes()
         .route_layer(axum::middleware::from_fn_with_state(
@@ -219,6 +234,8 @@ async fn demo_schema_access_control() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["editor".into()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -249,6 +266,8 @@ async fn demo_schema_access_control() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["viewer".into()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -333,6 +352,8 @@ async fn demo_field_access_filtering() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["hr".into()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -363,6 +384,8 @@ async fn demo_field_access_filtering() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".into()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -434,6 +457,8 @@ async fn demo_record_ownership() {
         auth_provider: Some(alice_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -468,6 +493,8 @@ async fn demo_record_ownership() {
         auth_provider: Some(bob_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -509,6 +536,8 @@ async fn demo_record_ownership() {
         auth_provider: Some(admin_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -606,6 +635,8 @@ async fn demo_multi_tenancy_isolation() {
         auth_provider: Some(tenant_a_provider),
         tenant_config: Some(tenant_config.clone()),
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -644,6 +675,8 @@ async fn demo_multi_tenancy_isolation() {
         auth_provider: Some(tenant_b_provider),
         tenant_config: Some(tenant_config.clone()),
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -881,6 +914,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -928,6 +963,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -956,6 +993,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -983,6 +1022,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -1007,6 +1048,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };

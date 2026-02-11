@@ -13,6 +13,21 @@ use tower::ServiceExt;
 // Test helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "graphql")]
+fn test_graphql_schema() -> Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>> {
+    use async_graphql::dynamic::{Field, FieldFuture, FieldValue, Object, Schema, TypeRef};
+    let query = Object::new("Query").field(Field::new(
+        "_empty",
+        TypeRef::named(TypeRef::BOOLEAN),
+        |_ctx| FieldFuture::new(async { Ok(None::<FieldValue>) }),
+    ));
+    let schema = Schema::build("Query", None, None)
+        .register(query)
+        .finish()
+        .expect("test GraphQL schema");
+    Arc::new(arc_swap::ArcSwap::new(Arc::new(schema)))
+}
+
 /// Create a test ForgeState with in-memory SurrealDB.
 async fn test_state() -> ForgeState {
     let backend = SurrealBackend::connect_memory("test", "test")
@@ -25,6 +40,8 @@ async fn test_state() -> ForgeState {
         auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     }
@@ -556,6 +573,8 @@ async fn request_with_noop_auth_succeeds() {
         auth_provider: Some(Arc::new(NoopAuthProvider::admin())),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -601,6 +620,8 @@ async fn request_with_failing_auth_returns_401() {
         auth_provider: Some(Arc::new(FailingAuthProvider)),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -677,6 +698,8 @@ async fn access_test_state(
         auth_provider: Some(Arc::new(NoopAuthProvider::new(user_roles))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -794,6 +817,8 @@ async fn open_access_request_always_succeeds() {
         auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -871,6 +896,8 @@ async fn field_filtering_hides_restricted_fields() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".to_string()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(feature = "graphql")]
+        graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
