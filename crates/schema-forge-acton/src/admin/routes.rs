@@ -16,6 +16,7 @@ use super::handlers;
 /// `/schemas/{name}` to avoid being captured as a name parameter.
 pub fn admin_routes() -> Router<ForgeState> {
     Router::new()
+        .route("/static/admin.css", get(handlers::admin_css))
         .route("/", get(handlers::dashboard))
         // Schema editor: static paths first
         .route("/schemas/new", get(handlers::schema_create_form))

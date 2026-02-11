@@ -1,6 +1,6 @@
 use acton_service::prelude::HtmlTemplate;
 use axum::extract::{Form, Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::migration::DiffEngine;
@@ -21,6 +21,14 @@ use super::views::{
     DashboardEntry, EntityView, FieldEditorRow, FieldView, MigrationPreviewView, PaginationView,
     SchemaEditorView, SchemaGraphView, SchemaView,
 };
+
+/// GET /admin/static/admin.css — Serve compiled Tailwind CSS.
+pub async fn admin_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css")],
+        include_str!("../../static/css/admin.css"),
+    )
+}
 
 /// Query params for entity list pagination.
 #[derive(Debug, serde::Deserialize, Default)]

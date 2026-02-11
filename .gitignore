@@ -9,3 +9,6 @@
 
 # Rust
 target/
+
+# Tailwind CSS standalone CLI binary
+/tailwindcss
