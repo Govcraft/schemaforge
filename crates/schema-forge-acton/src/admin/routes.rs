@@ -8,6 +8,9 @@ use super::handlers;
 /// Build the admin UI router.
 ///
 /// All routes expect `ForgeState` — the caller applies `.with_state()`.
+///
+/// The dashboard is mounted at both `/` and the empty path so that
+/// `/admin` and `/admin/` both resolve when nested via `nest("/admin", ...)`.
 pub fn admin_routes() -> Router<ForgeState> {
     Router::new()
         .route("/", get(handlers::dashboard))

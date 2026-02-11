@@ -119,14 +119,20 @@ impl SchemaForgeExtension {
     /// Register admin UI routes onto an existing Router.
     ///
     /// Only available when the `admin-ui` feature is enabled.
-    /// Nests admin routes under `/admin`.
+    /// Nests admin routes under `/admin/`, with a redirect from `/admin` to `/admin/`
+    /// so both URL forms work correctly in browsers.
     #[cfg(feature = "admin-ui")]
     pub fn register_admin_routes<S>(&self, router: Router<S>) -> Router<S>
     where
         S: Clone + Send + Sync + 'static,
     {
+        use axum::response::Redirect;
+        use axum::routing::get;
+
         let admin_router = crate::admin::routes::admin_routes().with_state(self.state.clone());
-        router.nest("/admin", admin_router)
+        router
+            .nest("/admin/", admin_router)
+            .route("/admin", get(|| async { Redirect::permanent("/admin/") }))
     }
 
     /// Get a reference to the schema registry.
