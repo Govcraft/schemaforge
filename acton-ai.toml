@@ -5,5 +5,5 @@ type = "ollama"
 model = "qwen2.5:7b"
 base_url = "http://localhost:11434/v1"
 timeout_secs = 120
-max_tokens = 4096
+max_tokens = 16384
 temperature = 0.3

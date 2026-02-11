@@ -110,39 +110,24 @@ Do NOT skip tool calls — the tools are the only way to ensure correctness.
 - **generate_cedar**: Call this after applying a schema to generate Cedar authorization policies. Pass the `schema_name` parameter.
 - **read_schema_file**: Call this when the user provides a path to a `.schema` file. Only absolute paths to `.schema` files are accepted.
 
-## Example: CRM Schemas
+## Syntax Example (for reference only — do NOT reproduce this in your output)
 
 ```schemadsl
 @version(1)
-@display("name")
-schema Company {
-    name: text(max: 200) required indexed
-    website: text(max: 500)
-    industry: text(max: 100)
-    employee_count: integer default(0)
-    active: boolean default(true)
-    address: composite {
-        street: text(max: 200)
-        city: text(max: 100)
-        state: text(max: 50)
-        zip: text(max: 20)
-        country: text(max: 100) default("US")
+schema ExampleWidget {
+    label: text(max: 100) required indexed
+    count: integer default(0)
+    kind: enum("alpha", "beta") default("alpha")
+    parent: -> ExampleWidget
+    tags: text[]
+    dimensions: composite {
+        width: float
+        height: float
     }
 }
-
-@version(1)
-@display("email")
-schema Contact {
-    first_name: text(max: 100) required
-    last_name: text(max: 100) required
-    email: text(max: 255) required indexed
-    phone: text(max: 20)
-    status: enum("active", "inactive", "lead") default("lead")
-    company: -> Company
-    tags: text[]
-    notes: richtext
-}
 ```
+
+This shows the syntax for: annotations, text/integer/enum/relation/array/composite types, and required/indexed/default modifiers. Generate schemas that match the USER's request — never output ExampleWidget.
 "#;
 
 #[cfg(test)]
@@ -177,10 +162,9 @@ mod tests {
 
     #[test]
     fn prompt_contains_example() {
-        assert!(FORGE_SYSTEM_PROMPT.contains("schema Contact"));
-        assert!(FORGE_SYSTEM_PROMPT.contains("schema Company"));
-        assert!(FORGE_SYSTEM_PROMPT.contains("company: -> Company"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("schema ExampleWidget"));
         assert!(FORGE_SYSTEM_PROMPT.contains("@version(1)"));
-        assert!(FORGE_SYSTEM_PROMPT.contains("@display("));
+        assert!(FORGE_SYSTEM_PROMPT.contains("-> ExampleWidget"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("never output ExampleWidget"));
     }
 }

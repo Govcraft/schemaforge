@@ -1,13 +1,26 @@
 use std::fmt;
 use std::sync::Arc;
 
-use acton_ai::prelude::{ActonAI, ActonAIBuilder, Message};
+use acton_ai::prelude::{ActonAI, ActonAIBuilder, Message, ProviderConfig};
 use acton_ai::stream::ExecutedToolCall;
 use schema_forge_acton::state::{DynForgeBackend, ForgeState, SchemaRegistry};
 
 use crate::error::ForgeAiError;
 use crate::prompt::FORGE_SYSTEM_PROMPT;
 use crate::tools::SchemaForgeTools;
+
+/// Maximum number of generation rounds beyond the initial attempt.
+///
+/// Each round either corrects invalid DSL or prompts for additional schemas.
+/// With 5 rounds, the system can accumulate up to ~6 schemas (1 per round).
+const MAX_GENERATION_ROUNDS: usize = 5;
+
+/// Default max output tokens for LLM responses.
+///
+/// Schema generation with 5+ schemas, tool calls, and conversational text
+/// can easily exceed 4096 tokens. 16384 gives ample headroom for complex
+/// multi-schema generation workflows.
+const DEFAULT_MAX_TOKENS: u32 = 16384;
 
 /// The result of `generate_dsl()`, containing validated DSL and metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,11 +36,13 @@ pub struct GenerateResult {
 }
 
 /// Indicates where the DSL was extracted from, in priority order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Ordering: Registry (best) < ToolArguments < ResponseText < RawText (worst).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DslSource {
     /// Schemas applied via `apply_schema` tool and read back from the registry (best).
     Registry,
-    /// DSL extracted from the last successful `validate_schema` or `apply_schema` tool call arguments.
+    /// DSL extracted from successful `validate_schema` or `apply_schema` tool call arguments.
     ToolArguments,
     /// Parsed from the LLM's response text (including markdown code blocks).
     ResponseText,
@@ -68,7 +83,10 @@ impl SchemaForgeAgent {
         registry: SchemaRegistry,
         backend: Arc<dyn DynForgeBackend>,
     ) -> Result<Self, ForgeAiError> {
-        let builder = ActonAI::builder().app_name("schema-forge").ollama(model);
+        let config = ProviderConfig::ollama(model).with_max_tokens(DEFAULT_MAX_TOKENS);
+        let builder = ActonAI::builder()
+            .app_name("schema-forge")
+            .provider_named("default", config);
         build_agent(builder, registry, backend).await
     }
 
@@ -78,9 +96,10 @@ impl SchemaForgeAgent {
         registry: SchemaRegistry,
         backend: Arc<dyn DynForgeBackend>,
     ) -> Result<Self, ForgeAiError> {
+        let config = ProviderConfig::anthropic(api_key).with_max_tokens(DEFAULT_MAX_TOKENS);
         let builder = ActonAI::builder()
             .app_name("schema-forge")
-            .anthropic(api_key);
+            .provider_named("default", config);
         build_agent(builder, registry, backend).await
     }
 
@@ -90,7 +109,10 @@ impl SchemaForgeAgent {
         registry: SchemaRegistry,
         backend: Arc<dyn DynForgeBackend>,
     ) -> Result<Self, ForgeAiError> {
-        let builder = ActonAI::builder().app_name("schema-forge").openai(api_key);
+        let config = ProviderConfig::openai(api_key).with_max_tokens(DEFAULT_MAX_TOKENS);
+        let builder = ActonAI::builder()
+            .app_name("schema-forge")
+            .provider_named("default", config);
         build_agent(builder, registry, backend).await
     }
 
@@ -112,9 +134,10 @@ impl SchemaForgeAgent {
         registry: SchemaRegistry,
         backend: Arc<dyn DynForgeBackend>,
     ) -> Result<Self, ForgeAiError> {
+        let config = ProviderConfig::ollama(model).with_max_tokens(DEFAULT_MAX_TOKENS);
         let builder = ActonAI::builder()
             .app_name("schema-forge")
-            .ollama(model)
+            .provider_named("default", config)
             .with_builtins();
         build_agent(builder, registry, backend).await
     }
@@ -141,15 +164,28 @@ impl SchemaForgeAgent {
     /// Single-shot generation that reliably extracts validated DSL.
     ///
     /// Like `generate()`, sends the description to the LLM with tools attached.
-    /// After collection, extracts DSL from three sources in priority order:
+    /// After collection, extracts DSL from four sources in priority order:
     ///
     /// 1. **Registry** — schemas applied via `apply_schema` tool
     /// 2. **Tool arguments** — DSL from the last successful `validate_schema`/`apply_schema` call
     /// 3. **Response text** — parsed from the LLM's final text (including markdown code blocks)
     /// 4. **Raw text** — unparseable fallback
     ///
+    /// If the initial attempt falls through to tier 4 (no valid DSL), enters a
+    /// correction loop: extracts parse errors from the response text and sends
+    /// them back to the model for up to [`MAX_GENERATION_ROUNDS`] rounds.
+    ///
     /// Uses low temperature (0.3) for deterministic tool usage.
     pub async fn generate_dsl(&self, description: &str) -> Result<GenerateResult, ForgeAiError> {
+        let registry = self.tools.registry();
+
+        // Accumulate schemas across multiple LLM rounds. Small models often
+        // generate one schema per tool call and stop, requiring continuation
+        // prompts to produce all requested schemas.
+        let mut accumulated = Vec::<schema_forge_core::types::SchemaDefinition>::new();
+        let mut best_source = DslSource::RawText;
+
+        // Initial attempt
         let mut builder = self
             .runtime
             .prompt(description)
@@ -161,8 +197,105 @@ impl SchemaForgeAgent {
             .await
             .map_err(|e| ForgeAiError::runtime_error(e.to_string()))?;
 
-        let registry = self.tools.registry();
-        Ok(extract_dsl(registry, &response.tool_calls, &response.text).await)
+        // Check registry first (Tier 1) — if apply_schema was called, we're done
+        let registry_schemas = registry.list().await;
+        if !registry_schemas.is_empty() {
+            let dsl = schema_forge_dsl::print_all(&registry_schemas);
+            return Ok(GenerateResult {
+                schema_count: registry_schemas.len(),
+                dsl,
+                source: DslSource::Registry,
+                assistant_text: response.text,
+            });
+        }
+
+        // Collect schemas from this round's tool calls and response text
+        let (new_schemas, source) =
+            collect_schemas_from_round(&response.tool_calls, &response.text);
+        merge_schemas(&mut accumulated, new_schemas);
+        if source < best_source {
+            best_source = source;
+        }
+
+        // Continuation loop: prompt for remaining schemas or fix errors
+        let mut messages = vec![
+            Message::user(description),
+            Message::assistant(&response.text),
+        ];
+        let mut last_response_text = response.text;
+
+        for _round in 0..MAX_GENERATION_ROUNDS {
+            let feedback = if accumulated.is_empty() {
+                // No schemas yet — send correction feedback
+                build_correction_feedback(&last_response_text)
+            } else {
+                // Have some schemas — build continuation with missing names
+                build_continuation_prompt(description, &accumulated)
+            };
+            messages.push(Message::user(&feedback));
+
+            let mut retry_builder = self
+                .runtime
+                .continue_with(messages.clone())
+                .system(FORGE_SYSTEM_PROMPT)
+                .temperature(0.3);
+            retry_builder = self.tools.attach_to(retry_builder);
+
+            let retry_response = match retry_builder.collect().await {
+                Ok(r) => r,
+                Err(_) if !accumulated.is_empty() => {
+                    // Round failed but we have schemas — return them
+                    break;
+                }
+                Err(e) => return Err(ForgeAiError::runtime_error(e.to_string())),
+            };
+
+            // Check registry again
+            let registry_schemas = registry.list().await;
+            if !registry_schemas.is_empty() {
+                let dsl = schema_forge_dsl::print_all(&registry_schemas);
+                return Ok(GenerateResult {
+                    schema_count: registry_schemas.len(),
+                    dsl,
+                    source: DslSource::Registry,
+                    assistant_text: retry_response.text,
+                });
+            }
+
+            let (new_schemas, source) =
+                collect_schemas_from_round(&retry_response.tool_calls, &retry_response.text);
+
+            messages.push(Message::assistant(&retry_response.text));
+            last_response_text = retry_response.text.clone();
+
+            if new_schemas.is_empty() && !accumulated.is_empty() {
+                // We have some schemas and the model produced nothing new — stop
+                break;
+            }
+
+            merge_schemas(&mut accumulated, new_schemas);
+            if source < best_source {
+                best_source = source;
+            }
+        }
+
+        // Build final result from accumulated schemas
+        if accumulated.is_empty() {
+            Ok(GenerateResult {
+                dsl: last_response_text.clone(),
+                source: DslSource::RawText,
+                assistant_text: last_response_text,
+                schema_count: 0,
+            })
+        } else {
+            let dsl = schema_forge_dsl::print_all(&accumulated);
+            Ok(GenerateResult {
+                schema_count: accumulated.len(),
+                dsl,
+                source: best_source,
+                assistant_text: last_response_text,
+            })
+        }
     }
 
     /// Single-shot with streaming tokens via callback.
@@ -257,9 +390,10 @@ async fn build_agent(
 ///
 /// Tries each tier in order and returns the first successful extraction:
 /// 1. Registry — schemas applied via `apply_schema`
-/// 2. Tool arguments — DSL from last successful `validate_schema`/`apply_schema`
+/// 2. Tool arguments — DSL from successful `validate_schema`/`apply_schema`
 /// 3. Response text — parsed from the LLM's conversational text
 /// 4. Raw text — unparseable fallback
+#[cfg(test)]
 pub(crate) async fn extract_dsl(
     registry: &SchemaRegistry,
     tool_calls: &[ExecutedToolCall],
@@ -277,25 +411,29 @@ pub(crate) async fn extract_dsl(
         };
     }
 
-    // Tier 2: Tool arguments — scan tool calls in reverse for last successful
-    // validate_schema or apply_schema with a "dsl" argument
-    for call in tool_calls.iter().rev() {
-        if (call.name == "validate_schema" || call.name == "apply_schema")
-            && call.result.is_ok()
-        {
-            if let Some(dsl_str) = call.arguments["dsl"].as_str() {
-                if let Ok(parsed) = schema_forge_dsl::parse(dsl_str) {
-                    if !parsed.is_empty() {
-                        let dsl = schema_forge_dsl::print_all(&parsed);
-                        return GenerateResult {
-                            schema_count: parsed.len(),
-                            dsl,
-                            source: DslSource::ToolArguments,
-                            assistant_text: response_text.to_string(),
-                        };
+    // Tier 2: Tool arguments — aggregate schemas from ALL successful
+    // validate_schema or apply_schema calls (model may call once per schema)
+    {
+        let mut all_schemas = Vec::new();
+        for call in tool_calls {
+            if (call.name == "validate_schema" || call.name == "apply_schema")
+                && call.result.is_ok()
+            {
+                if let Some(dsl_str) = call.arguments["dsl"].as_str() {
+                    if let Ok(parsed) = schema_forge_dsl::parse(dsl_str) {
+                        all_schemas.extend(parsed);
                     }
                 }
             }
+        }
+        if !all_schemas.is_empty() {
+            let dsl = schema_forge_dsl::print_all(&all_schemas);
+            return GenerateResult {
+                schema_count: all_schemas.len(),
+                dsl,
+                source: DslSource::ToolArguments,
+                assistant_text: response_text.to_string(),
+            };
         }
     }
 
@@ -312,18 +450,22 @@ pub(crate) async fn extract_dsl(
         }
     }
 
-    // Try extracting from markdown code blocks
-    for block in extract_dsl_from_markdown(response_text) {
-        if let Ok(parsed) = schema_forge_dsl::parse(&block) {
-            if !parsed.is_empty() {
-                let dsl = schema_forge_dsl::print_all(&parsed);
-                return GenerateResult {
-                    schema_count: parsed.len(),
-                    dsl,
-                    source: DslSource::ResponseText,
-                    assistant_text: response_text.to_string(),
-                };
+    // Try extracting from markdown code blocks (aggregate all parseable blocks)
+    {
+        let mut all_schemas = Vec::new();
+        for block in extract_dsl_from_markdown(response_text) {
+            if let Ok(parsed) = schema_forge_dsl::parse(&block) {
+                all_schemas.extend(parsed);
             }
+        }
+        if !all_schemas.is_empty() {
+            let dsl = schema_forge_dsl::print_all(&all_schemas);
+            return GenerateResult {
+                schema_count: all_schemas.len(),
+                dsl,
+                source: DslSource::ResponseText,
+                assistant_text: response_text.to_string(),
+            };
         }
     }
 
@@ -367,6 +509,170 @@ pub(crate) fn extract_dsl_from_markdown(text: &str) -> Vec<String> {
     }
 
     blocks
+}
+
+/// Collect parsed schemas from a single LLM round's tool calls and response text.
+///
+/// Returns the schemas found and the best extraction source tier.
+/// Does NOT check the registry (that's handled separately in `generate_dsl`).
+fn collect_schemas_from_round(
+    tool_calls: &[ExecutedToolCall],
+    response_text: &str,
+) -> (Vec<schema_forge_core::types::SchemaDefinition>, DslSource) {
+    // Tier 2: Tool arguments — aggregate from all successful validate/apply calls
+    let mut from_tools = Vec::new();
+    for call in tool_calls {
+        if (call.name == "validate_schema" || call.name == "apply_schema")
+            && call.result.is_ok()
+        {
+            if let Some(dsl_str) = call.arguments["dsl"].as_str() {
+                if let Ok(parsed) = schema_forge_dsl::parse(dsl_str) {
+                    from_tools.extend(parsed);
+                }
+            }
+        }
+    }
+
+    // Tier 3: Response text — try full text, then markdown blocks
+    let mut from_text = Vec::new();
+    if let Ok(parsed) = schema_forge_dsl::parse(response_text) {
+        from_text = parsed;
+    }
+    if from_text.is_empty() {
+        for block in extract_dsl_from_markdown(response_text) {
+            if let Ok(parsed) = schema_forge_dsl::parse(&block) {
+                from_text.extend(parsed);
+            }
+        }
+    }
+
+    // Merge: prefer tool schemas, add any text-only schemas not already present
+    if !from_tools.is_empty() {
+        let tool_names: Vec<String> =
+            from_tools.iter().map(|s| s.name.to_string()).collect();
+        for s in from_text {
+            if !tool_names.iter().any(|n| n == s.name.as_str()) {
+                from_tools.push(s);
+            }
+        }
+        (from_tools, DslSource::ToolArguments)
+    } else if !from_text.is_empty() {
+        (from_text, DslSource::ResponseText)
+    } else {
+        (Vec::new(), DslSource::RawText)
+    }
+}
+
+/// Merge new schemas into the accumulated set, skipping duplicates by name.
+fn merge_schemas(
+    accumulated: &mut Vec<schema_forge_core::types::SchemaDefinition>,
+    new_schemas: Vec<schema_forge_core::types::SchemaDefinition>,
+) {
+    for schema in new_schemas {
+        if !accumulated.iter().any(|s| s.name == schema.name) {
+            accumulated.push(schema);
+        }
+    }
+}
+
+/// Build a continuation prompt that tells the model which schemas are still missing.
+///
+/// Extracts PascalCase words from the original description as candidate schema names,
+/// compares with already-generated schemas, and asks for specific missing ones.
+fn build_continuation_prompt(
+    description: &str,
+    accumulated: &[schema_forge_core::types::SchemaDefinition],
+) -> String {
+    let generated_names: Vec<&str> = accumulated.iter().map(|s| s.name.as_str()).collect();
+
+    // Extract PascalCase words from the description as candidate schema names
+    let expected: Vec<&str> = description
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| {
+            w.len() >= 2
+                && w.chars().next().is_some_and(|c| c.is_uppercase())
+                && w.chars().skip(1).any(|c| c.is_lowercase())
+                && !is_common_word(w)
+        })
+        .collect();
+
+    let missing: Vec<&&str> = expected
+        .iter()
+        .filter(|name| !generated_names.iter().any(|g| g == *name))
+        .collect();
+
+    if missing.is_empty() {
+        format!(
+            "You have generated: {}. The original request was: \"{}\". \
+             If you believe more schemas are needed, generate the next one \
+             using `validate_schema`. Otherwise you are done.",
+            generated_names.join(", "),
+            description
+        )
+    } else {
+        format!(
+            "You have generated: {}. But the request also needs: {}. \
+             Generate the `{}` schema now. Call `validate_schema` with the DSL.",
+            generated_names.join(", "),
+            missing.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", "),
+            missing[0]
+        )
+    }
+}
+
+/// Returns true for common English words that happen to start with uppercase.
+fn is_common_word(word: &str) -> bool {
+    matches!(
+        word,
+        "The" | "This" | "These" | "Those" | "They"
+            | "There" | "Their" | "Then" | "Than"
+            | "Include" | "Including" | "Create" | "Design" | "Build"
+            | "Each" | "All" | "Some" | "Any" | "Every" | "Both"
+            | "Products" | "Categories" | "Customers" | "Orders" | "Reviews"
+            | "Items" | "Users" | "Posts" | "Comments" | "Tags"
+            | "Has" | "Have" | "Had" | "Does" | "Did" | "Will" | "Would"
+            | "Can" | "Could" | "Should" | "May" | "Might" | "Must"
+            | "Are" | "Were" | "Was" | "Been" | "Being"
+            | "Not" | "But" | "And" | "For" | "With" | "From" | "Into"
+            | "About" | "After" | "Before" | "Between" | "Through"
+            | "During" | "Without" | "Within" | "Along" | "Among"
+            | "Upon" | "Against" | "Across" | "Behind" | "Beyond"
+    )
+}
+
+/// Build a correction feedback message from the model's response text.
+///
+/// Extracts DSL from markdown code blocks, attempts to parse each block,
+/// and constructs feedback with specific parse errors when available.
+/// Falls back to generic tool-usage instructions when no DSL-like content is found.
+fn build_correction_feedback(response_text: &str) -> String {
+    let blocks = extract_dsl_from_markdown(response_text);
+
+    let mut all_errors = Vec::new();
+    for block in &blocks {
+        if let Err(errors) = schema_forge_dsl::parse(block) {
+            for err in &errors {
+                all_errors.push(err.to_string());
+            }
+        }
+    }
+
+    if !all_errors.is_empty() {
+        format!(
+            "Your DSL has parse errors. Please fix these errors and call the \
+             `validate_schema` tool with the corrected DSL:\n\n{}\n\n\
+             Remember: schema names must be PascalCase, field names must be \
+             snake_case, and all types must match the grammar exactly.",
+            all_errors.join("\n")
+        )
+    } else {
+        "Your response did not contain valid SchemaDSL. Please generate the schema \
+         using the `validate_schema` tool to ensure correctness, then call \
+         `apply_schema` to register it. Do NOT just write DSL in text — you MUST \
+         use the tools."
+            .to_string()
+    }
 }
 
 #[cfg(test)]
@@ -488,10 +794,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extract_dsl_tier2_uses_last_successful_call() {
+    async fn extract_dsl_tier2_aggregates_multiple_calls() {
         let registry = SchemaRegistry::new();
-        let dsl_v1 = "schema OldSchema {\n    name: text\n}";
-        let dsl_v2 = "schema NewSchema {\n    name: text required\n}";
+        let dsl_v1 = "schema Product {\n    name: text\n}";
+        let dsl_v2 = "schema Category {\n    name: text required\n}";
         let tool_calls = vec![
             make_successful_tool_call("validate_schema", dsl_v1),
             make_successful_tool_call("validate_schema", dsl_v2),
@@ -499,8 +805,9 @@ mod tests {
 
         let result = extract_dsl(&registry, &tool_calls, "Done!").await;
         assert_eq!(result.source, DslSource::ToolArguments);
-        // Should use the last (v2) since we scan in reverse
-        assert!(result.dsl.contains("NewSchema"));
+        assert_eq!(result.schema_count, 2);
+        assert!(result.dsl.contains("Product"));
+        assert!(result.dsl.contains("Category"));
     }
 
     #[tokio::test]
@@ -524,6 +831,18 @@ mod tests {
         assert_eq!(result.source, DslSource::ResponseText);
         assert_eq!(result.schema_count, 1);
         assert!(result.dsl.contains("Contact"));
+    }
+
+    #[tokio::test]
+    async fn extract_dsl_tier3_aggregates_markdown_blocks() {
+        let registry = SchemaRegistry::new();
+        let text = "First schema:\n\n```schemadsl\nschema Product {\n    name: text required\n}\n```\n\nSecond schema:\n\n```schemadsl\nschema Category {\n    title: text required\n}\n```\n\nDone!";
+
+        let result = extract_dsl(&registry, &[], text).await;
+        assert_eq!(result.source, DslSource::ResponseText);
+        assert_eq!(result.schema_count, 2);
+        assert!(result.dsl.contains("Product"));
+        assert!(result.dsl.contains("Category"));
     }
 
     #[tokio::test]
@@ -572,5 +891,55 @@ mod tests {
         let text = "No code blocks here, just text.";
         let blocks = extract_dsl_from_markdown(text);
         assert!(blocks.is_empty());
+    }
+
+    // -- build_correction_feedback tests --
+
+    #[test]
+    fn correction_feedback_includes_parse_errors() {
+        // Uppercase field name → parser should produce an error
+        let text = "Here is the schema:\n\n```schemadsl\nschema Book {\n    Title: text\n}\n```";
+        let feedback = build_correction_feedback(text);
+        assert!(
+            feedback.contains("parse error") || feedback.contains("PascalCase"),
+            "feedback should contain parse errors: {feedback}"
+        );
+        assert!(feedback.contains("validate_schema"));
+    }
+
+    #[test]
+    fn correction_feedback_without_dsl_content() {
+        let text = "I created a wonderful schema for you! It has books and authors.";
+        let feedback = build_correction_feedback(text);
+        assert!(feedback.contains("validate_schema"));
+        assert!(feedback.contains("MUST"));
+    }
+
+    #[test]
+    fn correction_feedback_with_empty_schema() {
+        // Empty schema body → parser produces EmptySchema error
+        let text = "```\nschema Empty {}\n```";
+        let feedback = build_correction_feedback(text);
+        assert!(
+            feedback.contains("no fields") || feedback.contains("parse error"),
+            "feedback should mention empty schema: {feedback}"
+        );
+    }
+
+    #[test]
+    fn correction_feedback_valid_dsl_returns_generic() {
+        // Valid DSL in a markdown block. In practice, extract_dsl would
+        // catch this before build_correction_feedback is called, but if it
+        // does get called, the generic message should be returned since
+        // there are no parse errors to report.
+        let text = "```\nschema Contact {\n    name: text required\n}\n```";
+        let feedback = build_correction_feedback(text);
+        // No errors extracted → generic message
+        assert!(feedback.contains("validate_schema"));
+    }
+
+    #[test]
+    fn max_generation_rounds_constant() {
+        assert_eq!(MAX_GENERATION_ROUNDS, 5);
     }
 }
