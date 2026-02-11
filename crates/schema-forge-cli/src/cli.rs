@@ -234,6 +234,16 @@ pub struct ServeArgs {
     /// Log level override (trace, debug, info, warn, error)
     #[arg(long = "log-level")]
     pub log_level: Option<String>,
+
+    /// Admin username for the admin UI (bootstraps on first run)
+    #[cfg(feature = "admin-ui")]
+    #[arg(long = "admin-user", env = "FORGE_ADMIN_USER", default_value = "admin")]
+    pub admin_user: String,
+
+    /// Admin password for the admin UI (bootstraps on first run)
+    #[cfg(feature = "admin-ui")]
+    #[arg(long = "admin-password", env = "FORGE_ADMIN_PASSWORD")]
+    pub admin_password: Option<String>,
 }
 
 /// Export subcommands.

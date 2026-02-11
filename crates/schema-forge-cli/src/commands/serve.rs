@@ -40,7 +40,19 @@ pub async fn run(
     let backend = super::connect_backend(&db_params, output).await?;
 
     // 4. Build the SchemaForge extension
-    let extension = SchemaForgeExtension::builder()
+    #[allow(unused_mut)]
+    let mut builder = SchemaForgeExtension::builder();
+
+    #[cfg(feature = "admin-ui")]
+    {
+        let client = backend.client().clone();
+        builder = builder.with_surreal_client(client);
+        if let Some(ref password) = args.admin_password {
+            builder = builder.with_admin_credentials(args.admin_user.clone(), password.clone());
+        }
+    }
+
+    let extension = builder
         .with_backend(backend)
         .build()
         .await
