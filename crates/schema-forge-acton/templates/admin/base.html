@@ -3,14 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
     <title>{% block title %}SchemaForge Admin{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <link rel="stylesheet" href="/admin/static/admin.css">
 </head>
 <body>
     <nav class="sidebar bg-base-200 border-r border-base-300">
-        <div class="text-lg font-bold p-4">
-            SchemaForge <span class="font-normal text-sm text-base-content/60">Admin</span>
+        <div class="sidebar-brand">
+            <h1>SchemaForge</h1>
+            <span>Admin Console</span>
         </div>
         <ul class="menu">
             <li><a href="/admin/">Dashboard</a></li>

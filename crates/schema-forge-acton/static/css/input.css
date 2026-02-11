@@ -4,22 +4,164 @@
 }
 
 /* ================================================================
-   Admin UI component styles — daisyUI 5
-   Only layout / structural classes that daisyUI does not provide.
+   SchemaForge Admin UI — Polished with daisyUI 5
+   Typography: Outfit (UI) + JetBrains Mono (code)
    ================================================================ */
 
-/* Sidebar — fixed positioning shell */
+/* Fonts loaded via <link> in base.html */
+
+/* ── Global polish ─────────────────────────────────────────────── */
+html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+    font-family: 'Outfit', system-ui, sans-serif;
+}
+
+::selection {
+    background: color-mix(in oklch, var(--color-primary) 30%, transparent);
+    color: var(--color-base-content);
+}
+
+/* Focus ring — consistent primary glow */
+:focus-visible {
+    outline: 2px solid color-mix(in oklch, var(--color-primary) 50%, transparent);
+    outline-offset: 2px;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Outfit', system-ui, sans-serif;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.875em;
+    background: var(--color-base-100);
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+    border: 1px solid color-mix(in oklch, var(--color-base-300) 50%, transparent);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: color-mix(in oklch, var(--color-base-content) 15%, transparent);
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklch, var(--color-base-content) 25%, transparent);
+}
+
+/* ── HTMX loading states ───────────────────────────────────────── */
+.htmx-request {
+    opacity: 0.6;
+    transition: opacity 200ms ease;
+    pointer-events: none;
+}
+
+.htmx-settling {
+    opacity: 1;
+    transition: opacity 150ms ease-in;
+}
+
+/* Subtle loading indicator for HTMX targets */
+.htmx-indicator {
+    display: none;
+}
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+    display: inline-block;
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────── */
 .sidebar {
     width: 240px;
-    background: oklch(var(--b2));
-    border-right: 1px solid oklch(var(--b3));
-    padding: 20px 0;
+    background: var(--color-base-200);
+    border-right: 1px solid var(--color-base-300);
+    padding: 0;
     flex-shrink: 0;
     position: fixed;
     top: 0;
     left: 0;
     bottom: 0;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar-brand {
+    padding: 20px 20px 16px;
+    border-bottom: 1px solid var(--color-base-300);
+}
+
+.sidebar-brand h1 {
+    font-size: 1.125rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    margin: 0;
+    line-height: 1;
+    color: var(--color-primary);
+}
+
+.sidebar-brand span {
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: color-mix(in oklch, var(--color-base-content) 40%, transparent);
+    display: block;
+    margin-top: 2px;
+}
+
+.sidebar .menu {
+    padding: 8px;
+    flex: 1;
+}
+
+.sidebar .menu li > a {
+    border-radius: 6px;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    padding: 8px 12px;
+    transition: all 0.15s ease;
+    border-left: 2px solid transparent;
+}
+
+.sidebar .menu li > a:hover {
+    background: color-mix(in oklch, var(--color-base-300) 50%, transparent);
+}
+
+.sidebar .menu li > a.active,
+.sidebar .menu li > a[aria-current="page"] {
+    background: color-mix(in oklch, var(--color-primary) 10%, transparent);
+    border-left-color: var(--color-primary);
+    color: var(--color-primary);
+}
+
+.sidebar .menu-title {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: color-mix(in oklch, var(--color-base-content) 35%, transparent);
+    padding: 16px 12px 4px;
 }
 
 /* Main content offset */
@@ -30,16 +172,80 @@
     min-width: 0;
 }
 
-/* Schema editor 2-column grid + sticky preview */
+/* ── Card enhancements ─────────────────────────────────────────── */
+.card {
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+/* ── Schema card — dashboard grid items ────────────────────────── */
+.schema-card {
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.schema-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--color-primary), color-mix(in oklch, var(--color-primary) 30%, transparent));
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.schema-card:hover {
+    border-color: color-mix(in oklch, var(--color-primary) 40%, transparent);
+    box-shadow: 0 4px 24px color-mix(in oklch, var(--color-primary) 6%, transparent);
+    transform: translateY(-1px);
+}
+
+.schema-card:hover::before {
+    opacity: 1;
+}
+
+.schema-card h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+    letter-spacing: -0.01em;
+}
+
+.schema-card .meta {
+    font-size: 0.8125rem;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
+}
+
+.schema-card .count {
+    margin-top: 16px;
+    font-size: 2rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: var(--color-primary);
+}
+
+.schema-card .count-label {
+    font-size: 0.6875rem;
+    color: color-mix(in oklch, var(--color-base-content) 40%, transparent);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+}
+
+/* ── Schema editor 2-column grid + sticky preview ──────────────── */
 .schema-editor-layout {
     display: grid;
     grid-template-columns: 1fr 380px;
     gap: 24px;
     align-items: start;
 }
+
 .editor-form-panel {
     min-width: 0;
 }
+
 .editor-preview-panel {
     position: sticky;
     top: 32px;
@@ -54,33 +260,37 @@
     }
 }
 
-/* DSL preview monospace block */
+/* ── DSL preview monospace block ───────────────────────────────── */
 .dsl-preview-code {
-    background: oklch(var(--b1));
-    border: 1px solid oklch(var(--b3));
-    border-radius: var(--rounded-box);
+    background: var(--color-base-100);
+    border: 1px solid var(--color-base-300);
+    border-radius: var(--radius-box);
     padding: 16px;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
-    line-height: 1.5;
+    line-height: 1.6;
     overflow-x: auto;
     white-space: pre;
-    color: oklch(var(--bc));
+    color: color-mix(in oklch, var(--color-base-content) 85%, transparent);
     margin: 0;
+    tab-size: 4;
 }
 
-/* Field editor rows */
+/* ── Field editor rows ─────────────────────────────────────────── */
 .field-editor-row {
-    background: oklch(var(--b1));
-    border: 1px solid oklch(var(--b3));
-    border-radius: var(--rounded-box);
+    background: var(--color-base-100);
+    border: 1px solid var(--color-base-300);
+    border-radius: var(--radius-box);
     padding: 12px 16px;
-    margin-bottom: 12px;
-    transition: border-color 0.15s;
+    margin-bottom: 10px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
+
 .field-editor-row:hover {
-    border-color: oklch(var(--p));
+    border-color: color-mix(in oklch, var(--color-primary) 40%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in oklch, var(--color-primary) 8%, transparent);
 }
+
 .field-row-header {
     display: flex;
     justify-content: space-between;
@@ -88,51 +298,67 @@
     gap: 12px;
     margin-bottom: 8px;
 }
+
 .field-row-main {
     display: flex;
     gap: 12px;
     flex: 1;
     min-width: 0;
 }
+
 .field-name-input {
     flex: 1;
     min-width: 0;
 }
+
 .field-name-input input {
     width: 100%;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
 }
+
 .field-type-select {
     width: 140px;
     flex-shrink: 0;
 }
+
 .field-type-select select {
     width: 100%;
 }
+
 .field-row-actions {
     display: flex;
-    gap: 4px;
+    gap: 2px;
     flex-shrink: 0;
 }
+
 .field-row-details {
     display: flex;
     gap: 16px;
     align-items: flex-start;
 }
+
 .field-constraints {
     display: flex;
     gap: 12px;
     flex: 1;
     flex-wrap: wrap;
 }
+
 .constraint-row {
     min-width: 100px;
 }
+
 .constraint-row label {
     display: block;
-    font-size: 11px;
-    color: oklch(var(--bc) / 0.6);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
     margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
 }
+
 .constraint-row input,
 .constraint-row select,
 .constraint-row textarea {
@@ -140,6 +366,7 @@
     padding: 6px 8px;
     font-size: 13px;
 }
+
 .field-modifiers {
     display: flex;
     gap: 12px;
@@ -147,138 +374,293 @@
     align-items: center;
     padding-top: 8px;
 }
+
 .modifier-check {
     display: flex;
     align-items: center;
-    gap: 4px;
-    font-size: 13px;
-    color: oklch(var(--bc) / 0.6);
+    gap: 6px;
+    font-size: 0.8125rem;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
     cursor: pointer;
+    transition: color 0.15s ease;
+    font-weight: 500;
 }
+
+.modifier-check:hover {
+    color: color-mix(in oklch, var(--color-base-content) 80%, transparent);
+}
+
+.modifier-check:has(input:checked) {
+    color: color-mix(in oklch, var(--color-base-content) 90%, transparent);
+}
+
 .modifier-check input {
     width: 16px;
     height: 16px;
 }
 
-/* Detail view */
+/* ── Detail view ───────────────────────────────────────────────── */
 .detail-row {
     display: flex;
-    padding: 12px 0;
-    border-bottom: 1px solid oklch(var(--b3));
+    padding: 14px 0;
+    border-bottom: 1px solid color-mix(in oklch, var(--color-base-300) 60%, transparent);
+    transition: background-color 0.15s ease;
 }
+
+.detail-row:hover {
+    background: color-mix(in oklch, var(--color-base-300) 15%, transparent);
+    margin: 0 -16px;
+    padding-left: 16px;
+    padding-right: 16px;
+}
+
+.detail-row:last-child {
+    border-bottom: none;
+}
+
 .detail-label {
     width: 200px;
     flex-shrink: 0;
-    font-size: 13px;
+    font-size: 0.8125rem;
     font-weight: 600;
-    color: oklch(var(--bc) / 0.6);
+    color: color-mix(in oklch, var(--color-base-content) 45%, transparent);
     text-transform: uppercase;
-    letter-spacing: 0.03em;
-}
-.detail-value {
-    font-size: 14px;
+    letter-spacing: 0.04em;
 }
 
-/* Migration preview */
+.detail-value {
+    font-size: 0.875rem;
+}
+
+/* ── Migration preview ─────────────────────────────────────────── */
 .migration-steps {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
 }
+
 .migration-step {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
+    font-size: 0.8125rem;
+    padding: 4px 0;
 }
+
 .migration-desc {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
+    font-size: 0.75rem;
 }
+
 .migration-overall {
     margin-top: 12px;
-    padding-top: 8px;
-    border-top: 1px solid oklch(var(--b3));
-    font-size: 13px;
-    color: oklch(var(--bc) / 0.6);
+    padding-top: 10px;
+    border-top: 1px solid var(--color-base-300);
+    font-size: 0.8125rem;
+    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
 }
 
-/* Composite field nesting */
+/* ── Composite field nesting ───────────────────────────────────── */
 .composite-group {
-    border: 1px solid oklch(var(--b3));
-    border-radius: var(--rounded-box);
+    border: 1px solid color-mix(in oklch, var(--color-base-300) 60%, transparent);
+    border-radius: var(--radius-box);
     padding: 16px;
     margin-top: 4px;
+    background: color-mix(in oklch, var(--color-base-100) 50%, transparent);
 }
 
-/* Schema card hover transition */
-.schema-card {
-    transition: border-color 0.15s;
-}
-.schema-card:hover {
-    border-color: oklch(var(--p));
-}
-.schema-card h3 {
-    font-size: 16px;
+/* ── Table enhancements ────────────────────────────────────────── */
+.table th {
+    font-size: 0.6875rem;
     font-weight: 600;
-    margin-bottom: 4px;
-}
-.schema-card .meta {
-    font-size: 13px;
-    color: oklch(var(--bc) / 0.6);
-}
-.schema-card .count {
-    margin-top: 12px;
-    font-size: 28px;
-    font-weight: 700;
-    color: oklch(var(--p));
-}
-.schema-card .count-label {
-    font-size: 12px;
-    color: oklch(var(--bc) / 0.6);
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    color: color-mix(in oklch, var(--color-base-content) 45%, transparent);
 }
 
-/* Schema relationship graph */
-#schema-graph svg { width: 100%; height: 100%; }
-.graph-node { cursor: pointer; }
+.table td {
+    vertical-align: middle;
+}
+
+.table tbody tr {
+    transition: background-color 0.15s ease;
+}
+
+/* ── Badge enhancements ────────────────────────────────────────── */
+.badge {
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+/* ── Button enhancements ───────────────────────────────────────── */
+.btn {
+    font-family: 'Outfit', system-ui, sans-serif;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    transition: all 0.15s ease;
+}
+
+.btn:active {
+    transform: scale(0.97);
+}
+
+.btn-primary {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.btn-primary:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Input focus enhancements ──────────────────────────────────── */
+.input:focus,
+.select:focus,
+.textarea:focus {
+    border-color: color-mix(in oklch, var(--color-primary) 50%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-primary) 10%, transparent);
+}
+
+/* ── Alert / flash animation ───────────────────────────────────── */
+.alert {
+    animation: alertSlideIn 0.3s ease-out;
+}
+
+@keyframes alertSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ── Breadcrumb polish ─────────────────────────────────────────── */
+.breadcrumbs {
+    margin-bottom: 16px;
+}
+
+.breadcrumbs a {
+    transition: color 0.15s ease;
+}
+
+.breadcrumbs a:hover {
+    color: var(--color-primary);
+}
+
+/* ── Empty state ───────────────────────────────────────────────── */
+.empty-state-icon {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 16px;
+    border-radius: 12px;
+    background: var(--color-base-200);
+    border: 1px solid var(--color-base-300);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: color-mix(in oklch, var(--color-base-content) 30%, transparent);
+    font-size: 1.25rem;
+}
+
+/* ── Schema relationship graph ─────────────────────────────────── */
+#schema-graph svg {
+    width: 100%;
+    height: 100%;
+}
+
+.graph-node {
+    cursor: pointer;
+}
+
 .graph-node circle {
-    fill: oklch(var(--p) / 0.12);
-    stroke: oklch(var(--p));
-    stroke-width: 2;
-    transition: all 0.15s;
+    fill: color-mix(in oklch, var(--color-primary) 10%, transparent);
+    stroke: color-mix(in oklch, var(--color-primary) 60%, transparent);
+    stroke-width: 1.5;
+    transition: all 0.2s ease;
 }
+
 .graph-node:hover circle {
-    fill: oklch(var(--p) / 0.25);
-    filter: drop-shadow(0 0 6px oklch(var(--p) / 0.3));
+    fill: color-mix(in oklch, var(--color-primary) 20%, transparent);
+    stroke: var(--color-primary);
+    stroke-width: 2;
+    filter: drop-shadow(0 0 8px color-mix(in oklch, var(--color-primary) 25%, transparent));
 }
+
 .graph-node text {
-    fill: oklch(var(--bc));
-    font-size: 12px;
+    fill: var(--color-base-content);
+    font-family: 'Outfit', system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
     text-anchor: middle;
     dominant-baseline: central;
     pointer-events: none;
 }
+
 .graph-edge {
-    stroke: oklch(var(--b3));
+    stroke: var(--color-base-300);
     stroke-width: 1.5;
+    transition: stroke 0.15s ease;
 }
+
+.graph-edge:hover {
+    stroke: color-mix(in oklch, var(--color-base-content) 40%, transparent);
+}
+
 .graph-edge.many {
-    stroke-dasharray: 6,3;
+    stroke-dasharray: 6, 3;
 }
+
 .graph-edge-label {
-    fill: oklch(var(--bc) / 0.6);
-    font-size: 11px;
-    text-anchor: middle;
-    opacity: 0;
-    transition: opacity 0.15s;
-    pointer-events: none;
-}
-.graph-edge:hover + .graph-edge-label,
-.graph-edge-label:hover { opacity: 1; }
-.graph-count {
-    fill: oklch(var(--bc) / 0.6);
+    fill: color-mix(in oklch, var(--color-base-content) 60%, transparent);
+    font-family: 'JetBrains Mono', monospace;
     font-size: 10px;
     text-anchor: middle;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    pointer-events: none;
+}
+
+.graph-edge:hover + .graph-edge-label,
+.graph-edge-label:hover {
+    opacity: 1;
+}
+
+.graph-count {
+    fill: color-mix(in oklch, var(--color-base-content) 40%, transparent);
+    font-family: 'Outfit', system-ui, sans-serif;
+    font-size: 9px;
+    font-weight: 500;
+    text-anchor: middle;
+}
+
+/* ── Preview card section headers ──────────────────────────────── */
+.preview-header {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: color-mix(in oklch, var(--color-base-content) 35%, transparent);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.preview-header::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: color-mix(in oklch, var(--color-base-300) 60%, transparent);
+}
+
+/* ── Page transition for HTMX ──────────────────────────────────── */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+main > *:first-child {
+    animation: fadeIn 0.2s ease-out;
 }

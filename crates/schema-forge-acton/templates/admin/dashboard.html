@@ -3,26 +3,31 @@
 {% block title %}Dashboard - SchemaForge Admin{% endblock %}
 
 {% block content %}
-<div class="flex justify-between items-center mb-6">
+<div class="flex justify-between items-center mb-8">
     <div>
         <h2>Dashboard</h2>
+        {% if !entries.is_empty() %}
+        <p class="text-sm text-base-content/40 mt-1">{{ entries.len() }} schema{% if entries.len() != 1 %}s{% endif %} registered</p>
+        {% endif %}
     </div>
     <a href="/admin/schemas/new" class="btn btn-primary">+ Create Schema</a>
 </div>
 
 {% if entries.is_empty() %}
-<div class="text-center py-12 px-5 text-base-content/60">
-    <p>No schemas registered yet.</p>
-    <p>Define schemas in <code>.forge</code> files and start the server with <code>schema-forge serve</code>.</p>
+<div class="text-center py-16 px-5">
+    <div class="empty-state-icon">&#x2692;</div>
+    <p class="text-base-content/60 text-lg font-medium mb-2">No schemas yet</p>
+    <p class="text-base-content/40 text-sm mb-6">Define schemas in <code>.forge</code> files or create one above.</p>
+    <a href="/admin/schemas/new" class="btn btn-primary btn-sm">Create Your First Schema</a>
 </div>
 {% else %}
 
 {% if graph.has_edges %}
-<div class="card card-border bg-base-200 mb-6">
+<div class="card card-border bg-base-200 mb-8">
     <div class="card-body">
         <div class="flex justify-between items-center mb-4">
-            <h3 class="m-0">Schema Relationships</h3>
-            <span class="text-sm text-base-content/60">Click a schema to view details</span>
+            <h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 m-0">Schema Relationships</h3>
+            <span class="text-xs text-base-content/30">Click a node to view details</span>
         </div>
         <div id="schema-graph" class="w-full h-[350px] bg-base-100 rounded-box overflow-hidden"></div>
     </div>
@@ -103,7 +108,7 @@
     marker.setAttribute('orient', 'auto');
     var arrow = document.createElementNS(ns, 'polygon');
     arrow.setAttribute('points', '0 0, 8 3, 0 6');
-    arrow.setAttribute('fill', 'var(--border)');
+    arrow.setAttribute('fill', 'var(--color-base-300)');
     marker.appendChild(arrow);
     defs.appendChild(marker);
     svg.appendChild(defs);
@@ -177,17 +182,17 @@
 </script>
 {% endif %}
 
-<div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
+<div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-5">
     {% for entry in entries %}
     <a href="/admin/schemas/{{ entry.schema.url_name }}/entities" class="card card-border bg-base-200 schema-card no-underline text-inherit">
         <div class="card-body">
             <h3>{{ entry.schema.name }}</h3>
-            <div class="text-sm text-base-content/60">
+            <div class="meta">
                 {{ entry.schema.fields.len() }} fields
                 {% if let Some(v) = entry.schema.version %} &middot; v{{ v }}{% endif %}
             </div>
-            <div class="text-2xl font-bold">{{ entry.entity_count }}</div>
-            <div class="text-sm text-base-content/60">entities</div>
+            <div class="count">{{ entry.entity_count }}</div>
+            <div class="count-label">entities</div>
         </div>
     </a>
     {% endfor %}

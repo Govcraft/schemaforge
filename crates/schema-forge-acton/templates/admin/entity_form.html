@@ -20,7 +20,7 @@
 {% if !errors.is_empty() %}
 <div class="alert alert-error">
     <strong>Please fix the following errors:</strong>
-    <ul style="margin-top: 8px; padding-left: 20px;">
+    <ul class="mt-2 ml-5 list-disc">
         {% for error in errors %}
         <li>{{ error }}</li>
         {% endfor %}
@@ -43,7 +43,7 @@
         {% include "admin/fragments/field_input.html" %}
         {% endfor %}
 
-        <div style="display: flex; gap: 12px; margin-top: 24px;">
+        <div class="flex gap-3 mt-6">
             <button type="submit" class="btn btn-primary">
                 {% if entity_id.is_some() %}Update{% else %}Create{% endif %}
             </button>
