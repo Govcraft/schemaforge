@@ -44,6 +44,11 @@ fn assert_round_trip(source: &str) {
                 "modifier mismatch for '{}.{}'",
                 s1.name, f1.name
             );
+            assert_eq!(
+                f1.annotations, f2.annotations,
+                "field annotation mismatch for '{}.{}'",
+                s1.name, f1.name
+            );
         }
 
         assert_eq!(
@@ -216,4 +221,54 @@ fn print_then_parse_preserves_comments_stripped() {
     let reparsed = parse(&printed).unwrap();
     assert_eq!(reparsed[0].fields[0].name.as_str(), "name");
     assert!(reparsed[0].fields[0].is_required());
+}
+
+// -- Authorization annotation round-trips --
+
+#[test]
+fn round_trip_system_annotation() {
+    assert_round_trip("@system schema S { name: text }");
+}
+
+#[test]
+fn round_trip_access_annotation() {
+    assert_round_trip(
+        r#"@access(read: ["sales", "admin"], write: ["admin"], delete: ["admin"], cross_tenant_read: ["super_admin"]) schema S { name: text }"#,
+    );
+}
+
+#[test]
+fn round_trip_tenant_root() {
+    assert_round_trip("@tenant(root) schema S { name: text }");
+}
+
+#[test]
+fn round_trip_tenant_child() {
+    assert_round_trip(r#"@tenant(parent: "Organization") schema S { name: text }"#);
+}
+
+#[test]
+fn round_trip_field_owner() {
+    assert_round_trip("schema S { user_id: text @owner }");
+}
+
+#[test]
+fn round_trip_field_access() {
+    assert_round_trip(
+        r#"schema S { salary: float @field_access(read: ["hr"], write: ["hr"]) }"#,
+    );
+}
+
+#[test]
+fn round_trip_combined_annotations() {
+    assert_round_trip(
+        r#"@system
+        @access(read: ["admin"], write: ["admin"])
+        @tenant(root)
+        schema S {
+            owner_id: text required @owner
+            salary: float @field_access(read: ["hr"], write: ["hr"])
+            name: text
+        }"#,
+    );
 }

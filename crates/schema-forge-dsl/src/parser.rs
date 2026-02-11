@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use schema_forge_core::types::{
-    Annotation, Cardinality, DefaultValue, EnumVariants, FieldDefinition, FieldModifier, FieldName,
-    FieldType, FloatConstraints, IntegerConstraints, SchemaDefinition, SchemaId, SchemaName,
-    SchemaVersion, TextConstraints,
+    Annotation, Cardinality, DefaultValue, EnumVariants, FieldAnnotation, FieldDefinition,
+    FieldModifier, FieldName, FieldType, FloatConstraints, IntegerConstraints, SchemaDefinition,
+    SchemaId, SchemaName, SchemaVersion, TenantKind, TextConstraints,
 };
 
 use crate::error::{DslError, Span};
@@ -183,14 +183,15 @@ impl Parser {
         Ok(annotations)
     }
 
-    /// annotation = "@" IDENT "(" literal ")"
+    /// annotation = "@" IDENT ("(" ... ")")?
     fn parse_annotation(&mut self) -> Result<Annotation, DslError> {
         self.expect(&Token::At)?;
         let name_tok = self.expect_ident("annotation name")?;
-        self.expect(&Token::LParen)?;
 
         let annotation = match name_tok.text.as_str() {
+            "system" => Annotation::System,
             "version" => {
+                self.expect(&Token::LParen)?;
                 let value_tok = self.expect_integer_literal()?;
                 let version_num = parse_i64(&value_tok.text, &value_tok.span)? as u32;
                 let version =
@@ -198,28 +199,112 @@ impl Parser {
                         source: e,
                         span: value_tok.span.clone(),
                     })?;
+                self.expect(&Token::RParen)?;
                 Annotation::Version { version }
             }
             "display" => {
+                self.expect(&Token::LParen)?;
                 let value_tok = self.expect_string_literal()?;
                 let field_str = unquote_string(&value_tok.text);
                 let field = FieldName::new(&field_str).map_err(|_| DslError::InvalidFieldName {
                     name: field_str.clone(),
                     span: value_tok.span.clone(),
                 })?;
+                self.expect(&Token::RParen)?;
                 Annotation::Display { field }
             }
+            "access" => {
+                self.expect(&Token::LParen)?;
+                let lists = self.parse_named_string_lists()?;
+                self.expect(&Token::RParen)?;
+                Annotation::Access {
+                    read: extract_string_list(&lists, "read"),
+                    write: extract_string_list(&lists, "write"),
+                    delete: extract_string_list(&lists, "delete"),
+                    cross_tenant_read: extract_string_list(&lists, "cross_tenant_read"),
+                }
+            }
+            "tenant" => {
+                self.expect(&Token::LParen)?;
+                let tok = self.expect_ident("tenant kind")?;
+                let kind = match tok.text.as_str() {
+                    "root" => TenantKind::Root,
+                    "parent" => {
+                        self.expect(&Token::Colon)?;
+                        let schema_tok = self.expect_string_literal()?;
+                        let schema_str = unquote_string(&schema_tok.text);
+                        let parent =
+                            SchemaName::new(&schema_str).map_err(|_| {
+                                DslError::InvalidSchemaName {
+                                    name: schema_str,
+                                    span: schema_tok.span.clone(),
+                                }
+                            })?;
+                        TenantKind::Child { parent }
+                    }
+                    other => {
+                        return Err(DslError::UnexpectedToken {
+                            expected: "'root' or 'parent'".to_string(),
+                            found: format!("'{other}'"),
+                            span: tok.span,
+                        });
+                    }
+                };
+                self.expect(&Token::RParen)?;
+                Annotation::Tenant(kind)
+            }
             other => {
-                return Err(DslError::UnexpectedToken {
-                    expected: "annotation name ('version' or 'display')".to_string(),
-                    found: format!("'{other}'"),
+                return Err(DslError::UnknownAnnotation {
+                    name: other.to_string(),
                     span: name_tok.span,
                 });
             }
         };
 
-        self.expect(&Token::RParen)?;
         Ok(annotation)
+    }
+
+    /// Parse named string lists: `key: ["a", "b"], key2: ["c"]`
+    fn parse_named_string_lists(
+        &mut self,
+    ) -> Result<Vec<(String, Vec<String>)>, DslError> {
+        let mut result = Vec::new();
+        if self.peek_token() == Some(&Token::RParen) {
+            return Ok(result);
+        }
+        loop {
+            let key_tok = self.expect_ident("list name")?;
+            self.expect(&Token::Colon)?;
+            let values = self.parse_string_list()?;
+            result.push((key_tok.text.clone(), values));
+            if self.peek_token() == Some(&Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(result)
+    }
+
+    /// Parse a bracketed string list: `["a", "b", "c"]`
+    fn parse_string_list(&mut self) -> Result<Vec<String>, DslError> {
+        self.expect(&Token::LBracket)?;
+        let mut items = Vec::new();
+        if self.peek_token() == Some(&Token::RBracket) {
+            self.advance();
+            return Ok(items);
+        }
+        loop {
+            let tok = self.expect_string_literal()?;
+            items.push(unquote_string(&tok.text));
+            if self.peek_token() == Some(&Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(&Token::RBracket)?;
+        Ok(items)
     }
 
     /// field_def* (zero or more fields until '}')
@@ -231,7 +316,7 @@ impl Parser {
         Ok(fields)
     }
 
-    /// field_def = IDENT ":" type_expr modifier*
+    /// field_def = IDENT ":" type_expr modifier* field_annotation*
     fn parse_field(&mut self) -> Result<FieldDefinition, DslError> {
         let name_tok = self.expect_ident("field name")?;
         let field_name =
@@ -244,13 +329,54 @@ impl Parser {
 
         let field_type = self.parse_type()?;
         let modifiers = self.parse_modifiers()?;
+        let field_annotations = self.parse_field_annotations()?;
 
-        if modifiers.is_empty() {
-            Ok(FieldDefinition::new(field_name, field_type))
+        if field_annotations.is_empty() {
+            if modifiers.is_empty() {
+                Ok(FieldDefinition::new(field_name, field_type))
+            } else {
+                Ok(FieldDefinition::with_modifiers(
+                    field_name, field_type, modifiers,
+                ))
+            }
         } else {
-            Ok(FieldDefinition::with_modifiers(
-                field_name, field_type, modifiers,
+            Ok(FieldDefinition::with_annotations(
+                field_name,
+                field_type,
+                modifiers,
+                field_annotations,
             ))
+        }
+    }
+
+    /// Parse zero or more field-level annotations (e.g., `@owner`, `@field_access(...)`)
+    fn parse_field_annotations(&mut self) -> Result<Vec<FieldAnnotation>, DslError> {
+        let mut annotations = Vec::new();
+        while self.peek_token() == Some(&Token::At) {
+            annotations.push(self.parse_field_annotation()?);
+        }
+        Ok(annotations)
+    }
+
+    /// Parse a single field-level annotation.
+    fn parse_field_annotation(&mut self) -> Result<FieldAnnotation, DslError> {
+        self.expect(&Token::At)?;
+        let name_tok = self.expect_ident("field annotation name")?;
+        match name_tok.text.as_str() {
+            "owner" => Ok(FieldAnnotation::Owner),
+            "field_access" => {
+                self.expect(&Token::LParen)?;
+                let lists = self.parse_named_string_lists()?;
+                self.expect(&Token::RParen)?;
+                Ok(FieldAnnotation::FieldAccess {
+                    read: extract_string_list(&lists, "read"),
+                    write: extract_string_list(&lists, "write"),
+                })
+            }
+            other => Err(DslError::UnknownAnnotation {
+                name: other.to_string(),
+                span: name_tok.span,
+            }),
         }
     }
 
@@ -708,6 +834,14 @@ fn parse_i64(text: &str, span: &Span) -> Result<i64, DslError> {
             text: text.to_string(),
             span: span.clone(),
         })
+}
+
+fn extract_string_list(lists: &[(String, Vec<String>)], key: &str) -> Vec<String> {
+    lists
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
 }
 
 fn extract_i64_param(
@@ -1203,5 +1337,193 @@ mod tests {
     #[test]
     fn unquote_empty() {
         assert_eq!(unquote_string(r#""""#), "");
+    }
+
+    // -- New annotation parsing (Phase 1B) --
+
+    #[test]
+    fn parse_system_annotation() {
+        let schema = parse_one("@system schema S { name: text }");
+        assert_eq!(schema.annotations.len(), 1);
+        assert!(matches!(&schema.annotations[0], Annotation::System));
+    }
+
+    #[test]
+    fn parse_system_no_parens() {
+        // @system should work without parentheses
+        let schema = parse_one("@system schema S { name: text }");
+        assert!(matches!(&schema.annotations[0], Annotation::System));
+    }
+
+    #[test]
+    fn parse_access_annotation_full() {
+        let schema = parse_one(
+            r#"@access(read: ["sales", "admin"], write: ["admin"], delete: ["admin"], cross_tenant_read: ["super_admin"]) schema S { name: text }"#,
+        );
+        assert_eq!(schema.annotations.len(), 1);
+        match &schema.annotations[0] {
+            Annotation::Access {
+                read,
+                write,
+                delete,
+                cross_tenant_read,
+            } => {
+                assert_eq!(read, &["sales", "admin"]);
+                assert_eq!(write, &["admin"]);
+                assert_eq!(delete, &["admin"]);
+                assert_eq!(cross_tenant_read, &["super_admin"]);
+            }
+            other => panic!("expected Access, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_access_annotation_partial() {
+        let schema = parse_one(
+            r#"@access(read: ["viewer"], write: ["editor"]) schema S { name: text }"#,
+        );
+        match &schema.annotations[0] {
+            Annotation::Access {
+                read,
+                write,
+                delete,
+                cross_tenant_read,
+            } => {
+                assert_eq!(read, &["viewer"]);
+                assert_eq!(write, &["editor"]);
+                assert!(delete.is_empty());
+                assert!(cross_tenant_read.is_empty());
+            }
+            other => panic!("expected Access, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_access_annotation_empty() {
+        let schema = parse_one("@access() schema S { name: text }");
+        match &schema.annotations[0] {
+            Annotation::Access {
+                read,
+                write,
+                delete,
+                cross_tenant_read,
+            } => {
+                assert!(read.is_empty());
+                assert!(write.is_empty());
+                assert!(delete.is_empty());
+                assert!(cross_tenant_read.is_empty());
+            }
+            other => panic!("expected Access, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_tenant_root() {
+        let schema = parse_one("@tenant(root) schema S { name: text }");
+        assert_eq!(schema.annotations.len(), 1);
+        assert!(matches!(
+            &schema.annotations[0],
+            Annotation::Tenant(TenantKind::Root)
+        ));
+    }
+
+    #[test]
+    fn parse_tenant_child() {
+        let schema =
+            parse_one(r#"@tenant(parent: "Organization") schema S { name: text }"#);
+        match &schema.annotations[0] {
+            Annotation::Tenant(TenantKind::Child { parent }) => {
+                assert_eq!(parent.as_str(), "Organization");
+            }
+            other => panic!("expected Tenant(Child), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_field_owner() {
+        let schema = parse_one("schema S { user_id: text @owner }");
+        assert_eq!(schema.fields[0].annotations.len(), 1);
+        assert!(matches!(
+            &schema.fields[0].annotations[0],
+            FieldAnnotation::Owner
+        ));
+        assert!(schema.fields[0].has_owner());
+    }
+
+    #[test]
+    fn parse_field_access() {
+        let schema = parse_one(
+            r#"schema S { salary: float @field_access(read: ["hr"], write: ["hr"]) }"#,
+        );
+        match &schema.fields[0].annotations[0] {
+            FieldAnnotation::FieldAccess { read, write } => {
+                assert_eq!(read, &["hr"]);
+                assert_eq!(write, &["hr"]);
+            }
+            other => panic!("expected FieldAccess, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_combined_schema_annotations() {
+        let schema = parse_one(
+            r#"@system @access(read: ["admin"]) schema S { name: text }"#,
+        );
+        assert_eq!(schema.annotations.len(), 2);
+        assert!(matches!(&schema.annotations[0], Annotation::System));
+        assert!(matches!(&schema.annotations[1], Annotation::Access { .. }));
+    }
+
+    #[test]
+    fn parse_field_with_modifiers_and_annotations() {
+        let schema = parse_one("schema S { name: text required @owner }");
+        assert!(schema.fields[0].is_required());
+        assert!(schema.fields[0].has_owner());
+    }
+
+    #[test]
+    fn error_unknown_annotation() {
+        let result = parse("@bogus schema S { name: text }");
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(matches!(
+            &errors[0],
+            DslError::UnknownAnnotation { name, .. } if name == "bogus"
+        ));
+    }
+
+    #[test]
+    fn error_unknown_field_annotation() {
+        let result = parse("schema S { x: text @bogus }");
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(matches!(
+            &errors[0],
+            DslError::UnknownAnnotation { name, .. } if name == "bogus"
+        ));
+    }
+
+    #[test]
+    fn error_invalid_tenant_arg() {
+        let result = parse("@tenant(invalid) schema S { name: text }");
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(matches!(&errors[0], DslError::UnexpectedToken { .. }));
+    }
+
+    #[test]
+    fn parse_multiple_field_annotations() {
+        let schema = parse_one(
+            r#"schema S { salary: float @owner @field_access(read: ["hr"], write: ["hr"]) }"#,
+        );
+        assert_eq!(schema.fields[0].annotations.len(), 2);
+        assert!(matches!(
+            &schema.fields[0].annotations[0],
+            FieldAnnotation::Owner
+        ));
+        assert!(matches!(
+            &schema.fields[0].annotations[1],
+            FieldAnnotation::FieldAccess { .. }
+        ));
     }
 }

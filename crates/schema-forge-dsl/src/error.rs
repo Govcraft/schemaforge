@@ -73,6 +73,9 @@ pub enum DslError {
 
     /// Integer constraint min > max.
     InvalidIntegerRange { min: i64, max: i64, span: Span },
+
+    /// An unknown annotation name was encountered.
+    UnknownAnnotation { name: String, span: Span },
 }
 
 impl fmt::Display for DslError {
@@ -147,6 +150,9 @@ impl fmt::Display for DslError {
                     f,
                     "invalid integer range at {span}: min ({min}) > max ({max})"
                 )
+            }
+            Self::UnknownAnnotation { name, span } => {
+                write!(f, "unknown annotation '@{name}' at {span}")
             }
         }
     }
@@ -250,5 +256,17 @@ mod tests {
             span: Span::new(0, 1),
         };
         assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn error_display_unknown_annotation() {
+        let err = DslError::UnknownAnnotation {
+            name: "bogus".into(),
+            span: Span::new(1, 6),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("unknown annotation"));
+        assert!(msg.contains("@bogus"));
+        assert!(msg.contains("1..6"));
     }
 }
