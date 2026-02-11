@@ -5,7 +5,7 @@ CSS_CONTENT := 'crates/schema-forge-acton/templates/**/*.html'
 .PHONY: css css-watch
 
 css:
-	./tailwindcss -i $(CSS_INPUT) -o $(CSS_OUTPUT) --content $(CSS_CONTENT)
+	npx @tailwindcss/cli -i $(CSS_INPUT) -o $(CSS_OUTPUT) --content $(CSS_CONTENT)
 
 css-watch:
-	./tailwindcss -i $(CSS_INPUT) -o $(CSS_OUTPUT) --content $(CSS_CONTENT) --watch
+	npx @tailwindcss/cli -i $(CSS_INPUT) -o $(CSS_OUTPUT) --content $(CSS_CONTENT) --watch

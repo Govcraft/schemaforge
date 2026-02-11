@@ -8,18 +8,19 @@
     <link rel="stylesheet" href="/admin/static/admin.css">
 </head>
 <body>
-    <nav class="sidebar">
-        <div class="sidebar-brand">
-            <h1>SchemaForge</h1>
-            <span>Admin</span>
+    <nav class="sidebar bg-base-200 border-r border-base-300">
+        <div class="text-lg font-bold p-4">
+            SchemaForge <span class="font-normal text-sm text-base-content/60">Admin</span>
         </div>
-        <a href="/admin/" class="sidebar-link">Dashboard</a>
-        <div class="sidebar-section">Schemas</div>
-        {% for name in schema_names %}
-        <a href="/admin/schemas/{{ name }}" class="sidebar-link">{{ name }}</a>
-        {% endfor %}
+        <ul class="menu">
+            <li><a href="/admin/">Dashboard</a></li>
+            <li class="menu-title">Schemas</li>
+            {% for name in schema_names %}
+            <li><a href="/admin/schemas/{{ name }}">{{ name }}</a></li>
+            {% endfor %}
+        </ul>
     </nav>
-    <main class="main">
+    <main class="main bg-base-100 min-h-screen">
         <div id="flash-messages"></div>
         {% block content %}{% endblock %}
     </main>

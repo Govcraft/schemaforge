@@ -3,7 +3,7 @@
 {% block title %}Dashboard - SchemaForge Admin{% endblock %}
 
 {% block content %}
-<div class="page-header">
+<div class="flex justify-between items-center mb-6">
     <div>
         <h2>Dashboard</h2>
     </div>
@@ -11,19 +11,21 @@
 </div>
 
 {% if entries.is_empty() %}
-<div class="empty-state">
+<div class="text-center py-12 px-5 text-base-content/60">
     <p>No schemas registered yet.</p>
     <p>Define schemas in <code>.forge</code> files and start the server with <code>schema-forge serve</code>.</p>
 </div>
 {% else %}
 
 {% if graph.has_edges %}
-<div class="card" style="margin-bottom: 24px;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-        <h3 style="margin: 0;">Schema Relationships</h3>
-        <span style="font-size: 13px; color: var(--text-muted);">Click a schema to view details</span>
+<div class="card card-border bg-base-200 mb-6">
+    <div class="card-body">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="m-0">Schema Relationships</h3>
+            <span class="text-sm text-base-content/60">Click a schema to view details</span>
+        </div>
+        <div id="schema-graph" class="w-full h-[350px] bg-base-100 rounded-box overflow-hidden"></div>
     </div>
-    <div id="schema-graph" style="width: 100%; height: 350px; background: var(--bg); border-radius: var(--radius); overflow: hidden;"></div>
 </div>
 <script>
 (function() {
@@ -175,16 +177,18 @@
 </script>
 {% endif %}
 
-<div class="card-grid">
+<div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
     {% for entry in entries %}
-    <a href="/admin/schemas/{{ entry.schema.url_name }}/entities" class="card schema-card" style="text-decoration: none; color: inherit;">
-        <h3>{{ entry.schema.name }}</h3>
-        <div class="meta">
-            {{ entry.schema.fields.len() }} fields
-            {% if let Some(v) = entry.schema.version %} &middot; v{{ v }}{% endif %}
+    <a href="/admin/schemas/{{ entry.schema.url_name }}/entities" class="card card-border bg-base-200 schema-card no-underline text-inherit">
+        <div class="card-body">
+            <h3>{{ entry.schema.name }}</h3>
+            <div class="text-sm text-base-content/60">
+                {{ entry.schema.fields.len() }} fields
+                {% if let Some(v) = entry.schema.version %} &middot; v{{ v }}{% endif %}
+            </div>
+            <div class="text-2xl font-bold">{{ entry.entity_count }}</div>
+            <div class="text-sm text-base-content/60">entities</div>
         </div>
-        <div class="count">{{ entry.entity_count }}</div>
-        <div class="count-label">entities</div>
     </a>
     {% endfor %}
 </div>

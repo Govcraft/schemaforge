@@ -1,10 +1,10 @@
 {% if migration.is_empty %}
-<p style="font-size: 13px; color: var(--text-muted);">No changes detected.</p>
+<p class="text-sm text-base-content/60">No changes detected.</p>
 {% else %}
 <div class="migration-steps">
     {% for step in migration.steps %}
     <div class="migration-step">
-        <span class="safety-badge {{ step.safety_class }}">{{ step.safety }}</span>
+        <span class="badge badge-sm font-semibold {{ step.safety_class }}">{{ step.safety }}</span>
         <span class="migration-desc">{{ step.description }}</span>
     </div>
     {% endfor %}

@@ -3,18 +3,25 @@
 {% block title %}{% if editor.is_edit %}Edit {{ editor.schema_name }}{% else %}Create Schema{% endif %} - SchemaForge Admin{% endblock %}
 
 {% block content %}
-<div class="breadcrumb">
-    <a href="/admin/">Dashboard</a>
-    {% if editor.is_edit %} / <a href="/admin/schemas/{{ editor.schema_name }}">{{ editor.schema_name }}</a> / Edit{% else %} / Create Schema{% endif %}
+<div class="breadcrumbs text-sm">
+    <ul>
+        <li><a href="/admin/">Dashboard</a></li>
+        {% if editor.is_edit %}
+        <li><a href="/admin/schemas/{{ editor.schema_name }}">{{ editor.schema_name }}</a></li>
+        <li>Edit</li>
+        {% else %}
+        <li>Create Schema</li>
+        {% endif %}
+    </ul>
 </div>
-<div class="page-header">
+<div class="mb-6">
     <h2>{% if editor.is_edit %}Edit {{ editor.schema_name }}{% else %}Create Schema{% endif %}</h2>
 </div>
 
 {% if !errors.is_empty() %}
-<div class="flash flash-error" style="margin-bottom: 20px;">
+<div class="alert alert-error mb-5">
     <strong>Please fix the following errors:</strong>
-    <ul style="margin: 8px 0 0 20px;">
+    <ul class="mt-2 ml-5 list-disc">
         {% for error in errors %}
         <li>{{ error }}</li>
         {% endfor %}
@@ -36,42 +43,49 @@
         {% endif %}
 
         <div class="editor-form-panel">
-            <div class="card" style="margin-bottom: 20px;">
-                <div class="form-group">
-                    <label for="schema_name">Schema Name <span class="required">*</span></label>
-                    <input type="text" id="schema_name" name="schema_name" value="{{ editor.schema_name }}"
-                           placeholder="PascalCase (e.g. Contact, BlogPost)"
-                           {% if editor.is_edit %}readonly style="opacity: 0.7;"{% endif %}
-                           required>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label for="version">Version</label>
-                        <input type="number" id="version" name="version" value="{{ editor.version }}"
-                               min="1" step="1" placeholder="Optional">
-                    </div>
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label for="display_field">Display Field</label>
-                        <input type="text" id="display_field" name="display_field" value="{{ editor.display_field }}"
-                               placeholder="snake_case field name">
+            <div class="card card-border bg-base-200 mb-5">
+                <div class="card-body">
+                    <fieldset>
+                        <legend class="fieldset-legend">Schema Name <span class="text-error">*</span></legend>
+                        <input type="text" id="schema_name" name="schema_name" value="{{ editor.schema_name }}"
+                               class="input"
+                               placeholder="PascalCase (e.g. Contact, BlogPost)"
+                               {% if editor.is_edit %}readonly style="opacity: 0.7;"{% endif %}
+                               required>
+                    </fieldset>
+                    <div class="grid grid-cols-2 gap-4">
+                        <fieldset>
+                            <legend class="fieldset-legend">Version</legend>
+                            <input type="number" id="version" name="version" value="{{ editor.version }}"
+                                   class="input"
+                                   min="1" step="1" placeholder="Optional">
+                        </fieldset>
+                        <fieldset>
+                            <legend class="fieldset-legend">Display Field</legend>
+                            <input type="text" id="display_field" name="display_field" value="{{ editor.display_field }}"
+                                   class="input"
+                                   placeholder="snake_case field name">
+                        </fieldset>
                     </div>
                 </div>
             </div>
 
-            <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                    <h3 style="font-size: 16px; font-weight: 600;">Fields</h3>
-                    <button type="button" class="btn btn-outline btn-sm" onclick="addFieldRow()">+ Add Field</button>
-                </div>
+            <div class="card card-border bg-base-200">
+                <div class="card-body">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold">Fields</h3>
+                        <button type="button" class="btn btn-ghost btn-sm" onclick="addFieldRow()">+ Add Field</button>
+                    </div>
 
-                <div id="field-list">
-                    {% for field in editor.fields %}
-                    {% include "admin/fragments/field_editor_row.html" %}
-                    {% endfor %}
+                    <div id="field-list">
+                        {% for field in editor.fields %}
+                        {% include "admin/fragments/field_editor_row.html" %}
+                        {% endfor %}
+                    </div>
                 </div>
             </div>
 
-            <div style="display: flex; gap: 12px; margin-top: 20px;">
+            <div class="flex gap-3 mt-5">
                 <button type="submit" class="btn btn-primary"
                         hx-post="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/schemas{% endif %}"
                         hx-target="body"
@@ -82,24 +96,28 @@
                         {% if editor.is_edit %}hx-vals='{"_method": "PUT"}'{% endif %}>
                     {% if editor.is_edit %}Update Schema{% else %}Create Schema{% endif %}
                 </button>
-                <a href="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/{% endif %}" class="btn btn-outline">Cancel</a>
+                <a href="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/{% endif %}" class="btn btn-ghost">Cancel</a>
             </div>
         </div>
     </form>
 
     <div class="editor-preview-panel">
-        <div class="card preview-card">
-            <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 12px;">DSL Preview</h3>
-            <div id="dsl-preview-content">
-                <pre class="dsl-preview-code">// Start typing to see preview...</pre>
+        <div class="card card-border bg-base-200 preview-card">
+            <div class="card-body">
+                <h3 class="text-sm font-semibold uppercase tracking-wide text-base-content/60 mb-3">DSL Preview</h3>
+                <div id="dsl-preview-content">
+                    <pre class="dsl-preview-code">// Start typing to see preview...</pre>
+                </div>
             </div>
         </div>
 
         {% if editor.is_edit %}
-        <div class="card preview-card" style="margin-top: 16px;">
-            <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 12px;">Migration Preview</h3>
-            <div id="migration-preview-content">
-                <p style="font-size: 13px; color: var(--text-muted);">Make changes to see migration steps...</p>
+        <div class="card card-border bg-base-200 preview-card mt-4">
+            <div class="card-body">
+                <h3 class="text-sm font-semibold uppercase tracking-wide text-base-content/60 mb-3">Migration Preview</h3>
+                <div id="migration-preview-content">
+                    <p class="text-sm text-base-content/60">Make changes to see migration steps...</p>
+                </div>
             </div>
         </div>
         {% endif %}

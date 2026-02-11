@@ -124,15 +124,10 @@ impl FieldView {
         let name = field.name.as_str().to_string();
         let label = snake_to_label(&name);
         let required = field.is_required();
-        let default_value = field
-            .modifiers
-            .iter()
-            .find_map(|m| match m {
-                schema_forge_core::types::FieldModifier::Default { value } => {
-                    Some(value.to_string())
-                }
-                _ => None,
-            });
+        let default_value = field.modifiers.iter().find_map(|m| match m {
+            schema_forge_core::types::FieldModifier::Default { value } => Some(value.to_string()),
+            _ => None,
+        });
         let current_value = value.map(dynamic_value_display);
 
         let (input_type, attrs, options, multiple, children, relation_target) =
@@ -173,7 +168,11 @@ impl SchemaView {
             _ => None,
         });
 
-        let fields = schema.fields.iter().map(FieldView::from_definition).collect();
+        let fields = schema
+            .fields
+            .iter()
+            .map(FieldView::from_definition)
+            .collect();
 
         Self {
             name,
@@ -322,10 +321,7 @@ type FieldInputInfo = (
 );
 
 /// Map FieldType to HTML input_type, attrs, options, multiple, children, relation_target.
-fn field_type_to_input(
-    field_type: &FieldType,
-    value: Option<&DynamicValue>,
-) -> FieldInputInfo {
+fn field_type_to_input(field_type: &FieldType, value: Option<&DynamicValue>) -> FieldInputInfo {
     match field_type {
         FieldType::Text(constraints) => {
             let mut attrs = Vec::new();
@@ -410,7 +406,14 @@ fn field_type_to_input(
                 *inner.clone(),
             );
             let child = FieldView::from_definition_with_value(&inner_field, None);
-            ("array".to_string(), vec![], vec![], false, vec![child], None)
+            (
+                "array".to_string(),
+                vec![],
+                vec![],
+                false,
+                vec![child],
+                None,
+            )
         }
         FieldType::Composite(fields) => {
             let children: Vec<FieldView> = fields
@@ -529,7 +532,10 @@ impl FieldEditorRow {
     pub fn from_definition(index: usize, field: &FieldDefinition) -> Self {
         let name = field.name.as_str().to_string();
         let required = field.is_required();
-        let indexed = field.modifiers.iter().any(|m| matches!(m, FieldModifier::Indexed));
+        let indexed = field
+            .modifiers
+            .iter()
+            .any(|m| matches!(m, FieldModifier::Indexed));
 
         let (default_enabled, default_value) = field
             .modifiers
@@ -540,24 +546,126 @@ impl FieldEditorRow {
             })
             .unwrap_or((false, String::new()));
 
-        let (field_type, text_max_length, integer_min, integer_max, float_precision, enum_variants, relation_target, relation_cardinality) = match &field.field_type {
-            FieldType::Text(c) => ("text".to_string(), c.max_length, None, None, None, String::new(), String::new(), "one".to_string()),
-            FieldType::RichText => ("richtext".to_string(), None, None, None, None, String::new(), String::new(), "one".to_string()),
-            FieldType::Integer(c) => ("integer".to_string(), None, c.min, c.max, None, String::new(), String::new(), "one".to_string()),
-            FieldType::Float(c) => ("float".to_string(), None, None, None, c.precision, String::new(), String::new(), "one".to_string()),
-            FieldType::Boolean => ("boolean".to_string(), None, None, None, None, String::new(), String::new(), "one".to_string()),
-            FieldType::DateTime => ("datetime".to_string(), None, None, None, None, String::new(), String::new(), "one".to_string()),
-            FieldType::Enum(variants) => ("enum".to_string(), None, None, None, None, variants.as_slice().join("\n"), String::new(), "one".to_string()),
-            FieldType::Json => ("json".to_string(), None, None, None, None, String::new(), String::new(), "one".to_string()),
-            FieldType::Relation { target, cardinality } => {
+        let (
+            field_type,
+            text_max_length,
+            integer_min,
+            integer_max,
+            float_precision,
+            enum_variants,
+            relation_target,
+            relation_cardinality,
+        ) = match &field.field_type {
+            FieldType::Text(c) => (
+                "text".to_string(),
+                c.max_length,
+                None,
+                None,
+                None,
+                String::new(),
+                String::new(),
+                "one".to_string(),
+            ),
+            FieldType::RichText => (
+                "richtext".to_string(),
+                None,
+                None,
+                None,
+                None,
+                String::new(),
+                String::new(),
+                "one".to_string(),
+            ),
+            FieldType::Integer(c) => (
+                "integer".to_string(),
+                None,
+                c.min,
+                c.max,
+                None,
+                String::new(),
+                String::new(),
+                "one".to_string(),
+            ),
+            FieldType::Float(c) => (
+                "float".to_string(),
+                None,
+                None,
+                None,
+                c.precision,
+                String::new(),
+                String::new(),
+                "one".to_string(),
+            ),
+            FieldType::Boolean => (
+                "boolean".to_string(),
+                None,
+                None,
+                None,
+                None,
+                String::new(),
+                String::new(),
+                "one".to_string(),
+            ),
+            FieldType::DateTime => (
+                "datetime".to_string(),
+                None,
+                None,
+                None,
+                None,
+                String::new(),
+                String::new(),
+                "one".to_string(),
+            ),
+            FieldType::Enum(variants) => (
+                "enum".to_string(),
+                None,
+                None,
+                None,
+                None,
+                variants.as_slice().join("\n"),
+                String::new(),
+                "one".to_string(),
+            ),
+            FieldType::Json => (
+                "json".to_string(),
+                None,
+                None,
+                None,
+                None,
+                String::new(),
+                String::new(),
+                "one".to_string(),
+            ),
+            FieldType::Relation {
+                target,
+                cardinality,
+            } => {
                 let card = match cardinality {
                     Cardinality::One => "one",
                     Cardinality::Many => "many",
                     _ => "one",
                 };
-                ("relation".to_string(), None, None, None, None, String::new(), target.as_str().to_string(), card.to_string())
+                (
+                    "relation".to_string(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    String::new(),
+                    target.as_str().to_string(),
+                    card.to_string(),
+                )
             }
-            _ => ("text".to_string(), None, None, None, None, String::new(), String::new(), "one".to_string()),
+            _ => (
+                "text".to_string(),
+                None,
+                None,
+                None,
+                None,
+                String::new(),
+                String::new(),
+                "one".to_string(),
+            ),
         };
 
         Self {
@@ -747,10 +855,10 @@ impl MigrationStepView {
     fn from_step(step: &MigrationStep) -> Self {
         let safety = step.safety();
         let (safety_label, safety_class) = match safety {
-            MigrationSafety::Safe => ("Safe", "safety-safe"),
-            MigrationSafety::RequiresConfirmation => ("Requires Confirmation", "safety-warning"),
-            MigrationSafety::Destructive => ("Destructive", "safety-danger"),
-            _ => ("Unknown", "safety-warning"),
+            MigrationSafety::Safe => ("Safe", "badge-success"),
+            MigrationSafety::RequiresConfirmation => ("Requires Confirmation", "badge-warning"),
+            MigrationSafety::Destructive => ("Destructive", "badge-error"),
+            _ => ("Unknown", "badge-warning"),
         };
         Self {
             description: step.to_string(),
@@ -841,7 +949,10 @@ mod tests {
 
     #[test]
     fn field_view_text_with_max() {
-        let field = make_field("email", FieldType::Text(TextConstraints::with_max_length(255)));
+        let field = make_field(
+            "email",
+            FieldType::Text(TextConstraints::with_max_length(255)),
+        );
         let view = FieldView::from_definition(&field);
         assert_eq!(view.input_type, "text");
         assert_eq!(
@@ -852,10 +963,7 @@ mod tests {
 
     #[test]
     fn field_view_required() {
-        let field = make_required_field(
-            "name",
-            FieldType::Text(TextConstraints::unconstrained()),
-        );
+        let field = make_required_field("name", FieldType::Text(TextConstraints::unconstrained()));
         let view = FieldView::from_definition(&field);
         assert!(view.required);
     }
@@ -905,23 +1013,14 @@ mod tests {
         );
         let view = FieldView::from_definition(&field);
         assert_eq!(view.input_type, "number");
-        assert!(view
-            .attrs
-            .iter()
-            .any(|(k, v)| k == "step" && v == "0.01"));
+        assert!(view.attrs.iter().any(|(k, v)| k == "step" && v == "0.01"));
     }
 
     #[test]
     fn field_view_float_unconstrained() {
-        let field = make_field(
-            "value",
-            FieldType::Float(FloatConstraints::unconstrained()),
-        );
+        let field = make_field("value", FieldType::Float(FloatConstraints::unconstrained()));
         let view = FieldView::from_definition(&field);
-        assert!(view
-            .attrs
-            .iter()
-            .any(|(k, v)| k == "step" && v == "any"));
+        assert!(view.attrs.iter().any(|(k, v)| k == "step" && v == "any"));
     }
 
     // --- FieldView from Boolean ---
@@ -952,7 +1051,10 @@ mod tests {
         let view = FieldView::from_definition(&field);
         assert_eq!(view.input_type, "select");
         assert_eq!(view.options.len(), 3);
-        assert_eq!(view.options[0], ("Active".to_string(), "Active".to_string()));
+        assert_eq!(
+            view.options[0],
+            ("Active".to_string(), "Active".to_string())
+        );
     }
 
     // --- FieldView from Json ---
@@ -1071,7 +1173,10 @@ mod tests {
             SchemaName::new("Product").unwrap(),
             vec![
                 make_field("name", FieldType::Text(TextConstraints::unconstrained())),
-                make_field("price", FieldType::Float(FloatConstraints::with_precision(2))),
+                make_field(
+                    "price",
+                    FieldType::Float(FloatConstraints::with_precision(2)),
+                ),
             ],
             vec![
                 Annotation::Version {
@@ -1119,7 +1224,10 @@ mod tests {
             SchemaName::new("Contact").unwrap(),
             vec![
                 make_field("name", FieldType::Text(TextConstraints::unconstrained())),
-                make_field("age", FieldType::Integer(IntegerConstraints::unconstrained())),
+                make_field(
+                    "age",
+                    FieldType::Integer(IntegerConstraints::unconstrained()),
+                ),
             ],
             vec![Annotation::Display {
                 field: FieldName::new("name").unwrap(),
@@ -1231,10 +1339,7 @@ mod tests {
 
     #[test]
     fn display_boolean() {
-        assert_eq!(
-            dynamic_value_display(&DynamicValue::Boolean(true)),
-            "true"
-        );
+        assert_eq!(dynamic_value_display(&DynamicValue::Boolean(true)), "true");
     }
 
     // --- FieldView with default value ---
@@ -1260,8 +1365,14 @@ mod tests {
             SchemaId::new(),
             SchemaName::new("Contact").unwrap(),
             vec![
-                make_required_field("name", FieldType::Text(TextConstraints::with_max_length(100))),
-                make_field("age", FieldType::Integer(IntegerConstraints::with_range(0, 150).unwrap())),
+                make_required_field(
+                    "name",
+                    FieldType::Text(TextConstraints::with_max_length(100)),
+                ),
+                make_field(
+                    "age",
+                    FieldType::Integer(IntegerConstraints::with_range(0, 150).unwrap()),
+                ),
             ],
             vec![
                 Annotation::Version {
@@ -1518,7 +1629,10 @@ mod tests {
         .unwrap()];
 
         let graph = SchemaGraphView::from_entries(&entries, &schemas);
-        assert!(!graph.has_edges, "edge to missing target should be excluded");
+        assert!(
+            !graph.has_edges,
+            "edge to missing target should be excluded"
+        );
         assert!(graph.json.contains("\"edges\":[]"));
     }
 }

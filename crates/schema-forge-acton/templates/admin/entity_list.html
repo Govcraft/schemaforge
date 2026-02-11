@@ -3,20 +3,24 @@
 {% block title %}{{ schema.name }} Entities - SchemaForge Admin{% endblock %}
 
 {% block content %}
-<div class="breadcrumb">
-    <a href="/admin/">Dashboard</a> / <a href="/admin/schemas/{{ schema.url_name }}">{{ schema.name }}</a> / Entities
+<div class="breadcrumbs text-sm">
+    <ul>
+        <li><a href="/admin/">Dashboard</a></li>
+        <li><a href="/admin/schemas/{{ schema.url_name }}">{{ schema.name }}</a></li>
+        <li>Entities</li>
+    </ul>
 </div>
-<div class="page-header">
+<div class="flex justify-between items-center mb-6">
     <div>
         <h2>{{ schema.name }} Entities</h2>
-        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+        <div class="text-base-content/60" style="font-size: 13px; margin-top: 4px;">
             {{ pagination.total_count }} total
         </div>
     </div>
     <a href="/admin/schemas/{{ schema.url_name }}/entities/new" class="btn btn-primary">Create New</a>
 </div>
 
-<div class="card" style="padding: 0; overflow: hidden;">
+<div class="card card-border bg-base-200 p-0 overflow-hidden">
     <div id="entity-table">
         {% include "admin/fragments/entity_table_body.html" %}
     </div>

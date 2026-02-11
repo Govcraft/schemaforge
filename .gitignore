@@ -10,5 +10,5 @@
 # Rust
 target/
 
-# Tailwind CSS standalone CLI binary
-/tailwindcss
+# Node.js
+/node_modules/

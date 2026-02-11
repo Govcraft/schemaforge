@@ -1,56 +1,56 @@
 {% if field.input_type == "text" %}
-<div class="form-group">
-    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
-    <input type="text" id="{{ field.name }}" name="{{ field.name }}"
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <input type="text" id="{{ field.name }}" name="{{ field.name }}" class="input"
         {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
         {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
         {% if field.required %}required{% endif %}
     >
-</div>
+</fieldset>
 
 {% else if field.input_type == "textarea" %}
-<div class="form-group">
-    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
-    <textarea id="{{ field.name }}" name="{{ field.name }}"
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <textarea id="{{ field.name }}" name="{{ field.name }}" class="textarea"
         {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
         {% if field.required %}required{% endif %}
     >{% if let Some(val) = field.current_value %}{{ val }}{% endif %}</textarea>
-</div>
+</fieldset>
 
 {% else if field.input_type == "number" %}
-<div class="form-group">
-    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
-    <input type="number" id="{{ field.name }}" name="{{ field.name }}"
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <input type="number" id="{{ field.name }}" name="{{ field.name }}" class="input"
         {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
         {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
         {% if field.required %}required{% endif %}
     >
-</div>
+</fieldset>
 
 {% else if field.input_type == "checkbox" %}
-<div class="form-group">
+<fieldset class="fieldset">
     <input type="hidden" name="{{ field.name }}" value="false">
-    <label style="display: flex; align-items: center; gap: 8px; text-transform: none; font-weight: normal; cursor: pointer;">
-        <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}" value="true"
+    <label class="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}" value="true" class="checkbox"
             {% if let Some(val) = field.current_value %}{% if val == "true" %}checked{% endif %}{% endif %}
         >
-        {{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}
+        {{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}
     </label>
-</div>
+</fieldset>
 
 {% else if field.input_type == "datetime-local" %}
-<div class="form-group">
-    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
-    <input type="datetime-local" id="{{ field.name }}" name="{{ field.name }}"
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <input type="datetime-local" id="{{ field.name }}" name="{{ field.name }}" class="input"
         {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
         {% if field.required %}required{% endif %}
     >
-</div>
+</fieldset>
 
 {% else if field.input_type == "select" %}
-<div class="form-group">
-    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
-    <select id="{{ field.name }}" name="{{ field.name }}"
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <select id="{{ field.name }}" name="{{ field.name }}" class="select"
         {% if field.multiple %}multiple size="5"{% endif %}
         {% if field.required %}required{% endif %}
         {% if let Some(target) = field.relation_target %}
@@ -67,39 +67,38 @@
         >{{ label }}</option>
         {% endfor %}
     </select>
-</div>
+</fieldset>
 
 {% else if field.input_type == "json" %}
-<div class="form-group">
-    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
-    <textarea id="{{ field.name }}" name="{{ field.name }}"
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <textarea id="{{ field.name }}" name="{{ field.name }}" class="textarea font-mono text-sm"
         {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
         {% if field.required %}required{% endif %}
-        style="font-family: 'JetBrains Mono', monospace; font-size: 13px;"
     >{% if let Some(val) = field.current_value %}{{ val }}{% endif %}</textarea>
-</div>
+</fieldset>
 
 {% else if field.input_type == "composite" %}
-<div class="form-group">
-    <label>{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
     <div class="composite-group">
         {% for child in field.children %}
-        <div class="form-group">
-            <label for="{{ field.name }}.{{ child.name }}">{{ child.label }}</label>
-            <input type="text" id="{{ field.name }}.{{ child.name }}" name="{{ field.name }}.{{ child.name }}"
+        <fieldset class="fieldset">
+            <legend class="fieldset-legend">{{ child.label }}</legend>
+            <input type="text" id="{{ field.name }}.{{ child.name }}" name="{{ field.name }}.{{ child.name }}" class="input"
                 {% if let Some(val) = child.current_value %}value="{{ val }}"{% endif %}
             >
-        </div>
+        </fieldset>
         {% endfor %}
     </div>
-</div>
+</fieldset>
 
 {% else %}
-<div class="form-group">
-    <label for="{{ field.name }}">{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</label>
-    <input type="text" id="{{ field.name }}" name="{{ field.name }}"
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <input type="text" id="{{ field.name }}" name="{{ field.name }}" class="input"
         {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
         {% if field.required %}required{% endif %}
     >
-</div>
+</fieldset>
 {% endif %}

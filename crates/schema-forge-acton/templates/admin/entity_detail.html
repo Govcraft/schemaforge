@@ -3,20 +3,25 @@
 {% block title %}{{ entity.display_value }} - {{ schema.name }} - SchemaForge Admin{% endblock %}
 
 {% block content %}
-<div class="breadcrumb">
-    <a href="/admin/">Dashboard</a> / <a href="/admin/schemas/{{ schema.url_name }}">{{ schema.name }}</a> / <a href="/admin/schemas/{{ schema.url_name }}/entities">Entities</a> / {{ entity.display_value }}
+<div class="breadcrumbs text-sm">
+    <ul>
+        <li><a href="/admin/">Dashboard</a></li>
+        <li><a href="/admin/schemas/{{ schema.url_name }}">{{ schema.name }}</a></li>
+        <li><a href="/admin/schemas/{{ schema.url_name }}/entities">Entities</a></li>
+        <li>{{ entity.display_value }}</li>
+    </ul>
 </div>
-<div class="page-header">
+<div class="flex justify-between items-center mb-6">
     <div>
         <h2>{{ entity.display_value }}</h2>
-        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+        <div class="text-base-content/60" style="font-size: 13px; margin-top: 4px;">
             ID: <code>{{ entity.id }}</code>
         </div>
     </div>
-    <div class="actions">
+    <div class="flex gap-1.5">
         <a href="/admin/schemas/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="btn btn-primary btn-sm">Edit</a>
         <button
-            class="btn btn-danger btn-sm"
+            class="btn btn-error btn-sm"
             hx-delete="/admin/schemas/{{ schema.url_name }}/entities/{{ entity.id }}"
             hx-confirm="Are you sure you want to delete this entity?"
             hx-target="body"
@@ -25,12 +30,14 @@
     </div>
 </div>
 
-<div class="card">
-    {% for (label, value) in entity.field_values %}
-    <div class="detail-row">
-        <div class="detail-label">{{ label }}</div>
-        <div class="detail-value">{% if value.is_empty() %}<span style="color: var(--text-muted);">-</span>{% else %}{{ value }}{% endif %}</div>
+<div class="card card-border bg-base-200">
+    <div class="card-body">
+        {% for (label, value) in entity.field_values %}
+        <div class="detail-row">
+            <div class="detail-label">{{ label }}</div>
+            <div class="detail-value">{% if value.is_empty() %}<span class="text-base-content/60">-</span>{% else %}{{ value }}{% endif %}</div>
+        </div>
+        {% endfor %}
     </div>
-    {% endfor %}
 </div>
 {% endblock %}
