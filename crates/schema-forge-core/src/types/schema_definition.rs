@@ -60,6 +60,25 @@ impl SchemaDefinition {
     pub fn field(&self, name: &str) -> Option<&FieldDefinition> {
         self.fields.iter().find(|f| f.name.as_str() == name)
     }
+
+    /// Returns the `@access` annotation if present.
+    pub fn access_annotation(&self) -> Option<&Annotation> {
+        self.annotations
+            .iter()
+            .find(|a| matches!(a, Annotation::Access { .. }))
+    }
+
+    /// Returns true if this schema has `@access` restrictions.
+    pub fn has_access_restrictions(&self) -> bool {
+        self.access_annotation().is_some()
+    }
+
+    /// Returns true if this schema has the `@system` annotation.
+    pub fn is_system(&self) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::System))
+    }
 }
 
 impl std::fmt::Display for SchemaDefinition {
@@ -184,5 +203,91 @@ mod tests {
         let json = serde_json::to_string(&sd).unwrap();
         let back: SchemaDefinition = serde_json::from_str(&json).unwrap();
         assert_eq!(sd, back);
+    }
+
+    #[test]
+    fn access_annotation_returns_some_when_present() {
+        let sd = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Secured").unwrap(),
+            vec![make_field("name")],
+            vec![Annotation::Access {
+                read: vec!["viewer".into()],
+                write: vec!["editor".into()],
+                delete: vec!["admin".into()],
+                cross_tenant_read: vec![],
+            }],
+        )
+        .unwrap();
+        assert!(sd.access_annotation().is_some());
+        assert!(matches!(
+            sd.access_annotation(),
+            Some(Annotation::Access { .. })
+        ));
+    }
+
+    #[test]
+    fn access_annotation_returns_none_when_absent() {
+        let sd = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Open").unwrap(),
+            vec![make_field("name")],
+            vec![],
+        )
+        .unwrap();
+        assert!(sd.access_annotation().is_none());
+    }
+
+    #[test]
+    fn has_access_restrictions_true() {
+        let sd = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Secured").unwrap(),
+            vec![make_field("name")],
+            vec![Annotation::Access {
+                read: vec!["viewer".into()],
+                write: vec![],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            }],
+        )
+        .unwrap();
+        assert!(sd.has_access_restrictions());
+    }
+
+    #[test]
+    fn has_access_restrictions_false() {
+        let sd = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Open").unwrap(),
+            vec![make_field("name")],
+            vec![],
+        )
+        .unwrap();
+        assert!(!sd.has_access_restrictions());
+    }
+
+    #[test]
+    fn is_system_true() {
+        let sd = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Internal").unwrap(),
+            vec![make_field("name")],
+            vec![Annotation::System],
+        )
+        .unwrap();
+        assert!(sd.is_system());
+    }
+
+    #[test]
+    fn is_system_false() {
+        let sd = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Regular").unwrap(),
+            vec![make_field("name")],
+            vec![],
+        )
+        .unwrap();
+        assert!(!sd.is_system());
     }
 }

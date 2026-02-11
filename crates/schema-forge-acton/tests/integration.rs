@@ -5,7 +5,7 @@ use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use schema_forge_acton::routes::forge_routes;
-use schema_forge_acton::state::{ForgeState, SchemaRegistry};
+use schema_forge_acton::state::{DynSchemaBackend, ForgeState, SchemaRegistry};
 use schema_forge_surrealdb::SurrealBackend;
 use tower::ServiceExt;
 
@@ -603,4 +603,302 @@ async fn request_with_failing_auth_returns_401() {
     let (status, json) = json_request(&app, Method::GET, "/schemas", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(json["error"], "unauthorized");
+}
+
+// ---------------------------------------------------------------------------
+// Access control integration tests
+// ---------------------------------------------------------------------------
+
+/// Helper to create a ForgeState with a NoopAuthProvider configured with specific roles,
+/// and a pre-registered schema with @access annotations.
+async fn access_test_state(
+    user_roles: Vec<String>,
+    schema_read_roles: Vec<String>,
+    schema_write_roles: Vec<String>,
+    schema_delete_roles: Vec<String>,
+) -> (ForgeState, Router) {
+    use schema_forge_acton::auth::NoopAuthProvider;
+    use schema_forge_core::types::{
+        Annotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName,
+        TextConstraints,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // Create a schema with @access annotation
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Article").unwrap(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("title").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::new(
+                FieldName::new("body").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+        ],
+        vec![Annotation::Access {
+            read: schema_read_roles,
+            write: schema_write_roles,
+            delete: schema_delete_roles,
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let registry = SchemaRegistry::new();
+    registry.insert("Article".to_string(), schema.clone()).await;
+
+    // Apply migration so the backend table exists
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    let backend = Arc::new(backend);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    let state = ForgeState {
+        registry,
+        backend,
+        auth_provider: Some(Arc::new(NoopAuthProvider::new(user_roles))),
+        #[cfg(feature = "admin-ui")]
+        surreal_client: None,
+    };
+    let app = test_app_with_state(state.clone());
+    (state, app)
+}
+
+#[tokio::test]
+async fn authenticated_request_with_matching_role_succeeds() {
+    let (_state, app) = access_test_state(
+        vec!["editor".to_string()],
+        vec!["viewer".to_string(), "editor".to_string()],
+        vec!["editor".to_string()],
+        vec!["admin".to_string()],
+    )
+    .await;
+
+    // Create entity -- user has "editor" role which is in write roles
+    let entity_body = serde_json::json!({
+        "fields": {
+            "title": "Hello World",
+            "body": "Content here"
+        }
+    });
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Article/entities",
+        Some(entity_body),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "expected 201, got {status} with body: {json}"
+    );
+    assert_eq!(json["schema"], "Article");
+    assert_eq!(json["fields"]["title"], "Hello World");
+}
+
+#[tokio::test]
+async fn authenticated_request_with_wrong_role_gets_403() {
+    let (_state, app) = access_test_state(
+        vec!["viewer".to_string()],
+        vec!["viewer".to_string()],
+        vec!["editor".to_string()],
+        vec!["admin".to_string()],
+    )
+    .await;
+
+    // Create entity -- user has "viewer" role, write requires "editor"
+    let entity_body = serde_json::json!({
+        "fields": {
+            "title": "Forbidden Article",
+            "body": "Should fail"
+        }
+    });
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Article/entities",
+        Some(entity_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(json["error"], "forbidden");
+}
+
+#[tokio::test]
+async fn open_access_request_always_succeeds() {
+    use schema_forge_core::types::{
+        Annotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName,
+        TextConstraints,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // Schema with restrictive @access
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Secret").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("data").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![Annotation::Access {
+            read: vec!["classified".to_string()],
+            write: vec!["classified".to_string()],
+            delete: vec!["classified".to_string()],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let registry = SchemaRegistry::new();
+    registry.insert("Secret".to_string(), schema.clone()).await;
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    // No auth_provider => open access mode
+    let state = ForgeState {
+        registry,
+        backend,
+        auth_provider: None,
+        #[cfg(feature = "admin-ui")]
+        surreal_client: None,
+    };
+    let app = test_app_with_state(state);
+
+    // Even with restrictive @access, open access should succeed
+    let entity_body = serde_json::json!({
+        "fields": { "data": "top secret" }
+    });
+    let (status, _json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Secret/entities",
+        Some(entity_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn field_filtering_hides_restricted_fields() {
+    use schema_forge_core::types::{
+        FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId,
+        SchemaName, TextConstraints,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // Schema with a field-level access restriction
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Employee").unwrap(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::with_annotations(
+                FieldName::new("salary").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::FieldAccess {
+                    read: vec!["hr".to_string()],
+                    write: vec!["hr".to_string()],
+                }],
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+
+    let registry = SchemaRegistry::new();
+    registry
+        .insert("Employee".to_string(), schema.clone())
+        .await;
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    // User with "member" role (not "hr")
+    use schema_forge_acton::auth::NoopAuthProvider;
+    let state = ForgeState {
+        registry,
+        backend,
+        auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".to_string()]))),
+        #[cfg(feature = "admin-ui")]
+        surreal_client: None,
+    };
+    let app = test_app_with_state(state);
+
+    // Create entity with both fields
+    let entity_body = serde_json::json!({
+        "fields": {
+            "name": "Alice",
+            "salary": "100000"
+        }
+    });
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Employee/entities",
+        Some(entity_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The response should include "name" but NOT "salary" (filtered by read access)
+    assert_eq!(json["fields"]["name"], "Alice");
+    assert!(
+        json["fields"].get("salary").is_none()
+            || json["fields"]["salary"] == serde_json::Value::Null,
+        "salary field should be filtered from response, got: {:?}",
+        json["fields"]
+    );
+
+    // Get the entity back and verify salary is still filtered
+    let entity_id = json["id"].as_str().unwrap();
+    let path = format!("/schemas/Employee/entities/{entity_id}");
+    let (status, get_json) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(get_json["fields"]["name"], "Alice");
+    assert!(
+        get_json["fields"].get("salary").is_none()
+            || get_json["fields"]["salary"] == serde_json::Value::Null,
+        "salary field should be filtered from GET response, got: {:?}",
+        get_json["fields"]
+    );
 }
