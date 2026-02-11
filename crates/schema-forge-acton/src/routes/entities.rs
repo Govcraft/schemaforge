@@ -382,9 +382,18 @@ pub async fn list_entities(
         .await
         .map_err(ForgeError::from)?;
 
+    // Record-level access filtering (e.g. @owner)
+    let visible_entities =
+        if let (Some(ref policy), Some(ref auth_ctx)) = (&state.record_access_policy, &auth) {
+            policy
+                .filter_visible(&schema_def, auth_ctx, result.entities)
+                .await
+        } else {
+            result.entities
+        };
+
     // Filter read-restricted fields from each entity
-    let entities: Vec<EntityResponse> = result
-        .entities
+    let entities: Vec<EntityResponse> = visible_entities
         .into_iter()
         .map(|mut e| {
             filter_entity_fields(
@@ -436,6 +445,18 @@ pub async fn get_entity(
         .await
         .map_err(ForgeError::from)?;
 
+    // Record-level visibility check
+    if let (Some(ref policy), Some(ref auth_ctx)) = (&state.record_access_policy, &auth) {
+        let visible = policy
+            .filter_visible(&schema_def, auth_ctx, vec![entity.clone()])
+            .await;
+        if visible.is_empty() {
+            return Err(ForgeError::Forbidden {
+                message: format!("not authorized to view entity '{id}'"),
+            });
+        }
+    }
+
     // Filter read-restricted fields from response
     filter_entity_fields(
         &mut entity,
@@ -472,6 +493,20 @@ pub async fn update_entity(
 
     // Access check
     check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)?;
+
+    // Record-level ownership check: fetch existing entity and verify ownership
+    if let (Some(ref policy), Some(ref auth_ctx)) = (&state.record_access_policy, &auth) {
+        let existing = state
+            .backend
+            .get(&schema_name, &entity_id)
+            .await
+            .map_err(ForgeError::from)?;
+        if !policy.can_modify(&schema_def, auth_ctx, &existing).await {
+            return Err(ForgeError::Forbidden {
+                message: format!("not authorized to modify entity '{id}'"),
+            });
+        }
+    }
 
     // Convert JSON fields
     let fields = json_to_entity_fields(&schema_def, &body.fields)
@@ -526,6 +561,20 @@ pub async fn delete_entity(
 
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
+
+    // Record-level ownership check: fetch entity first and verify ownership
+    if let (Some(ref policy), Some(ref auth_ctx)) = (&state.record_access_policy, &auth) {
+        let entity = state
+            .backend
+            .get(&schema_name, &entity_id)
+            .await
+            .map_err(ForgeError::from)?;
+        if !policy.can_delete(&schema_def, auth_ctx, &entity).await {
+            return Err(ForgeError::Forbidden {
+                message: format!("not authorized to delete entity '{id}'"),
+            });
+        }
+    }
 
     state
         .backend

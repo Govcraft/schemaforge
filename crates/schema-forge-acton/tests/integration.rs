@@ -24,6 +24,7 @@ async fn test_state() -> ForgeState {
         backend: Arc::new(backend),
         auth_provider: None,
         tenant_config: None,
+        record_access_policy: None,
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     }
@@ -554,6 +555,7 @@ async fn request_with_noop_auth_succeeds() {
         backend: Arc::new(backend),
         auth_provider: Some(Arc::new(NoopAuthProvider::admin())),
         tenant_config: None,
+        record_access_policy: None,
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -598,6 +600,7 @@ async fn request_with_failing_auth_returns_401() {
         backend: Arc::new(backend),
         auth_provider: Some(Arc::new(FailingAuthProvider)),
         tenant_config: None,
+        record_access_policy: None,
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -673,6 +676,7 @@ async fn access_test_state(
         backend,
         auth_provider: Some(Arc::new(NoopAuthProvider::new(user_roles))),
         tenant_config: None,
+        record_access_policy: None,
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -789,6 +793,7 @@ async fn open_access_request_always_succeeds() {
         backend,
         auth_provider: None,
         tenant_config: None,
+        record_access_policy: None,
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };
@@ -865,6 +870,7 @@ async fn field_filtering_hides_restricted_fields() {
         backend,
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".to_string()]))),
         tenant_config: None,
+        record_access_policy: None,
         #[cfg(feature = "admin-ui")]
         surreal_client: None,
     };

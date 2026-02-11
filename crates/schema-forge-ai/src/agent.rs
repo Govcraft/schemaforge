@@ -80,6 +80,7 @@ impl SchemaForgeAgent {
             backend: self.tools.backend().clone(),
             auth_provider: None,
             tenant_config: None,
+            record_access_policy: None,
             #[cfg(feature = "admin-ui")]
             surreal_client: None,
         }

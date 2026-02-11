@@ -37,6 +37,7 @@ async fn admin_test_state() -> ForgeState {
         backend: Arc::new(backend),
         auth_provider: None,
         tenant_config: None,
+        record_access_policy: None,
         surreal_client: None,
     }
 }

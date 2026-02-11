@@ -19,7 +19,7 @@ Follow these steps when a user asks you to create or modify schemas:
 ```ebnf
 program        = { schema_def } ;
 schema_def     = { annotation } "schema" PASCAL_IDENT "{" { field_def } "}" ;
-field_def      = SNAKE_IDENT ":" field_type { modifier } ;
+field_def      = SNAKE_IDENT ":" field_type { modifier } { field_annotation } ;
 
 field_type     = "text" [ "(" text_params ")" ]
                | "richtext" [ "(" text_params ")" ]
@@ -50,7 +50,17 @@ modifier       = "required"
 default_value  = STRING | INTEGER | FLOAT | "true" | "false" ;
 
 annotation     = "@version" "(" INTEGER ")"
-               | "@display" "(" STRING ")" ;
+               | "@display" "(" STRING ")"
+               | "@system"
+               | "@access" "(" named_string_lists ")"
+               | "@tenant" "(" tenant_arg ")" ;
+tenant_arg     = "root" | "parent" ":" STRING ;
+named_string_lists = named_list { "," named_list } ;
+named_list     = IDENT ":" "[" string_list "]" ;
+string_list    = STRING { "," STRING } ;
+
+field_annotation = "@field_access" "(" named_string_lists ")"
+                 | "@owner" ;
 
 PASCAL_IDENT   = /[A-Z][a-zA-Z0-9]*/ ;
 SNAKE_IDENT    = /[a-z][a-z0-9_]*/ ;
@@ -83,6 +93,23 @@ FLOAT          = /-?[0-9]+\.[0-9]+/ ;
 | `required` | Field must have a value (not null) |
 | `indexed` | Field is indexed for fast lookups |
 | `default(value)` | Default value when not provided |
+
+## Annotation Reference
+
+| Annotation | Level | Purpose | Syntax |
+|-----------|-------|---------|--------|
+| `@version(N)` | Schema | Declares schema version | `@version(1)` |
+| `@display("field")` | Schema | Display name field | `@display("name")` |
+| `@system` | Schema | Protected system schema | `@system` |
+| `@access(...)` | Schema | Role-based access control | `@access(read: ["viewer"], write: ["editor"], delete: ["admin"])` |
+| `@tenant(root)` | Schema | Root of tenant hierarchy | `@tenant(root)` |
+| `@tenant(parent: "Schema")` | Schema | Child in tenant hierarchy | `@tenant(parent: "Organization")` |
+| `@field_access(...)` | Field | Per-field role-based visibility | `@field_access(read: ["hr"], write: ["hr"])` |
+| `@owner` | Field | Record ownership identifier | `@owner` -- marks field as entity owner ID |
+
+**@access details**: Controls who can read, write, or delete entities of this schema. Roles are strings. If a role list is empty, that action is unrestricted.
+
+**@owner details**: When a field has `@owner`, the record-level access policy enforces that only the user whose ID matches this field value can modify or delete the record. Admins bypass this check.
 
 ## Naming Rules
 
@@ -156,5 +183,23 @@ mod tests {
         assert!(FORGE_SYSTEM_PROMPT.contains("@version(1)"));
         assert!(FORGE_SYSTEM_PROMPT.contains("-> ExampleWidget"));
         assert!(FORGE_SYSTEM_PROMPT.contains("never output ExampleWidget"));
+    }
+
+    #[test]
+    fn prompt_contains_access_grammar() {
+        assert!(FORGE_SYSTEM_PROMPT.contains("@access"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("named_string_lists"));
+    }
+
+    #[test]
+    fn prompt_contains_owner_annotation() {
+        assert!(FORGE_SYSTEM_PROMPT.contains("@owner"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("field_annotation"));
+    }
+
+    #[test]
+    fn prompt_contains_tenant_syntax() {
+        assert!(FORGE_SYSTEM_PROMPT.contains("@tenant"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("tenant_arg"));
     }
 }
