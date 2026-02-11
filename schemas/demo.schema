@@ -1,0 +1,353 @@
+// =============================================================================
+// SchemaForge Demo Schema — Comprehensive Feature Showcase
+// =============================================================================
+//
+// Domain: A multi-tenant project management platform with CRM, HR, and
+// document management capabilities. Designed to exercise every DSL feature.
+//
+// Organization hierarchy:
+//   Organization (tenant root)
+//     └── Department (tenant child)
+//
+// Schemas:
+//   Tenancy:       Organization, Department
+//   People:        Employee, Contact
+//   CRM:           Company, Deal, Activity
+//   Projects:      Project, Task, Milestone
+//   Content:       Document, Comment
+//   Configuration: Tag, Workflow
+
+// =============================================================================
+// TENANCY — Multi-tenant hierarchy
+// =============================================================================
+
+/* Organization is the tenant root. All data is scoped to an organization.
+   Only admins can create or delete organizations. */
+
+@tenant(root)
+@display("name")
+@access(read: ["member", "admin"], write: ["admin"], delete: ["admin"])
+schema Organization {
+    name:             text(max: 255) required indexed
+    slug:             text(max: 100) required indexed
+    billing_email:    text(max: 512)
+    plan:             enum("free", "starter", "business", "enterprise") default("free")
+    max_seats:        integer(min: 1) default(5)
+    logo_url:         text
+    settings:         json
+    founded:          datetime
+    active:           boolean default(true)
+    owner_id:         text required @owner
+}
+
+/* Departments belong to an organization. Members and managers can read;
+   only managers and admins can create or modify. */
+
+@tenant(parent: "Organization")
+@display("name")
+@access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
+schema Department {
+    name:             text(max: 255) required
+    code:             text(max: 20) required indexed
+    description:      text
+    head:             -> Employee
+    parent_org:       -> Organization required
+    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"])
+    headcount_limit:  integer(min: 0) default(50)
+    active:           boolean default(true)
+}
+
+// =============================================================================
+// PEOPLE — Employees and external contacts
+// =============================================================================
+
+/* Employee records have strict field-level access: salary and SSN are
+   restricted to HR and admin roles. The owner_id field enables record-level
+   ownership checks. */
+
+@version(2)
+@display("full_name")
+@access(read: ["member", "hr", "manager", "admin"], write: ["hr", "admin"], delete: ["admin"])
+schema Employee {
+    full_name:        text(max: 255) required indexed
+    email:            text(max: 512) required indexed
+    phone:            text(max: 50)
+    title:            text(max: 255)
+    department:       -> Department
+    manager:          -> Employee
+    hire_date:        datetime required
+    termination_date: datetime
+    salary:           float(precision: 2) @field_access(read: ["hr", "admin"], write: ["hr", "admin"])
+    ssn_last_four:    text(max: 4) @field_access(read: ["hr", "admin"], write: ["hr"])
+    employment_type:  enum("full_time", "part_time", "contractor", "intern") default("full_time")
+    status:           enum("active", "on_leave", "terminated") default("active")
+    skills:           text[]
+    certifications:   text[]
+    emergency_contact: composite {
+        name:         text required
+        phone:        text required
+        relationship: text
+    }
+    home_address:     composite {
+        street:       text
+        city:         text required
+        state:        text
+        postal_code:  text(max: 20)
+        country:      text(max: 100) required
+    }
+    metadata:         json
+    owner_id:         text @owner
+    active:           boolean default(true)
+}
+
+/* Contacts are external people associated with companies — CRM data.
+   Sales and marketing teams can read; only sales can write. */
+
+@display("full_name")
+@access(read: ["sales", "marketing", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
+schema Contact {
+    full_name:        text(max: 255) required indexed
+    email:            text(max: 512) indexed
+    phone:            text(max: 50)
+    title:            text(max: 255)
+    company:          -> Company
+    source:           enum("inbound", "outbound", "referral", "event", "website", "other") default("other")
+    lead_score:       integer(min: 0, max: 100) default(0)
+    lifecycle_stage:  enum("subscriber", "lead", "mql", "sql", "opportunity", "customer", "evangelist") default("lead")
+    last_contacted:   datetime
+    preferred_channel: enum("email", "phone", "linkedin", "other") default("email")
+    tags:             text[]
+    social_profiles:  composite {
+        linkedin:     text
+        twitter:      text
+        github:       text
+    }
+    notes:            richtext
+    owner_id:         text @owner
+    active:           boolean default(true)
+}
+
+// =============================================================================
+// CRM — Companies, deals, and activities
+// =============================================================================
+
+/* Companies are the accounts in our CRM. Includes a nested address
+   composite and financial data restricted to finance roles. */
+
+@display("name")
+@access(read: ["sales", "marketing", "finance", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
+schema Company {
+    name:             text(max: 255) required indexed
+    domain:           text(max: 255) indexed
+    industry:         enum("technology", "finance", "healthcare", "education", "retail", "manufacturing", "consulting", "other")
+    size:             enum("startup", "smb", "mid_market", "enterprise")
+    employee_count:   integer(min: 0)
+    annual_revenue:   float(precision: 2) @field_access(read: ["finance", "sales", "admin"], write: ["finance"])
+    website:          text
+    description:      richtext
+    founded_year:     integer(min: 1800, max: 2100)
+    headquarters:     composite {
+        street:       text
+        suite:        text
+        city:         text required
+        state:        text
+        postal_code:  text(max: 20)
+        country:      text(max: 100) required
+        timezone:     text(max: 50)
+    }
+    contacts:         -> Contact[]
+    tags:             text[]
+    metadata:         json
+    owner_id:         text @owner
+    active:           boolean default(true)
+}
+
+/* Deals track revenue opportunities through a pipeline. Value fields
+   are restricted to sales and finance. */
+
+@version(3)
+@display("name")
+@access(read: ["sales", "finance", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
+schema Deal {
+    name:             text(max: 255) required indexed
+    value:            float(precision: 2) required @field_access(read: ["sales", "finance", "admin"], write: ["sales"])
+    currency:         text(max: 3) default("USD")
+    stage:            enum("prospecting", "qualification", "proposal", "negotiation", "closed_won", "closed_lost") default("prospecting")
+    probability:      integer(min: 0, max: 100) default(10)
+    expected_close:   datetime
+    actual_close:     datetime
+    contact:          -> Contact required
+    company:          -> Company
+    assigned_to:      -> Employee
+    competitors:      text[]
+    loss_reason:      text
+    win_reason:       text
+    notes:            richtext
+    owner_id:         text @owner
+    active:           boolean default(true)
+}
+
+/* Activities log all interactions: calls, emails, meetings. */
+
+@display("subject")
+@access(read: ["sales", "marketing", "manager", "admin"], write: ["sales", "marketing", "admin"], delete: ["admin"])
+schema Activity {
+    subject:          text(max: 500) required
+    activity_type:    enum("call", "email", "meeting", "note", "task", "demo", "follow_up") required
+    description:      richtext
+    occurred_at:      datetime required
+    duration_minutes: integer(min: 0)
+    outcome:          enum("completed", "no_answer", "rescheduled", "cancelled")
+    contact:          -> Contact
+    company:          -> Company
+    deal:             -> Deal
+    performed_by:     -> Employee required
+    attendees:        text[]
+    follow_up_date:   datetime
+    metadata:         json
+    owner_id:         text @owner
+}
+
+// =============================================================================
+// PROJECTS — Project management
+// =============================================================================
+
+/* Projects are high-level work items. Budget is finance-restricted. */
+
+@display("name")
+@access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
+schema Project {
+    name:             text(max: 255) required indexed
+    code:             text(max: 20) required indexed
+    description:      richtext
+    status:           enum("planning", "active", "on_hold", "completed", "cancelled") default("planning")
+    priority:         enum("critical", "high", "medium", "low") default("medium")
+    start_date:       datetime
+    target_end_date:  datetime
+    actual_end_date:  datetime
+    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"])
+    spent:            float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance"])
+    department:       -> Department
+    lead:             -> Employee
+    members:          -> Employee[]
+    client:           -> Company
+    tags:             text[]
+    metadata:         json
+    owner_id:         text @owner
+    active:           boolean default(true)
+}
+
+/* Tasks are individual work items within a project. Any member can
+   create and manage their own tasks. */
+
+@display("title")
+@access(read: ["member", "manager", "admin"], write: ["member", "manager", "admin"], delete: ["manager", "admin"])
+schema Task {
+    title:            text(max: 500) required indexed
+    description:      richtext
+    status:           enum("backlog", "todo", "in_progress", "in_review", "done", "cancelled") default("backlog")
+    priority:         enum("critical", "high", "medium", "low") default("medium")
+    story_points:     integer(min: 0, max: 100)
+    due_date:         datetime
+    completed_at:     datetime
+    estimated_hours:  float(precision: 1)
+    actual_hours:     float(precision: 1)
+    project:          -> Project required
+    assignee:         -> Employee
+    reviewer:         -> Employee
+    blocked_by:       -> Task[]
+    tags:             text[]
+    labels:           enum("bug", "feature", "improvement", "documentation", "infrastructure")[]
+    attachments:      json
+    owner_id:         text @owner
+}
+
+/* Milestones mark key deliverables within a project. */
+
+@display("name")
+@access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
+schema Milestone {
+    name:             text(max: 255) required
+    description:      text
+    due_date:         datetime required
+    completed_at:     datetime
+    status:           enum("upcoming", "in_progress", "completed", "missed") default("upcoming")
+    project:          -> Project required
+    tasks:            -> Task[]
+    owner_id:         text @owner
+}
+
+// =============================================================================
+// CONTENT — Documents and comments
+// =============================================================================
+
+/* Documents support rich text content with confidential fields
+   restricted to specific roles. */
+
+@display("title")
+@access(read: ["member", "manager", "admin"], write: ["member", "manager", "admin"], delete: ["manager", "admin"])
+schema Document {
+    title:            text(max: 500) required indexed
+    content:          richtext required
+    summary:          text
+    doc_type:         enum("proposal", "specification", "report", "memo", "meeting_notes", "other") default("other")
+    status:           enum("draft", "review", "approved", "archived") default("draft")
+    version_number:   integer(min: 1) default(1)
+    confidential:     boolean default(false)
+    classification:   enum("public", "internal", "confidential", "restricted") default("internal")
+    internal_notes:   richtext @field_access(read: ["manager", "admin"], write: ["manager", "admin"])
+    project:          -> Project
+    related_deal:     -> Deal
+    author:           -> Employee required
+    reviewers:        -> Employee[]
+    tags:             text[]
+    metadata:         json
+    owner_id:         text @owner
+}
+
+/* Comments are threaded discussions on any entity. */
+
+@display("preview")
+schema Comment {
+    preview:          text(max: 255) required
+    body:             richtext required
+    parent_type:      text(max: 100) required
+    parent_id:        text required indexed
+    parent_comment:   -> Comment
+    author:           -> Employee required
+    reactions:        json
+    edited:           boolean default(false)
+    owner_id:         text @owner
+}
+
+// =============================================================================
+// CONFIGURATION — Tags and workflows
+// =============================================================================
+
+/* Tags provide flexible categorization across all entity types. */
+
+@display("name")
+@access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
+schema Tag {
+    name:             text(max: 100) required indexed
+    color:            text(max: 7)
+    category:         enum("general", "priority", "status", "department", "skill", "industry") default("general")
+    description:      text
+    active:           boolean default(true)
+}
+
+/* Workflows define automated state transitions. Admin-only. */
+
+@system
+@display("name")
+@access(read: ["admin"], write: ["admin"], delete: ["admin"])
+schema Workflow {
+    name:             text(max: 255) required indexed
+    description:      text
+    target_schema:    text(max: 100) required
+    trigger_field:    text(max: 100) required
+    rules:            json required
+    enabled:          boolean default(true)
+    execution_count:  integer(min: 0) default(0)
+    last_executed:    datetime
+}

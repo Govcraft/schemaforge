@@ -27,157 +27,419 @@
     <div class="card-body">
         <div class="flex justify-between items-center mb-4">
             <h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 m-0">Schema Relationships</h3>
-            <span class="text-xs text-base-content/30">Click a node to view details</span>
+            <span class="text-xs text-base-content/30">Drag nodes &middot; Scroll to zoom &middot; Click to view</span>
         </div>
-        <div id="schema-graph" class="w-full h-[350px] bg-base-100 rounded-box overflow-hidden"></div>
+        <div id="schema-graph" class="w-full bg-base-100 rounded-box overflow-hidden" style="height: 420px; position: relative;"></div>
     </div>
 </div>
 <script>
 (function() {
-    var data = {{ graph.json|safe }};
+    var raw = {{ graph.json|safe }};
     var container = document.getElementById('schema-graph');
     var W = container.clientWidth;
     var H = container.clientHeight;
-    var R = 28;
-    var nodes = data.nodes.map(function(n, i) {
-        return { id: n.id, count: n.entity_count, x: W/2 + (Math.random()-0.5)*W*0.5, y: H/2 + (Math.random()-0.5)*H*0.5, vx: 0, vy: 0 };
+    var R = 30;
+
+    // Build D3-friendly data structures
+    var nodes = raw.nodes.map(function(n) {
+        return { id: n.id, count: n.entity_count };
     });
-    var nodeMap = {};
-    nodes.forEach(function(n) { nodeMap[n.id] = n; });
-    var edges = data.edges;
+    var nodeById = new Map(nodes.map(function(n) { return [n.id, n]; }));
 
-    // Force-directed layout: 150 iterations
-    for (var iter = 0; iter < 150; iter++) {
-        // Repulsion between all pairs
-        for (var i = 0; i < nodes.length; i++) {
-            for (var j = i+1; j < nodes.length; j++) {
-                var dx = nodes[i].x - nodes[j].x;
-                var dy = nodes[i].y - nodes[j].y;
-                var dist = Math.sqrt(dx*dx + dy*dy) || 1;
-                var force = 8000 / (dist * dist);
-                var fx = dx/dist * force;
-                var fy = dy/dist * force;
-                nodes[i].vx += fx; nodes[i].vy += fy;
-                nodes[j].vx -= fx; nodes[j].vy -= fy;
-            }
+    // Detect parallel edges and assign curve offsets
+    var edgeKey = function(e) {
+        return [e.from, e.to].sort().join('\x00');
+    };
+    var edgeCounts = {};
+    raw.edges.forEach(function(e) {
+        var k = edgeKey(e);
+        edgeCounts[k] = (edgeCounts[k] || 0) + 1;
+    });
+    var edgeIndices = {};
+    var selfLoopCounts = {};
+    var links = raw.edges.map(function(e) {
+        var k = edgeKey(e);
+        var total = edgeCounts[k];
+        var idx = edgeIndices[k] = (edgeIndices[k] || 0) + 1;
+        var isSelf = e.from === e.to;
+        // Track self-loop index per node for stacking
+        var selfIndex = 0;
+        if (isSelf) {
+            selfIndex = selfLoopCounts[e.from] = (selfLoopCounts[e.from] || 0);
+            selfLoopCounts[e.from]++;
         }
-        // Attraction along edges
-        for (var e = 0; e < edges.length; e++) {
-            var src = nodeMap[edges[e].from];
-            var tgt = nodeMap[edges[e].to];
-            if (!src || !tgt) continue;
-            var dx = tgt.x - src.x;
-            var dy = tgt.y - src.y;
-            var dist = Math.sqrt(dx*dx + dy*dy) || 1;
-            var force = (dist - 120) * 0.05;
-            var fx = dx/dist * force;
-            var fy = dy/dist * force;
-            src.vx += fx; src.vy += fy;
-            tgt.vx -= fx; tgt.vy -= fy;
+        // Curve offset: 0 for single edge, spread for parallel (non-self only)
+        var curve = isSelf ? 0 : (total === 1 ? 0 : (idx - (total + 1) / 2) * 50);
+        return {
+            source: e.from,
+            target: e.to,
+            label: e.label,
+            cardinality: e.cardinality,
+            curve: curve,
+            selfIndex: selfIndex
+        };
+    });
+
+    // SVG setup with D3
+    var svg = d3.select(container).append('svg')
+        .attr('width', W)
+        .attr('height', H)
+        .attr('class', 'schema-force-graph');
+
+    // Zoom layer
+    var g = svg.append('g');
+
+    var zoom = d3.zoom()
+        .scaleExtent([0.3, 3])
+        .on('zoom', function(event) {
+            g.attr('transform', event.transform);
+        });
+    svg.call(zoom);
+
+    // Defs: arrowheads + glow filter
+    var defs = svg.append('defs');
+
+    // Arrow for "One" cardinality
+    defs.append('marker')
+        .attr('id', 'arrow-one')
+        .attr('viewBox', '0 0 10 8')
+        .attr('refX', 10).attr('refY', 4)
+        .attr('markerWidth', 10).attr('markerHeight', 8)
+        .attr('orient', 'auto')
+      .append('path')
+        .attr('d', 'M0,1 L8,4 L0,7')
+        .attr('class', 'arrow-head');
+
+    // Arrow for "Many" cardinality (crow's foot)
+    defs.append('marker')
+        .attr('id', 'arrow-many')
+        .attr('viewBox', '0 0 14 12')
+        .attr('refX', 14).attr('refY', 6)
+        .attr('markerWidth', 14).attr('markerHeight', 12)
+        .attr('orient', 'auto')
+      .append('path')
+        .attr('d', 'M0,1 L10,6 L0,11 M10,1 L10,11')
+        .attr('class', 'arrow-head arrow-many-stroke');
+
+    // Highlighted arrow variants (match --color-primary)
+    defs.append('marker')
+        .attr('id', 'arrow-one-hl')
+        .attr('viewBox', '0 0 10 8')
+        .attr('refX', 10).attr('refY', 4)
+        .attr('markerWidth', 10).attr('markerHeight', 8)
+        .attr('orient', 'auto')
+      .append('path')
+        .attr('d', 'M0,1 L8,4 L0,7')
+        .attr('class', 'arrow-head-hl');
+
+    defs.append('marker')
+        .attr('id', 'arrow-many-hl')
+        .attr('viewBox', '0 0 14 12')
+        .attr('refX', 14).attr('refY', 6)
+        .attr('markerWidth', 14).attr('markerHeight', 12)
+        .attr('orient', 'auto')
+      .append('path')
+        .attr('d', 'M0,1 L10,6 L0,11 M10,1 L10,11')
+        .attr('class', 'arrow-head-hl arrow-many-stroke-hl');
+
+    // Glow filter for hover
+    var glow = defs.append('filter')
+        .attr('id', 'node-glow')
+        .attr('x', '-50%').attr('y', '-50%')
+        .attr('width', '200%').attr('height', '200%');
+    glow.append('feGaussianBlur')
+        .attr('stdDeviation', '4')
+        .attr('result', 'blur');
+    var merge = glow.append('feMerge');
+    merge.append('feMergeNode').attr('in', 'blur');
+    merge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+    // Edge path generator
+    var loopSize = 60;
+    function edgePath(d) {
+        var sx = d.source.x, sy = d.source.y;
+        var tx = d.target.x, ty = d.target.y;
+
+        // Self-referential: loop out from top-right and back to top-left
+        if (d.source.id === d.target.id) {
+            var x = sx, y = sy;
+            var offset = d.selfIndex * 20;
+            var ls = loopSize + offset;
+            // Depart from right side of circle, arrive at left side
+            var startX = x + R * 0.7;
+            var startY = y - R * 0.7;
+            var endX = x - R * 0.7;
+            var endY = y - R * 0.7 - 2;
+            // Two cubic control points arching above the node
+            var c1x = x + ls * 0.9;
+            var c1y = y - ls * 1.4;
+            var c2x = x - ls * 0.9;
+            var c2y = y - ls * 1.4;
+            return 'M' + startX + ',' + startY +
+                   'C' + c1x + ',' + c1y + ' ' + c2x + ',' + c2y + ' ' + endX + ',' + endY;
         }
-        // Center gravity
-        for (var i = 0; i < nodes.length; i++) {
-            nodes[i].vx += (W/2 - nodes[i].x) * 0.01;
-            nodes[i].vy += (H/2 - nodes[i].y) * 0.01;
+
+        var dx = tx - sx, dy = ty - sy;
+        var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        // Unit vector
+        var ux = dx / dist, uy = dy / dist;
+        // Perpendicular for curve offset
+        var px = -uy, py = ux;
+        // Shorten to circle edge
+        var startX = sx + ux * (R + 2) + px * d.curve * 0.3;
+        var startY = sy + uy * (R + 2) + py * d.curve * 0.3;
+        var endX = tx - ux * (R + 12) + px * d.curve * 0.3;
+        var endY = ty - uy * (R + 12) + py * d.curve * 0.3;
+
+        if (d.curve === 0) {
+            return 'M' + startX + ',' + startY + 'L' + endX + ',' + endY;
         }
-        // Apply velocity with damping
-        for (var i = 0; i < nodes.length; i++) {
-            nodes[i].vx *= 0.85;
-            nodes[i].vy *= 0.85;
-            nodes[i].x += nodes[i].vx;
-            nodes[i].y += nodes[i].vy;
-            // Clamp to bounds
-            nodes[i].x = Math.max(R+4, Math.min(W-R-4, nodes[i].x));
-            nodes[i].y = Math.max(R+4, Math.min(H-R-4, nodes[i].y));
-        }
+        // Quadratic curve via control point
+        var mx = (sx + tx) / 2 + px * d.curve;
+        var my = (sy + ty) / 2 + py * d.curve;
+        return 'M' + startX + ',' + startY + 'Q' + mx + ',' + my + ' ' + endX + ',' + endY;
     }
 
-    // Render SVG
-    var ns = 'http://www.w3.org/2000/svg';
-    var svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    // Edge label position
+    function edgeLabelPos(d) {
+        var sx = d.source.x, sy = d.source.y;
+        var tx = d.target.x, ty = d.target.y;
 
-    // Arrowhead marker
-    var defs = document.createElementNS(ns, 'defs');
-    var marker = document.createElementNS(ns, 'marker');
-    marker.setAttribute('id', 'arrowhead');
-    marker.setAttribute('markerWidth', '8');
-    marker.setAttribute('markerHeight', '6');
-    marker.setAttribute('refX', '8');
-    marker.setAttribute('refY', '3');
-    marker.setAttribute('orient', 'auto');
-    var arrow = document.createElementNS(ns, 'polygon');
-    arrow.setAttribute('points', '0 0, 8 3, 0 6');
-    arrow.setAttribute('fill', 'var(--color-base-300)');
-    marker.appendChild(arrow);
-    defs.appendChild(marker);
-    svg.appendChild(defs);
+        // Self-referential: label above the loop apex
+        if (d.source.id === d.target.id) {
+            var offset = d.selfIndex * 20;
+            return {
+                x: sx,
+                y: sy - (loopSize + offset) * 1.4 - 4
+            };
+        }
 
-    // Draw edges
-    for (var e = 0; e < edges.length; e++) {
-        var src = nodeMap[edges[e].from];
-        var tgt = nodeMap[edges[e].to];
-        if (!src || !tgt) continue;
-        var dx = tgt.x - src.x;
-        var dy = tgt.y - src.y;
-        var dist = Math.sqrt(dx*dx + dy*dy) || 1;
-        // Shorten line to stop at circle edge
-        var sx = src.x + dx/dist * R;
-        var sy = src.y + dy/dist * R;
-        var ex = tgt.x - dx/dist * (R+8);
-        var ey = tgt.y - dy/dist * (R+8);
-
-        var line = document.createElementNS(ns, 'line');
-        line.setAttribute('x1', sx); line.setAttribute('y1', sy);
-        line.setAttribute('x2', ex); line.setAttribute('y2', ey);
-        line.setAttribute('class', 'graph-edge' + (edges[e].cardinality === 'Many' ? ' many' : ''));
-        line.setAttribute('marker-end', 'url(#arrowhead)');
-        svg.appendChild(line);
-
-        // Edge label at midpoint
-        var lbl = document.createElementNS(ns, 'text');
-        lbl.setAttribute('x', (sx+ex)/2);
-        lbl.setAttribute('y', (sy+ey)/2 - 6);
-        lbl.setAttribute('class', 'graph-edge-label');
-        lbl.textContent = edges[e].label;
-        svg.appendChild(lbl);
+        var dx = tx - sx, dy = ty - sy;
+        var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        var px = -dy / dist, py = dx / dist;
+        return {
+            x: (sx + tx) / 2 + px * d.curve * 0.6,
+            y: (sy + ty) / 2 + py * d.curve * 0.6
+        };
     }
+
+    // Draw edges (paths for curves)
+    var linkGroup = g.append('g').attr('class', 'links');
+    var link = linkGroup.selectAll('.graph-edge')
+        .data(links)
+        .join('path')
+        .attr('class', function(d) {
+            return 'graph-edge' + (d.cardinality === 'Many' ? ' many' : '');
+        })
+        .attr('marker-end', function(d) {
+            return d.cardinality === 'Many' ? 'url(#arrow-many)' : 'url(#arrow-one)';
+        })
+        .style('opacity', 0);
+
+    // Edge labels
+    var linkLabelGroup = g.append('g').attr('class', 'link-labels');
+    var linkLabel = linkLabelGroup.selectAll('.graph-edge-label')
+        .data(links)
+        .join('g')
+        .attr('class', 'graph-edge-label-group');
+
+    linkLabel.append('rect').attr('class', 'graph-edge-label-bg');
+    linkLabel.append('text')
+        .attr('class', 'graph-edge-label')
+        .text(function(d) { return d.label; });
 
     // Draw nodes
-    for (var i = 0; i < nodes.length; i++) {
-        var n = nodes[i];
-        var g = document.createElementNS(ns, 'g');
-        g.setAttribute('class', 'graph-node');
-        g.setAttribute('data-schema', n.id);
+    var nodeGroup = g.append('g').attr('class', 'nodes');
+    var node = nodeGroup.selectAll('.graph-node')
+        .data(nodes)
+        .join('g')
+        .attr('class', 'graph-node')
+        .style('opacity', 0)
+        .on('click', function(event, d) {
+            if (!event.defaultPrevented) {
+                window.location.href = '/admin/schemas/' + d.id;
+            }
+        });
 
-        var circle = document.createElementNS(ns, 'circle');
-        circle.setAttribute('cx', n.x);
-        circle.setAttribute('cy', n.y);
-        circle.setAttribute('r', R);
-        g.appendChild(circle);
+    // Inner group for scale/blur transforms (independent of D3 position)
+    var nodeInner = node.append('g').attr('class', 'node-inner');
 
-        var label = n.id.length > 12 ? n.id.substring(0, 11) + '\u2026' : n.id;
-        var text = document.createElementNS(ns, 'text');
-        text.setAttribute('x', n.x);
-        text.setAttribute('y', n.y - 2);
-        text.textContent = label;
-        g.appendChild(text);
+    // Outer ring (subtle pulse)
+    nodeInner.append('circle')
+        .attr('class', 'node-ring')
+        .attr('r', R + 4);
 
-        var countText = document.createElementNS(ns, 'text');
-        countText.setAttribute('x', n.x);
-        countText.setAttribute('y', n.y + 12);
-        countText.setAttribute('class', 'graph-count');
-        countText.textContent = n.count + '';
-        g.appendChild(countText);
+    // Main circle
+    nodeInner.append('circle')
+        .attr('class', 'node-circle')
+        .attr('r', R);
 
-        g.addEventListener('click', (function(id) {
-            return function() { window.location.href = '/admin/schemas/' + id; };
-        })(n.id));
+    // Entity count (centered inside circle)
+    nodeInner.append('text')
+        .attr('class', 'node-count')
+        .attr('dy', 1)
+        .text(function(d) { return d.count; });
 
-        svg.appendChild(g);
+    // Schema name (below the circle)
+    nodeInner.append('text')
+        .attr('class', 'node-label')
+        .attr('dy', R + 16)
+        .text(function(d) {
+            return d.id.length > 16 ? d.id.substring(0, 15) + '\u2026' : d.id;
+        });
+
+    // Hover interactions: highlight connected subgraph
+    node.on('mouseenter', function(event, d) {
+        var connected = new Set();
+        connected.add(d.id);
+        links.forEach(function(l) {
+            var sid = typeof l.source === 'object' ? l.source.id : l.source;
+            var tid = typeof l.target === 'object' ? l.target.id : l.target;
+            if (sid === d.id) connected.add(tid);
+            if (tid === d.id) connected.add(sid);
+        });
+        node.classed('dimmed', function(n) { return !connected.has(n.id); });
+        node.classed('highlighted', function(n) { return n.id === d.id; });
+        link.classed('dimmed', function(l) {
+            var sid = typeof l.source === 'object' ? l.source.id : l.source;
+            var tid = typeof l.target === 'object' ? l.target.id : l.target;
+            return !connected.has(sid) || !connected.has(tid);
+        });
+        link.classed('highlighted', function(l) {
+            var sid = typeof l.source === 'object' ? l.source.id : l.source;
+            var tid = typeof l.target === 'object' ? l.target.id : l.target;
+            return connected.has(sid) && connected.has(tid);
+        });
+        // Swap arrowheads to highlighted variants
+        link.attr('marker-end', function(l) {
+            var sid = typeof l.source === 'object' ? l.source.id : l.source;
+            var tid = typeof l.target === 'object' ? l.target.id : l.target;
+            var hl = connected.has(sid) && connected.has(tid);
+            var suffix = hl ? '-hl' : '';
+            return l.cardinality === 'Many' ? 'url(#arrow-many' + suffix + ')' : 'url(#arrow-one' + suffix + ')';
+        });
+        linkLabel.classed('visible', function(l) {
+            var sid = typeof l.source === 'object' ? l.source.id : l.source;
+            var tid = typeof l.target === 'object' ? l.target.id : l.target;
+            return connected.has(sid) && connected.has(tid);
+        });
+
+        // Pin hovered node so it doesn't drift away
+        d.fx = d.x;
+        d.fy = d.y;
+
+        // Dimmed nodes drop to z-back: zero out their charge so they
+        // can't push the foreground subgraph around
+        simulation.force('charge', d3.forceManyBody().strength(function(n) {
+            return connected.has(n.id) ? defaultCharge : 0;
+        }));
+        simulation.force('collision', d3.forceCollide().radius(function(n) {
+            return connected.has(n.id) ? R * 2 : 0;
+        }).strength(0.7));
+
+        // Repel connected nodes from each other for breathing room
+        var connectedNodes = nodes.filter(function(n) { return connected.has(n.id); });
+        simulation.force('hover-repel', function(alpha) {
+            for (var i = 0; i < connectedNodes.length; i++) {
+                for (var j = i + 1; j < connectedNodes.length; j++) {
+                    var a = connectedNodes[i], b = connectedNodes[j];
+                    var dx = b.x - a.x;
+                    var dy = b.y - a.y;
+                    var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                    var push = 40 * alpha / Math.max(dist * 0.01, 0.3);
+                    var fx = (dx / dist) * push;
+                    var fy = (dy / dist) * push;
+                    if (!a.fx) { a.vx -= fx; a.vy -= fy; }
+                    if (!b.fx) { b.vx += fx; b.vy += fy; }
+                }
+            }
+        });
+        simulation.alpha(0.3).restart();
+    }).on('mouseleave', function(event, d) {
+        node.classed('dimmed', false).classed('highlighted', false);
+        link.classed('dimmed', false).classed('highlighted', false);
+        // Restore default arrowheads
+        link.attr('marker-end', function(l) {
+            return l.cardinality === 'Many' ? 'url(#arrow-many)' : 'url(#arrow-one)';
+        });
+        linkLabel.classed('visible', false);
+
+        // Unpin, remove repel, restore full forces — nodes reconverge
+        d.fx = null;
+        d.fy = null;
+        simulation.force('hover-repel', null);
+        simulation.force('charge', d3.forceManyBody().strength(defaultCharge));
+        simulation.force('collision', d3.forceCollide().radius(R * 2).strength(0.7));
+        simulation.alpha(0.15).restart();
+    });
+
+    // Drag behavior
+    var drag = d3.drag()
+        .on('start', function(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        })
+        .on('drag', function(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        })
+        .on('end', function(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        });
+    node.call(drag);
+
+    // Force simulation — compact cluster at rest so hover-repel reads clearly
+    var defaultCharge = -120;
+    var simulation = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id(function(d) { return d.id; }).distance(R * 3.2).strength(0.9))
+        .force('charge', d3.forceManyBody().strength(defaultCharge))
+        .force('center', d3.forceCenter(W / 2, H / 2))
+        .force('collision', d3.forceCollide().radius(R * 2).strength(0.7))
+        .force('x', d3.forceX(W / 2).strength(0.18))
+        .force('y', d3.forceY(H / 2).strength(0.18))
+        .on('tick', ticked);
+
+    function ticked() {
+        link.attr('d', edgePath);
+
+        linkLabel.each(function(d) {
+            var pos = edgeLabelPos(d);
+            var sel = d3.select(this);
+            sel.select('text')
+                .attr('x', pos.x)
+                .attr('y', pos.y);
+            // Size background pill to text
+            var textEl = sel.select('text').node();
+            if (textEl) {
+                var bbox = textEl.getBBox();
+                sel.select('rect')
+                    .attr('x', bbox.x - 4)
+                    .attr('y', bbox.y - 2)
+                    .attr('width', bbox.width + 8)
+                    .attr('height', bbox.height + 4)
+                    .attr('rx', 3);
+            }
+        });
+
+        node.attr('transform', function(d) {
+            return 'translate(' + d.x + ',' + d.y + ')';
+        });
     }
 
-    container.appendChild(svg);
+    // Animated entrance
+    node.transition()
+        .delay(function(d, i) { return i * 60; })
+        .duration(500)
+        .ease(d3.easeBackOut.overshoot(1.2))
+        .style('opacity', 1);
+
+    link.transition()
+        .delay(function(d, i) { return nodes.length * 60 + i * 40; })
+        .duration(400)
+        .style('opacity', 1);
 })();
 </script>
 {% endif %}
