@@ -7,6 +7,7 @@
     <div>
         <h2>Dashboard</h2>
     </div>
+    <a href="/admin/schemas/new" class="btn btn-primary">+ Create Schema</a>
 </div>
 
 {% if entries.is_empty() %}
@@ -15,6 +16,165 @@
     <p>Define schemas in <code>.forge</code> files and start the server with <code>schema-forge serve</code>.</p>
 </div>
 {% else %}
+
+{% if graph.has_edges %}
+<div class="card" style="margin-bottom: 24px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0;">Schema Relationships</h3>
+        <span style="font-size: 13px; color: var(--text-muted);">Click a schema to view details</span>
+    </div>
+    <div id="schema-graph" style="width: 100%; height: 350px; background: var(--bg); border-radius: var(--radius); overflow: hidden;"></div>
+</div>
+<script>
+(function() {
+    var data = {{ graph.json|safe }};
+    var container = document.getElementById('schema-graph');
+    var W = container.clientWidth;
+    var H = container.clientHeight;
+    var R = 28;
+    var nodes = data.nodes.map(function(n, i) {
+        return { id: n.id, count: n.entity_count, x: W/2 + (Math.random()-0.5)*W*0.5, y: H/2 + (Math.random()-0.5)*H*0.5, vx: 0, vy: 0 };
+    });
+    var nodeMap = {};
+    nodes.forEach(function(n) { nodeMap[n.id] = n; });
+    var edges = data.edges;
+
+    // Force-directed layout: 150 iterations
+    for (var iter = 0; iter < 150; iter++) {
+        // Repulsion between all pairs
+        for (var i = 0; i < nodes.length; i++) {
+            for (var j = i+1; j < nodes.length; j++) {
+                var dx = nodes[i].x - nodes[j].x;
+                var dy = nodes[i].y - nodes[j].y;
+                var dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                var force = 8000 / (dist * dist);
+                var fx = dx/dist * force;
+                var fy = dy/dist * force;
+                nodes[i].vx += fx; nodes[i].vy += fy;
+                nodes[j].vx -= fx; nodes[j].vy -= fy;
+            }
+        }
+        // Attraction along edges
+        for (var e = 0; e < edges.length; e++) {
+            var src = nodeMap[edges[e].from];
+            var tgt = nodeMap[edges[e].to];
+            if (!src || !tgt) continue;
+            var dx = tgt.x - src.x;
+            var dy = tgt.y - src.y;
+            var dist = Math.sqrt(dx*dx + dy*dy) || 1;
+            var force = (dist - 120) * 0.05;
+            var fx = dx/dist * force;
+            var fy = dy/dist * force;
+            src.vx += fx; src.vy += fy;
+            tgt.vx -= fx; tgt.vy -= fy;
+        }
+        // Center gravity
+        for (var i = 0; i < nodes.length; i++) {
+            nodes[i].vx += (W/2 - nodes[i].x) * 0.01;
+            nodes[i].vy += (H/2 - nodes[i].y) * 0.01;
+        }
+        // Apply velocity with damping
+        for (var i = 0; i < nodes.length; i++) {
+            nodes[i].vx *= 0.85;
+            nodes[i].vy *= 0.85;
+            nodes[i].x += nodes[i].vx;
+            nodes[i].y += nodes[i].vy;
+            // Clamp to bounds
+            nodes[i].x = Math.max(R+4, Math.min(W-R-4, nodes[i].x));
+            nodes[i].y = Math.max(R+4, Math.min(H-R-4, nodes[i].y));
+        }
+    }
+
+    // Render SVG
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+
+    // Arrowhead marker
+    var defs = document.createElementNS(ns, 'defs');
+    var marker = document.createElementNS(ns, 'marker');
+    marker.setAttribute('id', 'arrowhead');
+    marker.setAttribute('markerWidth', '8');
+    marker.setAttribute('markerHeight', '6');
+    marker.setAttribute('refX', '8');
+    marker.setAttribute('refY', '3');
+    marker.setAttribute('orient', 'auto');
+    var arrow = document.createElementNS(ns, 'polygon');
+    arrow.setAttribute('points', '0 0, 8 3, 0 6');
+    arrow.setAttribute('fill', 'var(--border)');
+    marker.appendChild(arrow);
+    defs.appendChild(marker);
+    svg.appendChild(defs);
+
+    // Draw edges
+    for (var e = 0; e < edges.length; e++) {
+        var src = nodeMap[edges[e].from];
+        var tgt = nodeMap[edges[e].to];
+        if (!src || !tgt) continue;
+        var dx = tgt.x - src.x;
+        var dy = tgt.y - src.y;
+        var dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        // Shorten line to stop at circle edge
+        var sx = src.x + dx/dist * R;
+        var sy = src.y + dy/dist * R;
+        var ex = tgt.x - dx/dist * (R+8);
+        var ey = tgt.y - dy/dist * (R+8);
+
+        var line = document.createElementNS(ns, 'line');
+        line.setAttribute('x1', sx); line.setAttribute('y1', sy);
+        line.setAttribute('x2', ex); line.setAttribute('y2', ey);
+        line.setAttribute('class', 'graph-edge' + (edges[e].cardinality === 'Many' ? ' many' : ''));
+        line.setAttribute('marker-end', 'url(#arrowhead)');
+        svg.appendChild(line);
+
+        // Edge label at midpoint
+        var lbl = document.createElementNS(ns, 'text');
+        lbl.setAttribute('x', (sx+ex)/2);
+        lbl.setAttribute('y', (sy+ey)/2 - 6);
+        lbl.setAttribute('class', 'graph-edge-label');
+        lbl.textContent = edges[e].label;
+        svg.appendChild(lbl);
+    }
+
+    // Draw nodes
+    for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        var g = document.createElementNS(ns, 'g');
+        g.setAttribute('class', 'graph-node');
+        g.setAttribute('data-schema', n.id);
+
+        var circle = document.createElementNS(ns, 'circle');
+        circle.setAttribute('cx', n.x);
+        circle.setAttribute('cy', n.y);
+        circle.setAttribute('r', R);
+        g.appendChild(circle);
+
+        var label = n.id.length > 12 ? n.id.substring(0, 11) + '\u2026' : n.id;
+        var text = document.createElementNS(ns, 'text');
+        text.setAttribute('x', n.x);
+        text.setAttribute('y', n.y - 2);
+        text.textContent = label;
+        g.appendChild(text);
+
+        var countText = document.createElementNS(ns, 'text');
+        countText.setAttribute('x', n.x);
+        countText.setAttribute('y', n.y + 12);
+        countText.setAttribute('class', 'graph-count');
+        countText.textContent = n.count + '';
+        g.appendChild(countText);
+
+        g.addEventListener('click', (function(id) {
+            return function() { window.location.href = '/admin/schemas/' + id; };
+        })(n.id));
+
+        svg.appendChild(g);
+    }
+
+    container.appendChild(svg);
+})();
+</script>
+{% endif %}
+
 <div class="card-grid">
     {% for entry in entries %}
     <a href="/admin/schemas/{{ entry.schema.url_name }}/entities" class="card schema-card" style="text-decoration: none; color: inherit;">

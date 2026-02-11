@@ -16,8 +16,8 @@ use schema_forge_acton::admin::routes::admin_routes;
 use schema_forge_acton::state::{ForgeState, SchemaRegistry};
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::{
-    DynamicValue, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaDefinition, SchemaId,
-    SchemaName, TextConstraints,
+    Cardinality, DynamicValue, FieldDefinition, FieldModifier, FieldName, FieldType,
+    SchemaDefinition, SchemaId, SchemaName, TextConstraints,
 };
 use schema_forge_surrealdb::SurrealBackend;
 use tower::ServiceExt;
@@ -608,5 +608,538 @@ async fn register_admin_routes_mounts_under_admin() {
     assert!(
         status_no_slash == StatusCode::OK || status_with_slash == StatusCode::OK,
         "expected 200 from /admin or /admin/, got {status_no_slash} and {status_with_slash}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Schema editor tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn schema_create_form_returns_200() {
+    let (app, _state) = admin_test_app().await;
+    let (status, body) = get_html(&app, "/schemas/new").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Create Schema"), "should show create heading");
+    assert!(body.contains("<form"), "should contain a form element");
+    assert!(body.contains("schema_name"), "should have schema name input");
+    assert!(body.contains("field_0_name"), "should have at least one field row");
+}
+
+#[tokio::test]
+async fn schema_create_redirects_on_success() {
+    let (app, _state) = admin_test_app().await;
+    let (status, headers, _body) = post_form(
+        &app,
+        "/schemas",
+        "schema_name=Product&field_0_name=title&field_0_type=text",
+    )
+    .await;
+    assert!(
+        status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
+        "expected redirect, got {status}"
+    );
+    let location = headers.get("location").expect("should have Location header");
+    let loc_str = location.to_str().unwrap();
+    assert!(
+        loc_str.contains("/schemas/Product"),
+        "should redirect to schema detail, got: {loc_str}"
+    );
+}
+
+#[tokio::test]
+async fn schema_create_validates_name() {
+    let (app, _state) = admin_test_app().await;
+    let (status, _headers, body) = post_form(
+        &app,
+        "/schemas",
+        "schema_name=not-valid&field_0_name=x&field_0_type=text",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body.contains("schema name") || body.contains("error") || body.contains("Error"),
+        "should show validation error");
+}
+
+#[tokio::test]
+async fn schema_create_validates_empty_fields() {
+    let (app, _state) = admin_test_app().await;
+    let (status, _headers, body) = post_form(
+        &app,
+        "/schemas",
+        "schema_name=Test",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body.contains("field") || body.contains("required"),
+        "should show field error");
+}
+
+#[tokio::test]
+async fn schema_create_persists_to_registry() {
+    let (app, state) = admin_test_app().await;
+    let (_status, _headers, _body) = post_form(
+        &app,
+        "/schemas",
+        "schema_name=BlogPost&field_0_name=title&field_0_type=text&field_0_required=true&field_1_name=body&field_1_type=richtext",
+    )
+    .await;
+
+    // Verify it's in the registry
+    let schema = state.registry.get("BlogPost").await;
+    assert!(schema.is_some(), "schema should be in registry");
+    let schema = schema.unwrap();
+    assert_eq!(schema.fields.len(), 2);
+    assert!(schema.fields[0].is_required());
+}
+
+#[tokio::test]
+async fn schema_edit_form_returns_200() {
+    let (app, state) = admin_test_app().await;
+    let schema = make_contact_schema();
+    register_schema(&state, &schema).await;
+
+    let (status, body) = get_html(&app, "/schemas/Contact/edit").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Edit Contact"), "should show edit heading");
+    assert!(body.contains("Contact"), "should contain schema name");
+    assert!(body.contains("name"), "should pre-fill field name");
+    assert!(body.contains("age"), "should pre-fill field age");
+}
+
+#[tokio::test]
+async fn schema_edit_form_nonexistent_returns_error() {
+    let (app, _state) = admin_test_app().await;
+    let (status, _body) = get_html(&app, "/schemas/NonExistent/edit").await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn schema_update_redirects_on_success() {
+    let (app, state) = admin_test_app().await;
+    let schema = make_contact_schema();
+    register_schema(&state, &schema).await;
+
+    let (status, headers, _body) = post_form(
+        &app,
+        "/schemas/Contact",
+        "schema_name=Contact&field_0_name=name&field_0_type=text&field_0_required=true&field_1_name=email&field_1_type=text",
+    )
+    .await;
+    assert!(
+        status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
+        "expected redirect, got {status}"
+    );
+    let location = headers.get("location").expect("should have Location header");
+    assert!(location.to_str().unwrap().contains("Contact"));
+}
+
+#[tokio::test]
+async fn schema_update_applies_migration() {
+    let (app, state) = admin_test_app().await;
+    let schema = make_contact_schema();
+    register_schema(&state, &schema).await;
+
+    // Add a new field "email"
+    let (_status, _headers, _body) = post_form(
+        &app,
+        "/schemas/Contact",
+        "schema_name=Contact&field_0_name=name&field_0_type=text&field_0_required=true&field_1_name=age&field_1_type=integer&field_2_name=email&field_2_type=text",
+    )
+    .await;
+
+    // Verify updated schema in registry
+    let updated = state.registry.get("Contact").await.expect("should exist");
+    assert_eq!(updated.fields.len(), 3);
+    assert_eq!(updated.fields[2].name.as_str(), "email");
+}
+
+#[tokio::test]
+async fn schema_delete_removes_from_registry() {
+    let (app, state) = admin_test_app().await;
+    let schema = make_contact_schema();
+    register_schema(&state, &schema).await;
+
+    assert!(state.registry.get("Contact").await.is_some());
+
+    let (status, _body) = delete_request(&app, "/schemas/Contact").await;
+    assert!(
+        status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
+        "expected redirect, got {status}"
+    );
+
+    assert!(state.registry.get("Contact").await.is_none(), "schema should be removed");
+}
+
+#[tokio::test]
+async fn schema_delete_nonexistent_redirects() {
+    let (app, _state) = admin_test_app().await;
+    let (status, _body) = delete_request(&app, "/schemas/NonExistent").await;
+    // Should still redirect (we just remove from registry, which returns None for missing)
+    assert!(
+        status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
+        "expected redirect, got {status}"
+    );
+}
+
+#[tokio::test]
+async fn schema_preview_returns_dsl_fragment() {
+    let (app, _state) = admin_test_app().await;
+    let (status, _headers, body) = post_form(
+        &app,
+        "/schemas/_preview",
+        "schema_name=Contact&field_0_name=name&field_0_type=text&field_0_required=true",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("schema Contact"), "should contain DSL text");
+    assert!(body.contains("name"), "should contain field name");
+    assert!(!body.contains("<!DOCTYPE"), "should be a fragment, not full page");
+}
+
+#[tokio::test]
+async fn schema_preview_returns_errors_on_invalid() {
+    let (app, _state) = admin_test_app().await;
+    let (status, _headers, body) = post_form(
+        &app,
+        "/schemas/_preview",
+        "schema_name=not-valid&field_0_name=name&field_0_type=text",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("schema name") || body.contains("error") || body.contains("Invalid"),
+        "should show errors in preview");
+}
+
+#[tokio::test]
+async fn schema_preview_with_migration() {
+    let (app, state) = admin_test_app().await;
+    let schema = make_contact_schema();
+    register_schema(&state, &schema).await;
+
+    let (status, _headers, body) = post_form(
+        &app,
+        "/schemas/_preview",
+        "schema_name=Contact&_existing_schema_name=Contact&field_0_name=name&field_0_type=text&field_0_required=true&field_1_name=email&field_1_type=text",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("migration") || body.contains("ADD") || body.contains("REMOVE"),
+        "should show migration steps");
+}
+
+#[tokio::test]
+async fn field_row_fragment_returns_html() {
+    let (app, _state) = admin_test_app().await;
+    let (status, body) = get_html(&app, "/schemas/_field-row/5").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("field_5_name"), "should contain correct field index");
+    assert!(body.contains("field_5_type"), "should contain type select");
+    assert!(!body.contains("<!DOCTYPE"), "should be a fragment");
+}
+
+#[tokio::test]
+async fn type_constraints_text_fragment() {
+    let (app, _state) = admin_test_app().await;
+    let (status, body) = get_html(&app, "/schemas/_type-constraints/text?index=3").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("text_max_length"), "should contain text constraints");
+    assert!(body.contains("field_3_"), "should use correct index");
+}
+
+#[tokio::test]
+async fn type_constraints_enum_fragment() {
+    let (app, _state) = admin_test_app().await;
+    let (status, body) = get_html(&app, "/schemas/_type-constraints/enum?index=0").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("enum_variants"), "should contain enum variants textarea");
+}
+
+#[tokio::test]
+async fn type_constraints_relation_fragment() {
+    let (app, _state) = admin_test_app().await;
+    let (status, body) = get_html(&app, "/schemas/_type-constraints/relation?index=2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("relation_target"), "should contain relation target input");
+    assert!(body.contains("relation_cardinality"), "should contain cardinality select");
+}
+
+#[tokio::test]
+async fn create_schema_with_enum_field_roundtrip() {
+    let (app, state) = admin_test_app().await;
+    let form_data = "schema_name=Status&field_0_name=level&field_0_type=enum&field_0_enum_variants=Low%0AMedium%0AHigh";
+    let (status, _headers, _body) = post_form(&app, "/schemas", form_data).await;
+    assert!(
+        status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
+        "expected redirect, got {status}"
+    );
+
+    let schema = state.registry.get("Status").await.expect("should exist");
+    if let FieldType::Enum(v) = &schema.fields[0].field_type {
+        assert_eq!(v.as_slice(), &["Low", "Medium", "High"]);
+    } else {
+        panic!("expected enum field type");
+    }
+}
+
+#[tokio::test]
+async fn create_schema_with_relation_field_roundtrip() {
+    let (app, state) = admin_test_app().await;
+    let form_data = "schema_name=Employee&field_0_name=company&field_0_type=relation&field_0_relation_target=Company&field_0_relation_cardinality=one";
+    let (status, _headers, _body) = post_form(&app, "/schemas", form_data).await;
+    assert!(
+        status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
+        "expected redirect, got {status}"
+    );
+
+    let schema = state.registry.get("Employee").await.expect("should exist");
+    if let FieldType::Relation { target, cardinality } = &schema.fields[0].field_type {
+        assert_eq!(target.as_str(), "Company");
+        assert!(matches!(cardinality, schema_forge_core::types::Cardinality::One));
+    } else {
+        panic!("expected relation field type");
+    }
+}
+
+#[tokio::test]
+async fn form_preserves_values_on_validation_error() {
+    let (app, _state) = admin_test_app().await;
+    // Submit with valid field but invalid schema name
+    let (status, _headers, body) = post_form(
+        &app,
+        "/schemas",
+        "schema_name=not-valid&field_0_name=title&field_0_type=text&field_0_text_max_length=200",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Check that form values are preserved in re-rendered form
+    assert!(body.contains("not-valid") || body.contains("title"),
+        "should preserve form values on error");
+}
+
+#[tokio::test]
+async fn dashboard_has_create_schema_button() {
+    let (app, _state) = admin_test_app().await;
+    let (status, body) = get_html(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("/schemas/new"), "dashboard should have create schema link");
+}
+
+#[tokio::test]
+async fn schema_detail_has_edit_and_delete_buttons() {
+    let (app, state) = admin_test_app().await;
+    let schema = make_contact_schema();
+    register_schema(&state, &schema).await;
+
+    let (status, body) = get_html(&app, "/schemas/Contact").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("/schemas/Contact/edit"), "should have edit link");
+    assert!(body.contains("hx-delete"), "should have delete button");
+}
+
+// ---------------------------------------------------------------------------
+// Schema relationship graph tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dashboard_no_graph_without_relations() {
+    let (app, state) = admin_test_app().await;
+    let schema = make_contact_schema();
+    register_schema(&state, &schema).await;
+
+    let (status, body) = get_html(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body.contains("id=\"schema-graph\""),
+        "graph should not appear when no relations exist"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_has_graph_with_relations() {
+    let (app, state) = admin_test_app().await;
+
+    // Create Company schema
+    let company = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Company").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("name").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![],
+    )
+    .unwrap();
+    register_schema(&state, &company).await;
+
+    // Create Employee schema with relation to Company
+    let employee = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Employee").unwrap(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::new(
+                FieldName::new("company").unwrap(),
+                FieldType::Relation {
+                    target: SchemaName::new("Company").unwrap(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+    register_schema(&state, &employee).await;
+
+    let (status, body) = get_html(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("id=\"schema-graph\""),
+        "graph div should appear when relations exist"
+    );
+    assert!(
+        body.contains("Schema Relationships"),
+        "graph heading should be present"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_graph_json_has_correct_nodes() {
+    let (app, state) = admin_test_app().await;
+
+    let company = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Company").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("name").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![],
+    )
+    .unwrap();
+    register_schema(&state, &company).await;
+
+    let employee = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Employee").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("company").unwrap(),
+            FieldType::Relation {
+                target: SchemaName::new("Company").unwrap(),
+                cardinality: Cardinality::One,
+            },
+        )],
+        vec![],
+    )
+    .unwrap();
+    register_schema(&state, &employee).await;
+
+    let (_status, body) = get_html(&app, "/").await;
+    // The JSON is embedded in the script tag
+    assert!(body.contains("\"id\":\"Company\""), "JSON should contain Company node");
+    assert!(body.contains("\"id\":\"Employee\""), "JSON should contain Employee node");
+}
+
+#[tokio::test]
+async fn dashboard_graph_json_has_correct_edges() {
+    let (app, state) = admin_test_app().await;
+
+    let tag = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Tag").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("name").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![],
+    )
+    .unwrap();
+    register_schema(&state, &tag).await;
+
+    let article = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Article").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("tags").unwrap(),
+            FieldType::Relation {
+                target: SchemaName::new("Tag").unwrap(),
+                cardinality: Cardinality::Many,
+            },
+        )],
+        vec![],
+    )
+    .unwrap();
+    register_schema(&state, &article).await;
+
+    let (_status, body) = get_html(&app, "/").await;
+    assert!(body.contains("\"from\":\"Article\""), "edge should come from Article");
+    assert!(body.contains("\"to\":\"Tag\""), "edge should go to Tag");
+    assert!(body.contains("\"label\":\"tags\""), "edge label should be field name");
+    assert!(body.contains("\"cardinality\":\"Many\""), "cardinality should be Many");
+}
+
+// ---------------------------------------------------------------------------
+// Field rename detection tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn schema_update_rename_field_preserves_data() {
+    let (app, state) = admin_test_app().await;
+    let schema = make_contact_schema();
+    register_schema(&state, &schema).await;
+
+    // Rename "name" → "full_name" by including old_name in form data
+    let (status, headers, _body) = post_form(
+        &app,
+        "/schemas/Contact",
+        "schema_name=Contact&field_0_name=full_name&field_0_old_name=name&field_0_type=text&field_0_required=true&field_1_name=age&field_1_old_name=age&field_1_type=integer",
+    )
+    .await;
+
+    assert!(
+        status == StatusCode::SEE_OTHER || status == StatusCode::TEMPORARY_REDIRECT,
+        "expected redirect, got {status}"
+    );
+    let location = headers.get("location").expect("should have Location header");
+    assert!(location.to_str().unwrap().contains("Contact"));
+
+    // Verify updated schema in registry has the renamed field
+    let updated = state.registry.get("Contact").await.expect("should exist");
+    assert!(
+        updated.fields.iter().any(|f| f.name.as_str() == "full_name"),
+        "schema should have renamed field 'full_name'"
+    );
+    assert!(
+        !updated.fields.iter().any(|f| f.name.as_str() == "name"),
+        "schema should not have old field 'name'"
+    );
+}
+
+#[tokio::test]
+async fn schema_preview_shows_rename_step() {
+    let (app, state) = admin_test_app().await;
+    let schema = make_contact_schema();
+    register_schema(&state, &schema).await;
+
+    // Preview with rename: "name" → "full_name"
+    let (status, _headers, body) = post_form(
+        &app,
+        "/schemas/_preview",
+        "schema_name=Contact&_existing_schema_name=Contact&field_0_name=full_name&field_0_old_name=name&field_0_type=text&field_0_required=true&field_1_name=age&field_1_old_name=age&field_1_type=integer",
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("RENAME"),
+        "preview should show RENAME step, got: {}",
+        body
+    );
+    assert!(
+        !body.contains("REMOVE field"),
+        "preview should NOT show REMOVE field when rename hint is provided"
     );
 }

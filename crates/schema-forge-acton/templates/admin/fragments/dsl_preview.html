@@ -1,0 +1,29 @@
+{% if !errors.is_empty() %}
+<div style="font-size: 13px; color: var(--danger);">
+    {% for error in errors %}
+    <div>{{ error }}</div>
+    {% endfor %}
+</div>
+{% else %}
+<pre class="dsl-preview-code">{{ dsl_text }}</pre>
+{% endif %}
+
+{% if let Some(mig) = migration %}
+<div id="migration-preview-content" hx-swap-oob="innerHTML:#migration-preview-content">
+    {% if mig.is_empty %}
+    <p style="font-size: 13px; color: var(--text-muted);">No changes detected.</p>
+    {% else %}
+    <div class="migration-steps">
+        {% for step in mig.steps %}
+        <div class="migration-step">
+            <span class="safety-badge {{ step.safety_class }}">{{ step.safety }}</span>
+            <span class="migration-desc">{{ step.description }}</span>
+        </div>
+        {% endfor %}
+    </div>
+    <div class="migration-overall">
+        Overall: <strong>{{ mig.overall_safety }}</strong>
+    </div>
+    {% endif %}
+</div>
+{% endif %}

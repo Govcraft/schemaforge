@@ -371,10 +371,24 @@ impl DiffEngine {
         old: &crate::types::SchemaDefinition,
         new: &crate::types::SchemaDefinition,
     ) -> MigrationPlan {
+        Self::diff_with_renames(old, new, &[])
+    }
+
+    /// Compare two schema definitions with explicit rename hints.
+    ///
+    /// Rename hints are `(old_name, new_name)` pairs. When a rename hint is
+    /// provided and the old field exists, a `RenameField` step is emitted
+    /// instead of `RemoveField` + `AddField`. If the type also changed,
+    /// a `ChangeType` step is emitted for the new name.
+    pub fn diff_with_renames(
+        old: &crate::types::SchemaDefinition,
+        new: &crate::types::SchemaDefinition,
+        renames: &[(FieldName, FieldName)],
+    ) -> MigrationPlan {
         let mut steps = Vec::new();
 
-        Self::diff_fields(old, new, &mut steps);
-        Self::diff_modifiers(old, new, &mut steps);
+        Self::diff_fields_with_renames(old, new, renames, &mut steps);
+        Self::diff_modifiers_with_renames(old, new, renames, &mut steps);
 
         MigrationPlan::new(new.id.clone(), new.name.clone(), steps)
     }
@@ -388,27 +402,71 @@ impl DiffEngine {
         MigrationPlan::new(schema.id.clone(), schema.name.clone(), steps)
     }
 
-    fn diff_fields(
+    fn diff_fields_with_renames(
         old: &crate::types::SchemaDefinition,
         new: &crate::types::SchemaDefinition,
+        renames: &[(FieldName, FieldName)],
         steps: &mut Vec<MigrationStep>,
     ) {
-        // Detect removed fields
+        use std::collections::HashMap;
+
+        // Build rename maps: old_name → new_name, new_name → old_name
+        let rename_old_to_new: HashMap<&str, &FieldName> = renames
+            .iter()
+            .map(|(old_n, new_n)| (old_n.as_str(), new_n))
+            .collect();
+        let rename_new_to_old: HashMap<&str, &FieldName> = renames
+            .iter()
+            .map(|(old_n, new_n)| (new_n.as_str(), old_n))
+            .collect();
+
+        // Emit RenameField for valid rename pairs
+        for (old_name, new_name) in renames {
+            if let Some(old_field) = old.field(old_name.as_str()) {
+                steps.push(MigrationStep::RenameField {
+                    old_name: old_name.clone(),
+                    new_name: new_name.clone(),
+                });
+
+                // If the type also changed, emit ChangeType using the new name
+                if let Some(new_field) = new.field(new_name.as_str()) {
+                    if old_field.field_type != new_field.field_type {
+                        Self::emit_change_type_with_name(
+                            new_name.clone(),
+                            old_field,
+                            new_field,
+                            steps,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Detect removed fields — skip rename sources
         for old_field in &old.fields {
+            if rename_old_to_new.contains_key(old_field.name.as_str()) {
+                continue;
+            }
             if new.field(old_field.name.as_str()).is_none() {
                 Self::emit_remove_field(old_field, steps);
             }
         }
 
-        // Detect added fields
+        // Detect added fields — skip rename targets
         for new_field in &new.fields {
+            if rename_new_to_old.contains_key(new_field.name.as_str()) {
+                continue;
+            }
             if old.field(new_field.name.as_str()).is_none() {
                 Self::emit_add_field(new_field, steps);
             }
         }
 
-        // Detect changed fields (same name, different type)
+        // Detect changed fields (same name, different type) — skip renamed fields
         for new_field in &new.fields {
+            if rename_new_to_old.contains_key(new_field.name.as_str()) {
+                continue; // already handled above
+            }
             if let Some(old_field) = old.field(new_field.name.as_str()) {
                 if old_field.field_type != new_field.field_type {
                     Self::emit_change_type(old_field, new_field, steps);
@@ -417,15 +475,34 @@ impl DiffEngine {
         }
     }
 
-    fn diff_modifiers(
+    fn diff_modifiers_with_renames(
         old: &crate::types::SchemaDefinition,
         new: &crate::types::SchemaDefinition,
+        renames: &[(FieldName, FieldName)],
         steps: &mut Vec<MigrationStep>,
     ) {
+        use std::collections::HashMap;
+
+        let rename_new_to_old: HashMap<&str, &FieldName> = renames
+            .iter()
+            .map(|(old_n, new_n)| (new_n.as_str(), old_n))
+            .collect();
+
         for new_field in &new.fields {
-            if let Some(old_field) = old.field(new_field.name.as_str()) {
-                // Same field type -- check modifier changes
-                if old_field.field_type == new_field.field_type {
+            // Find the corresponding old field: either by same name, or via rename
+            let old_field = if let Some(old_name) = rename_new_to_old.get(new_field.name.as_str()) {
+                old.field(old_name.as_str())
+            } else {
+                old.field(new_field.name.as_str())
+            };
+
+            if let Some(old_field) = old_field {
+                // For renamed fields, we compare old type with new type
+                // (type changes are handled in diff_fields_with_renames)
+                // Modifier diffing uses the new field's name for step output
+                let old_type = &old_field.field_type;
+                let new_type = &new_field.field_type;
+                if old_type == new_type {
                     Self::diff_field_modifiers(old_field, new_field, steps);
                 }
             }
@@ -534,9 +611,23 @@ impl DiffEngine {
         new_field: &FieldDefinition,
         steps: &mut Vec<MigrationStep>,
     ) {
+        Self::emit_change_type_with_name(
+            new_field.name.clone(),
+            old_field,
+            new_field,
+            steps,
+        );
+    }
+
+    fn emit_change_type_with_name(
+        name: FieldName,
+        old_field: &FieldDefinition,
+        new_field: &FieldDefinition,
+        steps: &mut Vec<MigrationStep>,
+    ) {
         let transform = Self::infer_transform(&old_field.field_type, &new_field.field_type);
         steps.push(MigrationStep::ChangeType {
-            name: new_field.name.clone(),
+            name,
             old_type: old_field.field_type.clone(),
             new_type: new_field.field_type.clone(),
             transform,
@@ -1191,6 +1282,77 @@ mod tests {
             .steps
             .iter()
             .any(|s| matches!(s, MigrationStep::AddIndex { field } if field.as_str() == "email")));
+    }
+
+    // -- DiffEngine rename tests --
+
+    #[test]
+    fn diff_with_renames_detects_rename() {
+        let old = make_schema("Contact", vec![make_field("name"), make_field("email")]);
+        let new = make_schema("Contact", vec![make_field("full_name"), make_field("email")]);
+        let renames = vec![(
+            FieldName::new("name").unwrap(),
+            FieldName::new("full_name").unwrap(),
+        )];
+        let plan = DiffEngine::diff_with_renames(&old, &new, &renames);
+        assert_eq!(plan.len(), 1);
+        assert!(matches!(
+            &plan.steps[0],
+            MigrationStep::RenameField { old_name, new_name }
+            if old_name.as_str() == "name" && new_name.as_str() == "full_name"
+        ));
+        // Should NOT contain RemoveField or AddField
+        assert!(!plan.steps.iter().any(|s| matches!(s, MigrationStep::RemoveField { .. })));
+        assert!(!plan.steps.iter().any(|s| matches!(s, MigrationStep::AddField { .. })));
+    }
+
+    #[test]
+    fn diff_with_renames_rename_with_type_change() {
+        let old = make_schema(
+            "Stats",
+            vec![FieldDefinition::new(
+                FieldName::new("score").unwrap(),
+                FieldType::Integer(IntegerConstraints::unconstrained()),
+            )],
+        );
+        let new = make_schema(
+            "Stats",
+            vec![FieldDefinition::new(
+                FieldName::new("rating").unwrap(),
+                FieldType::Float(FloatConstraints::unconstrained()),
+            )],
+        );
+        let renames = vec![(
+            FieldName::new("score").unwrap(),
+            FieldName::new("rating").unwrap(),
+        )];
+        let plan = DiffEngine::diff_with_renames(&old, &new, &renames);
+        assert_eq!(plan.len(), 2);
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            MigrationStep::RenameField { old_name, new_name }
+            if old_name.as_str() == "score" && new_name.as_str() == "rating"
+        )));
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            MigrationStep::ChangeType { name, transform: ValueTransform::IntegerToFloat, .. }
+            if name.as_str() == "rating"
+        )));
+    }
+
+    #[test]
+    fn diff_with_renames_no_hint_still_deletes() {
+        let old = make_schema("Contact", vec![make_field("name"), make_field("email")]);
+        let new = make_schema("Contact", vec![make_field("full_name"), make_field("email")]);
+        // No rename hints — should produce RemoveField + AddField
+        let plan = DiffEngine::diff_with_renames(&old, &new, &[]);
+        assert!(plan.steps.iter().any(|s| matches!(
+            s, MigrationStep::RemoveField { name } if name.as_str() == "name"
+        )));
+        assert!(plan.steps.iter().any(|s| matches!(
+            s, MigrationStep::AddField { field } if field.name.as_str() == "full_name"
+        )));
+        assert!(!plan.steps.iter().any(|s| matches!(s, MigrationStep::RenameField { .. })));
     }
 
     // -- MigrationError tests --

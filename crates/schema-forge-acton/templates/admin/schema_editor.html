@@ -1,0 +1,155 @@
+{% extends "admin/base.html" %}
+
+{% block title %}{% if editor.is_edit %}Edit {{ editor.schema_name }}{% else %}Create Schema{% endif %} - SchemaForge Admin{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+    <a href="/admin/">Dashboard</a>
+    {% if editor.is_edit %} / <a href="/admin/schemas/{{ editor.schema_name }}">{{ editor.schema_name }}</a> / Edit{% else %} / Create Schema{% endif %}
+</div>
+<div class="page-header">
+    <h2>{% if editor.is_edit %}Edit {{ editor.schema_name }}{% else %}Create Schema{% endif %}</h2>
+</div>
+
+{% if !errors.is_empty() %}
+<div class="flash flash-error" style="margin-bottom: 20px;">
+    <strong>Please fix the following errors:</strong>
+    <ul style="margin: 8px 0 0 20px;">
+        {% for error in errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<div class="schema-editor-layout">
+    <form id="schema-editor-form"
+          method="post"
+          action="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/schemas{% endif %}"
+          hx-post="/admin/schemas/_preview"
+          hx-trigger="input changed delay:500ms, change from:select delay:500ms"
+          hx-target="#dsl-preview-content"
+          hx-swap="innerHTML">
+        {% if editor.is_edit %}
+        <input type="hidden" name="_method" value="PUT">
+        <input type="hidden" name="_existing_schema_name" value="{{ editor.schema_name }}">
+        {% endif %}
+
+        <div class="editor-form-panel">
+            <div class="card" style="margin-bottom: 20px;">
+                <div class="form-group">
+                    <label for="schema_name">Schema Name <span class="required">*</span></label>
+                    <input type="text" id="schema_name" name="schema_name" value="{{ editor.schema_name }}"
+                           placeholder="PascalCase (e.g. Contact, BlogPost)"
+                           {% if editor.is_edit %}readonly style="opacity: 0.7;"{% endif %}
+                           required>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label for="version">Version</label>
+                        <input type="number" id="version" name="version" value="{{ editor.version }}"
+                               min="1" step="1" placeholder="Optional">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label for="display_field">Display Field</label>
+                        <input type="text" id="display_field" name="display_field" value="{{ editor.display_field }}"
+                               placeholder="snake_case field name">
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <h3 style="font-size: 16px; font-weight: 600;">Fields</h3>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="addFieldRow()">+ Add Field</button>
+                </div>
+
+                <div id="field-list">
+                    {% for field in editor.fields %}
+                    {% include "admin/fragments/field_editor_row.html" %}
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 12px; margin-top: 20px;">
+                <button type="submit" class="btn btn-primary"
+                        hx-post="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/schemas{% endif %}"
+                        hx-target="body"
+                        hx-push-url="true"
+                        hx-swap="innerHTML"
+                        hx-trigger="click"
+                        hx-include="#schema-editor-form"
+                        {% if editor.is_edit %}hx-vals='{"_method": "PUT"}'{% endif %}>
+                    {% if editor.is_edit %}Update Schema{% else %}Create Schema{% endif %}
+                </button>
+                <a href="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/{% endif %}" class="btn btn-outline">Cancel</a>
+            </div>
+        </div>
+    </form>
+
+    <div class="editor-preview-panel">
+        <div class="card preview-card">
+            <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 12px;">DSL Preview</h3>
+            <div id="dsl-preview-content">
+                <pre class="dsl-preview-code">// Start typing to see preview...</pre>
+            </div>
+        </div>
+
+        {% if editor.is_edit %}
+        <div class="card preview-card" style="margin-top: 16px;">
+            <h3 style="font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 12px;">Migration Preview</h3>
+            <div id="migration-preview-content">
+                <p style="font-size: 13px; color: var(--text-muted);">Make changes to see migration steps...</p>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+let fieldCounter = {{ editor.fields.len() }};
+
+function addFieldRow() {
+    const index = fieldCounter++;
+    fetch(`/admin/schemas/_field-row/${index}`)
+        .then(r => r.text())
+        .then(html => {
+            document.getElementById('field-list').insertAdjacentHTML('beforeend', html);
+            htmx.process(document.getElementById('field-list'));
+        });
+}
+
+function removeFieldRow(btn) {
+    btn.closest('.field-editor-row').remove();
+    // Trigger preview update
+    htmx.trigger(document.getElementById('schema-editor-form'), 'input');
+}
+
+function moveFieldUp(btn) {
+    const row = btn.closest('.field-editor-row');
+    const prev = row.previousElementSibling;
+    if (prev && prev.classList.contains('field-editor-row')) {
+        row.parentNode.insertBefore(row, prev);
+        htmx.trigger(document.getElementById('schema-editor-form'), 'input');
+    }
+}
+
+function moveFieldDown(btn) {
+    const row = btn.closest('.field-editor-row');
+    const next = row.nextElementSibling;
+    if (next && next.classList.contains('field-editor-row')) {
+        row.parentNode.insertBefore(next, row);
+        htmx.trigger(document.getElementById('schema-editor-form'), 'input');
+    }
+}
+
+function onTypeChange(select, index) {
+    const type = select.value;
+    fetch(`/admin/schemas/_type-constraints/${type}?index=${index}`)
+        .then(r => r.text())
+        .then(html => {
+            document.getElementById(`field-${index}-constraints`).innerHTML = html;
+        });
+}
+</script>
+{% endblock %}

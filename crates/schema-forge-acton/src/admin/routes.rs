@@ -1,4 +1,4 @@
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 
 use crate::state::ForgeState;
@@ -11,10 +11,39 @@ use super::handlers;
 ///
 /// The dashboard is mounted at both `/` and the empty path so that
 /// `/admin` and `/admin/` both resolve when nested via `nest("/admin", ...)`.
+///
+/// **Route ordering**: `/schemas/new` and `/schemas/_*` are registered before
+/// `/schemas/{name}` to avoid being captured as a name parameter.
 pub fn admin_routes() -> Router<ForgeState> {
     Router::new()
         .route("/", get(handlers::dashboard))
-        .route("/schemas/{name}", get(handlers::schema_detail))
+        // Schema editor: static paths first
+        .route("/schemas/new", get(handlers::schema_create_form))
+        .route("/schemas", post(handlers::schema_create))
+        .route(
+            "/schemas/_preview",
+            post(handlers::schema_preview),
+        )
+        .route(
+            "/schemas/_field-row/{index}",
+            get(handlers::field_row_fragment),
+        )
+        .route(
+            "/schemas/_type-constraints/{field_type}",
+            get(handlers::type_constraints_fragment),
+        )
+        // Schema detail/edit/delete: dynamic {name} path
+        .route(
+            "/schemas/{name}",
+            get(handlers::schema_detail)
+                .post(handlers::schema_update)
+                .delete(handlers::schema_delete),
+        )
+        .route(
+            "/schemas/{name}/edit",
+            get(handlers::schema_edit_form),
+        )
+        // Entity routes
         .route(
             "/schemas/{name}/entities",
             get(handlers::entity_list).post(handlers::entity_create),

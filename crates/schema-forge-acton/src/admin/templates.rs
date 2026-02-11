@@ -1,6 +1,9 @@
 use acton_service::prelude::Template;
 
-use super::views::{DashboardEntry, EntityView, FieldView, PaginationView, SchemaView};
+use super::views::{
+    DashboardEntry, EntityView, FieldEditorRow, FieldView, MigrationPreviewView, PaginationView,
+    SchemaEditorView, SchemaGraphView, SchemaView,
+};
 
 /// Dashboard page — lists all schemas with entity counts.
 #[derive(Template)]
@@ -8,6 +11,7 @@ use super::views::{DashboardEntry, EntityView, FieldView, PaginationView, Schema
 pub struct DashboardTemplate {
     pub entries: Vec<DashboardEntry>,
     pub schema_names: Vec<String>,
+    pub graph: SchemaGraphView,
 }
 
 /// Schema detail page — shows field definitions.
@@ -70,4 +74,44 @@ pub struct FlashMessageFragment {
 #[template(path = "admin/fragments/relation_options.html")]
 pub struct RelationOptionsFragment {
     pub options: Vec<(String, String)>,
+}
+
+/// Schema editor page — create or edit a schema.
+#[derive(Template)]
+#[template(path = "admin/schema_editor.html")]
+pub struct SchemaEditorTemplate {
+    pub editor: SchemaEditorView,
+    pub schema_names: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// Field editor row fragment — a single field row for HTMX append.
+#[derive(Template)]
+#[template(path = "admin/fragments/field_editor_row.html")]
+pub struct FieldEditorRowFragment {
+    pub field: FieldEditorRow,
+}
+
+/// Type constraints fragment — type-specific inputs swapped via HTMX.
+#[derive(Template)]
+#[template(path = "admin/fragments/type_constraints.html")]
+pub struct TypeConstraintsFragment {
+    pub field_type: String,
+    pub index: usize,
+}
+
+/// DSL preview fragment — formatted DSL text.
+#[derive(Template)]
+#[template(path = "admin/fragments/dsl_preview.html")]
+pub struct DslPreviewFragment {
+    pub dsl_text: String,
+    pub errors: Vec<String>,
+    pub migration: Option<MigrationPreviewView>,
+}
+
+/// Migration preview fragment.
+#[derive(Template)]
+#[template(path = "admin/fragments/migration_preview.html")]
+pub struct MigrationPreviewFragment {
+    pub migration: MigrationPreviewView,
 }

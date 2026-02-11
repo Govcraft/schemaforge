@@ -15,7 +15,15 @@
             {% if let Some(df) = schema.display_field %} &middot; Display: {{ df }}{% endif %}
         </div>
     </div>
-    <a href="/admin/schemas/{{ schema.url_name }}/entities" class="btn btn-primary">View Entities</a>
+    <div class="actions">
+        <a href="/admin/schemas/{{ schema.url_name }}/entities" class="btn btn-primary">View Entities</a>
+        <a href="/admin/schemas/{{ schema.url_name }}/edit" class="btn btn-outline">Edit Schema</a>
+        <button class="btn btn-danger"
+                hx-delete="/admin/schemas/{{ schema.url_name }}"
+                hx-confirm="Delete schema '{{ schema.name }}'? This cannot be undone."
+                hx-target="body"
+                hx-push-url="/admin/">Delete</button>
+    </div>
 </div>
 
 <div class="card">

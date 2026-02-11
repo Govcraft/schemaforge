@@ -348,6 +348,224 @@
             gap: 6px;
         }
 
+        /* Schema editor layout */
+        .schema-editor-layout {
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            gap: 24px;
+            align-items: start;
+        }
+        .editor-form-panel {
+            min-width: 0;
+        }
+        .editor-preview-panel {
+            position: sticky;
+            top: 32px;
+        }
+        .preview-card {
+            background: var(--surface);
+        }
+        .dsl-preview-code {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            overflow-x: auto;
+            white-space: pre;
+            color: var(--text);
+            margin: 0;
+        }
+
+        /* Field editor rows */
+        .field-editor-row {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 16px;
+            margin-bottom: 12px;
+            transition: border-color 0.15s;
+        }
+        .field-editor-row:hover {
+            border-color: var(--primary);
+        }
+        .field-row-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        .field-row-main {
+            display: flex;
+            gap: 12px;
+            flex: 1;
+            min-width: 0;
+        }
+        .field-name-input {
+            flex: 1;
+            min-width: 0;
+        }
+        .field-name-input input {
+            width: 100%;
+        }
+        .field-type-select {
+            width: 140px;
+            flex-shrink: 0;
+        }
+        .field-type-select select {
+            width: 100%;
+        }
+        .field-row-actions {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+        .field-row-details {
+            display: flex;
+            gap: 16px;
+            align-items: flex-start;
+        }
+        .field-constraints {
+            display: flex;
+            gap: 12px;
+            flex: 1;
+            flex-wrap: wrap;
+        }
+        .constraint-row {
+            min-width: 100px;
+        }
+        .constraint-row label {
+            display: block;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+        .constraint-row input,
+        .constraint-row select,
+        .constraint-row textarea {
+            width: 100%;
+            padding: 6px 8px;
+            font-size: 13px;
+        }
+        .field-modifiers {
+            display: flex;
+            gap: 12px;
+            flex-shrink: 0;
+            align-items: center;
+            padding-top: 8px;
+        }
+        .modifier-check {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 13px;
+            color: var(--text-muted);
+            cursor: pointer;
+        }
+        .modifier-check input {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* Migration preview */
+        .migration-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .migration-step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+        .migration-desc {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+        }
+        .safety-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .safety-safe {
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--success);
+        }
+        .safety-warning {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--warning);
+        }
+        .safety-danger {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--danger);
+        }
+        .migration-overall {
+            margin-top: 12px;
+            padding-top: 8px;
+            border-top: 1px solid var(--border);
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        @media (max-width: 1024px) {
+            .schema-editor-layout {
+                grid-template-columns: 1fr;
+            }
+            .editor-preview-panel {
+                position: static;
+            }
+        }
+
+        /* Schema relationship graph */
+        #schema-graph svg { width: 100%; height: 100%; }
+        .graph-node { cursor: pointer; }
+        .graph-node circle {
+            fill: rgba(59, 130, 246, 0.12);
+            stroke: var(--primary);
+            stroke-width: 2;
+            transition: all 0.15s;
+        }
+        .graph-node:hover circle {
+            fill: rgba(59, 130, 246, 0.25);
+            filter: drop-shadow(0 0 6px rgba(59, 130, 246, 0.3));
+        }
+        .graph-node text {
+            fill: var(--text);
+            font-size: 12px;
+            text-anchor: middle;
+            dominant-baseline: central;
+            pointer-events: none;
+        }
+        .graph-edge {
+            stroke: var(--border);
+            stroke-width: 1.5;
+        }
+        .graph-edge.many {
+            stroke-dasharray: 6,3;
+        }
+        .graph-edge-label {
+            fill: var(--text-muted);
+            font-size: 11px;
+            text-anchor: middle;
+            opacity: 0;
+            transition: opacity 0.15s;
+            pointer-events: none;
+        }
+        .graph-edge:hover + .graph-edge-label,
+        .graph-edge-label:hover { opacity: 1; }
+        .graph-count {
+            fill: var(--text-muted);
+            font-size: 10px;
+            text-anchor: middle;
+        }
+
         /* Detail view */
         .detail-row {
             display: flex;

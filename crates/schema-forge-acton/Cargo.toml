@@ -13,9 +13,10 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["sync"] }
 acton-service = { version = "0.16.0", default-features = false, features = ["http"] }
 askama = { version = "0.15.4", optional = true }
+schema-forge-dsl = { path = "../schema-forge-dsl", optional = true }
 
 [features]
-admin-ui = ["acton-service/htmx-full", "dep:askama"]
+admin-ui = ["acton-service/htmx-full", "dep:askama", "dep:schema-forge-dsl"]
 
 [dev-dependencies]
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb" }

@@ -5515,6 +5515,7 @@ dependencies = [
  "http-body-util",
  "schema-forge-backend",
  "schema-forge-core",
+ "schema-forge-dsl",
  "schema-forge-surrealdb",
  "serde",
  "serde_json",

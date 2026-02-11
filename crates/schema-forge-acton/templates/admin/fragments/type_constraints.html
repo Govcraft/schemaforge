@@ -1,0 +1,39 @@
+{% if field_type == "text" %}
+<div class="constraint-row">
+    <label>Max length</label>
+    <input type="number" name="field_{{ index }}_text_max_length" placeholder="No limit" min="1">
+</div>
+{% else if field_type == "integer" %}
+<div class="constraint-row">
+    <label>Min</label>
+    <input type="number" name="field_{{ index }}_integer_min" placeholder="No min">
+</div>
+<div class="constraint-row">
+    <label>Max</label>
+    <input type="number" name="field_{{ index }}_integer_max" placeholder="No max">
+</div>
+{% else if field_type == "float" %}
+<div class="constraint-row">
+    <label>Precision</label>
+    <input type="number" name="field_{{ index }}_float_precision" placeholder="Any" min="0">
+</div>
+{% else if field_type == "enum" %}
+<div class="constraint-row" style="flex: 1;">
+    <label>Variants (one per line)</label>
+    <textarea name="field_{{ index }}_enum_variants" rows="3"
+              placeholder="Active&#10;Inactive&#10;Pending"
+              style="min-height: 60px;"></textarea>
+</div>
+{% else if field_type == "relation" %}
+<div class="constraint-row">
+    <label>Target Schema</label>
+    <input type="text" name="field_{{ index }}_relation_target" placeholder="PascalCase schema name">
+</div>
+<div class="constraint-row">
+    <label>Cardinality</label>
+    <select name="field_{{ index }}_relation_cardinality">
+        <option value="one">One</option>
+        <option value="many">Many</option>
+    </select>
+</div>
+{% endif %}

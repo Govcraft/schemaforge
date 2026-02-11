@@ -1,0 +1,97 @@
+<div class="field-editor-row" id="field-row-{{ field.index }}">
+    {% if let Some(old) = field.old_name %}
+    <input type="hidden" name="field_{{ field.index }}_old_name" value="{{ old }}">
+    {% endif %}
+    <div class="field-row-header">
+        <div class="field-row-main">
+            <div class="field-name-input">
+                <input type="text" name="field_{{ field.index }}_name" value="{{ field.name }}"
+                       placeholder="field_name (snake_case)" class="field-name">
+            </div>
+            <div class="field-type-select">
+                <select name="field_{{ field.index }}_type" onchange="onTypeChange(this, {{ field.index }})">
+                    <option value="text" {% if field.field_type == "text" %}selected{% endif %}>Text</option>
+                    <option value="richtext" {% if field.field_type == "richtext" %}selected{% endif %}>Rich Text</option>
+                    <option value="integer" {% if field.field_type == "integer" %}selected{% endif %}>Integer</option>
+                    <option value="float" {% if field.field_type == "float" %}selected{% endif %}>Float</option>
+                    <option value="boolean" {% if field.field_type == "boolean" %}selected{% endif %}>Boolean</option>
+                    <option value="datetime" {% if field.field_type == "datetime" %}selected{% endif %}>DateTime</option>
+                    <option value="enum" {% if field.field_type == "enum" %}selected{% endif %}>Enum</option>
+                    <option value="json" {% if field.field_type == "json" %}selected{% endif %}>JSON</option>
+                    <option value="relation" {% if field.field_type == "relation" %}selected{% endif %}>Relation</option>
+                </select>
+            </div>
+        </div>
+        <div class="field-row-actions">
+            <button type="button" class="btn btn-outline btn-sm" onclick="moveFieldUp(this)" title="Move up">&#x2191;</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="moveFieldDown(this)" title="Move down">&#x2193;</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="removeFieldRow(this)" title="Remove">&#x2715;</button>
+        </div>
+    </div>
+
+    <div class="field-row-details">
+        <div id="field-{{ field.index }}-constraints" class="field-constraints">
+            {% if field.field_type == "text" %}
+            <div class="constraint-row">
+                <label>Max length</label>
+                <input type="number" name="field_{{ field.index }}_text_max_length"
+                       value="{% if let Some(v) = field.text_max_length %}{{ v }}{% endif %}"
+                       placeholder="No limit" min="1">
+            </div>
+            {% else if field.field_type == "integer" %}
+            <div class="constraint-row">
+                <label>Min</label>
+                <input type="number" name="field_{{ field.index }}_integer_min"
+                       value="{% if let Some(v) = field.integer_min %}{{ v }}{% endif %}"
+                       placeholder="No min">
+            </div>
+            <div class="constraint-row">
+                <label>Max</label>
+                <input type="number" name="field_{{ field.index }}_integer_max"
+                       value="{% if let Some(v) = field.integer_max %}{{ v }}{% endif %}"
+                       placeholder="No max">
+            </div>
+            {% else if field.field_type == "float" %}
+            <div class="constraint-row">
+                <label>Precision</label>
+                <input type="number" name="field_{{ field.index }}_float_precision"
+                       value="{% if let Some(v) = field.float_precision %}{{ v }}{% endif %}"
+                       placeholder="Any" min="0">
+            </div>
+            {% else if field.field_type == "enum" %}
+            <div class="constraint-row" style="flex: 1;">
+                <label>Variants (one per line)</label>
+                <textarea name="field_{{ field.index }}_enum_variants"
+                          rows="3" placeholder="Active&#10;Inactive&#10;Pending"
+                          style="min-height: 60px;">{{ field.enum_variants }}</textarea>
+            </div>
+            {% else if field.field_type == "relation" %}
+            <div class="constraint-row">
+                <label>Target Schema</label>
+                <input type="text" name="field_{{ field.index }}_relation_target"
+                       value="{{ field.relation_target }}" placeholder="PascalCase schema name">
+            </div>
+            <div class="constraint-row">
+                <label>Cardinality</label>
+                <select name="field_{{ field.index }}_relation_cardinality">
+                    <option value="one" {% if field.relation_cardinality == "one" %}selected{% endif %}>One</option>
+                    <option value="many" {% if field.relation_cardinality == "many" %}selected{% endif %}>Many</option>
+                </select>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="field-modifiers">
+            <label class="modifier-check">
+                <input type="checkbox" name="field_{{ field.index }}_required" value="true"
+                       {% if field.required %}checked{% endif %}>
+                Required
+            </label>
+            <label class="modifier-check">
+                <input type="checkbox" name="field_{{ field.index }}_indexed" value="true"
+                       {% if field.indexed %}checked{% endif %}>
+                Indexed
+            </label>
+        </div>
+    </div>
+</div>
