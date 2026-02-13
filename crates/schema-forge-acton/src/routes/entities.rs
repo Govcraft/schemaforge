@@ -499,6 +499,12 @@ pub async fn create_entity(
         FieldFilterDirection::Read,
     );
 
+    // Hot-reload theme when Theme entities change
+    #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+    if schema == "Theme" {
+        crate::theme::reload_theme(&state).await;
+    }
+
     Ok((StatusCode::CREATED, Json(entity_to_response(&created))))
 }
 
@@ -775,6 +781,12 @@ pub async fn update_entity(
         FieldFilterDirection::Read,
     );
 
+    // Hot-reload theme when Theme entities change
+    #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+    if schema == "Theme" {
+        crate::theme::reload_theme(&state).await;
+    }
+
     Ok(Json(entity_to_response(&updated)))
 }
 
@@ -821,6 +833,12 @@ pub async fn delete_entity(
         .delete(&schema_name, &entity_id)
         .await
         .map_err(ForgeError::from)?;
+
+    // Hot-reload theme when Theme entities change
+    #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+    if schema == "Theme" {
+        crate::theme::reload_theme(&state).await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

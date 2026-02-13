@@ -168,6 +168,14 @@ impl Theme {
         &self.detail_style
     }
 
+    /// Get the application title. Checks `schema_labels["_app"]`, falls back to `"SchemaForge"`.
+    pub fn app_title(&self) -> String {
+        self.schema_labels
+            .get("_app")
+            .cloned()
+            .unwrap_or_else(|| "SchemaForge".to_string())
+    }
+
     /// Get the display label for a schema, with fallback to the raw name.
     pub fn schema_label(&self, name: &str) -> String {
         self.schema_labels
@@ -247,9 +255,17 @@ pub async fn load_active_theme(
         None => return Theme::default(),
     };
 
-    // Query for an active theme
-    let mut query = schema_forge_core::query::Query::new(theme_def.id.clone());
-    query.limit = Some(1);
+    // Query for the most recently created active theme
+    let query = schema_forge_core::query::Query::new(theme_def.id.clone())
+        .with_filter(schema_forge_core::query::Filter::eq(
+            schema_forge_core::query::FieldPath::single("active"),
+            DynamicValue::Boolean(true),
+        ))
+        .with_sort(
+            schema_forge_core::query::FieldPath::single("id"),
+            schema_forge_core::query::SortOrder::Descending,
+        )
+        .with_limit(1);
 
     let result = match backend.query(&query).await {
         Ok(r) => r,

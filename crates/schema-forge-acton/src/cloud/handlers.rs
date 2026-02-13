@@ -116,7 +116,7 @@ pub async fn dashboard(
     }
 
     Ok(HtmlTemplate::new(CloudDashboardTemplate {
-        app_title: theme.schema_label("_app").to_string(),
+        app_title: theme.app_title(),
         nav_style: nav_style_name(&theme).to_string(),
         logo_url: theme.logo_url.clone(),
         nav_schemas,
@@ -186,7 +186,7 @@ pub async fn entity_list(
     let list_style = theme.resolve_list_style(&name);
 
     Ok(HtmlTemplate::new(CloudEntityListTemplate {
-        app_title: theme.schema_label("_app").to_string(),
+        app_title: theme.app_title(),
         nav_style: nav_style_name(&theme).to_string(),
         logo_url: theme.logo_url.clone(),
         nav_schemas,
@@ -275,7 +275,7 @@ pub async fn entity_create_form(
     let nav_schemas = build_nav(&state, &theme).await;
 
     Ok(HtmlTemplate::new(CloudEntityFormTemplate {
-        app_title: theme.schema_label("_app").to_string(),
+        app_title: theme.app_title(),
         nav_style: nav_style_name(&theme).to_string(),
         logo_url: theme.logo_url.clone(),
         nav_schemas,
@@ -341,7 +341,7 @@ pub async fn entity_create(
             Ok((
                 StatusCode::UNPROCESSABLE_ENTITY,
                 HtmlTemplate::new(CloudEntityFormTemplate {
-                    app_title: theme.schema_label("_app").to_string(),
+                    app_title: theme.app_title(),
                     nav_style: nav_style_name(&theme).to_string(),
                     logo_url: theme.logo_url.clone(),
                     nav_schemas,
@@ -400,7 +400,7 @@ pub async fn entity_detail(
     let detail_style = theme.resolve_detail_style(&name);
 
     Ok(HtmlTemplate::new(CloudEntityDetailTemplate {
-        app_title: theme.schema_label("_app").to_string(),
+        app_title: theme.app_title(),
         nav_style: nav_style_name(&theme).to_string(),
         logo_url: theme.logo_url.clone(),
         nav_schemas,
@@ -452,7 +452,7 @@ pub async fn entity_edit_form(
     let nav_schemas = build_nav(&state, &theme).await;
 
     Ok(HtmlTemplate::new(CloudEntityFormTemplate {
-        app_title: theme.schema_label("_app").to_string(),
+        app_title: theme.app_title(),
         nav_style: nav_style_name(&theme).to_string(),
         logo_url: theme.logo_url.clone(),
         nav_schemas,
@@ -520,7 +520,7 @@ pub async fn entity_update(
             Ok((
                 StatusCode::UNPROCESSABLE_ENTITY,
                 HtmlTemplate::new(CloudEntityFormTemplate {
-                    app_title: theme.schema_label("_app").to_string(),
+                    app_title: theme.app_title(),
                     nav_style: nav_style_name(&theme).to_string(),
                     logo_url: theme.logo_url.clone(),
                     nav_schemas,

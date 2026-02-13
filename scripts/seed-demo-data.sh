@@ -91,6 +91,29 @@ echo -e "${BOLD}Seeding demo data...${NC}"
 echo ""
 
 # =========================================================================
+# Layer 0: Theme (system schema, no dependencies — apply before other data)
+# =========================================================================
+echo -e "${CYAN}--- Theme ---${NC}"
+
+THEME_ID=$(create_entity "Theme" "$(jq -n '{fields: {
+    name: "Midnight Purple",
+    primary_color: "#8B5CF6",
+    secondary_color: "#A78BFA",
+    accent_color: "#34D399",
+    error_color: "#F87171",
+    background_color: "#0F172A",
+    surface_color: "#1E293B",
+    text_color: "#E2E8F0",
+    border_radius: "0.75rem",
+    font_family: "system-ui, sans-serif",
+    list_style: "table",
+    detail_style: "full",
+    nav_style: "sidebar",
+    density: "comfortable",
+    active: true
+}}')")
+
+# =========================================================================
 # Layer 1: Tags (no dependencies)
 # =========================================================================
 echo -e "${CYAN}--- Tags ---${NC}"
