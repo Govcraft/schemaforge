@@ -10,6 +10,9 @@ use crate::error::{DslError, Span};
 use crate::lexer::SpannedToken;
 use crate::token::Token;
 
+/// Known format type identifiers for `@format("...")` validation.
+const KNOWN_FORMAT_TYPES: &[&str] = &["currency", "percent"];
+
 /// Known widget type identifiers for `@widget("...")` validation.
 const KNOWN_WIDGET_TYPES: &[&str] = &[
     "status_badge",
@@ -451,6 +454,21 @@ impl Parser {
                 Ok(FieldAnnotation::Widget { widget_type })
             }
             "kanban_column" => Ok(FieldAnnotation::KanbanColumn),
+            "format" => {
+                self.expect(&Token::LParen)?;
+                let value_tok = self.expect_string_literal()?;
+                let format_type = unquote_string(&value_tok.text);
+                // Validate the base type (before optional `:symbol` suffix)
+                let base_type = format_type.split(':').next().unwrap_or(&format_type);
+                if !KNOWN_FORMAT_TYPES.contains(&base_type) {
+                    return Err(DslError::UnknownAnnotation {
+                        name: format!("format type '{format_type}'"),
+                        span: value_tok.span,
+                    });
+                }
+                self.expect(&Token::RParen)?;
+                Ok(FieldAnnotation::Format { format_type })
+            }
             other => Err(DslError::UnknownAnnotation {
                 name: other.to_string(),
                 span: name_tok.span,
@@ -1667,6 +1685,71 @@ mod tests {
             &schema.fields[0].annotations[1],
             FieldAnnotation::Widget { .. }
         ));
+    }
+
+    // -- @format annotation --
+
+    #[test]
+    fn parse_format_currency() {
+        let schema = parse_one(r#"schema S { price: float @format("currency") }"#);
+        assert_eq!(schema.fields[0].annotations.len(), 1);
+        match &schema.fields[0].annotations[0] {
+            FieldAnnotation::Format { format_type } => {
+                assert_eq!(format_type, "currency");
+            }
+            other => panic!("expected Format, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_format_percent() {
+        let schema = parse_one(r#"schema S { rate: float @format("percent") }"#);
+        match &schema.fields[0].annotations[0] {
+            FieldAnnotation::Format { format_type } => {
+                assert_eq!(format_type, "percent");
+            }
+            other => panic!("expected Format, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_format_currency_with_symbol() {
+        let schema = parse_one(r#"schema S { price: float @format("currency:$") }"#);
+        match &schema.fields[0].annotations[0] {
+            FieldAnnotation::Format { format_type } => {
+                assert_eq!(format_type, "currency:$");
+            }
+            other => panic!("expected Format, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_format_currency_with_euro() {
+        let schema = parse_one(r#"schema S { price: float @format("currency:€") }"#);
+        match &schema.fields[0].annotations[0] {
+            FieldAnnotation::Format { format_type } => {
+                assert_eq!(format_type, "currency:€");
+            }
+            other => panic!("expected Format, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_unknown_format_type() {
+        let result = parse(r#"schema S { x: float @format("bogus") }"#);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(matches!(
+            &errors[0],
+            DslError::UnknownAnnotation { name, .. } if name.contains("bogus")
+        ));
+    }
+
+    #[test]
+    fn parse_format_with_modifiers() {
+        let schema = parse_one(r#"schema S { price: float required @format("currency") }"#);
+        assert!(schema.fields[0].is_required());
+        assert_eq!(schema.fields[0].format_hint(), Some("currency"));
     }
 
     #[test]

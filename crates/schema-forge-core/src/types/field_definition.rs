@@ -77,6 +77,14 @@ impl FieldDefinition {
             .any(|a| matches!(a, FieldAnnotation::Owner))
     }
 
+    /// Returns the format hint string if this field has a `@format` annotation.
+    pub fn format_hint(&self) -> Option<&str> {
+        self.annotations.iter().find_map(|a| match a {
+            FieldAnnotation::Format { format_type } => Some(format_type.as_str()),
+            _ => None,
+        })
+    }
+
     /// Returns the `FieldAccess` annotation if present.
     pub fn field_access(&self) -> Option<&FieldAnnotation> {
         self.annotations
@@ -240,6 +248,28 @@ mod tests {
         let json = serde_json::to_string(&fd).unwrap();
         let back: FieldDefinition = serde_json::from_str(&json).unwrap();
         assert_eq!(fd, back);
+    }
+
+    #[test]
+    fn format_hint_some() {
+        let fd = FieldDefinition::with_annotations(
+            FieldName::new("price").unwrap(),
+            FieldType::Float(crate::types::float_constraints::FloatConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Format {
+                format_type: "currency".into(),
+            }],
+        );
+        assert_eq!(fd.format_hint(), Some("currency"));
+    }
+
+    #[test]
+    fn format_hint_none() {
+        let fd = FieldDefinition::new(
+            FieldName::new("name").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        );
+        assert_eq!(fd.format_hint(), None);
     }
 
     #[test]

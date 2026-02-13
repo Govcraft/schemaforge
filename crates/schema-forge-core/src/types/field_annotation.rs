@@ -16,6 +16,8 @@ pub enum FieldAnnotation {
     Widget { widget_type: String },
     /// `@kanban_column` -- marks this field as the grouping column for kanban views.
     KanbanColumn,
+    /// `@format("format_type")` -- display format hint for field values.
+    Format { format_type: String },
 }
 
 impl FieldAnnotation {
@@ -26,6 +28,7 @@ impl FieldAnnotation {
             Self::Owner => "owner",
             Self::Widget { .. } => "widget",
             Self::KanbanColumn => "kanban_column",
+            Self::Format { .. } => "format",
         }
     }
 }
@@ -44,6 +47,7 @@ impl std::fmt::Display for FieldAnnotation {
             Self::Owner => write!(f, "@owner"),
             Self::Widget { widget_type } => write!(f, "@widget(\"{widget_type}\")"),
             Self::KanbanColumn => write!(f, "@kanban_column"),
+            Self::Format { format_type } => write!(f, "@format(\"{format_type}\")"),
         }
     }
 }
@@ -154,6 +158,35 @@ mod tests {
     #[test]
     fn serde_roundtrip_kanban_column() {
         let a = FieldAnnotation::KanbanColumn;
+        let json = serde_json::to_string(&a).unwrap();
+        let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn display_format() {
+        let a = FieldAnnotation::Format {
+            format_type: "currency".into(),
+        };
+        assert_eq!(a.to_string(), "@format(\"currency\")");
+    }
+
+    #[test]
+    fn kind_format() {
+        assert_eq!(
+            FieldAnnotation::Format {
+                format_type: "percent".into(),
+            }
+            .kind(),
+            "format"
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_format() {
+        let a = FieldAnnotation::Format {
+            format_type: "currency".into(),
+        };
         let json = serde_json::to_string(&a).unwrap();
         let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);

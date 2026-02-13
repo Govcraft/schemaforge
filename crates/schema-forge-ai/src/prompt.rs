@@ -68,7 +68,8 @@ dashboard_param  = "widgets" ":" "[" string_list "]"
 field_annotation = "@field_access" "(" named_string_lists ")"
                  | "@owner"
                  | "@widget" "(" STRING ")"
-                 | "@kanban_column" ;
+                 | "@kanban_column"
+                 | "@format" "(" STRING ")" ;
 
 PASCAL_IDENT   = /[A-Z][a-zA-Z0-9]*/ ;
 SNAKE_IDENT    = /[a-z][a-z0-9_]*/ ;
@@ -116,6 +117,7 @@ FLOAT          = /-?[0-9]+\.[0-9]+/ ;
 | `@owner` | Field | Record ownership identifier | `@owner` -- marks field as entity owner ID |
 | `@widget("type")` | Field | UI widget rendering hint | `@widget("status_badge")`, `@widget("currency")` |
 | `@kanban_column` | Field | Kanban board grouping column | `@kanban_column` |
+| `@format("type")` | Field | Display format hint | `@format("currency:$")`, `@format("percent")` |
 | `@dashboard(...)` | Schema | Dashboard layout configuration | `@dashboard(widgets: ["count", "sum:value"], layout: "kanban")` |
 
 **@access details**: Controls who can read, write, or delete entities of this schema. Roles are strings. If a role list is empty, that action is unrestricted.
@@ -125,6 +127,8 @@ FLOAT          = /-?[0-9]+\.[0-9]+/ ;
 **@widget details**: Specifies a specialized UI widget for rendering the field. Known widget types: `status_badge`, `progress`, `currency`, `avatar`, `link`, `relative_time`, `count_badge`, `color`, `email`, `phone`, `rating`, `tags`, `image`, `code`, `markdown`.
 
 **@kanban_column details**: Marks a field (typically an enum) as the grouping column for kanban-style board views. Only one field per schema should have this annotation.
+
+**@format details**: Specifies how a field's value should be formatted for display across all views (dashboard cards, entity lists, detail pages). Known format types: `currency` (thousand separators, 2 decimal places) and `percent` (1 decimal place + % suffix). Append `:symbol` to prepend a currency symbol — e.g. `@format("currency:$")` → $1,234,567.00, `@format("currency:€")` → €999.99, `@format("currency")` → 1,234,567.00 (no symbol).
 
 **@dashboard details**: Configures how the schema appears on dashboards. `widgets` lists aggregate displays (e.g., `"count"`, `"sum:field"`, `"avg:field"`). `layout` sets the default view: `"kanban"`, `"timeline"`, `"calendar"`, or omit for standard table. `group_by` names the field to group by. `sort_default` sets the default sort (prefix `-` for descending).
 
@@ -229,6 +233,13 @@ mod tests {
     #[test]
     fn prompt_contains_kanban_annotation() {
         assert!(FORGE_SYSTEM_PROMPT.contains("@kanban_column"));
+    }
+
+    #[test]
+    fn prompt_contains_format_annotation() {
+        assert!(FORGE_SYSTEM_PROMPT.contains("@format"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("currency"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("percent"));
     }
 
     #[test]

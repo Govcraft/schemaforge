@@ -134,11 +134,19 @@ pub async fn dashboard(
         let name = schema.name.as_str().to_string();
         let label = theme.schema_label(&name);
         for r in &results {
+            let format_hint = match &r.op {
+                AggregateOp::Sum { field } | AggregateOp::Avg { field } => {
+                    schema
+                        .field(field.root())
+                        .and_then(|f| f.format_hint())
+                }
+                _ => None,
+            };
             schema_cards.push(DashboardCard {
                 url_name: name.clone(),
                 label: label.clone(),
                 widget_label: widget_label(&r.op),
-                display_value: format_widget_value(&r.op, r.value),
+                display_value: format_widget_value(&r.op, r.value, format_hint),
             });
         }
     }
@@ -674,10 +682,30 @@ fn widget_label(op: &AggregateOp) -> String {
 }
 
 /// Format a widget value for display.
-fn format_widget_value(op: &AggregateOp, value: f64) -> String {
+fn format_widget_value(op: &AggregateOp, value: f64, format_hint: Option<&str>) -> String {
     match op {
         AggregateOp::Count => format!("{}", value as u64),
-        _ => format!("{value:.2}"),
+        _ => {
+            if let Some(hint) = format_hint {
+                let (fmt_type, symbol) = match hint.split_once(':') {
+                    Some((t, s)) => (t, s),
+                    None => (hint, ""),
+                };
+                match fmt_type {
+                    "currency" => format!(
+                        "{}{}",
+                        symbol,
+                        crate::views::format_number_with_commas(value, 2)
+                    ),
+                    "percent" => {
+                        format!("{}%", crate::views::format_number_with_commas(value, 1))
+                    }
+                    _ => format!("{value:.2}"),
+                }
+            } else {
+                format!("{value:.2}")
+            }
+        }
     }
 }
 

@@ -275,6 +275,11 @@ fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
             output.push_str("\")");
         }
         FieldAnnotation::KanbanColumn => output.push_str("@kanban_column"),
+        FieldAnnotation::Format { format_type } => {
+            output.push_str("@format(\"");
+            output.push_str(format_type);
+            output.push_str("\")");
+        }
         _ => {
             output.push_str("@unknown_field_annotation");
         }
@@ -847,6 +852,24 @@ mod tests {
         assert!(output.contains(r#"status: text required @widget("status_badge")"#));
     }
 
+    #[test]
+    fn print_format_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("price").unwrap(),
+                FieldType::Float(FloatConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Format {
+                    format_type: "currency".into(),
+                }],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains(r#"price: float @format("currency")"#));
+    }
+
     // -- Roundtrip tests (parse -> print -> reparse) --
 
     #[test]
@@ -867,6 +890,21 @@ mod tests {
     #[test]
     fn roundtrip_kanban_column() {
         let source = "schema S {\n    stage: text @kanban_column\n}\n";
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(
+            parsed[0].fields[0].annotations,
+            reparsed[0].fields[0].annotations
+        );
+    }
+
+    #[test]
+    fn roundtrip_format_currency() {
+        let source = r#"schema S {
+    price: float @format("currency")
+}
+"#;
         let parsed = crate::parser::parse(source).unwrap();
         let printed = print(&parsed[0]);
         let reparsed = crate::parser::parse(&printed).unwrap();

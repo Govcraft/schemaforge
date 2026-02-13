@@ -246,7 +246,7 @@ impl EntityView {
             .map(|f| {
                 let val = entity
                     .field(f.name.as_str())
-                    .map(|v| display_with_refs(v, ref_display))
+                    .map(|v| format_with_refs(v, f, ref_display))
                     .unwrap_or_default();
                 (snake_to_label(f.name.as_str()), val)
             })
@@ -258,6 +258,77 @@ impl EntityView {
             field_values,
         }
     }
+}
+
+/// Format a DynamicValue for display, applying @format annotation if present.
+pub fn format_value(value: &DynamicValue, field: &FieldDefinition) -> String {
+    if let Some(hint) = field.format_hint() {
+        if let Some(formatted) = apply_format_hint(hint, value) {
+            return formatted;
+        }
+    }
+    dynamic_value_display(value)
+}
+
+fn apply_format_hint(hint: &str, value: &DynamicValue) -> Option<String> {
+    let n = match value {
+        DynamicValue::Float(f) => *f,
+        DynamicValue::Integer(i) => *i as f64,
+        _ => return None,
+    };
+    // Parse "type:symbol" — e.g. "currency:$", "currency:€", or just "currency"
+    let (fmt_type, symbol) = match hint.split_once(':') {
+        Some((t, s)) => (t, s),
+        None => (hint, ""),
+    };
+    match fmt_type {
+        "currency" => Some(format!("{}{}", symbol, format_number_with_commas(n, 2))),
+        "percent" => Some(format!("{}%", format_number_with_commas(n, 1))),
+        _ => None,
+    }
+}
+
+/// Format a raw f64 with thousand separators and fixed decimal places.
+pub fn format_number_with_commas(n: f64, decimals: usize) -> String {
+    let formatted = format!("{:.prec$}", n, prec = decimals);
+    let (integer_part, decimal_part) = match formatted.split_once('.') {
+        Some((i, d)) => (i, Some(d)),
+        None => (formatted.as_str(), None),
+    };
+
+    // Handle negative numbers
+    let (sign, digits) = if let Some(stripped) = integer_part.strip_prefix('-') {
+        ("-", stripped)
+    } else {
+        ("", integer_part)
+    };
+
+    // Insert commas every 3 digits from the right
+    let mut result = String::new();
+    for (i, ch) in digits.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+    let with_commas: String = result.chars().rev().collect();
+
+    match decimal_part {
+        Some(d) => format!("{sign}{with_commas}.{d}"),
+        None => format!("{sign}{with_commas}"),
+    }
+}
+
+/// Format a value with refs, checking @format first then falling back to ref display.
+fn format_with_refs(
+    value: &DynamicValue,
+    field: &FieldDefinition,
+    ref_display: &std::collections::HashMap<String, String>,
+) -> String {
+    if field.format_hint().is_some() {
+        return format_value(value, field);
+    }
+    display_with_refs(value, ref_display)
 }
 
 /// Display a DynamicValue, resolving Ref/RefArray via a lookup map.
@@ -935,6 +1006,126 @@ mod tests {
     }
 
     // --- FieldView with default value ---
+
+    // --- format_value tests ---
+
+    #[test]
+    fn format_value_currency_float() {
+        let field = FieldDefinition::with_annotations(
+            FieldName::new("price").unwrap(),
+            FieldType::Float(FloatConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Format {
+                format_type: "currency".into(),
+            }],
+        );
+        let value = DynamicValue::Float(1234567.0);
+        assert_eq!(format_value(&value, &field), "1,234,567.00");
+    }
+
+    #[test]
+    fn format_value_currency_integer() {
+        let field = FieldDefinition::with_annotations(
+            FieldName::new("amount").unwrap(),
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Format {
+                format_type: "currency".into(),
+            }],
+        );
+        let value = DynamicValue::Integer(50000);
+        assert_eq!(format_value(&value, &field), "50,000.00");
+    }
+
+    #[test]
+    fn format_value_currency_with_symbol() {
+        let field = FieldDefinition::with_annotations(
+            FieldName::new("price").unwrap(),
+            FieldType::Float(FloatConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Format {
+                format_type: "currency:$".into(),
+            }],
+        );
+        let value = DynamicValue::Float(1234567.0);
+        assert_eq!(format_value(&value, &field), "$1,234,567.00");
+    }
+
+    #[test]
+    fn format_value_currency_with_euro_symbol() {
+        let field = FieldDefinition::with_annotations(
+            FieldName::new("price").unwrap(),
+            FieldType::Float(FloatConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Format {
+                format_type: "currency:€".into(),
+            }],
+        );
+        let value = DynamicValue::Float(999.99);
+        assert_eq!(format_value(&value, &field), "€999.99");
+    }
+
+    #[test]
+    fn format_value_percent() {
+        let field = FieldDefinition::with_annotations(
+            FieldName::new("rate").unwrap(),
+            FieldType::Float(FloatConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Format {
+                format_type: "percent".into(),
+            }],
+        );
+        let value = DynamicValue::Float(85.5);
+        assert_eq!(format_value(&value, &field), "85.5%");
+    }
+
+    #[test]
+    fn format_value_no_hint_passthrough() {
+        let field = make_field("name", FieldType::Text(TextConstraints::unconstrained()));
+        let value = DynamicValue::Text("hello".into());
+        assert_eq!(format_value(&value, &field), "hello");
+    }
+
+    #[test]
+    fn format_value_non_numeric_with_hint() {
+        let field = FieldDefinition::with_annotations(
+            FieldName::new("label").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Format {
+                format_type: "currency".into(),
+            }],
+        );
+        let value = DynamicValue::Text("not a number".into());
+        assert_eq!(format_value(&value, &field), "not a number");
+    }
+
+    // --- format_number_with_commas tests ---
+
+    #[test]
+    fn format_commas_small_number() {
+        assert_eq!(format_number_with_commas(42.0, 2), "42.00");
+    }
+
+    #[test]
+    fn format_commas_thousands() {
+        assert_eq!(format_number_with_commas(1234.5, 2), "1,234.50");
+    }
+
+    #[test]
+    fn format_commas_millions() {
+        assert_eq!(format_number_with_commas(1234567.89, 2), "1,234,567.89");
+    }
+
+    #[test]
+    fn format_commas_negative() {
+        assert_eq!(format_number_with_commas(-1234567.89, 2), "-1,234,567.89");
+    }
+
+    #[test]
+    fn format_commas_zero() {
+        assert_eq!(format_number_with_commas(0.0, 2), "0.00");
+    }
 
     #[test]
     fn field_view_with_default() {
