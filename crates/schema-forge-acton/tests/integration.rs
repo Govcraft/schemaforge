@@ -850,6 +850,8 @@ async fn field_filtering_hides_restricted_fields() {
         .expect("failed to connect to in-memory SurrealDB");
 
     // Schema with a field-level access restriction
+    // @access with empty lists = all authenticated users permitted (testing field-level, not schema-level)
+    use schema_forge_core::types::Annotation;
     let schema = SchemaDefinition::new(
         SchemaId::new(),
         SchemaName::new("Employee").unwrap(),
@@ -868,7 +870,12 @@ async fn field_filtering_hides_restricted_fields() {
                 }],
             ),
         ],
-        vec![],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
     )
     .unwrap();
 

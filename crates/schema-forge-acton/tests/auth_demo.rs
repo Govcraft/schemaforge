@@ -317,6 +317,7 @@ async fn demo_field_access_filtering() {
     let registry = SchemaRegistry::new();
 
     // Schema: salary field only visible/writable by "hr" role
+    // @access with empty lists = all authenticated users permitted (testing field-level, not schema-level)
     let schema = SchemaDefinition::new(
         SchemaId::new(),
         SchemaName::new("Employee").unwrap(),
@@ -339,7 +340,12 @@ async fn demo_field_access_filtering() {
                 }],
             ),
         ],
-        vec![],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
     )
     .unwrap();
     register_schema(&schema, &backend, &registry).await;
@@ -421,6 +427,7 @@ async fn demo_record_ownership() {
     let registry = SchemaRegistry::new();
 
     // Schema with @owner on owner_id field
+    // @access with empty lists = all authenticated users permitted (testing ownership, not schema-level)
     let schema = SchemaDefinition::new(
         SchemaId::new(),
         SchemaName::new("Note").unwrap(),
@@ -436,7 +443,12 @@ async fn demo_record_ownership() {
                 vec![FieldAnnotation::Owner],
             ),
         ],
-        vec![],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
     )
     .unwrap();
     register_schema(&schema, &backend, &registry).await;
@@ -575,6 +587,7 @@ async fn demo_multi_tenancy_isolation() {
     let registry = SchemaRegistry::new();
 
     // Create Organization schema with @tenant(root)
+    // @access with empty lists = all authenticated users permitted (testing tenancy, not schema-level)
     let org_schema = SchemaDefinition::new(
         SchemaId::new(),
         SchemaName::new("Organization").unwrap(),
@@ -582,12 +595,21 @@ async fn demo_multi_tenancy_isolation() {
             FieldName::new("name").unwrap(),
             FieldType::Text(TextConstraints::unconstrained()),
         )],
-        vec![Annotation::Tenant(TenantKind::Root)],
+        vec![
+            Annotation::Tenant(TenantKind::Root),
+            Annotation::Access {
+                read: vec![],
+                write: vec![],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            },
+        ],
     )
     .unwrap();
     register_schema(&org_schema, &backend, &registry).await;
 
     // Create Project schema (regular, will be tenant-scoped)
+    // @access with empty lists = all authenticated users permitted (testing tenancy, not schema-level)
     let project_schema = SchemaDefinition::new(
         SchemaId::new(),
         SchemaName::new("Project").unwrap(),
@@ -595,7 +617,12 @@ async fn demo_multi_tenancy_isolation() {
             FieldName::new("title").unwrap(),
             FieldType::Text(TextConstraints::unconstrained()),
         )],
-        vec![],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
     )
     .unwrap();
     register_schema(&project_schema, &backend, &registry).await;

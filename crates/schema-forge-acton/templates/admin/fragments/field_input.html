@@ -54,7 +54,7 @@
         {% if field.multiple %}multiple size="5"{% endif %}
         {% if field.required %}required{% endif %}
         {% if let Some(target) = field.relation_target %}
-        hx-get="/admin/schemas/{{ target }}/relation-options/{{ field.name }}"
+        hx-get="{{ url_prefix }}/{{ target }}/relation-options/{{ field.name }}"
         hx-trigger="load"
         hx-target="this"
         hx-swap="innerHTML"

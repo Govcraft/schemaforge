@@ -1,0 +1,31 @@
+<div class="forge-entity-form" id="forge-form-{{ schema.url_name }}">
+{% if !errors.is_empty() %}
+<div class="forge-errors">
+    <ul>
+        {% for error in errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<form
+    {% if let Some(id) = entity_id %}
+    hx-put="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ id }}"
+    {% else %}
+    hx-post="{{ url_prefix }}/{{ schema.url_name }}/entities"
+    {% endif %}
+    hx-target="closest .forge-entity-form"
+    hx-swap="outerHTML"
+>
+    {% for field in fields %}
+    {% include "admin/fragments/field_input.html" %}
+    {% endfor %}
+
+    <div class="forge-form-actions">
+        <button type="submit" class="forge-btn forge-btn-primary">
+            {% if entity_id.is_some() %}Update{% else %}Create{% endif %}
+        </button>
+    </div>
+</form>
+</div>

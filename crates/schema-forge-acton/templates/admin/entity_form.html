@@ -8,8 +8,8 @@
 <div class="breadcrumbs text-sm">
     <ul>
         <li><a href="/admin/">Dashboard</a></li>
-        <li><a href="/admin/schemas/{{ schema.url_name }}">{{ schema.name }}</a></li>
-        <li><a href="/admin/schemas/{{ schema.url_name }}/entities">Entities</a></li>
+        <li><a href="{{ url_prefix }}/{{ schema.url_name }}">{{ schema.name }}</a></li>
+        <li><a href="{{ url_prefix }}/{{ schema.url_name }}/entities">Entities</a></li>
         <li>{% if let Some(id) = entity_id %}Edit{% else %}Create{% endif %}</li>
     </ul>
 </div>
@@ -32,9 +32,9 @@
     <div class="card-body">
     <form
         {% if let Some(id) = entity_id %}
-        hx-put="/admin/schemas/{{ schema.url_name }}/entities/{{ id }}"
+        hx-put="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ id }}"
         {% else %}
-        hx-post="/admin/schemas/{{ schema.url_name }}/entities"
+        hx-post="{{ url_prefix }}/{{ schema.url_name }}/entities"
         {% endif %}
         hx-target="body"
         hx-push-url="true"
@@ -47,7 +47,7 @@
             <button type="submit" class="btn btn-primary">
                 {% if entity_id.is_some() %}Update{% else %}Create{% endif %}
             </button>
-            <a href="/admin/schemas/{{ schema.url_name }}/entities" class="btn btn-ghost">Cancel</a>
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities" class="btn btn-ghost">Cancel</a>
         </div>
     </form>
     </div>

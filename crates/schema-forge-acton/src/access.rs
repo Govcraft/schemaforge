@@ -51,20 +51,31 @@ where
     }
 }
 
+/// The reserved role name that grants unauthenticated (public) access.
+///
+/// When a schema's `@access` annotation includes `"public"` in a role list,
+/// that action is accessible without any `AuthContext`.
+pub const PUBLIC_ROLE: &str = "public";
+
 /// Check if the authenticated user has access to perform the given action.
 ///
-/// Access rules (in order):
-/// 1. No `AuthContext` (open access mode) => permit
+/// Access rules (secure by default when auth is configured):
+/// 1. No `AuthContext` (open access / dev mode) => permit
 /// 2. User has "admin" role => permit (bypass)
-/// 3. Schema has no `@access` annotation => permit all authenticated users
-/// 4. `@access` role list for the action is empty => permit all authenticated users
-/// 5. User must have at least one role from the action's role list
+/// 3. Schema has no `@access` annotation => **DENY** (secure by default)
+/// 4. Role list for the action contains "public" => permit (even without auth)
+/// 5. Empty role list for the action => permit all authenticated users
+/// 6. User must have at least one role from the action's role list
+///
+/// **Secure by default**: When auth IS configured (AuthContext is present),
+/// schemas without an `@access` annotation are denied. Developers must
+/// explicitly annotate with `@access(read = ["public"])` for open access.
 pub fn check_schema_access(
     schema: &SchemaDefinition,
     auth: Option<&AuthContext>,
     action: AccessAction,
 ) -> Result<(), ForgeError> {
-    // Rule 1: no auth context means open access mode
+    // Rule 1: no auth context means open access / dev mode — no restrictions
     let auth = match auth {
         Some(ctx) => ctx,
         None => return Ok(()),
@@ -75,10 +86,17 @@ pub fn check_schema_access(
         return Ok(());
     }
 
-    // Rule 3: no @access annotation means all authenticated users are permitted
+    // Rule 3: no @access annotation = deny (secure by default)
     let (read_roles, write_roles, delete_roles) = match find_access_annotation(schema) {
         Some(roles) => roles,
-        None => return Ok(()),
+        None => {
+            return Err(ForgeError::Forbidden {
+                message: format!(
+                    "access denied: schema '{}' has no @access annotation (secure by default)",
+                    schema.name.as_str(),
+                ),
+            })
+        }
     };
 
     // Select the role list for the requested action
@@ -88,12 +106,18 @@ pub fn check_schema_access(
         AccessAction::Delete => delete_roles,
     };
 
-    // Rule 4: empty role list means all authenticated users are permitted
+    // Rule 4: "public" in role list = permit all (including unauthenticated once
+    // the middleware supports soft-auth pass-through)
+    if required_roles.iter().any(|r| r == PUBLIC_ROLE) {
+        return Ok(());
+    }
+
+    // Rule 5: empty role list means all authenticated users are permitted
     if required_roles.is_empty() {
         return Ok(());
     }
 
-    // Rule 5: user must have at least one matching role
+    // Rule 6: user must have at least one matching role
     if auth.has_any_role(required_roles) {
         Ok(())
     } else {
@@ -362,16 +386,36 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn check_schema_access_permits_when_no_auth() {
+    fn check_schema_access_permits_when_no_auth_open_access() {
+        // No AuthContext = open access / dev mode — always permits
         let schema = make_access_schema(&["viewer"], &["editor"], &["admin"]);
         let result = check_schema_access(&schema, None, AccessAction::Write);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn check_schema_access_permits_when_no_access_annotation() {
+    fn check_schema_access_permits_when_no_auth_no_annotation() {
+        // No AuthContext = open access even without @access annotation
+        let schema = make_open_schema();
+        let result = check_schema_access(&schema, None, AccessAction::Read);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_schema_access_denies_when_auth_but_no_access_annotation() {
+        // Auth configured + no @access = secure by default → deny
         let schema = make_open_schema();
         let auth = make_auth(&["member"]);
+        let result = check_schema_access(&schema, Some(&auth), AccessAction::Read);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ForgeError::Forbidden { .. })));
+    }
+
+    #[test]
+    fn check_schema_access_permits_public_role() {
+        // "public" in role list = permit for any authenticated user
+        let schema = make_access_schema(&["public"], &["editor"], &["admin"]);
+        let auth = make_auth(&["anyone"]);
         let result = check_schema_access(&schema, Some(&auth), AccessAction::Read);
         assert!(result.is_ok());
     }

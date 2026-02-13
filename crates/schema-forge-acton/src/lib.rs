@@ -11,9 +11,15 @@ pub mod middleware;
 pub mod routes;
 pub mod state;
 pub mod system;
+pub mod form;
+pub mod shared;
+pub mod views;
 
 #[cfg(feature = "admin-ui")]
 pub mod admin;
+
+#[cfg(feature = "widget-ui")]
+pub mod widget;
 
 pub use acton_service;
 pub use config::SchemaForgeConfig;

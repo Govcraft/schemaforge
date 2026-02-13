@@ -6,7 +6,7 @@
 <div class="breadcrumbs text-sm">
     <ul>
         <li><a href="/admin/">Dashboard</a></li>
-        <li><a href="/admin/schemas/{{ schema.url_name }}">{{ schema.name }}</a></li>
+        <li><a href="{{ url_prefix }}/{{ schema.url_name }}">{{ schema.name }}</a></li>
         <li>Entities</li>
     </ul>
 </div>
@@ -17,7 +17,7 @@
             {{ pagination.total_count }} total
         </div>
     </div>
-    <a href="/admin/schemas/{{ schema.url_name }}/entities/new" class="btn btn-primary">Create New</a>
+    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="btn btn-primary">Create New</a>
 </div>
 
 <div class="card card-border bg-base-200 p-0 overflow-hidden">

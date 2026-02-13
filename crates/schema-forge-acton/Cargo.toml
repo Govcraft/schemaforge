@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-acton"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 
 [dependencies]
@@ -22,6 +22,7 @@ tracing = { version = "0.1", optional = true }
 
 [features]
 admin-ui = ["acton-service/htmx-full", "dep:askama", "dep:schema-forge-surrealdb"]
+widget-ui = ["acton-service/htmx-full", "dep:askama"]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum", "dep:arc-swap", "dep:tracing"]
 
 [dev-dependencies]

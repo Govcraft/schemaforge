@@ -300,6 +300,28 @@ impl SchemaForgeExtension {
         router.nest("/forge", gql_router)
     }
 
+    /// Register widget routes onto an existing Router.
+    ///
+    /// Only available when the `widget-ui` feature is enabled.
+    /// Nests widget routes under `/forge/`, serving bare HTMX fragments
+    /// for entity CRUD operations that can be embedded in any HTMX application.
+    ///
+    /// Auth middleware is applied so widget requests respect schema `@access`
+    /// annotations and field-level filtering.
+    #[cfg(feature = "widget-ui")]
+    pub fn register_widget_routes<S>(&self, router: Router<S>) -> Router<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        let widget_router = crate::widget::routes::widget_routes()
+            .route_layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                crate::middleware::auth_middleware,
+            ))
+            .with_state(self.state.clone());
+        router.nest("/forge", widget_router)
+    }
+
     /// Get a reference to the schema registry.
     pub fn registry(&self) -> &SchemaRegistry {
         &self.state.registry

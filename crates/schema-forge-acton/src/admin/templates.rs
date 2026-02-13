@@ -41,6 +41,7 @@ pub struct EntityListTemplate {
     pub pagination: PaginationView,
     pub schema_names: Vec<String>,
     pub current_user: Option<CurrentUserView>,
+    pub url_prefix: String,
 }
 
 /// Entity create form.
@@ -53,6 +54,7 @@ pub struct EntityFormTemplate {
     pub schema_names: Vec<String>,
     pub errors: Vec<String>,
     pub current_user: Option<CurrentUserView>,
+    pub url_prefix: String,
 }
 
 /// Entity detail page.
@@ -63,6 +65,7 @@ pub struct EntityDetailTemplate {
     pub entity: EntityView,
     pub schema_names: Vec<String>,
     pub current_user: Option<CurrentUserView>,
+    pub url_prefix: String,
 }
 
 /// Entity table body fragment (for HTMX pagination).
@@ -72,6 +75,7 @@ pub struct EntityTableBodyFragment {
     pub schema: SchemaView,
     pub entities: Vec<EntityView>,
     pub pagination: PaginationView,
+    pub url_prefix: String,
 }
 
 /// Flash message fragment.

@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::types::{
-    Annotation, DynamicValue, EntityId, FieldName, FieldType, SchemaDefinition, SchemaName,
+    Annotation, DynamicValue, EntityId, FieldName, FieldType, SchemaName,
 };
 
 use crate::state::ForgeState;
@@ -23,6 +23,9 @@ use super::views::{
     SchemaEditorView, SchemaGraphView, SchemaView,
 };
 use acton_service::prelude::{AuthSession, TypedSession};
+
+/// URL prefix for admin entity routes: `/admin/schemas`.
+const ADMIN_URL_PREFIX: &str = "/admin/schemas";
 
 /// GET /admin/static/admin.css — Serve compiled Tailwind CSS.
 pub async fn admin_css() -> impl IntoResponse {
@@ -52,112 +55,8 @@ async fn schema_names(state: &ForgeState) -> Vec<String> {
     names
 }
 
-/// Resolve relation display values for a set of entities.
-///
-/// Scans the schema for relation fields, collects referenced entity IDs,
-/// fetches those entities from the backend, and returns a map from
-/// entity ID → display value string.
-async fn resolve_ref_display(
-    state: &ForgeState,
-    schema: &SchemaDefinition,
-    entities: &[Entity],
-) -> std::collections::HashMap<String, String> {
-    let mut ref_display = std::collections::HashMap::new();
-
-    // Collect (target_schema_name, [entity_ids]) for each relation field
-    let mut targets: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-
-    for field in &schema.fields {
-        let target_name = match &field.field_type {
-            FieldType::Relation { target, .. } => target.as_str().to_string(),
-            _ => continue,
-        };
-
-        for entity in entities {
-            if let Some(val) = entity.field(field.name.as_str()) {
-                match val {
-                    DynamicValue::Ref(id) => {
-                        targets
-                            .entry(target_name.clone())
-                            .or_default()
-                            .push(id.as_str().to_string());
-                    }
-                    DynamicValue::RefArray(ids) => {
-                        for id in ids {
-                            targets
-                                .entry(target_name.clone())
-                                .or_default()
-                                .push(id.as_str().to_string());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // For each target schema, fetch the entities and extract display values
-    for (target_name, ids) in &targets {
-        let target_schema = match state.registry.get(target_name).await {
-            Some(s) => s,
-            None => continue,
-        };
-
-        // Find display field for the target schema
-        let display_field = target_schema.annotations.iter().find_map(|a| match a {
-            Annotation::Display { field } => Some(field.as_str().to_string()),
-            _ => None,
-        });
-
-        for id_str in ids {
-            if ref_display.contains_key(id_str) {
-                continue; // already resolved
-            }
-            let entity_id = match EntityId::parse(id_str) {
-                Ok(eid) => eid,
-                Err(_) => continue,
-            };
-            let target_sn = match SchemaName::new(target_name) {
-                Ok(sn) => sn,
-                Err(_) => continue,
-            };
-            let entity = match state.backend.get(&target_sn, &entity_id).await {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            let label = if let Some(ref df) = display_field {
-                entity
-                    .field(df)
-                    .map(|v| match v {
-                        DynamicValue::Text(s) => s.clone(),
-                        other => other.to_string(),
-                    })
-                    .unwrap_or_else(|| id_str.clone())
-            } else {
-                // Fallback: first text field
-                target_schema
-                    .fields
-                    .iter()
-                    .find_map(|f| {
-                        if matches!(f.field_type, FieldType::Text(_)) {
-                            entity.field(f.name.as_str()).map(|v| match v {
-                                DynamicValue::Text(s) => s.clone(),
-                                other => other.to_string(),
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_else(|| id_str.clone())
-            };
-            ref_display.insert(id_str.clone(), label);
-        }
-    }
-
-    ref_display
-}
+// Re-export from shared module for use by admin handlers.
+use crate::shared::resolve_ref_display;
 
 /// GET /admin/ — Dashboard with schema cards and entity counts.
 pub async fn dashboard(
@@ -260,6 +159,7 @@ pub async fn entity_list(
         pagination,
         schema_names: names,
         current_user,
+        url_prefix: ADMIN_URL_PREFIX.to_string(),
     }))
 }
 
@@ -301,6 +201,7 @@ pub async fn entity_table_fragment(
         schema,
         entities,
         pagination,
+        url_prefix: ADMIN_URL_PREFIX.to_string(),
     }))
 }
 
@@ -332,6 +233,7 @@ pub async fn entity_create_form(
         schema_names: names,
         errors: vec![],
         current_user,
+        url_prefix: ADMIN_URL_PREFIX.to_string(),
     }))
 }
 
@@ -384,6 +286,7 @@ pub async fn entity_create(
                 schema_names: names,
                 errors,
                 current_user,
+                url_prefix: ADMIN_URL_PREFIX.to_string(),
             })
             .with_status(StatusCode::UNPROCESSABLE_ENTITY)
             .into_response())
@@ -427,6 +330,7 @@ pub async fn entity_detail(
         entity: entity_view,
         schema_names: names,
         current_user,
+        url_prefix: ADMIN_URL_PREFIX.to_string(),
     }))
 }
 
@@ -474,6 +378,7 @@ pub async fn entity_edit_form(
         schema_names: names,
         errors: vec![],
         current_user,
+        url_prefix: ADMIN_URL_PREFIX.to_string(),
     }))
 }
 
@@ -525,6 +430,7 @@ pub async fn entity_update(
                 schema_names: names,
                 errors,
                 current_user,
+                url_prefix: ADMIN_URL_PREFIX.to_string(),
             })
             .with_status(StatusCode::UNPROCESSABLE_ENTITY)
             .into_response())
