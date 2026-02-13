@@ -1,0 +1,95 @@
+{% if entities.is_empty() %}
+<div class="sf-empty">
+    <p>No entities yet.</p>
+    <a href="/app/{{ schema.url_name }}/entities/new" class="sf-btn sf-btn-primary">Create First Entity</a>
+</div>
+{% else %}
+{% if list_style == "table" %}
+<div class="sf-entity-list" data-list-style="table">
+    <div class="sf-list-header">
+        {% for field in schema.fields %}
+        <div class="sf-list-header-cell">{{ field.label }}</div>
+        {% endfor %}
+        <div class="sf-list-header-cell">Actions</div>
+    </div>
+    {% for entity in entities %}
+    <div class="sf-list-row" id="sf-entity-{{ entity.id }}">
+        {% for (_, value) in entity.field_values %}
+        <div class="sf-list-cell">{% if value.is_empty() %}<span class="sf-detail-value" style="opacity: 0.4">-</span>{% else %}{{ value }}{% endif %}</div>
+        {% endfor %}
+        <div class="sf-list-cell">
+            <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}" class="sf-btn sf-btn-secondary sf-btn-sm">View</a>
+            <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="sf-btn sf-btn-secondary sf-btn-sm">Edit</a>
+            <button class="sf-btn sf-btn-danger sf-btn-sm"
+                hx-delete="/app/{{ schema.url_name }}/entities/{{ entity.id }}"
+                hx-confirm="Delete this entity?"
+                hx-target="#sf-entity-{{ entity.id }}"
+                hx-swap="delete"
+            >Del</button>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else if list_style == "cards" %}
+<div class="sf-entity-list" data-list-style="cards">
+    {% for entity in entities %}
+    <div class="sf-card" id="sf-entity-{{ entity.id }}">
+        <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}" class="sf-card-title">{{ entity.display_value }}</a>
+        {% for (label, value) in entity.field_values %}
+        <div class="sf-card-field">
+            <span class="sf-card-label">{{ label }}</span>
+            <span>{% if value.is_empty() %}-{% else %}{{ value }}{% endif %}</span>
+        </div>
+        {% endfor %}
+        <div style="margin-top: 0.5rem;">
+            <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="sf-btn sf-btn-secondary sf-btn-sm">Edit</a>
+            <button class="sf-btn sf-btn-danger sf-btn-sm"
+                hx-delete="/app/{{ schema.url_name }}/entities/{{ entity.id }}"
+                hx-confirm="Delete this entity?"
+                hx-target="#sf-entity-{{ entity.id }}"
+                hx-swap="delete"
+            >Del</button>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="sf-entity-list" data-list-style="compact">
+    {% for entity in entities %}
+    <div class="sf-list-row" id="sf-entity-{{ entity.id }}">
+        <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}">{{ entity.display_value }}</a>
+        <span style="flex: 1;"></span>
+        <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="sf-btn sf-btn-secondary sf-btn-xs">Edit</a>
+        <button class="sf-btn sf-btn-danger sf-btn-xs"
+            hx-delete="/app/{{ schema.url_name }}/entities/{{ entity.id }}"
+            hx-confirm="Delete this entity?"
+            hx-target="#sf-entity-{{ entity.id }}"
+            hx-swap="delete"
+        >Del</button>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+<div class="sf-pagination">
+    <span class="sf-pagination-info">
+        Showing {{ pagination.offset + 1 }}-{{ pagination.end_showing() }}
+        of {{ pagination.total_count }}
+    </span>
+    <div>
+        {% if pagination.has_previous %}
+        <a href="#" class="sf-btn sf-btn-secondary sf-btn-sm"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.previous_offset() }}"
+           hx-target="#sf-entity-table"
+           hx-swap="innerHTML"
+        >Previous</a>
+        {% endif %}
+        {% if pagination.has_next %}
+        <a href="#" class="sf-btn sf-btn-secondary sf-btn-sm"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.next_offset() }}"
+           hx-target="#sf-entity-table"
+           hx-swap="innerHTML"
+        >Next</a>
+        {% endif %}
+    </div>
+</div>
+{% endif %}

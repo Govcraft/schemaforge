@@ -463,11 +463,7 @@ pub fn validate_filter(filter: &Filter, schema: &SchemaDefinition) -> Result<(),
     }
 }
 
-fn collect_filter_errors(
-    filter: &Filter,
-    schema: &SchemaDefinition,
-    errors: &mut Vec<QueryError>,
-) {
+fn collect_filter_errors(filter: &Filter, schema: &SchemaDefinition, errors: &mut Vec<QueryError>) {
     match filter {
         Filter::Eq { path, value }
         | Filter::Ne { path, value }
@@ -530,7 +526,10 @@ fn check_field_exists(path: &FieldPath, schema: &SchemaDefinition, errors: &mut 
 }
 
 fn is_text_like(ft: &FieldType) -> bool {
-    matches!(ft, FieldType::Text(_) | FieldType::RichText | FieldType::Enum(_))
+    matches!(
+        ft,
+        FieldType::Text(_) | FieldType::RichText | FieldType::Enum(_)
+    )
 }
 
 fn field_type_name(ft: &FieldType) -> String {
@@ -994,8 +993,7 @@ mod tests {
     // -- validate_filter tests --
 
     use crate::types::{
-        FieldDefinition, FieldModifier, FieldName, IntegerConstraints, SchemaName,
-        TextConstraints,
+        FieldDefinition, FieldModifier, FieldName, IntegerConstraints, SchemaName, TextConstraints,
     };
 
     fn test_schema() -> SchemaDefinition {
@@ -1035,7 +1033,9 @@ mod tests {
         );
         let errs = validate_filter(&f, &schema).unwrap_err();
         assert_eq!(errs.len(), 1);
-        assert!(matches!(&errs[0], QueryError::UnknownField { field, .. } if field == "nonexistent"));
+        assert!(
+            matches!(&errs[0], QueryError::UnknownField { field, .. } if field == "nonexistent")
+        );
     }
 
     #[test]
@@ -1046,7 +1046,9 @@ mod tests {
             DynamicValue::Text("not a number".into()),
         );
         let errs = validate_filter(&f, &schema).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(e, QueryError::TypeMismatch { .. })));
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, QueryError::TypeMismatch { .. })));
     }
 
     #[test]
@@ -1064,7 +1066,9 @@ mod tests {
             Filter::eq(FieldPath::single("bogus"), DynamicValue::Integer(1)),
         ]);
         let errs = validate_filter(&f, &schema).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(e, QueryError::UnknownField { field, .. } if field == "bogus")));
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, QueryError::UnknownField { field, .. } if field == "bogus")));
     }
 
     #[test]
@@ -1093,7 +1097,9 @@ mod tests {
         let schema = test_schema();
         let f = Filter::contains(FieldPath::single("age"), "something");
         let errs = validate_filter(&f, &schema).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(e, QueryError::TypeMismatch { .. })));
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, QueryError::TypeMismatch { .. })));
     }
 
     #[test]
@@ -1108,7 +1114,9 @@ mod tests {
         let schema = test_schema();
         let f = Filter::in_set(FieldPath::single("name"), vec![]);
         let errs = validate_filter(&f, &schema).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(e, QueryError::EmptyInValues { .. })));
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, QueryError::EmptyInValues { .. })));
     }
 
     #[test]
@@ -1119,7 +1127,9 @@ mod tests {
             DynamicValue::Text("x".into()),
         );
         let errs = validate_filter(&f, &schema).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(e, QueryError::UnknownField { .. })));
+        assert!(errs
+            .iter()
+            .any(|e| matches!(e, QueryError::UnknownField { .. })));
     }
 
     #[test]

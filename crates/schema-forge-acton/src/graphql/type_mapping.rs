@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use async_graphql::dynamic::TypeRef;
-use async_graphql::Value as GqlValue;
 use async_graphql::indexmap;
+use async_graphql::Value as GqlValue;
 use async_graphql::{Name, Number};
 use schema_forge_core::types::{Cardinality, DynamicValue, FieldType, IntegerConstraints};
 
@@ -13,12 +13,8 @@ pub const INT64_SCALAR: &str = "Int64";
 
 /// Check whether integer constraints fit within i32 range.
 fn fits_i32(constraints: &IntegerConstraints) -> bool {
-    let min_ok = constraints
-        .min
-        .is_some_and(|m| m >= i64::from(i32::MIN));
-    let max_ok = constraints
-        .max
-        .is_some_and(|m| m <= i64::from(i32::MAX));
+    let min_ok = constraints.min.is_some_and(|m| m >= i64::from(i32::MIN));
+    let max_ok = constraints.max.is_some_and(|m| m <= i64::from(i32::MAX));
     min_ok && max_ok
 }
 
@@ -232,7 +228,10 @@ pub fn entity_fields_to_gql_object(
             .iter()
             .find(|fd| fd.name.as_str() == key)
             .map(|fd| &fd.field_type);
-        obj.insert(Name::new(key), dynamic_value_to_gql_value(value, field_type));
+        obj.insert(
+            Name::new(key),
+            dynamic_value_to_gql_value(value, field_type),
+        );
     }
     obj
 }
@@ -367,10 +366,8 @@ mod tests {
     #[test]
     fn dv_integer_to_gql_int() {
         let c = IntegerConstraints::with_range(0, 100).unwrap();
-        let v = dynamic_value_to_gql_value(
-            &DynamicValue::Integer(42),
-            Some(&FieldType::Integer(c)),
-        );
+        let v =
+            dynamic_value_to_gql_value(&DynamicValue::Integer(42), Some(&FieldType::Integer(c)));
         assert_eq!(v, GqlValue::Number(Number::from(42)));
     }
 

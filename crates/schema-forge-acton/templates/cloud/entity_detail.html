@@ -1,0 +1,37 @@
+{% extends "cloud/base.html" %}
+
+{% block title %}{{ entity.display_value }} - {{ schema.name }} - {{ app_title }}{% endblock %}
+
+{% block content %}
+<div class="sf-breadcrumbs">
+    <a href="/app/">Dashboard</a>
+    <span class="sf-breadcrumbs-sep"></span>
+    <a href="/app/{{ schema.url_name }}/entities">{{ schema.name }}</a>
+    <span class="sf-breadcrumbs-sep"></span>
+    <span>{{ entity.display_value }}</span>
+</div>
+<div class="sf-page-header">
+    <div>
+        <h1 class="sf-page-title">{{ entity.display_value }}</h1>
+        <div class="sf-page-subtitle">ID: {{ entity.id }}</div>
+    </div>
+    <div>
+        <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="sf-btn sf-btn-primary sf-btn-sm">Edit</a>
+        <button class="sf-btn sf-btn-danger sf-btn-sm"
+            hx-delete="/app/{{ schema.url_name }}/entities/{{ entity.id }}"
+            hx-confirm="Delete this entity?"
+            hx-target="body"
+        >Delete</button>
+    </div>
+</div>
+<div class="sf-detail" data-detail-style="{{ detail_style }}">
+    <div class="sf-detail-fields">
+        {% for (label, value) in entity.field_values %}
+        <div class="sf-detail-field">
+            <div class="sf-detail-label">{{ label }}</div>
+            <div class="sf-detail-value">{% if value.is_empty() %}<span style="opacity: 0.4">-</span>{% else %}{{ value }}{% endif %}</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

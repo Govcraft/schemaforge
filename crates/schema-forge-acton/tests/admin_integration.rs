@@ -38,6 +38,9 @@ async fn admin_test_state() -> ForgeState {
         auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
+        theme: Arc::new(arc_swap::ArcSwap::new(Arc::new(
+            schema_forge_acton::theme::Theme::default(),
+        ))),
         surreal_client: None,
     }
 }

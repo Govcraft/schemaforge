@@ -1,0 +1,29 @@
+{% if entities.is_empty() %}
+<div class="forge-empty-state">
+    <p>No entities yet.</p>
+    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="forge-btn">Create First Entity</a>
+</div>
+{% else %}
+<div class="forge-compact-list">
+    {% for entity in entities %}
+    <div class="forge-compact-row" id="entity-{{ entity.id }}">
+        <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}" class="forge-compact-title">{{ entity.display_value }}</a>
+        <span class="forge-compact-summary">
+            {% for (label, value) in entity.field_values %}{% if !value.is_empty() && loop.index < 4 %}
+            <span class="forge-compact-field">{{ value }}</span>{% if loop.index < 3 %} · {% endif %}
+            {% endif %}{% endfor %}
+        </span>
+        <span class="forge-compact-actions">
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="forge-btn forge-btn-xs">Edit</a>
+            <button class="forge-btn forge-btn-xs forge-btn-danger"
+                hx-delete="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}"
+                hx-confirm="Delete this entity?"
+                hx-target="#entity-{{ entity.id }}"
+                hx-swap="delete"
+            >Del</button>
+        </span>
+    </div>
+    {% endfor %}
+</div>
+{% include "molecules/pagination.html" %}
+{% endif %}

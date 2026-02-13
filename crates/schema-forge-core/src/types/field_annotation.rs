@@ -12,6 +12,10 @@ pub enum FieldAnnotation {
     },
     /// `@owner` -- marks this field as the ownership field for the record.
     Owner,
+    /// `@widget("widget_type")` -- UI widget hint for rendering this field.
+    Widget { widget_type: String },
+    /// `@kanban_column` -- marks this field as the grouping column for kanban views.
+    KanbanColumn,
 }
 
 impl FieldAnnotation {
@@ -20,6 +24,8 @@ impl FieldAnnotation {
         match self {
             Self::FieldAccess { .. } => "field_access",
             Self::Owner => "owner",
+            Self::Widget { .. } => "widget",
+            Self::KanbanColumn => "kanban_column",
         }
     }
 }
@@ -36,6 +42,8 @@ impl std::fmt::Display for FieldAnnotation {
                 )
             }
             Self::Owner => write!(f, "@owner"),
+            Self::Widget { widget_type } => write!(f, "@widget(\"{widget_type}\")"),
+            Self::KanbanColumn => write!(f, "@kanban_column"),
         }
     }
 }
@@ -98,6 +106,54 @@ mod tests {
     #[test]
     fn serde_roundtrip_owner() {
         let a = FieldAnnotation::Owner;
+        let json = serde_json::to_string(&a).unwrap();
+        let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn display_widget() {
+        let a = FieldAnnotation::Widget {
+            widget_type: "status_badge".into(),
+        };
+        assert_eq!(a.to_string(), "@widget(\"status_badge\")");
+    }
+
+    #[test]
+    fn display_kanban_column() {
+        let a = FieldAnnotation::KanbanColumn;
+        assert_eq!(a.to_string(), "@kanban_column");
+    }
+
+    #[test]
+    fn kind_widget() {
+        assert_eq!(
+            FieldAnnotation::Widget {
+                widget_type: "progress".into(),
+            }
+            .kind(),
+            "widget"
+        );
+    }
+
+    #[test]
+    fn kind_kanban_column() {
+        assert_eq!(FieldAnnotation::KanbanColumn.kind(), "kanban_column");
+    }
+
+    #[test]
+    fn serde_roundtrip_widget() {
+        let a = FieldAnnotation::Widget {
+            widget_type: "currency".into(),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_kanban_column() {
+        let a = FieldAnnotation::KanbanColumn;
         let json = serde_json::to_string(&a).unwrap();
         let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);

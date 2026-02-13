@@ -1,0 +1,7 @@
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <textarea id="{{ field.name }}" name="{{ field.name }}" class="textarea"
+        placeholder="One value per line"
+        {% if field.required %}required{% endif %}
+    >{% if let Some(val) = field.current_value %}{{ val }}{% endif %}</textarea>
+</fieldset>

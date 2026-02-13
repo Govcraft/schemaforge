@@ -167,6 +167,14 @@ impl SchemaForgeExtensionBuilder {
             None
         };
 
+        // Load active theme
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        let theme = {
+            let active_theme =
+                crate::theme::load_active_theme(&registry, backend.as_ref()).await;
+            Arc::new(arc_swap::ArcSwap::new(Arc::new(active_theme)))
+        };
+
         // Build initial GraphQL schema
         #[cfg(feature = "graphql")]
         let graphql_schema = {
@@ -180,6 +188,8 @@ impl SchemaForgeExtensionBuilder {
             auth_provider: self.auth_provider,
             tenant_config,
             record_access_policy: self.record_access_policy,
+            #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+            theme,
             #[cfg(feature = "graphql")]
             graphql_schema,
             #[cfg(feature = "admin-ui")]
@@ -320,6 +330,34 @@ impl SchemaForgeExtension {
             ))
             .with_state(self.state.clone());
         router.nest("/forge", widget_router)
+    }
+
+    /// Register Cloud UI routes onto an existing Router.
+    ///
+    /// Only available when the `cloud-ui` feature is enabled.
+    /// Nests cloud routes under `/app/`, providing a complete themed
+    /// application UI with `sf-` prefixed semantic HTML and CSS custom
+    /// properties from the active Theme.
+    ///
+    /// Auth middleware is applied so cloud requests respect schema `@access`
+    /// annotations.
+    #[cfg(feature = "cloud-ui")]
+    pub fn register_cloud_routes<S>(&self, router: Router<S>) -> Router<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        use axum::response::Redirect;
+        use axum::routing::get;
+
+        let cloud_router = crate::cloud::routes::cloud_routes()
+            .route_layer(axum::middleware::from_fn_with_state(
+                self.state.clone(),
+                crate::middleware::auth_middleware,
+            ))
+            .with_state(self.state.clone());
+        router
+            .nest("/app/", cloud_router)
+            .route("/app", get(|| async { Redirect::permanent("/app/") }))
     }
 
     /// Get a reference to the schema registry.

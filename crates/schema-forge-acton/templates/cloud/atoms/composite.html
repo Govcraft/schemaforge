@@ -1,0 +1,10 @@
+<fieldset style="border: 1px solid var(--sf-secondary); border-radius: var(--sf-border-radius); padding: 0.75rem;">
+    <legend style="font-weight: 600; font-size: 0.875rem;">{{ field.label }}{% if field.required %} *{% endif %}</legend>
+    {% for child in field.children %}
+    <div class="sf-form-group">
+        <label class="sf-form-label" for="{{ field.name }}.{{ child.name }}">{{ child.label }}</label>
+        <input type="text" id="{{ field.name }}.{{ child.name }}" name="{{ field.name }}.{{ child.name }}" class="sf-form-input"
+            {% if let Some(val) = child.current_value %}value="{{ val }}"{% endif %}>
+    </div>
+    {% endfor %}
+</fieldset>

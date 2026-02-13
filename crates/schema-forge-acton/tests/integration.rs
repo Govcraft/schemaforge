@@ -28,6 +28,13 @@ fn test_graphql_schema() -> Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema
     Arc::new(arc_swap::ArcSwap::new(Arc::new(schema)))
 }
 
+#[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+fn test_theme() -> Arc<arc_swap::ArcSwap<schema_forge_acton::theme::Theme>> {
+    Arc::new(arc_swap::ArcSwap::new(Arc::new(
+        schema_forge_acton::theme::Theme::default(),
+    )))
+}
+
 /// Create a test ForgeState with in-memory SurrealDB.
 async fn test_state() -> ForgeState {
     let backend = SurrealBackend::connect_memory("test", "test")
@@ -40,6 +47,8 @@ async fn test_state() -> ForgeState {
         auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -513,9 +522,9 @@ async fn extension_builder_with_backend_loads_schemas() {
         .await
         .expect("failed to build extension");
 
-    // Registry should contain exactly the 4 system schemas after seeding
+    // Registry should contain exactly the 5 system schemas after seeding
     let schemas = extension.registry().list().await;
-    assert_eq!(schemas.len(), 4);
+    assert_eq!(schemas.len(), 5);
     let names: Vec<String> = schemas
         .iter()
         .map(|s| s.name.as_str().to_string())
@@ -573,6 +582,8 @@ async fn request_with_noop_auth_succeeds() {
         auth_provider: Some(Arc::new(NoopAuthProvider::admin())),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -620,6 +631,8 @@ async fn request_with_failing_auth_returns_401() {
         auth_provider: Some(Arc::new(FailingAuthProvider)),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -698,6 +711,8 @@ async fn access_test_state(
         auth_provider: Some(Arc::new(NoopAuthProvider::new(user_roles))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -817,6 +832,8 @@ async fn open_access_request_always_succeeds() {
         auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -903,6 +920,8 @@ async fn field_filtering_hides_restricted_fields() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".to_string()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -947,4 +966,87 @@ async fn field_filtering_hides_restricted_fields() {
         "salary field should be filtered from GET response, got: {:?}",
         get_json["fields"]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cloud UI tests
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cloud-ui")]
+#[tokio::test]
+async fn cloud_theme_css_endpoint_returns_css() {
+    let state = test_state().await;
+
+    // Seed system schemas so Theme is available
+    schema_forge_acton::system::seed_system_schemas(&state.registry, state.backend.as_ref())
+        .await
+        .unwrap();
+
+    let extension = schema_forge_acton::SchemaForgeExtension::builder()
+        .with_backend(
+            schema_forge_surrealdb::SurrealBackend::connect_memory("cloud_css", "test")
+                .await
+                .unwrap(),
+        )
+        .build()
+        .await
+        .unwrap();
+
+    let app = extension.register_cloud_routes(Router::new());
+
+    let request = Request::builder()
+        .uri("/app/theme.css")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    assert!(
+        content_type.contains("text/css"),
+        "Expected text/css, got: {}",
+        content_type
+    );
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let css = String::from_utf8(body.to_vec()).unwrap();
+    assert!(css.contains("--sf-primary: #3B82F6;"));
+    assert!(css.contains(".sf-app"));
+    assert!(css.contains(".sf-btn"));
+}
+
+#[cfg(feature = "cloud-ui")]
+#[tokio::test]
+async fn cloud_dashboard_returns_200() {
+    let extension = schema_forge_acton::SchemaForgeExtension::builder()
+        .with_backend(
+            schema_forge_surrealdb::SurrealBackend::connect_memory("cloud_dash", "test")
+                .await
+                .unwrap(),
+        )
+        .build()
+        .await
+        .unwrap();
+
+    let app = extension.register_cloud_routes(Router::new());
+
+    let request = Request::builder()
+        .uri("/app/")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html.contains("sf-app"));
+    assert!(html.contains("Dashboard"));
 }

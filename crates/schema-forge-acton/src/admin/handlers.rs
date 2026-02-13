@@ -262,6 +262,12 @@ pub async fn entity_create(
                 .create(&entity)
                 .await
                 .map_err(AdminError::from)?;
+
+            // Hot-reload theme if Theme entity was created
+            if name == "Theme" {
+                crate::theme::reload_theme(&state).await;
+            }
+
             Ok(Redirect::to(&format!(
                 "/admin/schemas/{}/entities/{}",
                 name,
@@ -411,6 +417,12 @@ pub async fn entity_update(
                 .update(&entity)
                 .await
                 .map_err(AdminError::from)?;
+
+            // Hot-reload theme if Theme entity was updated
+            if name == "Theme" {
+                crate::theme::reload_theme(&state).await;
+            }
+
             Ok(Redirect::to(&format!("/admin/schemas/{}/entities/{}", name, id)).into_response())
         }
         Err(errors) => {
@@ -455,6 +467,11 @@ pub async fn entity_delete(
         .delete(&schema_name, &entity_id)
         .await
         .map_err(AdminError::from)?;
+
+    // Hot-reload theme if Theme entity was deleted
+    if name == "Theme" {
+        crate::theme::reload_theme(&state).await;
+    }
 
     // Return empty body — HTMX will remove the row
     Ok(StatusCode::OK)

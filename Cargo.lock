@@ -5706,6 +5706,7 @@ name = "schema-forge-ai"
 version = "0.2.0"
 dependencies = [
  "acton-ai",
+ "arc-swap",
  "axum 0.8.8",
  "http-body-util",
  "schema-forge-acton",

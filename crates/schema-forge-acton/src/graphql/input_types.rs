@@ -25,7 +25,12 @@ pub fn build_create_input(schema: &SchemaDefinition) -> InputObject {
     for field in &schema.fields {
         let field_name = field.name.as_str();
         let required = field.is_required();
-        let type_ref = input_field_type_ref(schema.name.as_str(), field_name, &field.field_type, required);
+        let type_ref = input_field_type_ref(
+            schema.name.as_str(),
+            field_name,
+            &field.field_type,
+            required,
+        );
         input = input.field(InputValue::new(field_name, type_ref));
     }
 
@@ -39,7 +44,8 @@ pub fn build_update_input(schema: &SchemaDefinition) -> InputObject {
 
     for field in &schema.fields {
         let field_name = field.name.as_str();
-        let type_ref = input_field_type_ref(schema.name.as_str(), field_name, &field.field_type, false);
+        let type_ref =
+            input_field_type_ref(schema.name.as_str(), field_name, &field.field_type, false);
         input = input.field(InputValue::new(field_name, type_ref));
     }
 
@@ -63,14 +69,8 @@ pub fn build_filter_input(schema: &SchemaDefinition) -> InputObject {
     }
 
     // Logical operators
-    input = input.field(InputValue::new(
-        "and",
-        TypeRef::named_list(&filter_name),
-    ));
-    input = input.field(InputValue::new(
-        "or",
-        TypeRef::named_list(&filter_name),
-    ));
+    input = input.field(InputValue::new("and", TypeRef::named_list(&filter_name)));
+    input = input.field(InputValue::new("or", TypeRef::named_list(&filter_name)));
     input = input.field(InputValue::new("not", TypeRef::named(&filter_name)));
 
     input
@@ -92,7 +92,10 @@ pub fn build_sort_input(schema: &SchemaDefinition) -> InputObject {
     let sort_field_enum = format!("{schema_name}SortField");
     let name = format!("{schema_name}SortInput");
     InputObject::new(&name)
-        .field(InputValue::new("field", TypeRef::named_nn(&sort_field_enum)))
+        .field(InputValue::new(
+            "field",
+            TypeRef::named_nn(&sort_field_enum),
+        ))
         .field(InputValue::new("order", TypeRef::named(SORT_ORDER_ENUM)))
 }
 
@@ -164,12 +167,7 @@ fn filter_ops_for_type(ft: &FieldType) -> Vec<&'static str> {
 }
 
 /// Get the TypeRef for a filter operator value.
-fn filter_value_type_ref(
-    schema_name: &str,
-    field_name: &str,
-    ft: &FieldType,
-    op: &str,
-) -> TypeRef {
+fn filter_value_type_ref(schema_name: &str, field_name: &str, ft: &FieldType, op: &str) -> TypeRef {
     if op == "in" {
         // 'in' takes a list of values
         let inner = scalar_type_for_filter(schema_name, field_name, ft);
@@ -522,10 +520,7 @@ mod tests {
     fn filter_input_eq() {
         let schema = test_schema();
         let mut obj = indexmap::IndexMap::new();
-        obj.insert(
-            Name::new("name_eq"),
-            GqlValue::String("Alice".into()),
-        );
+        obj.insert(Name::new("name_eq"), GqlValue::String("Alice".into()));
         let filter = filter_input_to_filter(&obj, &schema).unwrap();
         assert!(matches!(filter, Filter::Eq { .. }));
     }
@@ -534,23 +529,14 @@ mod tests {
     fn filter_input_and() {
         let schema = test_schema();
         let mut inner1 = indexmap::IndexMap::new();
-        inner1.insert(
-            Name::new("name_eq"),
-            GqlValue::String("Alice".into()),
-        );
+        inner1.insert(Name::new("name_eq"), GqlValue::String("Alice".into()));
         let mut inner2 = indexmap::IndexMap::new();
-        inner2.insert(
-            Name::new("age_gt"),
-            GqlValue::Number(25.into()),
-        );
+        inner2.insert(Name::new("age_gt"), GqlValue::Number(25.into()));
 
         let mut obj = indexmap::IndexMap::new();
         obj.insert(
             Name::new("and"),
-            GqlValue::List(vec![
-                GqlValue::Object(inner1),
-                GqlValue::Object(inner2),
-            ]),
+            GqlValue::List(vec![GqlValue::Object(inner1), GqlValue::Object(inner2)]),
         );
         let filter = filter_input_to_filter(&obj, &schema).unwrap();
         assert!(matches!(filter, Filter::And { ref filters } if filters.len() == 2));
@@ -560,10 +546,7 @@ mod tests {
     fn filter_input_not() {
         let schema = test_schema();
         let mut inner = indexmap::IndexMap::new();
-        inner.insert(
-            Name::new("active_eq"),
-            GqlValue::Boolean(false),
-        );
+        inner.insert(Name::new("active_eq"), GqlValue::Boolean(false));
         let mut obj = indexmap::IndexMap::new();
         obj.insert(Name::new("not"), GqlValue::Object(inner));
         let filter = filter_input_to_filter(&obj, &schema).unwrap();

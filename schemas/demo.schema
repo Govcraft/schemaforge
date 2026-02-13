@@ -3,7 +3,8 @@
 // =============================================================================
 //
 // Domain: A multi-tenant project management platform with CRM, HR, and
-// document management capabilities. Designed to exercise every DSL feature.
+// document management capabilities. Designed to exercise every DSL feature
+// including @widget, @dashboard, and @kanban_column annotations.
 //
 // Organization hierarchy:
 //   Organization (tenant root)
@@ -26,16 +27,17 @@
 
 @tenant(root)
 @display("name")
+@dashboard(widgets: ["count"])
 @access(read: ["member", "admin"], write: ["admin"], delete: ["admin"])
 schema Organization {
     name:             text(max: 255) required indexed
     slug:             text(max: 100) required indexed
-    billing_email:    text(max: 512)
-    plan:             enum("free", "starter", "business", "enterprise") default("free")
+    billing_email:    text(max: 512) @widget("email")
+    plan:             enum("free", "starter", "business", "enterprise") default("free") @widget("status_badge")
     max_seats:        integer(min: 1) default(5)
-    logo_url:         text
+    logo_url:         text @widget("image")
     settings:         json
-    founded:          datetime
+    founded:          datetime @widget("relative_time")
     active:           boolean default(true)
     owner_id:         text required @owner
 }
@@ -67,20 +69,21 @@ schema Department {
 
 @version(2)
 @display("full_name")
+@dashboard(widgets: ["count"])
 @access(read: ["member", "hr", "manager", "admin"], write: ["hr", "admin"], delete: ["admin"])
 schema Employee {
     full_name:        text(max: 255) required indexed
-    email:            text(max: 512) required indexed
-    phone:            text(max: 50)
+    email:            text(max: 512) required indexed @widget("email")
+    phone:            text(max: 50) @widget("phone")
     title:            text(max: 255)
     department:       -> Department
     manager:          -> Employee
-    hire_date:        datetime required
-    termination_date: datetime
-    salary:           float(precision: 2) @field_access(read: ["hr", "admin"], write: ["hr", "admin"])
+    hire_date:        datetime required @widget("relative_time")
+    termination_date: datetime @widget("relative_time")
+    salary:           float(precision: 2) @field_access(read: ["hr", "admin"], write: ["hr", "admin"]) @widget("currency")
     ssn_last_four:    text(max: 4) @field_access(read: ["hr", "admin"], write: ["hr"])
-    employment_type:  enum("full_time", "part_time", "contractor", "intern") default("full_time")
-    status:           enum("active", "on_leave", "terminated") default("active")
+    employment_type:  enum("full_time", "part_time", "contractor", "intern") default("full_time") @widget("status_badge")
+    status:           enum("active", "on_leave", "terminated") default("active") @widget("status_badge")
     skills:           text[]
     certifications:   text[]
     emergency_contact: composite {
@@ -104,19 +107,20 @@ schema Employee {
    Sales and marketing teams can read; only sales can write. */
 
 @display("full_name")
+@dashboard(widgets: ["count"])
 @access(read: ["sales", "marketing", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
 schema Contact {
     full_name:        text(max: 255) required indexed
-    email:            text(max: 512) indexed
-    phone:            text(max: 50)
+    email:            text(max: 512) indexed @widget("email")
+    phone:            text(max: 50) @widget("phone")
     title:            text(max: 255)
     company:          -> Company
-    source:           enum("inbound", "outbound", "referral", "event", "website", "other") default("other")
-    lead_score:       integer(min: 0, max: 100) default(0)
-    lifecycle_stage:  enum("subscriber", "lead", "mql", "sql", "opportunity", "customer", "evangelist") default("lead")
-    last_contacted:   datetime
+    source:           enum("inbound", "outbound", "referral", "event", "website", "other") default("other") @widget("status_badge")
+    lead_score:       integer(min: 0, max: 100) default(0) @widget("progress")
+    lifecycle_stage:  enum("subscriber", "lead", "mql", "sql", "opportunity", "customer", "evangelist") default("lead") @widget("status_badge") @kanban_column
+    last_contacted:   datetime @widget("relative_time")
     preferred_channel: enum("email", "phone", "linkedin", "other") default("email")
-    tags:             text[]
+    tags:             text[] @widget("tags")
     social_profiles:  composite {
         linkedin:     text
         twitter:      text
@@ -135,15 +139,16 @@ schema Contact {
    composite and financial data restricted to finance roles. */
 
 @display("name")
+@dashboard(widgets: ["count"])
 @access(read: ["sales", "marketing", "finance", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
 schema Company {
     name:             text(max: 255) required indexed
-    domain:           text(max: 255) indexed
-    industry:         enum("technology", "finance", "healthcare", "education", "retail", "manufacturing", "consulting", "other")
-    size:             enum("startup", "smb", "mid_market", "enterprise")
+    domain:           text(max: 255) indexed @widget("link")
+    industry:         enum("technology", "finance", "healthcare", "education", "retail", "manufacturing", "consulting", "other") @widget("status_badge")
+    size:             enum("startup", "smb", "mid_market", "enterprise") @widget("status_badge")
     employee_count:   integer(min: 0)
-    annual_revenue:   float(precision: 2) @field_access(read: ["finance", "sales", "admin"], write: ["finance"])
-    website:          text
+    annual_revenue:   float(precision: 2) @field_access(read: ["finance", "sales", "admin"], write: ["finance"]) @widget("currency")
+    website:          text @widget("link")
     description:      richtext
     founded_year:     integer(min: 1800, max: 2100)
     headquarters:     composite {
@@ -156,26 +161,28 @@ schema Company {
         timezone:     text(max: 50)
     }
     contacts:         -> Contact[]
-    tags:             text[]
+    tags:             text[] @widget("tags")
     metadata:         json
     owner_id:         text @owner
     active:           boolean default(true)
 }
 
 /* Deals track revenue opportunities through a pipeline. Value fields
-   are restricted to sales and finance. */
+   are restricted to sales and finance. The @dashboard uses kanban layout
+   grouped by stage — the canonical CRM pipeline view. */
 
 @version(3)
 @display("name")
+@dashboard(widgets: ["count", "sum:value", "avg:value"], layout: "kanban", group_by: "stage", sort_default: "-expected_close")
 @access(read: ["sales", "finance", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
 schema Deal {
     name:             text(max: 255) required indexed
-    value:            float(precision: 2) required @field_access(read: ["sales", "finance", "admin"], write: ["sales"])
+    value:            float(precision: 2) required @field_access(read: ["sales", "finance", "admin"], write: ["sales"]) @widget("currency")
     currency:         text(max: 3) default("USD")
-    stage:            enum("prospecting", "qualification", "proposal", "negotiation", "closed_won", "closed_lost") default("prospecting")
-    probability:      integer(min: 0, max: 100) default(10)
-    expected_close:   datetime
-    actual_close:     datetime
+    stage:            enum("prospecting", "qualification", "proposal", "negotiation", "closed_won", "closed_lost") default("prospecting") @widget("status_badge") @kanban_column
+    probability:      integer(min: 0, max: 100) default(10) @widget("progress")
+    expected_close:   datetime @widget("relative_time")
+    actual_close:     datetime @widget("relative_time")
     contact:          -> Contact required
     company:          -> Company
     assigned_to:      -> Employee
@@ -193,11 +200,11 @@ schema Deal {
 @access(read: ["sales", "marketing", "manager", "admin"], write: ["sales", "marketing", "admin"], delete: ["admin"])
 schema Activity {
     subject:          text(max: 500) required
-    activity_type:    enum("call", "email", "meeting", "note", "task", "demo", "follow_up") required
+    activity_type:    enum("call", "email", "meeting", "note", "task", "demo", "follow_up") required @widget("status_badge")
     description:      richtext
-    occurred_at:      datetime required
+    occurred_at:      datetime required @widget("relative_time")
     duration_minutes: integer(min: 0)
-    outcome:          enum("completed", "no_answer", "rescheduled", "cancelled")
+    outcome:          enum("completed", "no_answer", "rescheduled", "cancelled") @widget("status_badge")
     contact:          -> Contact
     company:          -> Company
     deal:             -> Deal
@@ -215,23 +222,24 @@ schema Activity {
 /* Projects are high-level work items. Budget is finance-restricted. */
 
 @display("name")
+@dashboard(widgets: ["count"], layout: "kanban", group_by: "status")
 @access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
 schema Project {
     name:             text(max: 255) required indexed
-    code:             text(max: 20) required indexed
+    code:             text(max: 20) required indexed @widget("code")
     description:      richtext
-    status:           enum("planning", "active", "on_hold", "completed", "cancelled") default("planning")
-    priority:         enum("critical", "high", "medium", "low") default("medium")
-    start_date:       datetime
-    target_end_date:  datetime
-    actual_end_date:  datetime
-    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"])
-    spent:            float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance"])
+    status:           enum("planning", "active", "on_hold", "completed", "cancelled") default("planning") @widget("status_badge") @kanban_column
+    priority:         enum("critical", "high", "medium", "low") default("medium") @widget("status_badge")
+    start_date:       datetime @widget("relative_time")
+    target_end_date:  datetime @widget("relative_time")
+    actual_end_date:  datetime @widget("relative_time")
+    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"]) @widget("currency")
+    spent:            float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance"]) @widget("currency")
     department:       -> Department
     lead:             -> Employee
     members:          -> Employee[]
     client:           -> Company
-    tags:             text[]
+    tags:             text[] @widget("tags")
     metadata:         json
     owner_id:         text @owner
     active:           boolean default(true)
@@ -241,23 +249,24 @@ schema Project {
    create and manage their own tasks. */
 
 @display("title")
+@dashboard(widgets: ["count"], layout: "kanban", group_by: "status")
 @access(read: ["member", "manager", "admin"], write: ["member", "manager", "admin"], delete: ["manager", "admin"])
 schema Task {
     title:            text(max: 500) required indexed
-    description:      richtext
-    status:           enum("backlog", "todo", "in_progress", "in_review", "done", "cancelled") default("backlog")
-    priority:         enum("critical", "high", "medium", "low") default("medium")
-    story_points:     integer(min: 0, max: 100)
-    due_date:         datetime
-    completed_at:     datetime
+    description:      richtext @widget("markdown")
+    status:           enum("backlog", "todo", "in_progress", "in_review", "done", "cancelled") default("backlog") @widget("status_badge") @kanban_column
+    priority:         enum("critical", "high", "medium", "low") default("medium") @widget("status_badge")
+    story_points:     integer(min: 0, max: 100) @widget("count_badge")
+    due_date:         datetime @widget("relative_time")
+    completed_at:     datetime @widget("relative_time")
     estimated_hours:  float(precision: 1)
     actual_hours:     float(precision: 1)
     project:          -> Project required
     assignee:         -> Employee
     reviewer:         -> Employee
     blocked_by:       -> Task[]
-    tags:             text[]
-    labels:           enum("bug", "feature", "improvement", "documentation", "infrastructure")[]
+    tags:             text[] @widget("tags")
+    labels:           enum("bug", "feature", "improvement", "documentation", "infrastructure")[] @widget("tags")
     attachments:      json
     owner_id:         text @owner
 }
@@ -269,9 +278,9 @@ schema Task {
 schema Milestone {
     name:             text(max: 255) required
     description:      text
-    due_date:         datetime required
-    completed_at:     datetime
-    status:           enum("upcoming", "in_progress", "completed", "missed") default("upcoming")
+    due_date:         datetime required @widget("relative_time")
+    completed_at:     datetime @widget("relative_time")
+    status:           enum("upcoming", "in_progress", "completed", "missed") default("upcoming") @widget("status_badge")
     project:          -> Project required
     tasks:            -> Task[]
     owner_id:         text @owner
@@ -285,22 +294,23 @@ schema Milestone {
    restricted to specific roles. */
 
 @display("title")
+@dashboard(widgets: ["count"])
 @access(read: ["member", "manager", "admin"], write: ["member", "manager", "admin"], delete: ["manager", "admin"])
 schema Document {
     title:            text(max: 500) required indexed
-    content:          richtext required
+    content:          richtext required @widget("markdown")
     summary:          text
-    doc_type:         enum("proposal", "specification", "report", "memo", "meeting_notes", "other") default("other")
-    status:           enum("draft", "review", "approved", "archived") default("draft")
-    version_number:   integer(min: 1) default(1)
+    doc_type:         enum("proposal", "specification", "report", "memo", "meeting_notes", "other") default("other") @widget("status_badge")
+    status:           enum("draft", "review", "approved", "archived") default("draft") @widget("status_badge") @kanban_column
+    version_number:   integer(min: 1) default(1) @widget("count_badge")
     confidential:     boolean default(false)
-    classification:   enum("public", "internal", "confidential", "restricted") default("internal")
+    classification:   enum("public", "internal", "confidential", "restricted") default("internal") @widget("status_badge")
     internal_notes:   richtext @field_access(read: ["manager", "admin"], write: ["manager", "admin"])
     project:          -> Project
     related_deal:     -> Deal
     author:           -> Employee required
     reviewers:        -> Employee[]
-    tags:             text[]
+    tags:             text[] @widget("tags")
     metadata:         json
     owner_id:         text @owner
 }
@@ -330,8 +340,8 @@ schema Comment {
 @access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
 schema Tag {
     name:             text(max: 100) required indexed
-    color:            text(max: 7)
-    category:         enum("general", "priority", "status", "department", "skill", "industry") default("general")
+    color:            text(max: 7) @widget("color")
+    category:         enum("general", "priority", "status", "department", "skill", "industry") default("general") @widget("status_badge")
     description:      text
     active:           boolean default(true)
 }

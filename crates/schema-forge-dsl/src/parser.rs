@@ -10,6 +10,31 @@ use crate::error::{DslError, Span};
 use crate::lexer::SpannedToken;
 use crate::token::Token;
 
+/// Known widget type identifiers for `@widget("...")` validation.
+const KNOWN_WIDGET_TYPES: &[&str] = &[
+    "status_badge",
+    "progress",
+    "currency",
+    "avatar",
+    "link",
+    "relative_time",
+    "count_badge",
+    "color",
+    "email",
+    "phone",
+    "rating",
+    "tags",
+    "image",
+    "code",
+    "markdown",
+];
+
+/// Parsed result of mixed named parameters (lists + scalar strings).
+struct MixedParams {
+    lists: Vec<(String, Vec<String>)>,
+    scalars: Vec<(String, String)>,
+}
+
 /// Recursive descent parser for the SchemaDSL grammar.
 ///
 /// Consumes a flat list of spanned tokens produced by the lexer
@@ -224,6 +249,21 @@ impl Parser {
                     cross_tenant_read: extract_string_list(&lists, "cross_tenant_read"),
                 }
             }
+            "dashboard" => {
+                self.expect(&Token::LParen)?;
+                let params = self.parse_named_mixed_params()?;
+                self.expect(&Token::RParen)?;
+                let widgets = extract_string_list(&params.lists, "widgets");
+                let layout = extract_optional_string(&params.scalars, "layout");
+                let group_by = extract_optional_string(&params.scalars, "group_by");
+                let sort_default = extract_optional_string(&params.scalars, "sort_default");
+                Annotation::Dashboard {
+                    widgets,
+                    layout,
+                    group_by,
+                    sort_default,
+                }
+            }
             "tenant" => {
                 self.expect(&Token::LParen)?;
                 let tok = self.expect_ident("tenant kind")?;
@@ -281,6 +321,33 @@ impl Parser {
             }
         }
         Ok(result)
+    }
+
+    /// Parse named mixed parameters: `key: ["list"], key2: "value"`
+    /// Handles both string lists and scalar string values.
+    fn parse_named_mixed_params(&mut self) -> Result<MixedParams, DslError> {
+        let mut lists = Vec::new();
+        let mut scalars = Vec::new();
+        if self.peek_token() == Some(&Token::RParen) {
+            return Ok(MixedParams { lists, scalars });
+        }
+        loop {
+            let key_tok = self.expect_ident("parameter name")?;
+            self.expect(&Token::Colon)?;
+            if self.peek_token() == Some(&Token::LBracket) {
+                let values = self.parse_string_list()?;
+                lists.push((key_tok.text.clone(), values));
+            } else {
+                let val_tok = self.expect_string_literal()?;
+                scalars.push((key_tok.text.clone(), unquote_string(&val_tok.text)));
+            }
+            if self.peek_token() == Some(&Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(MixedParams { lists, scalars })
     }
 
     /// Parse a bracketed string list: `["a", "b", "c"]`
@@ -370,6 +437,20 @@ impl Parser {
                     write: extract_string_list(&lists, "write"),
                 })
             }
+            "widget" => {
+                self.expect(&Token::LParen)?;
+                let value_tok = self.expect_string_literal()?;
+                let widget_type = unquote_string(&value_tok.text);
+                if !KNOWN_WIDGET_TYPES.contains(&widget_type.as_str()) {
+                    return Err(DslError::UnknownAnnotation {
+                        name: format!("widget type '{widget_type}'"),
+                        span: value_tok.span,
+                    });
+                }
+                self.expect(&Token::RParen)?;
+                Ok(FieldAnnotation::Widget { widget_type })
+            }
+            "kanban_column" => Ok(FieldAnnotation::KanbanColumn),
             other => Err(DslError::UnknownAnnotation {
                 name: other.to_string(),
                 span: name_tok.span,
@@ -839,6 +920,13 @@ fn extract_string_list(lists: &[(String, Vec<String>)], key: &str) -> Vec<String
         .find(|(k, _)| k == key)
         .map(|(_, v)| v.clone())
         .unwrap_or_default()
+}
+
+fn extract_optional_string(scalars: &[(String, String)], key: &str) -> Option<String> {
+    scalars
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
 }
 
 fn extract_i64_param(
@@ -1517,5 +1605,139 @@ mod tests {
             &schema.fields[0].annotations[1],
             FieldAnnotation::FieldAccess { .. }
         ));
+    }
+
+    // -- @widget annotation --
+
+    #[test]
+    fn parse_widget_annotation() {
+        let schema = parse_one(r#"schema S { status: text @widget("status_badge") }"#);
+        assert_eq!(schema.fields[0].annotations.len(), 1);
+        match &schema.fields[0].annotations[0] {
+            FieldAnnotation::Widget { widget_type } => {
+                assert_eq!(widget_type, "status_badge");
+            }
+            other => panic!("expected Widget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_widget_annotation_progress() {
+        let schema = parse_one(r#"schema S { completion: float @widget("progress") }"#);
+        match &schema.fields[0].annotations[0] {
+            FieldAnnotation::Widget { widget_type } => {
+                assert_eq!(widget_type, "progress");
+            }
+            other => panic!("expected Widget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_kanban_column_annotation() {
+        let schema = parse_one("schema S { stage: text @kanban_column }");
+        assert_eq!(schema.fields[0].annotations.len(), 1);
+        assert!(matches!(
+            &schema.fields[0].annotations[0],
+            FieldAnnotation::KanbanColumn
+        ));
+    }
+
+    #[test]
+    fn parse_field_with_widget_and_modifiers() {
+        let schema = parse_one(r#"schema S { status: text required @widget("status_badge") }"#);
+        assert!(schema.fields[0].is_required());
+        match &schema.fields[0].annotations[0] {
+            FieldAnnotation::Widget { widget_type } => {
+                assert_eq!(widget_type, "status_badge");
+            }
+            other => panic!("expected Widget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_field_with_kanban_and_widget() {
+        let schema =
+            parse_one(r#"schema S { stage: text @kanban_column @widget("status_badge") }"#);
+        assert_eq!(schema.fields[0].annotations.len(), 2);
+        assert!(matches!(
+            &schema.fields[0].annotations[0],
+            FieldAnnotation::KanbanColumn
+        ));
+        assert!(matches!(
+            &schema.fields[0].annotations[1],
+            FieldAnnotation::Widget { .. }
+        ));
+    }
+
+    #[test]
+    fn error_unknown_widget_type() {
+        let result = parse(r#"schema S { x: text @widget("nonexistent") }"#);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(matches!(
+            &errors[0],
+            DslError::UnknownAnnotation { name, .. } if name.contains("nonexistent")
+        ));
+    }
+
+    // -- @dashboard annotation --
+
+    #[test]
+    fn parse_dashboard_full() {
+        let schema = parse_one(
+            r#"@dashboard(widgets: ["count", "sum:value"], layout: "kanban", group_by: "stage", sort_default: "-expected_close") schema S { name: text }"#,
+        );
+        match &schema.annotations[0] {
+            Annotation::Dashboard {
+                widgets,
+                layout,
+                group_by,
+                sort_default,
+            } => {
+                assert_eq!(widgets, &["count", "sum:value"]);
+                assert_eq!(layout.as_deref(), Some("kanban"));
+                assert_eq!(group_by.as_deref(), Some("stage"));
+                assert_eq!(sort_default.as_deref(), Some("-expected_close"));
+            }
+            other => panic!("expected Dashboard, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_dashboard_widgets_only() {
+        let schema = parse_one(r#"@dashboard(widgets: ["count"]) schema S { name: text }"#);
+        match &schema.annotations[0] {
+            Annotation::Dashboard {
+                widgets,
+                layout,
+                group_by,
+                sort_default,
+            } => {
+                assert_eq!(widgets, &["count"]);
+                assert!(layout.is_none());
+                assert!(group_by.is_none());
+                assert!(sort_default.is_none());
+            }
+            other => panic!("expected Dashboard, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_dashboard_empty() {
+        let schema = parse_one("@dashboard() schema S { name: text }");
+        match &schema.annotations[0] {
+            Annotation::Dashboard {
+                widgets,
+                layout,
+                group_by,
+                sort_default,
+            } => {
+                assert!(widgets.is_empty());
+                assert!(layout.is_none());
+                assert!(group_by.is_none());
+                assert!(sort_default.is_none());
+            }
+            other => panic!("expected Dashboard, got {other:?}"),
+        }
     }
 }

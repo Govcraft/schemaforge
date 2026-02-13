@@ -101,10 +101,7 @@ pub trait EntityStore: Send + Sync {
     ///
     /// Returns the total number of entities that match the query's schema
     /// and filter criteria. Limit and offset are not applied.
-    fn count(
-        &self,
-        query: &Query,
-    ) -> impl Future<Output = Result<usize, BackendError>> + Send;
+    fn count(&self, query: &Query) -> impl Future<Output = Result<usize, BackendError>> + Send;
 }
 
 #[cfg(test)]

@@ -1,0 +1,13 @@
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <div class="composite-group">
+        {% for child in field.children %}
+        <fieldset class="fieldset">
+            <legend class="fieldset-legend">{{ child.label }}</legend>
+            <input type="text" id="{{ field.name }}.{{ child.name }}" name="{{ field.name }}.{{ child.name }}" class="input"
+                {% if let Some(val) = child.current_value %}value="{{ val }}"{% endif %}
+            >
+        </fieldset>
+        {% endfor %}
+    </div>
+</fieldset>

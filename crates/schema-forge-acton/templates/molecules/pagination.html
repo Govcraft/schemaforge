@@ -1,0 +1,24 @@
+<div class="flex justify-between items-center p-3">
+    <span>
+        Showing {{ pagination.offset + 1 }}-{{ pagination.end_showing() }}
+        of {{ pagination.total_count }}
+    </span>
+    <div class="join">
+        {% if pagination.has_previous %}
+        <a href="#"
+           class="btn btn-sm join-item"
+           hx-get="{{ url_prefix }}/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.previous_offset() }}"
+           hx-target="#entity-table"
+           hx-swap="innerHTML"
+        >Previous</a>
+        {% endif %}
+        {% if pagination.has_next %}
+        <a href="#"
+           class="btn btn-sm join-item"
+           hx-get="{{ url_prefix }}/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.next_offset() }}"
+           hx-target="#entity-table"
+           hx-swap="innerHTML"
+        >Next</a>
+        {% endif %}
+    </div>
+</div>

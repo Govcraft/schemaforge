@@ -1,0 +1,21 @@
+{% extends "cloud/base.html" %}
+
+{% block title %}{{ schema.name }} - {{ app_title }}{% endblock %}
+
+{% block content %}
+<div class="sf-breadcrumbs">
+    <a href="/app/">Dashboard</a>
+    <span class="sf-breadcrumbs-sep"></span>
+    <span>{{ schema.name }}</span>
+</div>
+<div class="sf-page-header">
+    <div>
+        <h1 class="sf-page-title">{{ schema.name }}</h1>
+        <div class="sf-page-subtitle">{{ pagination.total_count }} total</div>
+    </div>
+    <a href="/app/{{ schema.url_name }}/entities/new" class="sf-btn sf-btn-primary">Create New</a>
+</div>
+<div id="sf-entity-table">
+    {% include "cloud/fragments/entity_list_body.html" %}
+</div>
+{% endblock %}

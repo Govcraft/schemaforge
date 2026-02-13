@@ -33,6 +33,13 @@ pub enum Annotation {
     },
     /// `@tenant(...)` -- multi-tenancy configuration.
     Tenant(TenantKind),
+    /// `@dashboard(...)` -- dashboard configuration for this schema.
+    Dashboard {
+        widgets: Vec<String>,
+        layout: Option<String>,
+        group_by: Option<String>,
+        sort_default: Option<String>,
+    },
 }
 
 impl std::fmt::Display for Annotation {
@@ -60,6 +67,31 @@ impl std::fmt::Display for Annotation {
             Self::Tenant(TenantKind::Child { parent }) => {
                 write!(f, "@tenant(child(\"{parent}\"))")
             }
+            Self::Dashboard {
+                widgets,
+                layout,
+                group_by,
+                sort_default,
+            } => {
+                write!(f, "@dashboard(widgets: [")?;
+                for (i, w) in widgets.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "\"{w}\"")?;
+                }
+                write!(f, "]")?;
+                if let Some(l) = layout {
+                    write!(f, ", layout: \"{l}\"")?;
+                }
+                if let Some(g) = group_by {
+                    write!(f, ", group_by: \"{g}\"")?;
+                }
+                if let Some(s) = sort_default {
+                    write!(f, ", sort_default: \"{s}\"")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
@@ -82,6 +114,7 @@ impl Annotation {
             Self::System => "system",
             Self::Access { .. } => "access",
             Self::Tenant(_) => "tenant",
+            Self::Dashboard { .. } => "dashboard",
         }
     }
 }
@@ -198,6 +231,69 @@ mod tests {
         let a = Annotation::Tenant(TenantKind::Child {
             parent: SchemaName::new("Organization").unwrap(),
         });
+        let json = serde_json::to_string(&a).unwrap();
+        let back: Annotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn display_dashboard_full() {
+        let a = Annotation::Dashboard {
+            widgets: vec!["count".into(), "sum:value".into()],
+            layout: Some("kanban".into()),
+            group_by: Some("stage".into()),
+            sort_default: Some("-expected_close".into()),
+        };
+        assert_eq!(
+            a.to_string(),
+            "@dashboard(widgets: [\"count\", \"sum:value\"], layout: \"kanban\", group_by: \"stage\", sort_default: \"-expected_close\")"
+        );
+        assert_eq!(a.kind(), "dashboard");
+    }
+
+    #[test]
+    fn display_dashboard_widgets_only() {
+        let a = Annotation::Dashboard {
+            widgets: vec!["count".into()],
+            layout: None,
+            group_by: None,
+            sort_default: None,
+        };
+        assert_eq!(a.to_string(), "@dashboard(widgets: [\"count\"])");
+    }
+
+    #[test]
+    fn display_dashboard_empty_widgets() {
+        let a = Annotation::Dashboard {
+            widgets: vec![],
+            layout: None,
+            group_by: None,
+            sort_default: None,
+        };
+        assert_eq!(a.to_string(), "@dashboard(widgets: [])");
+    }
+
+    #[test]
+    fn serde_roundtrip_dashboard_full() {
+        let a = Annotation::Dashboard {
+            widgets: vec!["count".into(), "sum:value".into()],
+            layout: Some("kanban".into()),
+            group_by: Some("stage".into()),
+            sort_default: Some("-expected_close".into()),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: Annotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_dashboard_minimal() {
+        let a = Annotation::Dashboard {
+            widgets: vec!["count".into()],
+            layout: None,
+            group_by: None,
+            sort_default: None,
+        };
         let json = serde_json::to_string(&a).unwrap();
         let back: Annotation = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);

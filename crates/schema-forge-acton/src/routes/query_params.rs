@@ -108,7 +108,11 @@ pub fn parse_sort_param(sort: &str) -> Result<Vec<(FieldPath, SortOrder)>, Strin
             let order = match dir {
                 "asc" => SortOrder::Ascending,
                 "desc" => SortOrder::Descending,
-                _ => return Err(format!("invalid sort direction '{dir}', expected 'asc' or 'desc'")),
+                _ => {
+                    return Err(format!(
+                        "invalid sort direction '{dir}', expected 'asc' or 'desc'"
+                    ))
+                }
             };
             (field, order)
         } else {
@@ -118,8 +122,8 @@ pub fn parse_sort_param(sort: &str) -> Result<Vec<(FieldPath, SortOrder)>, Strin
         if field.is_empty() {
             return Err("empty field name in sort parameter".to_string());
         }
-        let path = FieldPath::parse(field)
-            .map_err(|e| format!("invalid sort field '{field}': {e}"))?;
+        let path =
+            FieldPath::parse(field).map_err(|e| format!("invalid sort field '{field}': {e}"))?;
         result.push((path, order));
     }
     Ok(result)
@@ -154,12 +158,8 @@ pub fn parse_filter_params(
         };
 
         let filter = match op {
-            FilterOp::Contains => {
-                Filter::contains(path, value.as_str())
-            }
-            FilterOp::StartsWith => {
-                Filter::starts_with(path, value.as_str())
-            }
+            FilterOp::Contains => Filter::contains(path, value.as_str()),
+            FilterOp::StartsWith => Filter::starts_with(path, value.as_str()),
             FilterOp::In => {
                 let mut values = Vec::new();
                 for part in value.split(',') {
@@ -169,7 +169,9 @@ pub fn parse_filter_params(
                     }
                 }
                 if values.is_empty() && errors.is_empty() {
-                    errors.push(format!("field '{field_name}': IN filter requires at least one value"));
+                    errors.push(format!(
+                        "field '{field_name}': IN filter requires at least one value"
+                    ));
                     continue;
                 }
                 Filter::in_set(path, values)
@@ -232,7 +234,9 @@ mod tests {
                 FieldDefinition::new(FieldName::new("active").unwrap(), FieldType::Boolean),
                 FieldDefinition::new(
                     FieldName::new("status").unwrap(),
-                    FieldType::Enum(EnumVariants::new(vec!["Active".into(), "Inactive".into()]).unwrap()),
+                    FieldType::Enum(
+                        EnumVariants::new(vec!["Active".into(), "Inactive".into()]).unwrap(),
+                    ),
                 ),
             ],
             vec![],
@@ -274,7 +278,10 @@ mod tests {
 
     #[test]
     fn parse_filter_key_ne_operator() {
-        assert_eq!(parse_filter_key("status__ne"), Some(("status", FilterOp::Ne)));
+        assert_eq!(
+            parse_filter_key("status__ne"),
+            Some(("status", FilterOp::Ne))
+        );
     }
 
     #[test]
@@ -295,7 +302,10 @@ mod tests {
 
     #[test]
     fn parse_filter_key_in_operator() {
-        assert_eq!(parse_filter_key("status__in"), Some(("status", FilterOp::In)));
+        assert_eq!(
+            parse_filter_key("status__in"),
+            Some(("status", FilterOp::In))
+        );
     }
 
     #[test]
@@ -327,13 +337,19 @@ mod tests {
 
     #[test]
     fn coerce_integer() {
-        let result = coerce_string_value("42", Some(&FieldType::Integer(IntegerConstraints::unconstrained())));
+        let result = coerce_string_value(
+            "42",
+            Some(&FieldType::Integer(IntegerConstraints::unconstrained())),
+        );
         assert_eq!(result.unwrap(), DynamicValue::Integer(42));
     }
 
     #[test]
     fn coerce_integer_invalid() {
-        let result = coerce_string_value("abc", Some(&FieldType::Integer(IntegerConstraints::unconstrained())));
+        let result = coerce_string_value(
+            "abc",
+            Some(&FieldType::Integer(IntegerConstraints::unconstrained())),
+        );
         assert!(result.is_err());
     }
 
@@ -363,7 +379,10 @@ mod tests {
 
     #[test]
     fn coerce_text() {
-        let result = coerce_string_value("hello", Some(&FieldType::Text(TextConstraints::unconstrained())));
+        let result = coerce_string_value(
+            "hello",
+            Some(&FieldType::Text(TextConstraints::unconstrained())),
+        );
         assert_eq!(result.unwrap(), DynamicValue::Text("hello".into()));
     }
 
@@ -383,7 +402,10 @@ mod tests {
     #[test]
     fn coerce_float() {
         use schema_forge_core::types::FloatConstraints;
-        let result = coerce_string_value("2.72", Some(&FieldType::Float(FloatConstraints::unconstrained())));
+        let result = coerce_string_value(
+            "2.72",
+            Some(&FieldType::Float(FloatConstraints::unconstrained())),
+        );
         match result.unwrap() {
             DynamicValue::Float(f) => assert!((f - 2.72).abs() < f64::EPSILON),
             other => panic!("expected Float, got {other:?}"),

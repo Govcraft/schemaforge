@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use schema_forge_core::types::{
-    Cardinality, DynamicValue, EntityId, FieldType, SchemaDefinition,
-};
+use schema_forge_core::types::{Cardinality, DynamicValue, EntityId, FieldType, SchemaDefinition};
 
 /// Convert HTML form data to entity fields using schema type hints.
 ///

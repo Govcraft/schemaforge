@@ -53,14 +53,22 @@ annotation     = "@version" "(" INTEGER ")"
                | "@display" "(" STRING ")"
                | "@system"
                | "@access" "(" named_string_lists ")"
-               | "@tenant" "(" tenant_arg ")" ;
+               | "@tenant" "(" tenant_arg ")"
+               | "@dashboard" "(" dashboard_params ")" ;
 tenant_arg     = "root" | "parent" ":" STRING ;
 named_string_lists = named_list { "," named_list } ;
 named_list     = IDENT ":" "[" string_list "]" ;
 string_list    = STRING { "," STRING } ;
+dashboard_params = dashboard_param { "," dashboard_param } ;
+dashboard_param  = "widgets" ":" "[" string_list "]"
+                 | "layout" ":" STRING
+                 | "group_by" ":" STRING
+                 | "sort_default" ":" STRING ;
 
 field_annotation = "@field_access" "(" named_string_lists ")"
-                 | "@owner" ;
+                 | "@owner"
+                 | "@widget" "(" STRING ")"
+                 | "@kanban_column" ;
 
 PASCAL_IDENT   = /[A-Z][a-zA-Z0-9]*/ ;
 SNAKE_IDENT    = /[a-z][a-z0-9_]*/ ;
@@ -106,10 +114,19 @@ FLOAT          = /-?[0-9]+\.[0-9]+/ ;
 | `@tenant(parent: "Schema")` | Schema | Child in tenant hierarchy | `@tenant(parent: "Organization")` |
 | `@field_access(...)` | Field | Per-field role-based visibility | `@field_access(read: ["hr"], write: ["hr"])` |
 | `@owner` | Field | Record ownership identifier | `@owner` -- marks field as entity owner ID |
+| `@widget("type")` | Field | UI widget rendering hint | `@widget("status_badge")`, `@widget("currency")` |
+| `@kanban_column` | Field | Kanban board grouping column | `@kanban_column` |
+| `@dashboard(...)` | Schema | Dashboard layout configuration | `@dashboard(widgets: ["count", "sum:value"], layout: "kanban")` |
 
 **@access details**: Controls who can read, write, or delete entities of this schema. Roles are strings. If a role list is empty, that action is unrestricted.
 
 **@owner details**: When a field has `@owner`, the record-level access policy enforces that only the user whose ID matches this field value can modify or delete the record. Admins bypass this check.
+
+**@widget details**: Specifies a specialized UI widget for rendering the field. Known widget types: `status_badge`, `progress`, `currency`, `avatar`, `link`, `relative_time`, `count_badge`, `color`, `email`, `phone`, `rating`, `tags`, `image`, `code`, `markdown`.
+
+**@kanban_column details**: Marks a field (typically an enum) as the grouping column for kanban-style board views. Only one field per schema should have this annotation.
+
+**@dashboard details**: Configures how the schema appears on dashboards. `widgets` lists aggregate displays (e.g., `"count"`, `"sum:field"`, `"avg:field"`). `layout` sets the default view: `"kanban"`, `"timeline"`, `"calendar"`, or omit for standard table. `group_by` names the field to group by. `sort_default` sets the default sort (prefix `-` for descending).
 
 ## Naming Rules
 
@@ -201,5 +218,22 @@ mod tests {
     fn prompt_contains_tenant_syntax() {
         assert!(FORGE_SYSTEM_PROMPT.contains("@tenant"));
         assert!(FORGE_SYSTEM_PROMPT.contains("tenant_arg"));
+    }
+
+    #[test]
+    fn prompt_contains_widget_annotation() {
+        assert!(FORGE_SYSTEM_PROMPT.contains("@widget"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("status_badge"));
+    }
+
+    #[test]
+    fn prompt_contains_kanban_annotation() {
+        assert!(FORGE_SYSTEM_PROMPT.contains("@kanban_column"));
+    }
+
+    #[test]
+    fn prompt_contains_dashboard_annotation() {
+        assert!(FORGE_SYSTEM_PROMPT.contains("@dashboard"));
+        assert!(FORGE_SYSTEM_PROMPT.contains("dashboard_params"));
     }
 }

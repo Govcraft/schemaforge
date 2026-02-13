@@ -1,0 +1,18 @@
+<tr id="entity-{{ entity.id }}">
+    {% for (_, value) in entity.field_values %}
+    <td>{% if value.is_empty() %}<span class="text-base-content/60">-</span>{% else %}{{ value }}{% endif %}</td>
+    {% endfor %}
+    <td>
+        <div class="flex gap-1.5">
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}" class="btn btn-ghost btn-sm">View</a>
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
+            <button
+                class="btn btn-error btn-sm"
+                hx-delete="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}"
+                hx-confirm="Delete this entity?"
+                hx-target="#entity-{{ entity.id }}"
+                hx-swap="delete"
+            >Del</button>
+        </div>
+    </td>
+</tr>

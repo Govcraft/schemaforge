@@ -1,0 +1,37 @@
+<div class="forge-entity-detail forge-detail-tabbed" id="forge-detail-{{ entity.id }}">
+    <div class="forge-entity-header">
+        <span class="forge-entity-title">{{ entity.display_value }}</span>
+        <span class="forge-entity-id">{{ entity.id }}</span>
+    </div>
+    <div class="forge-tabs">
+        <input type="radio" name="detail-tabs-{{ entity.id }}" id="tab-fields-{{ entity.id }}" class="forge-tab-radio" checked>
+        <label for="tab-fields-{{ entity.id }}" class="forge-tab-label">Fields</label>
+        <div class="forge-tab-content">
+            {% for (label, value) in entity.field_values %}
+            <div class="forge-field">
+                <div class="forge-field-label">{{ label }}</div>
+                <div class="forge-field-value">{% if value.is_empty() %}<span class="forge-empty">-</span>{% else %}{{ value }}{% endif %}</div>
+            </div>
+            {% endfor %}
+        </div>
+        <input type="radio" name="detail-tabs-{{ entity.id }}" id="tab-meta-{{ entity.id }}" class="forge-tab-radio">
+        <label for="tab-meta-{{ entity.id }}" class="forge-tab-label">Metadata</label>
+        <div class="forge-tab-content">
+            <div class="forge-field">
+                <div class="forge-field-label">ID</div>
+                <div class="forge-field-value"><code>{{ entity.id }}</code></div>
+            </div>
+        </div>
+    </div>
+    <div class="forge-detail-actions">
+        <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit"
+           class="forge-btn" hx-get="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit"
+           hx-target="closest .forge-entity-detail" hx-swap="outerHTML">Edit</a>
+        <button class="forge-btn forge-btn-danger"
+            hx-delete="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}"
+            hx-confirm="Delete this entity?"
+            hx-target="closest .forge-entity-detail"
+            hx-swap="outerHTML"
+        >Delete</button>
+    </div>
+</div>

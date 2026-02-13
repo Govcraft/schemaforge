@@ -1,7 +1,6 @@
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::{
-    Annotation, Cardinality, DynamicValue, FieldDefinition, FieldType,
-    SchemaDefinition,
+    Annotation, Cardinality, DynamicValue, FieldDefinition, FieldType, SchemaDefinition,
 };
 
 /// Template-friendly representation of a field definition.
@@ -142,6 +141,15 @@ impl FieldView {
             relation_target,
         }
     }
+
+    /// Apply theme-based label overrides to this field and its children.
+    #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+    pub fn apply_theme_labels(&mut self, schema_name: &str, theme: &crate::theme::Theme) {
+        self.label = theme.field_label(schema_name, &self.name);
+        for child in &mut self.children {
+            child.apply_theme_labels(schema_name, theme);
+        }
+    }
 }
 
 impl SchemaView {
@@ -172,6 +180,16 @@ impl SchemaView {
             version,
             fields,
             url_name,
+        }
+    }
+
+    /// Apply theme-based label overrides to the schema name and its fields.
+    #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+    pub fn apply_theme_labels(&mut self, theme: &crate::theme::Theme) {
+        // Override display name but keep url_name unchanged for routing
+        self.name = theme.schema_label(&self.url_name);
+        for field in &mut self.fields {
+            field.apply_theme_labels(&self.url_name, theme);
         }
     }
 }

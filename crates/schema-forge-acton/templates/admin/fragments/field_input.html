@@ -1,104 +1,21 @@
 {% if field.input_type == "text" %}
-<fieldset class="fieldset">
-    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
-    <input type="text" id="{{ field.name }}" name="{{ field.name }}" class="input"
-        {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
-        {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
-        {% if field.required %}required{% endif %}
-    >
-</fieldset>
-
+{% include "atoms/text_input.html" %}
 {% else if field.input_type == "textarea" %}
-<fieldset class="fieldset">
-    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
-    <textarea id="{{ field.name }}" name="{{ field.name }}" class="textarea"
-        {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
-        {% if field.required %}required{% endif %}
-    >{% if let Some(val) = field.current_value %}{{ val }}{% endif %}</textarea>
-</fieldset>
-
+{% include "atoms/textarea.html" %}
 {% else if field.input_type == "number" %}
-<fieldset class="fieldset">
-    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
-    <input type="number" id="{{ field.name }}" name="{{ field.name }}" class="input"
-        {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
-        {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
-        {% if field.required %}required{% endif %}
-    >
-</fieldset>
-
+{% include "atoms/number_input.html" %}
 {% else if field.input_type == "checkbox" %}
-<fieldset class="fieldset">
-    <input type="hidden" name="{{ field.name }}" value="false">
-    <label class="flex items-center gap-2 cursor-pointer">
-        <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}" value="true" class="checkbox"
-            {% if let Some(val) = field.current_value %}{% if val == "true" %}checked{% endif %}{% endif %}
-        >
-        {{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}
-    </label>
-</fieldset>
-
+{% include "atoms/checkbox.html" %}
 {% else if field.input_type == "datetime-local" %}
-<fieldset class="fieldset">
-    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
-    <input type="datetime-local" id="{{ field.name }}" name="{{ field.name }}" class="input"
-        {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
-        {% if field.required %}required{% endif %}
-    >
-</fieldset>
-
+{% include "atoms/datetime_input.html" %}
 {% else if field.input_type == "select" %}
-<fieldset class="fieldset">
-    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
-    <select id="{{ field.name }}" name="{{ field.name }}" class="select"
-        {% if field.multiple %}multiple size="5"{% endif %}
-        {% if field.required %}required{% endif %}
-        {% if let Some(target) = field.relation_target %}
-        hx-get="{{ url_prefix }}/{{ target }}/relation-options/{{ field.name }}"
-        hx-trigger="load"
-        hx-target="this"
-        hx-swap="innerHTML"
-        {% endif %}
-    >
-        {% if !field.multiple %}<option value="">-- Select --</option>{% endif %}
-        {% for (value, label) in field.options %}
-        <option value="{{ value }}"
-            {% if let Some(cv) = field.current_value %}{% if cv == value %}selected{% endif %}{% endif %}
-        >{{ label }}</option>
-        {% endfor %}
-    </select>
-</fieldset>
-
+{% include "atoms/select.html" %}
 {% else if field.input_type == "json" %}
-<fieldset class="fieldset">
-    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
-    <textarea id="{{ field.name }}" name="{{ field.name }}" class="textarea font-mono text-sm"
-        {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
-        {% if field.required %}required{% endif %}
-    >{% if let Some(val) = field.current_value %}{{ val }}{% endif %}</textarea>
-</fieldset>
-
+{% include "atoms/json_editor.html" %}
 {% else if field.input_type == "composite" %}
-<fieldset class="fieldset">
-    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
-    <div class="composite-group">
-        {% for child in field.children %}
-        <fieldset class="fieldset">
-            <legend class="fieldset-legend">{{ child.label }}</legend>
-            <input type="text" id="{{ field.name }}.{{ child.name }}" name="{{ field.name }}.{{ child.name }}" class="input"
-                {% if let Some(val) = child.current_value %}value="{{ val }}"{% endif %}
-            >
-        </fieldset>
-        {% endfor %}
-    </div>
-</fieldset>
-
+{% include "atoms/composite.html" %}
+{% else if field.input_type == "array" %}
+{% include "atoms/array_input.html" %}
 {% else %}
-<fieldset class="fieldset">
-    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
-    <input type="text" id="{{ field.name }}" name="{{ field.name }}" class="input"
-        {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
-        {% if field.required %}required{% endif %}
-    >
-</fieldset>
+{% include "atoms/fallback_input.html" %}
 {% endif %}

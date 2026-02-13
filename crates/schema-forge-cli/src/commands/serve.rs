@@ -103,9 +103,6 @@ pub async fn run(
     }
 
     // 7. Build versioned routes via acton-service
-    #[cfg(feature = "admin-ui")]
-    let routes = build_versioned_routes_with_admin(&extension);
-    #[cfg(not(feature = "admin-ui"))]
     let routes = build_versioned_routes(&extension);
 
     // 8. Configure and serve via acton-service
@@ -132,6 +129,8 @@ pub async fn run(
     output.status("    DEL  /api/v1/forge/schemas/:schema/entities/:id");
     #[cfg(feature = "admin-ui")]
     output.status("    GET  /admin/");
+    #[cfg(feature = "cloud-ui")]
+    output.status("    GET  /app/");
     output.status("  Press Ctrl+C to stop.");
 
     let service = ServiceBuilder::new()
@@ -149,31 +148,27 @@ pub async fn run(
 
 /// Build versioned routes using acton-service's VersionedApiBuilder.
 ///
-/// Nests SchemaForge's routes under `/api/v1/forge/`.
-#[cfg(not(feature = "admin-ui"))]
+/// Nests SchemaForge's routes under `/api/v1/forge/`. When UI features
+/// are enabled, frontend routes are registered alongside the API.
 fn build_versioned_routes(
     extension: &SchemaForgeExtension,
 ) -> acton_service::service_builder::VersionedRoutes {
-    VersionedApiBuilder::new()
+    let builder = VersionedApiBuilder::new()
         .with_base_path("/api")
         .add_version(ApiVersion::V1, |router| {
             extension.register_versioned_routes(router)
-        })
-        .build_routes()
-}
+        });
 
-/// Build versioned routes with admin UI frontend routes.
-#[cfg(feature = "admin-ui")]
-fn build_versioned_routes_with_admin(
-    extension: &SchemaForgeExtension,
-) -> acton_service::service_builder::VersionedRoutes {
-    VersionedApiBuilder::new()
-        .with_base_path("/api")
-        .add_version(ApiVersion::V1, |router| {
-            extension.register_versioned_routes(router)
-        })
-        .with_frontend_routes(|router| extension.register_admin_routes(router))
-        .build_routes()
+    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    let builder = builder.with_frontend_routes(|router| {
+        #[cfg(feature = "admin-ui")]
+        let router = extension.register_admin_routes(router);
+        #[cfg(feature = "cloud-ui")]
+        let router = extension.register_cloud_routes(router);
+        router
+    });
+
+    builder.build_routes()
 }
 
 /// Build a test router using `register_routes()` directly (no acton-service layer).
@@ -223,10 +218,10 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         // list_schemas returns { "schemas": [...], "count": N }
-        // After seeding, 4 system schemas should be present
-        assert_eq!(json["count"], 4);
+        // After seeding, 5 system schemas should be present
+        assert_eq!(json["count"], 5);
         assert!(json["schemas"].is_array());
-        assert_eq!(json["schemas"].as_array().unwrap().len(), 4);
+        assert_eq!(json["schemas"].as_array().unwrap().len(), 5);
     }
 
     #[test]

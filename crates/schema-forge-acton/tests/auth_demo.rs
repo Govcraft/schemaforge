@@ -49,6 +49,13 @@ fn test_graphql_schema() -> Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema
     Arc::new(arc_swap::ArcSwap::new(Arc::new(schema)))
 }
 
+#[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+fn test_theme() -> Arc<arc_swap::ArcSwap<schema_forge_acton::theme::Theme>> {
+    Arc::new(arc_swap::ArcSwap::new(Arc::new(
+        schema_forge_acton::theme::Theme::default(),
+    )))
+}
+
 fn test_app_with_state(state: ForgeState) -> Router {
     forge_routes()
         .route_layer(axum::middleware::from_fn_with_state(
@@ -154,12 +161,16 @@ async fn demo_system_schemas_seeded_at_startup() {
     println!("  System schemas found: {:?}", names);
     assert!(names.contains(&"User"), "User schema should be seeded");
     assert!(names.contains(&"Role"), "Role schema should be seeded");
-    assert!(names.contains(&"Permission"), "Permission schema should be seeded");
+    assert!(
+        names.contains(&"Permission"),
+        "Permission schema should be seeded"
+    );
     assert!(
         names.contains(&"TenantMembership"),
         "TenantMembership schema should be seeded"
     );
-    assert_eq!(schemas.len(), 4);
+    assert!(names.contains(&"Theme"), "Theme schema should be seeded");
+    assert_eq!(schemas.len(), 5);
 
     // Verify system schemas are protected from deletion
     let user_schema = schemas.iter().find(|s| s.name.as_str() == "User").unwrap();
@@ -234,6 +245,8 @@ async fn demo_schema_access_control() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["editor".into()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -253,10 +266,7 @@ async fn demo_schema_access_control() {
 
     let (status, json) = json_request(&app, Method::GET, "/schemas/Article/entities", None).await;
     assert_eq!(status, StatusCode::OK);
-    println!(
-        "    LIST:   {} ({} entities)",
-        status, json["count"]
-    );
+    println!("    LIST:   {} ({} entities)", status, json["count"]);
 
     // --- Scenario B: "viewer" can read but NOT write ---
     println!("  Scenario B: viewer role can read but NOT write");
@@ -266,6 +276,8 @@ async fn demo_schema_access_control() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["viewer".into()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -358,6 +370,8 @@ async fn demo_field_access_filtering() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["hr".into()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -376,9 +390,7 @@ async fn demo_field_access_filtering() {
     let entity_id = json["id"].as_str().unwrap().to_string();
     println!(
         "    HR sees salary: {} (name={}, salary={})",
-        status,
-        json["fields"]["name"],
-        json["fields"]["salary"]
+        status, json["fields"]["name"], json["fields"]["salary"]
     );
     assert_eq!(json["fields"]["salary"], "150000");
 
@@ -390,6 +402,8 @@ async fn demo_field_access_filtering() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".into()]))),
         tenant_config: None,
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -404,8 +418,7 @@ async fn demo_field_access_filtering() {
         && json["fields"]["salary"] != serde_json::Value::Null;
     println!(
         "    Member sees name={}, salary visible={}",
-        json["fields"]["name"],
-        has_salary
+        json["fields"]["name"], has_salary
     );
     assert!(!has_salary, "salary should be filtered from member view");
 
@@ -469,6 +482,8 @@ async fn demo_record_ownership() {
         auth_provider: Some(alice_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -505,6 +520,8 @@ async fn demo_record_ownership() {
         auth_provider: Some(bob_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -521,19 +538,13 @@ async fn demo_record_ownership() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    println!(
-        "    Bob UPDATE: {} ({})",
-        status, json["error"]
-    );
+    println!("    Bob UPDATE: {} ({})", status, json["error"]);
 
     // --- Bob tries to delete Alice's note ---
     println!("  Bob tries to delete Alice's note");
     let (status, json) = json_request(&app, Method::DELETE, &path, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    println!(
-        "    Bob DELETE: {} ({})",
-        status, json["error"]
-    );
+    println!("    Bob DELETE: {} ({})", status, json["error"]);
 
     // --- Admin can modify anyone's note ---
     println!("  Admin overrides ownership check");
@@ -548,6 +559,8 @@ async fn demo_record_ownership() {
         auth_provider: Some(admin_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -662,6 +675,8 @@ async fn demo_multi_tenancy_isolation() {
         auth_provider: Some(tenant_a_provider),
         tenant_config: Some(tenant_config.clone()),
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -677,7 +692,10 @@ async fn demo_multi_tenancy_isolation() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    println!("    Created: {} (title={})", json["id"], json["fields"]["title"]);
+    println!(
+        "    Created: {} (title={})",
+        json["id"], json["fields"]["title"]
+    );
 
     // Verify tenant A sees its project
     let (status, json) = json_request(&app, Method::GET, "/schemas/Project/entities", None).await;
@@ -702,6 +720,8 @@ async fn demo_multi_tenancy_isolation() {
         auth_provider: Some(tenant_b_provider),
         tenant_config: Some(tenant_config.clone()),
         record_access_policy: None,
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -717,14 +737,20 @@ async fn demo_multi_tenancy_isolation() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    println!("    Created: {} (title={})", json["id"], json["fields"]["title"]);
+    println!(
+        "    Created: {} (title={})",
+        json["id"], json["fields"]["title"]
+    );
 
     // Tenant B should only see its OWN project (not Tenant A's)
     let (status, json) = json_request(&app, Method::GET, "/schemas/Project/entities", None).await;
     assert_eq!(status, StatusCode::OK);
     let tenant_b_count = json["count"].as_u64().unwrap();
     println!("    Tenant B lists: {} projects", tenant_b_count);
-    assert_eq!(tenant_b_count, 1, "Tenant B should only see its own project");
+    assert_eq!(
+        tenant_b_count, 1,
+        "Tenant B should only see its own project"
+    );
 
     // Verify it's actually Tenant B's project
     let tenant_b_title = json["entities"][0]["fields"]["title"].as_str().unwrap();
@@ -771,7 +797,15 @@ schema Department {
 
     // Print
     let printed = schema_forge_dsl::print_all(&schemas);
-    println!("  Printed DSL:\n{}", printed.trim().lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n"));
+    println!(
+        "  Printed DSL:\n{}",
+        printed
+            .trim()
+            .lines()
+            .map(|l| format!("    {l}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 
     // Re-parse
     let reparsed = schema_forge_dsl::parse(&printed).expect("re-parse should succeed");
@@ -780,16 +814,35 @@ schema Department {
     // Compare
     for (orig, reparsed) in schemas.iter().zip(reparsed.iter()) {
         assert_eq!(orig.name, reparsed.name, "Schema name mismatch");
-        assert_eq!(orig.fields.len(), reparsed.fields.len(), "Field count mismatch for {}", orig.name.as_str());
-        assert_eq!(orig.annotations.len(), reparsed.annotations.len(), "Annotation count mismatch for {}", orig.name.as_str());
+        assert_eq!(
+            orig.fields.len(),
+            reparsed.fields.len(),
+            "Field count mismatch for {}",
+            orig.name.as_str()
+        );
+        assert_eq!(
+            orig.annotations.len(),
+            reparsed.annotations.len(),
+            "Annotation count mismatch for {}",
+            orig.name.as_str()
+        );
 
         // Compare field annotations
         for (of, rf) in orig.fields.iter().zip(reparsed.fields.iter()) {
             assert_eq!(of.name, rf.name);
-            assert_eq!(of.annotations.len(), rf.annotations.len(), "Field annotation count mismatch for {}.{}", orig.name.as_str(), of.name.as_str());
+            assert_eq!(
+                of.annotations.len(),
+                rf.annotations.len(),
+                "Field annotation count mismatch for {}.{}",
+                orig.name.as_str(),
+                of.name.as_str()
+            );
         }
     }
-    println!("  Round-trip comparison: all {} schemas match", schemas.len());
+    println!(
+        "  Round-trip comparison: all {} schemas match",
+        schemas.len()
+    );
 
     // Verify annotations parsed correctly
     let secure_user = &schemas[0];
@@ -845,7 +898,10 @@ async fn demo_cedar_policies_from_annotations() {
     .unwrap();
 
     let policies = schema_forge_acton::cedar::generate_cedar_policies(&schema_with_access);
-    println!("  Generated {} Cedar policies for Invoice schema:", policies.len());
+    println!(
+        "  Generated {} Cedar policies for Invoice schema:",
+        policies.len()
+    );
     for policy in &policies {
         println!("    - {}", policy.description);
     }
@@ -941,6 +997,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -990,6 +1048,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -1020,6 +1080,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -1049,6 +1111,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]
@@ -1075,6 +1139,8 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
+        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
+        theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
         #[cfg(feature = "admin-ui")]

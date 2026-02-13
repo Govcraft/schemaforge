@@ -43,6 +43,35 @@ schema TenantMembership {
 }
 "#;
 
+/// DSL text for the system Theme schema.
+pub const THEME_SCHEMA: &str = r##"
+@system @display("name")
+schema Theme {
+    name:              text(max: 128) required indexed
+    primary_color:     text(max: 32) default("#3B82F6")
+    secondary_color:   text(max: 32) default("#6B7280")
+    accent_color:      text(max: 32) default("#10B981")
+    error_color:       text(max: 32) default("#EF4444")
+    background_color:  text(max: 32) default("#FFFFFF")
+    surface_color:     text(max: 32) default("#F3F4F6")
+    text_color:        text(max: 32) default("#111827")
+    border_radius:     text(max: 16) default("0.5rem")
+    font_family:       text(max: 256) default("system-ui, sans-serif")
+    list_style:        enum("table", "cards", "compact") default("table")
+    detail_style:      enum("full", "split", "tabbed") default("full")
+    nav_style:         enum("sidebar", "topnav", "minimal") default("sidebar")
+    density:           enum("compact", "comfortable", "spacious") default("comfortable")
+    schema_labels:     json
+    field_labels:      json
+    schema_overrides:  json
+    view_overrides:    json
+    dashboard_schemas: text[]
+    logo_url:          text
+    custom_css:        richtext
+    active:            boolean default(true)
+}
+"##;
+
 /// Returns all system schema DSL texts in dependency order.
 ///
 /// Permission is first (no dependencies), then Role (depends on Permission),
@@ -53,5 +82,6 @@ pub fn all_system_schemas() -> Vec<&'static str> {
         ROLE_SCHEMA,
         USER_SCHEMA,
         TENANT_MEMBERSHIP_SCHEMA,
+        THEME_SCHEMA,
     ]
 }

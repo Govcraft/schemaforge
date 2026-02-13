@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ app_title }}{% endblock %}</title>
+    <link rel="stylesheet" href="/app/theme.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+</head>
+<body class="sf-app">
+    <div class="sf-layout" data-nav-style="{{ nav_style }}">
+        <nav class="sf-nav" data-nav-style="{{ nav_style }}">
+            {% if let Some(logo) = logo_url %}
+            <img src="{{ logo }}" alt="{{ app_title }}" class="sf-nav-logo">
+            {% else %}
+            <span class="sf-nav-brand">{{ app_title }}</span>
+            {% endif %}
+            <a href="/app/" class="sf-nav-link"{% if active_nav == "dashboard" %} aria-current="page"{% endif %}>Dashboard</a>
+            {% for schema in nav_schemas %}
+            <a href="/app/{{ schema.url_name }}/entities" class="sf-nav-link"{% if active_nav == schema.url_name %} aria-current="page"{% endif %}>{{ schema.label }}</a>
+            {% endfor %}
+        </nav>
+        <main class="sf-main">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</body>
+</html>

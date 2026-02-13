@@ -1,0 +1,23 @@
+{% if entities.is_empty() %}
+<div class="text-center py-12 text-base-content/60">
+    <p>No entities yet.</p>
+    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="btn btn-primary">Create First Entity</a>
+</div>
+{% else %}
+<table class="table">
+    <thead>
+        <tr>
+            {% for field in schema.fields %}
+            <th>{{ field.label }}</th>
+            {% endfor %}
+            <th class="w-[120px]">Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for entity in entities %}
+        {% include "molecules/entity_row.html" %}
+        {% endfor %}
+    </tbody>
+</table>
+{% include "molecules/pagination.html" %}
+{% endif %}

@@ -7,7 +7,9 @@ use schema_forge_core::query::{validate_filter, FieldPath, SortOrder};
 use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaName};
 
 use super::context::ForgeGraphqlContext;
-use super::input_types::{filter_input_to_filter, gql_input_to_entity_fields, gql_input_to_partial_fields};
+use super::input_types::{
+    filter_input_to_filter, gql_input_to_entity_fields, gql_input_to_partial_fields,
+};
 use crate::access::{
     check_schema_access, filter_entity_fields, inject_tenant_on_create, inject_tenant_scope,
     AccessAction, FieldFilterDirection,
@@ -56,9 +58,8 @@ pub async fn resolve_get_entity<'a>(
         })
     })?;
 
-    let entity_id = EntityId::parse(&id_arg).map_err(|_| {
-        forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() })
-    })?;
+    let entity_id = EntityId::parse(&id_arg)
+        .map_err(|_| forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() }))?;
 
     let mut entity = match gql_ctx.state.backend.get(&schema, &entity_id).await {
         Ok(e) => e,
@@ -111,13 +112,12 @@ pub async fn resolve_list_entities<'a>(
     // Parse filter
     if let Some(filter_accessor) = ctx.args.get("filter") {
         let filter_obj = filter_accessor.object()?;
-        let filter = filter_input_to_filter(filter_obj.as_index_map(), schema_def).map_err(
-            |errors| {
+        let filter =
+            filter_input_to_filter(filter_obj.as_index_map(), schema_def).map_err(|errors| {
                 forge_error_to_gql(ForgeError::InvalidQuery {
                     message: errors.join("; "),
                 })
-            },
-        )?;
+            })?;
         validate_filter(&filter, schema_def).map_err(|errors| {
             forge_error_to_gql(ForgeError::InvalidQuery {
                 message: errors
@@ -163,15 +163,14 @@ pub async fn resolve_list_entities<'a>(
         .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
 
     // Record-level access filtering
-    let visible_entities = if let (Some(ref policy), Some(auth_ctx)) =
-        (&gql_ctx.state.record_access_policy, auth)
-    {
-        policy
-            .filter_visible(schema_def, auth_ctx, result.entities)
-            .await
-    } else {
-        result.entities
-    };
+    let visible_entities =
+        if let (Some(ref policy), Some(auth_ctx)) = (&gql_ctx.state.record_access_policy, auth) {
+            policy
+                .filter_visible(schema_def, auth_ctx, result.entities)
+                .await
+        } else {
+            result.entities
+        };
 
     let count = visible_entities.len();
     let total_count = result.total_count;
@@ -219,10 +218,8 @@ pub async fn resolve_create_entity<'a>(
     let input_accessor = ctx.args.try_get("input")?;
     let input_obj = input_accessor.object()?;
 
-    let mut fields =
-        gql_input_to_entity_fields(input_obj.as_index_map(), schema_def).map_err(|errors| {
-            forge_error_to_gql(ForgeError::ValidationFailed { details: errors })
-        })?;
+    let mut fields = gql_input_to_entity_fields(input_obj.as_index_map(), schema_def)
+        .map_err(|errors| forge_error_to_gql(ForgeError::ValidationFailed { details: errors }))?;
 
     // Inject tenant
     inject_tenant_on_create(&mut fields, auth, &gql_ctx.state.tenant_config);
@@ -234,12 +231,7 @@ pub async fn resolve_create_entity<'a>(
     })?;
 
     let mut entity = Entity::new(schema, fields);
-    filter_entity_fields(
-        &mut entity,
-        schema_def,
-        auth,
-        FieldFilterDirection::Write,
-    );
+    filter_entity_fields(&mut entity, schema_def, auth, FieldFilterDirection::Write);
 
     let mut created = gql_ctx
         .state
@@ -248,12 +240,7 @@ pub async fn resolve_create_entity<'a>(
         .await
         .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
 
-    filter_entity_fields(
-        &mut created,
-        schema_def,
-        auth,
-        FieldFilterDirection::Read,
-    );
+    filter_entity_fields(&mut created, schema_def, auth, FieldFilterDirection::Read);
 
     Ok(Some(entity_to_field_value(created, type_name)))
 }
@@ -278,9 +265,8 @@ pub async fn resolve_update_entity<'a>(
         })
     })?;
 
-    let entity_id = EntityId::parse(&id_arg).map_err(|_| {
-        forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() })
-    })?;
+    let entity_id = EntityId::parse(&id_arg)
+        .map_err(|_| forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() }))?;
 
     // Record-level ownership check
     if let (Some(ref policy), Some(auth_ctx)) = (&gql_ctx.state.record_access_policy, auth) {
@@ -300,18 +286,11 @@ pub async fn resolve_update_entity<'a>(
     let input_accessor = ctx.args.try_get("input")?;
     let input_obj = input_accessor.object()?;
 
-    let fields =
-        gql_input_to_partial_fields(input_obj.as_index_map(), schema_def).map_err(|errors| {
-            forge_error_to_gql(ForgeError::ValidationFailed { details: errors })
-        })?;
+    let fields = gql_input_to_partial_fields(input_obj.as_index_map(), schema_def)
+        .map_err(|errors| forge_error_to_gql(ForgeError::ValidationFailed { details: errors }))?;
 
     let mut entity = Entity::with_id(entity_id, schema, fields);
-    filter_entity_fields(
-        &mut entity,
-        schema_def,
-        auth,
-        FieldFilterDirection::Write,
-    );
+    filter_entity_fields(&mut entity, schema_def, auth, FieldFilterDirection::Write);
 
     let mut updated = gql_ctx
         .state
@@ -320,12 +299,7 @@ pub async fn resolve_update_entity<'a>(
         .await
         .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
 
-    filter_entity_fields(
-        &mut updated,
-        schema_def,
-        auth,
-        FieldFilterDirection::Read,
-    );
+    filter_entity_fields(&mut updated, schema_def, auth, FieldFilterDirection::Read);
 
     Ok(Some(entity_to_field_value(updated, type_name)))
 }
@@ -349,9 +323,8 @@ pub async fn resolve_delete_entity(
         })
     })?;
 
-    let entity_id = EntityId::parse(&id_arg).map_err(|_| {
-        forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() })
-    })?;
+    let entity_id = EntityId::parse(&id_arg)
+        .map_err(|_| forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() }))?;
 
     // Record-level ownership check
     if let (Some(ref policy), Some(auth_ctx)) = (&gql_ctx.state.record_access_policy, auth) {
@@ -396,8 +369,7 @@ pub async fn resolve_relation_one<'a>(
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
     let auth = gql_ctx.auth.as_ref();
 
-    check_schema_access(target_schema_def, auth, AccessAction::Read)
-        .map_err(forge_error_to_gql)?;
+    check_schema_access(target_schema_def, auth, AccessAction::Read).map_err(forge_error_to_gql)?;
 
     let target_schema = SchemaName::new(target_schema_name).map_err(|_| {
         forge_error_to_gql(ForgeError::InvalidSchemaName {
@@ -440,8 +412,7 @@ pub async fn resolve_relation_many<'a>(
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
     let auth = gql_ctx.auth.as_ref();
 
-    check_schema_access(target_schema_def, auth, AccessAction::Read)
-        .map_err(forge_error_to_gql)?;
+    check_schema_access(target_schema_def, auth, AccessAction::Read).map_err(forge_error_to_gql)?;
 
     let target_schema = SchemaName::new(target_schema_name).map_err(|_| {
         forge_error_to_gql(ForgeError::InvalidSchemaName {
@@ -480,20 +451,21 @@ mod tests {
     use super::*;
 
     fn extension_code(err: &async_graphql::Error) -> Option<String> {
-        err.extensions.as_ref().and_then(|e| e.get("code")).and_then(|v| {
-            if let GqlValue::String(s) = v {
-                Some(s.clone())
-            } else {
-                None
-            }
-        })
+        err.extensions
+            .as_ref()
+            .and_then(|e| e.get("code"))
+            .and_then(|v| {
+                if let GqlValue::String(s) = v {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
     }
 
     #[test]
     fn forge_error_to_gql_not_found() {
-        let err = ForgeError::SchemaNotFound {
-            name: "X".into(),
-        };
+        let err = ForgeError::SchemaNotFound { name: "X".into() };
         let gql_err = forge_error_to_gql(err);
         assert!(gql_err.message.contains("not found"));
         assert_eq!(extension_code(&gql_err).as_deref(), Some("NOT_FOUND"));
@@ -514,7 +486,10 @@ mod tests {
             details: vec!["bad field".into()],
         };
         let gql_err = forge_error_to_gql(err);
-        assert_eq!(extension_code(&gql_err).as_deref(), Some("VALIDATION_ERROR"));
+        assert_eq!(
+            extension_code(&gql_err).as_deref(),
+            Some("VALIDATION_ERROR")
+        );
     }
 
     #[test]

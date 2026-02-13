@@ -40,12 +40,8 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
     // Collect all types to register
     let mut types_to_register: Vec<dynamic::Type> = vec![
         // Custom scalars
-        dynamic::Type::Scalar(
-            Scalar::new(DATETIME_SCALAR).description("RFC 3339 datetime string"),
-        ),
-        dynamic::Type::Scalar(
-            Scalar::new(JSON_SCALAR).description("Arbitrary JSON value"),
-        ),
+        dynamic::Type::Scalar(Scalar::new(DATETIME_SCALAR).description("RFC 3339 datetime string")),
+        dynamic::Type::Scalar(Scalar::new(JSON_SCALAR).description("Arbitrary JSON value")),
         dynamic::Type::Scalar(
             Scalar::new(INT64_SCALAR).description("64-bit integer serialized as string"),
         ),
@@ -63,8 +59,7 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
         let update_input_name = format!("Update{schema_name}Input");
 
         // 1. Build output Object type
-        let object_type =
-            build_output_type(schema_def, &schema_map, &type_name)?;
+        let object_type = build_output_type(schema_def, &schema_map, &type_name)?;
         types_to_register.push(dynamic::Type::Object(object_type));
 
         // 2. Build connection type
@@ -105,8 +100,8 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                         inner_field.is_required(),
                     );
                     let field_name_owned = inner_field_name.clone();
-                    nested_obj = nested_obj.field(
-                        Field::new(&inner_field_name, inner_tr, move |ctx| {
+                    nested_obj =
+                        nested_obj.field(Field::new(&inner_field_name, inner_tr, move |ctx| {
                             let field_name = field_name_owned.clone();
                             FieldFuture::new(async move {
                                 let parent = ctx
@@ -120,8 +115,7 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                                 }
                                 Ok(None)
                             })
-                        }),
-                    );
+                        }));
                 }
                 types_to_register.push(dynamic::Type::Object(nested_obj));
             }
@@ -144,9 +138,7 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                     let sn = sn.clone();
                     let sd = sd.clone();
                     let tn = tn.clone();
-                    FieldFuture::new(async move {
-                        resolve_get_entity(&ctx, &sn, &sd, &tn).await
-                    })
+                    FieldFuture::new(async move { resolve_get_entity(&ctx, &sn, &sd, &tn).await })
                 })
                 .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID))),
             );
@@ -165,9 +157,9 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                         let sn = sn.clone();
                         let sd = sd.clone();
                         let tn = tn.clone();
-                        FieldFuture::new(async move {
-                            resolve_list_entities(&ctx, &sn, &sd, &tn).await
-                        })
+                        FieldFuture::new(
+                            async move { resolve_list_entities(&ctx, &sn, &sd, &tn).await },
+                        )
                     },
                 )
                 .argument(InputValue::new("filter", TypeRef::named(&filter_type_name)))
@@ -193,9 +185,9 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                     let sn = sn.clone();
                     let sd = sd.clone();
                     let tn = tn.clone();
-                    FieldFuture::new(async move {
-                        resolve_create_entity(&ctx, &sn, &sd, &tn).await
-                    })
+                    FieldFuture::new(
+                        async move { resolve_create_entity(&ctx, &sn, &sd, &tn).await },
+                    )
                 })
                 .argument(InputValue::new(
                     "input",
@@ -215,9 +207,9 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                     let sn = sn.clone();
                     let sd = sd.clone();
                     let tn = tn.clone();
-                    FieldFuture::new(async move {
-                        resolve_update_entity(&ctx, &sn, &sd, &tn).await
-                    })
+                    FieldFuture::new(
+                        async move { resolve_update_entity(&ctx, &sn, &sd, &tn).await },
+                    )
                 })
                 .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
                 .argument(InputValue::new(
@@ -283,7 +275,9 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
         builder = builder.register(ty);
     }
 
-    builder.finish().map_err(|e| format!("GraphQL schema build failed: {e}"))
+    builder
+        .finish()
+        .map_err(|e| format!("GraphQL schema build failed: {e}"))
 }
 
 /// Build the output Object type for a schema, with field resolvers.
@@ -299,9 +293,9 @@ fn build_output_type(
     obj = obj.field(Field::new("id", TypeRef::named_nn(TypeRef::ID), |ctx| {
         FieldFuture::new(async move {
             let ef = ctx.parent_value.try_downcast_ref::<EntityFields>()?;
-            Ok(Some(FieldValue::value(
-                async_graphql::Value::String(ef.id.as_str().to_string()),
-            )))
+            Ok(Some(FieldValue::value(async_graphql::Value::String(
+                ef.id.as_str().to_string(),
+            ))))
         })
     }));
 
@@ -332,9 +326,7 @@ fn build_output_type(
                     let target_def = target_def.clone();
                     let card = card;
                     FieldFuture::new(async move {
-                        let parent = ctx
-                            .parent_value
-                            .try_downcast_ref::<EntityFields>()?;
+                        let parent = ctx.parent_value.try_downcast_ref::<EntityFields>()?;
                         let Some(td) = target_def else {
                             return Ok(None);
                         };
@@ -378,13 +370,10 @@ fn build_output_type(
                     let fn_clone = fn_clone.clone();
                     let ft_clone = ft_clone.clone();
                     FieldFuture::new(async move {
-                        let parent = ctx
-                            .parent_value
-                            .try_downcast_ref::<EntityFields>()?;
+                        let parent = ctx.parent_value.try_downcast_ref::<EntityFields>()?;
                         match parent.fields.get(&fn_clone) {
                             Some(dv) => {
-                                let gql_val =
-                                    dynamic_value_to_gql_value(dv, Some(&ft_clone));
+                                let gql_val = dynamic_value_to_gql_value(dv, Some(&ft_clone));
                                 Ok(Some(FieldValue::value(gql_val)))
                             }
                             None => Ok(None),
@@ -432,23 +421,27 @@ fn build_connection_type(connection_name: &str, item_type_name: &str) -> Object 
             |ctx| {
                 FieldFuture::new(async move {
                     let conn = ctx.parent_value.try_downcast_ref::<ConnectionData>()?;
-                    Ok(Some(FieldValue::value(
-                        async_graphql::Value::Number(conn.count.into()),
-                    )))
+                    Ok(Some(FieldValue::value(async_graphql::Value::Number(
+                        conn.count.into(),
+                    ))))
                 })
             },
         ))
-        .field(Field::new("totalCount", TypeRef::named(TypeRef::INT), |ctx| {
-            FieldFuture::new(async move {
-                let conn = ctx.parent_value.try_downcast_ref::<ConnectionData>()?;
-                match conn.total_count {
-                    Some(tc) => Ok(Some(FieldValue::value(
-                        async_graphql::Value::Number(tc.into()),
-                    ))),
-                    None => Ok(None),
-                }
-            })
-        }))
+        .field(Field::new(
+            "totalCount",
+            TypeRef::named(TypeRef::INT),
+            |ctx| {
+                FieldFuture::new(async move {
+                    let conn = ctx.parent_value.try_downcast_ref::<ConnectionData>()?;
+                    match conn.total_count {
+                        Some(tc) => Ok(Some(FieldValue::value(async_graphql::Value::Number(
+                            tc.into(),
+                        )))),
+                        None => Ok(None),
+                    }
+                })
+            },
+        ))
 }
 
 /// Lowercase the first character of a string.
@@ -462,15 +455,16 @@ fn lcfirst(s: &str) -> String {
 
 /// Simple English pluralization.
 fn pluralize(s: &str) -> String {
-    if s.ends_with("sh") || s.ends_with("ch") || s.ends_with('s') || s.ends_with('x') || s.ends_with('z')
+    if s.ends_with("sh")
+        || s.ends_with("ch")
+        || s.ends_with('s')
+        || s.ends_with('x')
+        || s.ends_with('z')
     {
         format!("{s}es")
     } else if s.ends_with('y')
         && s.len() > 1
-        && !matches!(
-            s.as_bytes()[s.len() - 2],
-            b'a' | b'e' | b'i' | b'o' | b'u'
-        )
+        && !matches!(s.as_bytes()[s.len() - 2], b'a' | b'e' | b'i' | b'o' | b'u')
     {
         format!("{}ies", &s[..s.len() - 1])
     } else {
@@ -658,27 +652,14 @@ mod tests {
                     FieldName::new("quantity").unwrap(),
                     FieldType::Integer(IntegerConstraints::with_range(0, 10000).unwrap()),
                 ),
-                FieldDefinition::new(
-                    FieldName::new("active").unwrap(),
-                    FieldType::Boolean,
-                ),
-                FieldDefinition::new(
-                    FieldName::new("created_at").unwrap(),
-                    FieldType::DateTime,
-                ),
-                FieldDefinition::new(
-                    FieldName::new("metadata").unwrap(),
-                    FieldType::Json,
-                ),
+                FieldDefinition::new(FieldName::new("active").unwrap(), FieldType::Boolean),
+                FieldDefinition::new(FieldName::new("created_at").unwrap(), FieldType::DateTime),
+                FieldDefinition::new(FieldName::new("metadata").unwrap(), FieldType::Json),
                 FieldDefinition::new(
                     FieldName::new("status").unwrap(),
                     FieldType::Enum(
-                        EnumVariants::new(vec![
-                            "Active".into(),
-                            "Inactive".into(),
-                            "Draft".into(),
-                        ])
-                        .unwrap(),
+                        EnumVariants::new(vec!["Active".into(), "Inactive".into(), "Draft".into()])
+                            .unwrap(),
                     ),
                 ),
             ],

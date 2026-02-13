@@ -21,8 +21,9 @@ arc-swap = { version = "1", optional = true }
 tracing = { version = "0.1", optional = true }
 
 [features]
-admin-ui = ["acton-service/htmx-full", "dep:askama", "dep:schema-forge-surrealdb"]
-widget-ui = ["acton-service/htmx-full", "dep:askama"]
+admin-ui = ["acton-service/htmx-full", "dep:askama", "dep:schema-forge-surrealdb", "dep:arc-swap"]
+widget-ui = ["acton-service/htmx-full", "dep:askama", "dep:arc-swap"]
+cloud-ui = ["widget-ui"]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum", "dep:arc-swap", "dep:tracing"]
 
 [dev-dependencies]

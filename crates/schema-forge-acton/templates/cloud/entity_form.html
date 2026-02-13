@@ -1,0 +1,48 @@
+{% extends "cloud/base.html" %}
+
+{% block title %}{% if let Some(id) = entity_id %}Edit{% else %}New{% endif %} {{ schema.name }} - {{ app_title }}{% endblock %}
+
+{% block content %}
+<div class="sf-breadcrumbs">
+    <a href="/app/">Dashboard</a>
+    <span class="sf-breadcrumbs-sep"></span>
+    <a href="/app/{{ schema.url_name }}/entities">{{ schema.name }}</a>
+    <span class="sf-breadcrumbs-sep"></span>
+    <span>{% if let Some(id) = entity_id %}Edit {{ id }}{% else %}New{% endif %}</span>
+</div>
+<div class="sf-page-header">
+    <h1 class="sf-page-title">{% if let Some(_id) = entity_id %}Edit{% else %}New{% endif %} {{ schema.name }}</h1>
+</div>
+{% if !errors.is_empty() %}
+<div class="sf-alert sf-alert-error">
+    <ul>
+    {% for error in errors %}
+        <li>{{ error }}</li>
+    {% endfor %}
+    </ul>
+</div>
+{% endif %}
+<div class="sf-detail">
+    <form class="sf-form"
+        {% if let Some(id) = entity_id %}
+        method="post" action="/app/{{ schema.url_name }}/entities/{{ id }}"
+        hx-put="/app/{{ schema.url_name }}/entities/{{ id }}"
+        {% else %}
+        method="post" action="/app/{{ schema.url_name }}/entities"
+        hx-post="/app/{{ schema.url_name }}/entities"
+        {% endif %}
+        hx-target="closest .sf-detail"
+        hx-swap="outerHTML"
+    >
+        {% for field in fields %}
+        {% include "cloud/atoms/field_input.html" %}
+        {% endfor %}
+        <div>
+            <button type="submit" class="sf-btn sf-btn-primary">
+                {% if let Some(_id) = entity_id %}Update{% else %}Create{% endif %}
+            </button>
+            <a href="/app/{{ schema.url_name }}/entities" class="sf-btn sf-btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

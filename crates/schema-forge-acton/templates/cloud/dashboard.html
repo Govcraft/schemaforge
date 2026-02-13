@@ -1,0 +1,16 @@
+{% extends "cloud/base.html" %}
+
+{% block title %}Dashboard - {{ app_title }}{% endblock %}
+
+{% block content %}
+<div class="sf-page-header">
+    <div>
+        <h1 class="sf-page-title">Dashboard</h1>
+    </div>
+</div>
+<div class="sf-dashboard">
+    {% for card in schema_cards %}
+    {% include "molecules/dashboard_card.html" %}
+    {% endfor %}
+</div>
+{% endblock %}

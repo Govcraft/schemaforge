@@ -331,33 +331,27 @@ pub fn json_to_filter(
 
             match op {
                 "contains" => {
-                    let val = obj
-                        .get("value")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            vec!["'contains' filter 'value' must be a string".to_string()]
-                        })?;
+                    let val = obj.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
+                        vec!["'contains' filter 'value' must be a string".to_string()]
+                    })?;
                     Ok(Filter::contains(path, val))
                 }
                 "startswith" => {
-                    let val = obj
-                        .get("value")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            vec!["'startswith' filter 'value' must be a string".to_string()]
-                        })?;
+                    let val = obj.get("value").and_then(|v| v.as_str()).ok_or_else(|| {
+                        vec!["'startswith' filter 'value' must be a string".to_string()]
+                    })?;
                     Ok(Filter::starts_with(path, val))
                 }
                 "in" => {
-                    let values_val = obj
-                        .get("values")
-                        .or_else(|| obj.get("value"))
-                        .ok_or_else(|| {
-                            vec!["'in' filter must have a 'values' array".to_string()]
-                        })?;
-                    let arr = values_val.as_array().ok_or_else(|| {
-                        vec!["'in' filter 'values' must be an array".to_string()]
-                    })?;
+                    let values_val =
+                        obj.get("values")
+                            .or_else(|| obj.get("value"))
+                            .ok_or_else(|| {
+                                vec!["'in' filter must have a 'values' array".to_string()]
+                            })?;
+                    let arr = values_val
+                        .as_array()
+                        .ok_or_else(|| vec!["'in' filter 'values' must be an array".to_string()])?;
                     let mut values = Vec::new();
                     let mut errors = Vec::new();
                     for item in arr {
@@ -420,20 +414,17 @@ async fn execute_entity_query(
     // Inject tenant scope filter
     inject_tenant_scope(query, auth, &state.tenant_config);
 
-    let result = state
-        .backend
-        .query(query)
-        .await
-        .map_err(ForgeError::from)?;
+    let result = state.backend.query(query).await.map_err(ForgeError::from)?;
 
     // Record-level access filtering (e.g. @owner)
-    let visible_entities = if let (Some(ref policy), Some(auth_ctx)) = (&state.record_access_policy, auth) {
-        policy
-            .filter_visible(schema_def, auth_ctx, result.entities)
-            .await
-    } else {
-        result.entities
-    };
+    let visible_entities =
+        if let (Some(ref policy), Some(auth_ctx)) = (&state.record_access_policy, auth) {
+            policy
+                .filter_visible(schema_def, auth_ctx, result.entities)
+                .await
+        } else {
+            result.entities
+        };
 
     // Filter read-restricted fields from each entity
     let entities: Vec<EntityResponse> = visible_entities
@@ -542,37 +533,43 @@ pub async fn list_entities(
 
     // Extract limit/offset
     if let Some(limit_str) = params.get("limit") {
-        let limit = limit_str.parse::<usize>().map_err(|_| ForgeError::InvalidQuery {
-            message: format!("invalid limit value '{limit_str}'"),
-        })?;
+        let limit = limit_str
+            .parse::<usize>()
+            .map_err(|_| ForgeError::InvalidQuery {
+                message: format!("invalid limit value '{limit_str}'"),
+            })?;
         query = query.with_limit(limit);
     }
     if let Some(offset_str) = params.get("offset") {
-        let offset = offset_str.parse::<usize>().map_err(|_| ForgeError::InvalidQuery {
-            message: format!("invalid offset value '{offset_str}'"),
-        })?;
+        let offset = offset_str
+            .parse::<usize>()
+            .map_err(|_| ForgeError::InvalidQuery {
+                message: format!("invalid offset value '{offset_str}'"),
+            })?;
         query = query.with_offset(offset);
     }
 
     // Parse sort
     if let Some(sort_str) = params.get("sort") {
-        let sort_clauses = parse_sort_param(sort_str).map_err(|e| ForgeError::InvalidQuery {
-            message: e,
-        })?;
+        let sort_clauses =
+            parse_sort_param(sort_str).map_err(|e| ForgeError::InvalidQuery { message: e })?;
         for (path, order) in sort_clauses {
             query = query.with_sort(path, order);
         }
     }
 
     // Parse filter params
-    let filter = parse_filter_params(&params, &schema_def).map_err(|errors| {
-        ForgeError::InvalidQuery {
+    let filter =
+        parse_filter_params(&params, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
             message: errors.join("; "),
-        }
-    })?;
+        })?;
     if let Some(f) = &filter {
         validate_filter(f, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
-            message: errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
+            message: errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
         })?;
     }
     if let Some(f) = filter {
@@ -644,7 +641,11 @@ pub async fn query_entities(
             }
         })?;
         validate_filter(&filter, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
-            message: errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "),
+            message: errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
         })?;
         query = query.with_filter(filter);
     }

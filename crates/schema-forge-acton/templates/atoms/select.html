@@ -1,0 +1,20 @@
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <select id="{{ field.name }}" name="{{ field.name }}" class="select"
+        {% if field.multiple %}multiple size="5"{% endif %}
+        {% if field.required %}required{% endif %}
+        {% if let Some(target) = field.relation_target %}
+        hx-get="{{ url_prefix }}/{{ target }}/relation-options/{{ field.name }}"
+        hx-trigger="load"
+        hx-target="this"
+        hx-swap="innerHTML"
+        {% endif %}
+    >
+        {% if !field.multiple %}<option value="">-- Select --</option>{% endif %}
+        {% for (value, label) in field.options %}
+        <option value="{{ value }}"
+            {% if let Some(cv) = field.current_value %}{% if cv == value %}selected{% endif %}{% endif %}
+        >{{ label }}</option>
+        {% endfor %}
+    </select>
+</fieldset>

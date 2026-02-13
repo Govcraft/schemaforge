@@ -1,0 +1,34 @@
+{% if entities.is_empty() %}
+<div class="forge-empty-state">
+    <p>No entities yet.</p>
+    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="forge-btn">Create First Entity</a>
+</div>
+{% else %}
+<div class="forge-card-grid">
+    {% for entity in entities %}
+    <div class="forge-card" id="entity-{{ entity.id }}">
+        <div class="forge-card-header">
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}" class="forge-card-title">{{ entity.display_value }}</a>
+        </div>
+        <div class="forge-card-body">
+            {% for (label, value) in entity.field_values %}
+            <div class="forge-card-field">
+                <span class="forge-card-label">{{ label }}</span>
+                <span class="forge-card-value">{% if value.is_empty() %}-{% else %}{{ value }}{% endif %}</span>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="forge-card-actions">
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="forge-btn forge-btn-sm">Edit</a>
+            <button class="forge-btn forge-btn-sm forge-btn-danger"
+                hx-delete="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}"
+                hx-confirm="Delete this entity?"
+                hx-target="#entity-{{ entity.id }}"
+                hx-swap="delete"
+            >Del</button>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% include "molecules/pagination.html" %}
+{% endif %}

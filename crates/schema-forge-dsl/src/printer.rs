@@ -85,6 +85,39 @@ fn print_annotation(annotation: &Annotation, output: &mut String) {
                 output.push_str(&format!("@tenant(parent: \"{}\")", parent.as_str()));
             }
         },
+        Annotation::Dashboard {
+            widgets,
+            layout,
+            group_by,
+            sort_default,
+        } => {
+            output.push_str("@dashboard(widgets: [");
+            for (i, w) in widgets.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                output.push('"');
+                output.push_str(w);
+                output.push('"');
+            }
+            output.push(']');
+            if let Some(l) = layout {
+                output.push_str(", layout: \"");
+                output.push_str(l);
+                output.push('"');
+            }
+            if let Some(g) = group_by {
+                output.push_str(", group_by: \"");
+                output.push_str(g);
+                output.push('"');
+            }
+            if let Some(s) = sort_default {
+                output.push_str(", sort_default: \"");
+                output.push_str(s);
+                output.push('"');
+            }
+            output.push(')');
+        }
         _ => {
             // Future annotation kinds -- print as @unknown for forward compatibility
             output.push_str("@unknown");
@@ -236,6 +269,12 @@ fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
             }
             output.push(')');
         }
+        FieldAnnotation::Widget { widget_type } => {
+            output.push_str("@widget(\"");
+            output.push_str(widget_type);
+            output.push_str("\")");
+        }
+        FieldAnnotation::KanbanColumn => output.push_str("@kanban_column"),
         _ => {
             output.push_str("@unknown_field_annotation");
         }
@@ -712,5 +751,154 @@ mod tests {
         );
         let output = print(&schema);
         assert!(output.contains("user_id: text required @owner"));
+    }
+
+    // -- New annotation printing --
+
+    #[test]
+    fn print_widget_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("status").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Widget {
+                    widget_type: "status_badge".into(),
+                }],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains(r#"status: text @widget("status_badge")"#));
+    }
+
+    #[test]
+    fn print_kanban_column_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("stage").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::KanbanColumn],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains("stage: text @kanban_column"));
+    }
+
+    #[test]
+    fn print_dashboard_full() {
+        let schema = make_schema(
+            "Deal",
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![Annotation::Dashboard {
+                widgets: vec!["count".into(), "sum:value".into()],
+                layout: Some("kanban".into()),
+                group_by: Some("stage".into()),
+                sort_default: Some("-expected_close".into()),
+            }],
+        );
+        let output = print(&schema);
+        assert!(output.contains(
+            r#"@dashboard(widgets: ["count", "sum:value"], layout: "kanban", group_by: "stage", sort_default: "-expected_close")"#
+        ));
+    }
+
+    #[test]
+    fn print_dashboard_widgets_only() {
+        let schema = make_schema(
+            "S",
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![Annotation::Dashboard {
+                widgets: vec!["count".into()],
+                layout: None,
+                group_by: None,
+                sort_default: None,
+            }],
+        );
+        let output = print(&schema);
+        assert!(output.contains(r#"@dashboard(widgets: ["count"])"#));
+    }
+
+    #[test]
+    fn print_field_with_widget_and_modifiers() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("status").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+                vec![FieldAnnotation::Widget {
+                    widget_type: "status_badge".into(),
+                }],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains(r#"status: text required @widget("status_badge")"#));
+    }
+
+    // -- Roundtrip tests (parse -> print -> reparse) --
+
+    #[test]
+    fn roundtrip_widget() {
+        let source = r#"schema S {
+    status: text @widget("status_badge")
+}
+"#;
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(
+            parsed[0].fields[0].annotations,
+            reparsed[0].fields[0].annotations
+        );
+    }
+
+    #[test]
+    fn roundtrip_kanban_column() {
+        let source = "schema S {\n    stage: text @kanban_column\n}\n";
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(
+            parsed[0].fields[0].annotations,
+            reparsed[0].fields[0].annotations
+        );
+    }
+
+    #[test]
+    fn roundtrip_dashboard_full() {
+        let source = r#"@dashboard(widgets: ["count", "sum:value"], layout: "kanban", group_by: "stage", sort_default: "-expected_close")
+schema S {
+    name: text
+}
+"#;
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(parsed[0].annotations, reparsed[0].annotations);
+    }
+
+    #[test]
+    fn roundtrip_dashboard_minimal() {
+        let source = r#"@dashboard(widgets: ["count"])
+schema S {
+    name: text
+}
+"#;
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(parsed[0].annotations, reparsed[0].annotations);
     }
 }

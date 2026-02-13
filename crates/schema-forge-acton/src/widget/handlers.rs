@@ -4,15 +4,20 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use schema_forge_core::types::{EntityId, SchemaName};
 
-use crate::access::{check_schema_access, filter_entity_fields, AccessAction, FieldFilterDirection, OptionalAuth};
+use crate::access::{
+    check_schema_access, filter_entity_fields, AccessAction, FieldFilterDirection, OptionalAuth,
+};
 use crate::form::form_to_entity_fields;
 use crate::shared::resolve_ref_display;
 use crate::state::ForgeState;
+use crate::theme::{DetailStyle, ListStyle};
 use crate::views::{EntityView, FieldView, PaginationView, SchemaView};
 
 use super::error::WidgetError;
 use super::templates::{
-    WidgetEntityDetailTemplate, WidgetEntityFormTemplate, WidgetEntityTableTemplate,
+    WidgetEntityDetailFullTemplate, WidgetEntityDetailSplitTemplate,
+    WidgetEntityDetailTabbedTemplate, WidgetEntityFormTemplate, WidgetEntityListCardsTemplate,
+    WidgetEntityListCompactTemplate, WidgetEntityListTableTemplate,
 };
 
 /// URL prefix for widget routes: `/forge`.
@@ -25,13 +30,75 @@ pub struct PaginationParams {
     pub offset: Option<usize>,
 }
 
+/// Render an entity list using the theme-selected layout variant.
+fn render_entity_list(
+    schema: SchemaView,
+    entities: Vec<EntityView>,
+    pagination: PaginationView,
+    url_prefix: String,
+    list_style: &ListStyle,
+) -> Response {
+    match list_style {
+        ListStyle::Table => HtmlTemplate::fragment(WidgetEntityListTableTemplate {
+            schema,
+            entities,
+            pagination,
+            url_prefix,
+        })
+        .into_response(),
+        ListStyle::Cards => HtmlTemplate::fragment(WidgetEntityListCardsTemplate {
+            schema,
+            entities,
+            pagination,
+            url_prefix,
+        })
+        .into_response(),
+        ListStyle::Compact => HtmlTemplate::fragment(WidgetEntityListCompactTemplate {
+            schema,
+            entities,
+            pagination,
+            url_prefix,
+        })
+        .into_response(),
+    }
+}
+
+/// Render an entity detail using the theme-selected layout variant.
+fn render_entity_detail(
+    schema: SchemaView,
+    entity: EntityView,
+    url_prefix: String,
+    detail_style: &DetailStyle,
+) -> Response {
+    match detail_style {
+        DetailStyle::Full => HtmlTemplate::fragment(WidgetEntityDetailFullTemplate {
+            schema,
+            entity,
+            url_prefix,
+        })
+        .into_response(),
+        DetailStyle::Split => HtmlTemplate::fragment(WidgetEntityDetailSplitTemplate {
+            schema,
+            entity,
+            url_prefix,
+        })
+        .into_response(),
+        DetailStyle::Tabbed => HtmlTemplate::fragment(WidgetEntityDetailTabbedTemplate {
+            schema,
+            entity,
+            url_prefix,
+        })
+        .into_response(),
+    }
+}
+
 /// GET /forge/{schema}/entities — Paginated entity table fragment.
 pub async fn entity_list(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
     Path(name): Path<String>,
     Query(params): Query<PaginationParams>,
-) -> Result<impl IntoResponse, WidgetError> {
+) -> Result<Response, WidgetError> {
     let schema_def = state
         .registry
         .get(&name)
@@ -63,12 +130,16 @@ pub async fn entity_list(
     let pagination = PaginationView::new(total_count, limit, offset);
     let schema = SchemaView::from_definition(&schema_def);
 
-    Ok(HtmlTemplate::fragment(WidgetEntityTableTemplate {
+    let theme = state.theme.load();
+    let list_style = theme.resolve_list_style(&name);
+
+    Ok(render_entity_list(
         schema,
         entities,
         pagination,
-        url_prefix: WIDGET_URL_PREFIX.to_string(),
-    }))
+        WIDGET_URL_PREFIX.to_string(),
+        list_style,
+    ))
 }
 
 /// GET /forge/{schema}/entities/_table — HTMX table pagination fragment.
@@ -77,15 +148,9 @@ pub async fn entity_table_fragment(
     OptionalAuth(auth): OptionalAuth,
     Path(name): Path<String>,
     Query(params): Query<PaginationParams>,
-) -> Result<impl IntoResponse, WidgetError> {
+) -> Result<Response, WidgetError> {
     // Delegate to entity_list — same response for widgets
-    entity_list(
-        State(state),
-        OptionalAuth(auth),
-        Path(name),
-        Query(params),
-    )
-    .await
+    entity_list(State(state), OptionalAuth(auth), Path(name), Query(params)).await
 }
 
 /// GET /forge/{schema}/entities/new — Create entity form fragment.
@@ -135,8 +200,7 @@ pub async fn entity_create(
     check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)
         .map_err(WidgetError::from)?;
 
-    let schema_name = SchemaName::new(&name)
-        .map_err(|_| WidgetError::schema_not_found(&name))?;
+    let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
 
     match form_to_entity_fields(&schema_def, &form_data) {
         Ok(fields) => {
@@ -148,7 +212,17 @@ pub async fn entity_create(
                 .map_err(|e| WidgetError::from(crate::error::ForgeError::from(e)))?;
 
             // Apply field filtering
-            filter_entity_fields(&mut created, &schema_def, auth.as_ref(), FieldFilterDirection::Read);
+            filter_entity_fields(
+                &mut created,
+                &schema_def,
+                auth.as_ref(),
+                FieldFilterDirection::Read,
+            );
+
+            // Hot-reload theme if Theme entity was created
+            if name == "Theme" {
+                crate::theme::reload_theme(&state).await;
+            }
 
             let ref_display =
                 resolve_ref_display(&state, &schema_def, std::slice::from_ref(&created)).await;
@@ -156,12 +230,15 @@ pub async fn entity_create(
                 EntityView::from_entity_with_refs(&created, &schema_def, &ref_display);
             let schema = SchemaView::from_definition(&schema_def);
 
-            Ok(HtmlTemplate::fragment(WidgetEntityDetailTemplate {
+            let theme = state.theme.load();
+            let detail_style = theme.resolve_detail_style(&name);
+
+            Ok(render_entity_detail(
                 schema,
-                entity: entity_view,
-                url_prefix: WIDGET_URL_PREFIX.to_string(),
-            })
-            .into_response())
+                entity_view,
+                WIDGET_URL_PREFIX.to_string(),
+                detail_style,
+            ))
         }
         Err(errors) => {
             let fields: Vec<FieldView> = schema_def
@@ -191,7 +268,7 @@ pub async fn entity_detail(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
     Path((name, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, WidgetError> {
+) -> Result<Response, WidgetError> {
     let schema_def = state
         .registry
         .get(&name)
@@ -201,10 +278,8 @@ pub async fn entity_detail(
     check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)
         .map_err(WidgetError::from)?;
 
-    let schema_name = SchemaName::new(&name)
-        .map_err(|_| WidgetError::schema_not_found(&name))?;
-    let entity_id = EntityId::parse(&id)
-        .map_err(|_| WidgetError::entity_not_found(&name, &id))?;
+    let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
+    let entity_id = EntityId::parse(&id).map_err(|_| WidgetError::entity_not_found(&name, &id))?;
 
     let mut entity = state
         .backend
@@ -212,18 +287,26 @@ pub async fn entity_detail(
         .await
         .map_err(|e| WidgetError::from(crate::error::ForgeError::from(e)))?;
 
-    filter_entity_fields(&mut entity, &schema_def, auth.as_ref(), FieldFilterDirection::Read);
+    filter_entity_fields(
+        &mut entity,
+        &schema_def,
+        auth.as_ref(),
+        FieldFilterDirection::Read,
+    );
 
-    let ref_display =
-        resolve_ref_display(&state, &schema_def, std::slice::from_ref(&entity)).await;
+    let ref_display = resolve_ref_display(&state, &schema_def, std::slice::from_ref(&entity)).await;
     let entity_view = EntityView::from_entity_with_refs(&entity, &schema_def, &ref_display);
     let schema = SchemaView::from_definition(&schema_def);
 
-    Ok(HtmlTemplate::fragment(WidgetEntityDetailTemplate {
+    let theme = state.theme.load();
+    let detail_style = theme.resolve_detail_style(&name);
+
+    Ok(render_entity_detail(
         schema,
-        entity: entity_view,
-        url_prefix: WIDGET_URL_PREFIX.to_string(),
-    }))
+        entity_view,
+        WIDGET_URL_PREFIX.to_string(),
+        detail_style,
+    ))
 }
 
 /// GET /forge/{schema}/entities/{id}/edit — Edit entity form fragment.
@@ -241,10 +324,8 @@ pub async fn entity_edit_form(
     check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)
         .map_err(WidgetError::from)?;
 
-    let schema_name = SchemaName::new(&name)
-        .map_err(|_| WidgetError::schema_not_found(&name))?;
-    let entity_id = EntityId::parse(&id)
-        .map_err(|_| WidgetError::entity_not_found(&name, &id))?;
+    let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
+    let entity_id = EntityId::parse(&id).map_err(|_| WidgetError::entity_not_found(&name, &id))?;
 
     let entity = state
         .backend
@@ -287,10 +368,8 @@ pub async fn entity_update(
     check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)
         .map_err(WidgetError::from)?;
 
-    let schema_name = SchemaName::new(&name)
-        .map_err(|_| WidgetError::schema_not_found(&name))?;
-    let entity_id = EntityId::parse(&id)
-        .map_err(|_| WidgetError::entity_not_found(&name, &id))?;
+    let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
+    let entity_id = EntityId::parse(&id).map_err(|_| WidgetError::entity_not_found(&name, &id))?;
 
     match form_to_entity_fields(&schema_def, &form_data) {
         Ok(fields) => {
@@ -302,18 +381,26 @@ pub async fn entity_update(
                 .await
                 .map_err(|e| WidgetError::from(crate::error::ForgeError::from(e)))?;
 
+            // Hot-reload theme if Theme entity was updated
+            if name == "Theme" {
+                crate::theme::reload_theme(&state).await;
+            }
+
             let ref_display =
                 resolve_ref_display(&state, &schema_def, std::slice::from_ref(&updated)).await;
             let entity_view =
                 EntityView::from_entity_with_refs(&updated, &schema_def, &ref_display);
             let schema = SchemaView::from_definition(&schema_def);
 
-            Ok(HtmlTemplate::fragment(WidgetEntityDetailTemplate {
+            let theme = state.theme.load();
+            let detail_style = theme.resolve_detail_style(&name);
+
+            Ok(render_entity_detail(
                 schema,
-                entity: entity_view,
-                url_prefix: WIDGET_URL_PREFIX.to_string(),
-            })
-            .into_response())
+                entity_view,
+                WIDGET_URL_PREFIX.to_string(),
+                detail_style,
+            ))
         }
         Err(errors) => {
             let fields: Vec<FieldView> = schema_def
@@ -353,16 +440,19 @@ pub async fn entity_delete(
     check_schema_access(&schema_def, auth.as_ref(), AccessAction::Delete)
         .map_err(WidgetError::from)?;
 
-    let schema_name = SchemaName::new(&name)
-        .map_err(|_| WidgetError::schema_not_found(&name))?;
-    let entity_id = EntityId::parse(&id)
-        .map_err(|_| WidgetError::entity_not_found(&name, &id))?;
+    let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
+    let entity_id = EntityId::parse(&id).map_err(|_| WidgetError::entity_not_found(&name, &id))?;
 
     state
         .backend
         .delete(&schema_name, &entity_id)
         .await
         .map_err(|e| WidgetError::from(crate::error::ForgeError::from(e)))?;
+
+    // Hot-reload theme if Theme entity was deleted
+    if name == "Theme" {
+        crate::theme::reload_theme(&state).await;
+    }
 
     // Return empty body — HTMX will remove the target element
     Ok(StatusCode::OK)
@@ -392,9 +482,7 @@ pub async fn relation_options(
 
     // Find display field
     let display_field = schema_def.annotations.iter().find_map(|a| match a {
-        schema_forge_core::types::Annotation::Display { field } => {
-            Some(field.as_str().to_string())
-        }
+        schema_forge_core::types::Annotation::Display { field } => Some(field.as_str().to_string()),
         _ => None,
     });
 

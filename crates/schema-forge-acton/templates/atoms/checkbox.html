@@ -1,0 +1,9 @@
+<fieldset class="fieldset">
+    <input type="hidden" name="{{ field.name }}" value="false">
+    <label class="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}" value="true" class="checkbox"
+            {% if let Some(val) = field.current_value %}{% if val == "true" %}checked{% endif %}{% endif %}
+        >
+        {{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}
+    </label>
+</fieldset>

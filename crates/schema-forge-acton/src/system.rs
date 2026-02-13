@@ -179,8 +179,8 @@ mod tests {
     }
 
     #[test]
-    fn all_system_schemas_returns_four() {
-        assert_eq!(system_schemas::all_system_schemas().len(), 4);
+    fn all_system_schemas_returns_five() {
+        assert_eq!(system_schemas::all_system_schemas().len(), 5);
     }
 
     #[test]
@@ -199,5 +199,6 @@ mod tests {
         assert_eq!(parsed[1], "Role");
         assert_eq!(parsed[2], "User");
         assert_eq!(parsed[3], "TenantMembership");
+        assert_eq!(parsed[4], "Theme");
     }
 }

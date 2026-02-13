@@ -82,6 +82,10 @@ impl SchemaForgeAgent {
             tenant_config: None,
             record_access_policy: None,
             #[cfg(feature = "admin-ui")]
+            theme: std::sync::Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(
+                schema_forge_acton::theme::Theme::default(),
+            ))),
+            #[cfg(feature = "admin-ui")]
             surreal_client: None,
         }
     }

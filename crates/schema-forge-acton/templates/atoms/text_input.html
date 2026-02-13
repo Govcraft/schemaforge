@@ -1,0 +1,8 @@
+<fieldset class="fieldset">
+    <legend class="fieldset-legend">{{ field.label }}{% if field.required %} <span class="text-error">*</span>{% endif %}</legend>
+    <input type="text" id="{{ field.name }}" name="{{ field.name }}" class="input"
+        {% if let Some(val) = field.current_value %}value="{{ val }}"{% endif %}
+        {% for (attr, val) in field.attrs %}{{ attr }}="{{ val }}" {% endfor %}
+        {% if field.required %}required{% endif %}
+    >
+</fieldset>
