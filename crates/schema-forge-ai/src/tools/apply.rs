@@ -219,6 +219,13 @@ mod tests {
         async fn count(&self, _query: &Query) -> Result<usize, BackendError> {
             Ok(0)
         }
+
+        async fn aggregate(
+            &self,
+            _query: &schema_forge_core::query::AggregateQuery,
+        ) -> Result<Vec<schema_forge_core::query::AggregateResult>, BackendError> {
+            Ok(vec![])
+        }
     }
 
     fn mock_backend() -> Arc<dyn DynForgeBackend> {

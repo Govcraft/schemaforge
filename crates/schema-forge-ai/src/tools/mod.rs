@@ -230,6 +230,13 @@ mod tests {
         async fn count(&self, _q: &Query) -> Result<usize, BackendError> {
             Ok(0)
         }
+
+        async fn aggregate(
+            &self,
+            _query: &schema_forge_core::query::AggregateQuery,
+        ) -> Result<Vec<schema_forge_core::query::AggregateResult>, BackendError> {
+            Ok(vec![])
+        }
     }
 
     fn make_tools() -> SchemaForgeTools {

@@ -9,12 +9,13 @@ pub struct NavSchemaEntry {
     pub label: String,
 }
 
-/// Schema card for dashboard.
+/// Schema card for dashboard — one card per aggregate widget.
 #[derive(Debug, Clone)]
 pub struct DashboardCard {
     pub url_name: String,
     pub label: String,
-    pub count: usize,
+    pub widget_label: String,
+    pub display_value: String,
 }
 
 /// Cloud dashboard page.

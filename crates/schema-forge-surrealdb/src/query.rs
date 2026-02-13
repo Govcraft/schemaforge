@@ -3,7 +3,7 @@
 //!
 //! No I/O. No side effects.
 
-use schema_forge_core::query::{FieldPath, Filter, Query, SortOrder};
+use schema_forge_core::query::{AggregateOp, AggregateQuery, FieldPath, Filter, Query, SortOrder};
 use schema_forge_core::types::DynamicValue;
 
 /// Compile a `Query` to a complete SurrealQL SELECT statement.
@@ -188,11 +188,42 @@ pub fn dynamic_value_to_surql_literal(value: &DynamicValue) -> String {
     }
 }
 
+/// Compile an `AggregateQuery` to a SurrealQL SELECT statement with aggregate functions.
+///
+/// Uses index-based aliases (`agg_0`, `agg_1`, ...) for predictable result keys.
+/// Applies an optional WHERE filter and always ends with GROUP ALL.
+pub fn aggregate_to_surql(query: &AggregateQuery, table: &str) -> String {
+    let projections: Vec<String> = query
+        .ops
+        .iter()
+        .enumerate()
+        .map(|(i, op)| match op {
+            AggregateOp::Count => format!("count() AS agg_{i}"),
+            AggregateOp::Sum { field } => {
+                format!("math::sum({}) AS agg_{i}", field_path_to_surql(field))
+            }
+            AggregateOp::Avg { field } => {
+                format!("math::mean({}) AS agg_{i}", field_path_to_surql(field))
+            }
+            _ => format!("count() AS agg_{i}"),
+        })
+        .collect();
+
+    let mut sql = format!("SELECT {} FROM {table}", projections.join(", "));
+
+    if let Some(filter) = &query.filter {
+        sql.push_str(&format!(" WHERE {}", filter_to_surql(filter)));
+    }
+
+    sql.push_str(" GROUP ALL;");
+    sql
+}
+
 /// Convert a `FieldPath` to its SurrealQL dotted representation.
 ///
 /// SurrealDB natively supports dotted paths for record link traversal,
 /// so `company.industry` works directly.
-fn field_path_to_surql(path: &FieldPath) -> String {
+pub(crate) fn field_path_to_surql(path: &FieldPath) -> String {
     path.segments().join(".")
 }
 
@@ -416,6 +447,59 @@ mod tests {
         assert_eq!(
             sql,
             "SELECT count() FROM Contact WHERE active = true GROUP ALL;"
+        );
+    }
+
+    // -- aggregate_to_surql tests --
+
+    #[test]
+    fn aggregate_count_only() {
+        let q = AggregateQuery::new(SchemaId::new()).with_op(AggregateOp::Count);
+        let sql = aggregate_to_surql(&q, "Deal");
+        assert_eq!(sql, "SELECT count() AS agg_0 FROM Deal GROUP ALL;");
+    }
+
+    #[test]
+    fn aggregate_multiple_ops() {
+        let q = AggregateQuery::new(SchemaId::new())
+            .with_op(AggregateOp::Count)
+            .with_op(AggregateOp::Sum {
+                field: FieldPath::single("value"),
+            })
+            .with_op(AggregateOp::Avg {
+                field: FieldPath::single("value"),
+            });
+        let sql = aggregate_to_surql(&q, "Deal");
+        assert_eq!(
+            sql,
+            "SELECT count() AS agg_0, math::sum(value) AS agg_1, math::mean(value) AS agg_2 FROM Deal GROUP ALL;"
+        );
+    }
+
+    #[test]
+    fn aggregate_with_filter() {
+        let q = AggregateQuery::new(SchemaId::new())
+            .with_op(AggregateOp::Count)
+            .with_filter(Filter::eq(
+                FieldPath::single("active"),
+                DynamicValue::Boolean(true),
+            ));
+        let sql = aggregate_to_surql(&q, "Deal");
+        assert_eq!(
+            sql,
+            "SELECT count() AS agg_0 FROM Deal WHERE active = true GROUP ALL;"
+        );
+    }
+
+    #[test]
+    fn aggregate_dotted_field_path() {
+        let q = AggregateQuery::new(SchemaId::new()).with_op(AggregateOp::Sum {
+            field: FieldPath::parse("line_items.amount").unwrap(),
+        });
+        let sql = aggregate_to_surql(&q, "Invoice");
+        assert_eq!(
+            sql,
+            "SELECT math::sum(line_items.amount) AS agg_0 FROM Invoice GROUP ALL;"
         );
     }
 

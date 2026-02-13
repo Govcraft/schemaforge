@@ -7,7 +7,7 @@ use schema_forge_backend::entity::{Entity, QueryResult};
 use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
 use schema_forge_core::migration::MigrationStep;
-use schema_forge_core::query::Query;
+use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
 use schema_forge_core::types::{EntityId, SchemaDefinition, SchemaName};
 use tokio::sync::RwLock;
 
@@ -123,6 +123,12 @@ pub trait DynEntityStore: Send + Sync {
         &'a self,
         query: &'a Query,
     ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + 'a>>;
+
+    /// Compute aggregate values over entities matching a query.
+    fn aggregate<'a>(
+        &'a self,
+        query: &'a AggregateQuery,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<AggregateResult>, BackendError>> + Send + 'a>>;
 }
 
 /// Blanket impl: any concrete `EntityStore` automatically implements `DynEntityStore`.
@@ -169,6 +175,13 @@ impl<T: EntityStore + 'static> DynEntityStore for T {
         query: &'a Query,
     ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + 'a>> {
         Box::pin(EntityStore::count(self, query))
+    }
+
+    fn aggregate<'a>(
+        &'a self,
+        query: &'a AggregateQuery,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<AggregateResult>, BackendError>> + Send + 'a>> {
+        Box::pin(EntityStore::aggregate(self, query))
     }
 }
 

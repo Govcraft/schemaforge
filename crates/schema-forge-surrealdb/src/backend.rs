@@ -9,7 +9,7 @@ use schema_forge_backend::entity::{Entity, QueryResult};
 use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
 use schema_forge_core::migration::MigrationStep;
-use schema_forge_core::query::Query;
+use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
 use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName};
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
@@ -420,6 +420,53 @@ impl EntityStore for SurrealBackend {
             }
         }
         Ok(0)
+    }
+
+    async fn aggregate(
+        &self,
+        query: &AggregateQuery,
+    ) -> Result<Vec<AggregateResult>, BackendError> {
+        let all_schemas = self.list_schema_metadata().await?;
+        let schema_def = all_schemas
+            .iter()
+            .find(|s| s.id == query.schema)
+            .ok_or_else(|| BackendError::QueryError {
+                message: format!("no schema found for id '{}'", query.schema.as_str()),
+            })?;
+
+        let table = schema_def.name.as_str();
+        let sql = crate::query::aggregate_to_surql(query, table);
+        let rows = self.execute_and_take_rows(&sql).await?;
+
+        let mut results = Vec::with_capacity(query.ops.len());
+        if let Some(row) = rows.first() {
+            if let surrealdb::sql::Value::Object(obj) = row {
+                for (i, op) in query.ops.iter().enumerate() {
+                    let key = format!("agg_{i}");
+                    let value = match obj.get(&key) {
+                        Some(surrealdb::sql::Value::Number(n)) => {
+                            let v = n.as_float();
+                            if v.is_nan() { 0.0 } else { v }
+                        }
+                        _ => 0.0,
+                    };
+                    results.push(AggregateResult {
+                        op: op.clone(),
+                        value,
+                    });
+                }
+            }
+        } else {
+            // Empty table — return 0 for all ops
+            for op in &query.ops {
+                results.push(AggregateResult {
+                    op: op.clone(),
+                    value: 0.0,
+                });
+            }
+        }
+
+        Ok(results)
     }
 }
 

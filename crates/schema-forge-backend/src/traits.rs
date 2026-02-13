@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use schema_forge_core::migration::MigrationStep;
-use schema_forge_core::query::Query;
+use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
 use schema_forge_core::types::{EntityId, SchemaDefinition, SchemaName};
 
 use crate::entity::{Entity, QueryResult};
@@ -102,6 +102,14 @@ pub trait EntityStore: Send + Sync {
     /// Returns the total number of entities that match the query's schema
     /// and filter criteria. Limit and offset are not applied.
     fn count(&self, query: &Query) -> impl Future<Output = Result<usize, BackendError>> + Send;
+
+    /// Compute aggregate values over entities matching a query.
+    ///
+    /// Returns one `AggregateResult` per operation in the query's `ops` list.
+    fn aggregate(
+        &self,
+        query: &AggregateQuery,
+    ) -> impl Future<Output = Result<Vec<AggregateResult>, BackendError>> + Send;
 }
 
 #[cfg(test)]

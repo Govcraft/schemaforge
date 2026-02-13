@@ -69,7 +69,8 @@ const BASE_SF_STYLES: &str = r#"
 .sf-dashboard-card { background: var(--sf-surface); border: 1px solid var(--sf-secondary); border-radius: var(--sf-border-radius); padding: 1.25rem; text-decoration: none; color: inherit; transition: box-shadow 0.15s; }
 .sf-dashboard-card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
 .sf-dashboard-card-title { font-weight: 600; font-size: 1rem; margin-bottom: 0.25rem; }
-.sf-dashboard-card-count { font-size: 2rem; font-weight: 700; color: var(--sf-primary); }
+.sf-dashboard-card-value { font-size: 2rem; font-weight: 700; color: var(--sf-primary); }
+.sf-dashboard-card-widget-label { font-size: 0.75rem; color: var(--sf-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
 
 /* Entity list — table variant */
 .sf-entity-list { width: 100%; }

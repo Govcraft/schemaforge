@@ -13,6 +13,8 @@ use crate::state::ForgeState;
 use crate::theme::{DetailStyle, ListStyle, Theme};
 use crate::views::{EntityView, FieldView, PaginationView, SchemaView};
 
+use schema_forge_core::query::{AggregateOp, AggregateQuery, FieldPath};
+
 use super::css;
 use super::templates::{
     CloudDashboardTemplate, CloudEntityDetailTemplate, CloudEntityFormTemplate,
@@ -86,7 +88,7 @@ pub async fn dashboard(
     let theme = state.theme.load();
     let nav_schemas = build_nav(&state, &theme).await;
 
-    // Build schema cards with entity counts
+    // Build schema cards with aggregate widgets
     let all_schemas = state.registry.list().await;
     let mut schema_cards = Vec::new();
 
@@ -105,14 +107,40 @@ pub async fn dashboard(
     };
 
     for schema in schemas_to_show {
-        let query = schema_forge_core::query::Query::new(schema.id.clone());
-        let count = state.backend.count(&query).await.unwrap_or(0);
+        // Extract @dashboard widget specs, default to ["count"]
+        let widget_specs = schema
+            .annotations
+            .iter()
+            .find_map(|a| match a {
+                Annotation::Dashboard { widgets, .. } if !widgets.is_empty() => {
+                    Some(widgets.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| vec!["count".to_string()]);
+
+        let ops: Vec<AggregateOp> = widget_specs
+            .iter()
+            .filter_map(|spec| parse_widget_spec(spec))
+            .collect();
+
+        let results = if ops.is_empty() {
+            vec![]
+        } else {
+            let agg_query = AggregateQuery::new(schema.id.clone()).with_ops(ops);
+            state.backend.aggregate(&agg_query).await.unwrap_or_default()
+        };
+
         let name = schema.name.as_str().to_string();
-        schema_cards.push(DashboardCard {
-            label: theme.schema_label(&name),
-            url_name: name,
-            count,
-        });
+        let label = theme.schema_label(&name);
+        for r in &results {
+            schema_cards.push(DashboardCard {
+                url_name: name.clone(),
+                label: label.clone(),
+                widget_label: widget_label(&r.op),
+                display_value: format_widget_value(&r.op, r.value),
+            });
+        }
     }
 
     Ok(HtmlTemplate::new(CloudDashboardTemplate {
@@ -618,6 +646,48 @@ pub async fn relation_options(
     }
 
     Ok(axum::response::Html(html))
+}
+
+/// Parse a widget spec string like "count", "sum:value", "avg:price" into an `AggregateOp`.
+fn parse_widget_spec(spec: &str) -> Option<AggregateOp> {
+    let spec = spec.trim();
+    if spec.eq_ignore_ascii_case("count") {
+        return Some(AggregateOp::Count);
+    }
+    if let Some(field) = spec.strip_prefix("sum:") {
+        return FieldPath::parse(field.trim()).ok().map(|field| AggregateOp::Sum { field });
+    }
+    if let Some(field) = spec.strip_prefix("avg:") {
+        return FieldPath::parse(field.trim()).ok().map(|field| AggregateOp::Avg { field });
+    }
+    None
+}
+
+/// Human-readable label for an aggregate operation.
+fn widget_label(op: &AggregateOp) -> String {
+    match op {
+        AggregateOp::Count => "Count".to_string(),
+        AggregateOp::Sum { field } => format!("Total {}", capitalize(field.leaf())),
+        AggregateOp::Avg { field } => format!("Avg {}", capitalize(field.leaf())),
+        _ => "Value".to_string(),
+    }
+}
+
+/// Format a widget value for display.
+fn format_widget_value(op: &AggregateOp, value: f64) -> String {
+    match op {
+        AggregateOp::Count => format!("{}", value as u64),
+        _ => format!("{value:.2}"),
+    }
+}
+
+/// Capitalize the first letter of a string.
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
 }
 
 fn html_escape(s: &str) -> String {

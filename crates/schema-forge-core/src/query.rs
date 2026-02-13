@@ -387,6 +387,107 @@ impl fmt::Display for Query {
 }
 
 // ---------------------------------------------------------------------------
+// AggregateOp
+// ---------------------------------------------------------------------------
+
+/// A single aggregate operation to compute over a schema's entities.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum AggregateOp {
+    /// Count all matching entities.
+    Count,
+    /// Sum a numeric field.
+    Sum { field: FieldPath },
+    /// Average a numeric field.
+    Avg { field: FieldPath },
+}
+
+impl fmt::Display for AggregateOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Count => write!(f, "count"),
+            Self::Sum { field } => write!(f, "sum:{field}"),
+            Self::Avg { field } => write!(f, "avg:{field}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AggregateQuery
+// ---------------------------------------------------------------------------
+
+/// A query that computes aggregate values over a schema's entities.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AggregateQuery {
+    /// The schema to aggregate over.
+    pub schema: SchemaId,
+    /// Optional filter to apply before aggregation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Filter>,
+    /// The aggregate operations to compute.
+    pub ops: Vec<AggregateOp>,
+}
+
+impl AggregateQuery {
+    /// Create a new aggregate query for a given schema with no filter or ops.
+    pub fn new(schema: SchemaId) -> Self {
+        Self {
+            schema,
+            filter: None,
+            ops: Vec::new(),
+        }
+    }
+
+    /// Set the filter.
+    pub fn with_filter(mut self, filter: Filter) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Add a single aggregate operation.
+    pub fn with_op(mut self, op: AggregateOp) -> Self {
+        self.ops.push(op);
+        self
+    }
+
+    /// Add multiple aggregate operations.
+    pub fn with_ops(mut self, ops: Vec<AggregateOp>) -> Self {
+        self.ops.extend(ops);
+        self
+    }
+}
+
+impl fmt::Display for AggregateQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "AGGREGATE ")?;
+        for (i, op) in self.ops.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{op}")?;
+        }
+        write!(f, " FROM {}", self.schema)?;
+        if let Some(filter) = &self.filter {
+            write!(f, " WHERE {filter}")?;
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AggregateResult
+// ---------------------------------------------------------------------------
+
+/// The result of a single aggregate operation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AggregateResult {
+    /// The operation that produced this result.
+    pub op: AggregateOp,
+    /// The computed value.
+    pub value: f64,
+}
+
+// ---------------------------------------------------------------------------
 // QueryError
 // ---------------------------------------------------------------------------
 
@@ -1141,6 +1242,115 @@ mod tests {
             DynamicValue::Integer(42),
         );
         assert!(validate_filter(&f, &schema).is_ok());
+    }
+
+    // -- AggregateOp tests --
+
+    #[test]
+    fn aggregate_op_display() {
+        assert_eq!(AggregateOp::Count.to_string(), "count");
+        assert_eq!(
+            AggregateOp::Sum {
+                field: FieldPath::single("value")
+            }
+            .to_string(),
+            "sum:value"
+        );
+        assert_eq!(
+            AggregateOp::Avg {
+                field: FieldPath::parse("line_items.amount").unwrap()
+            }
+            .to_string(),
+            "avg:line_items.amount"
+        );
+    }
+
+    #[test]
+    fn aggregate_op_serde_roundtrip() {
+        let ops = vec![
+            AggregateOp::Count,
+            AggregateOp::Sum {
+                field: FieldPath::single("value"),
+            },
+            AggregateOp::Avg {
+                field: FieldPath::single("price"),
+            },
+        ];
+        for op in ops {
+            let json = serde_json::to_string(&op).unwrap();
+            let back: AggregateOp = serde_json::from_str(&json).unwrap();
+            assert_eq!(op, back);
+        }
+    }
+
+    // -- AggregateQuery tests --
+
+    #[test]
+    fn aggregate_query_display() {
+        let q = AggregateQuery::new(SchemaId::new())
+            .with_op(AggregateOp::Count)
+            .with_op(AggregateOp::Sum {
+                field: FieldPath::single("value"),
+            });
+        let display = q.to_string();
+        assert!(display.contains("count"));
+        assert!(display.contains("sum:value"));
+        assert!(display.starts_with("AGGREGATE"));
+    }
+
+    #[test]
+    fn aggregate_query_with_filter_display() {
+        let q = AggregateQuery::new(SchemaId::new())
+            .with_op(AggregateOp::Count)
+            .with_filter(Filter::eq(
+                FieldPath::single("active"),
+                DynamicValue::Boolean(true),
+            ));
+        let display = q.to_string();
+        assert!(display.contains("WHERE active = true"));
+    }
+
+    #[test]
+    fn aggregate_query_serde_roundtrip() {
+        let q = AggregateQuery::new(SchemaId::new())
+            .with_filter(Filter::gt(
+                FieldPath::single("age"),
+                DynamicValue::Integer(18),
+            ))
+            .with_ops(vec![
+                AggregateOp::Count,
+                AggregateOp::Sum {
+                    field: FieldPath::single("value"),
+                },
+                AggregateOp::Avg {
+                    field: FieldPath::single("score"),
+                },
+            ]);
+        let json = serde_json::to_string(&q).unwrap();
+        let back: AggregateQuery = serde_json::from_str(&json).unwrap();
+        assert_eq!(q, back);
+    }
+
+    #[test]
+    fn aggregate_query_serde_skips_defaults() {
+        let q = AggregateQuery::new(SchemaId::new()).with_op(AggregateOp::Count);
+        let json = serde_json::to_string(&q).unwrap();
+        assert!(!json.contains("filter"));
+    }
+
+    // -- AggregateResult tests --
+
+    #[test]
+    fn aggregate_result_serde_roundtrip() {
+        let r = AggregateResult {
+            op: AggregateOp::Sum {
+                field: FieldPath::single("value"),
+            },
+            value: 1234.56,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: AggregateResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(r, back);
     }
 
     #[test]
