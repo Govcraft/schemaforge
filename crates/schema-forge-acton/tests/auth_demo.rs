@@ -249,7 +249,7 @@ async fn demo_schema_access_control() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -280,7 +280,7 @@ async fn demo_schema_access_control() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -374,7 +374,7 @@ async fn demo_field_access_filtering() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -406,7 +406,7 @@ async fn demo_field_access_filtering() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -486,7 +486,7 @@ async fn demo_record_ownership() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -524,7 +524,7 @@ async fn demo_record_ownership() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -563,7 +563,7 @@ async fn demo_record_ownership() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -679,7 +679,7 @@ async fn demo_multi_tenancy_isolation() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -724,7 +724,7 @@ async fn demo_multi_tenancy_isolation() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -1001,7 +1001,7 @@ async fn demo_all_auth_layers_combined() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(employee_state);
@@ -1052,7 +1052,7 @@ async fn demo_all_auth_layers_combined() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(manager_state);
@@ -1084,7 +1084,7 @@ async fn demo_all_auth_layers_combined() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(admin_state);
@@ -1115,7 +1115,7 @@ async fn demo_all_auth_layers_combined() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(guest_state);
@@ -1143,7 +1143,7 @@ async fn demo_all_auth_layers_combined() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(author_state);

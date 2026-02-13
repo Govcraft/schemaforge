@@ -19,6 +19,16 @@
             {% for schema in nav_schemas %}
             <a href="/app/{{ schema.url_name }}/entities" class="sf-nav-link"{% if active_nav == schema.url_name %} aria-current="page"{% endif %}>{{ schema.label }}</a>
             {% endfor %}
+            <div class="sf-nav-spacer"></div>
+            {% if let Some(user) = current_user %}
+            <div class="sf-nav-user">
+                <span class="sf-nav-username">{{ user.display_name }}</span>
+                <span class="sf-nav-roles">{{ user.roles|join(", ") }}</span>
+                <form method="post" action="/app/logout" style="display:inline;">
+                    <button type="submit" class="sf-btn sf-btn-secondary sf-btn-sm">Logout</button>
+                </form>
+            </div>
+            {% endif %}
         </nav>
         <main class="sf-main">
             {% block content %}{% endblock %}

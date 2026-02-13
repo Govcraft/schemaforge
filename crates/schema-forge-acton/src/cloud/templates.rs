@@ -2,6 +2,8 @@ use acton_service::prelude::Template;
 
 use crate::views::{EntityView, FieldView, FilterField, KanbanColumn, PaginationView, SchemaView};
 
+use super::auth::CloudUserView;
+
 /// Schema entry for navigation sidebar.
 #[derive(Debug, Clone)]
 pub struct NavSchemaEntry {
@@ -18,6 +20,15 @@ pub struct DashboardCard {
     pub display_value: String,
 }
 
+/// Cloud login page — standalone, no base.html.
+#[derive(Template)]
+#[template(path = "cloud/login.html")]
+pub struct CloudLoginTemplate {
+    pub app_title: String,
+    pub logo_url: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Cloud dashboard page.
 #[derive(Template)]
 #[template(path = "cloud/dashboard.html")]
@@ -28,6 +39,7 @@ pub struct CloudDashboardTemplate {
     pub nav_schemas: Vec<NavSchemaEntry>,
     pub active_nav: String,
     pub schema_cards: Vec<DashboardCard>,
+    pub current_user: Option<CloudUserView>,
 }
 
 /// Cloud entity list page.
@@ -44,6 +56,7 @@ pub struct CloudEntityListTemplate {
     pub pagination: PaginationView,
     pub list_style: String,
     pub filter_fields: Vec<FilterField>,
+    pub current_user: Option<CloudUserView>,
 }
 
 /// Cloud entity list body fragment (for HTMX pagination).
@@ -69,6 +82,7 @@ pub struct CloudEntityListKanbanTemplate {
     pub schema: SchemaView,
     pub columns: Vec<KanbanColumn>,
     pub kanban_field: String,
+    pub current_user: Option<CloudUserView>,
 }
 
 /// Cloud entity form page (create/edit).
@@ -84,6 +98,7 @@ pub struct CloudEntityFormTemplate {
     pub fields: Vec<FieldView>,
     pub entity_id: Option<String>,
     pub errors: Vec<String>,
+    pub current_user: Option<CloudUserView>,
 }
 
 /// Cloud entity detail page.
@@ -98,4 +113,5 @@ pub struct CloudEntityDetailTemplate {
     pub schema: SchemaView,
     pub entity: EntityView,
     pub detail_style: String,
+    pub current_user: Option<CloudUserView>,
 }

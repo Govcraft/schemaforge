@@ -16,7 +16,8 @@ use super::form::{form_to_entity_fields, form_to_schema_definition};
 use super::templates::{
     DashboardTemplate, DslPreviewFragment, EntityDetailTemplate, EntityFormTemplate,
     EntityListTemplate, EntityTableBodyFragment, FieldEditorRowFragment, RelationOptionsFragment,
-    SchemaDetailTemplate, SchemaEditorTemplate, TypeConstraintsFragment,
+    SchemaDetailTemplate, SchemaEditorTemplate, TypeConstraintsFragment, UserFormTemplate,
+    UserListTemplate,
 };
 use super::views::{
     DashboardEntry, EntityView, FieldEditorRow, FieldView, MigrationPreviewView, PaginationView,
@@ -794,6 +795,294 @@ fn extract_renames(form_data: &[(String, String)]) -> Vec<(FieldName, FieldName)
         }
     }
     renames
+}
+
+/// Available roles for user management checkboxes.
+const AVAILABLE_ROLES: &[&str] = &[
+    "admin", "member", "manager", "hr", "sales", "marketing", "finance",
+];
+
+/// GET /admin/users — User management list.
+pub async fn user_list(
+    State(state): State<ForgeState>,
+    auth: TypedSession<AuthSession>,
+) -> Result<impl IntoResponse, AdminError> {
+    let current_user = CurrentUserView::from_session(auth.data());
+    let names = schema_names(&state).await;
+
+    let db = state
+        .surreal_client
+        .as_ref()
+        .ok_or_else(|| AdminError::Internal {
+            message: "SurrealDB client not configured".to_string(),
+        })?;
+
+    let mut response = db
+        .query("SELECT username, roles, display_name, active FROM _forge_users ORDER BY username")
+        .await
+        .map_err(|e| AdminError::Internal {
+            message: format!("User query failed: {e}"),
+        })?;
+
+    let users: Vec<crate::shared_auth::ForgeUser> =
+        response.take(0).map_err(|e| AdminError::Internal {
+            message: format!("User deserialize failed: {e}"),
+        })?;
+
+    Ok(HtmlTemplate::new(UserListTemplate {
+        users,
+        schema_names: names,
+        current_user,
+    }))
+}
+
+/// GET /admin/users/new — Create user form.
+pub async fn user_create_form(
+    State(state): State<ForgeState>,
+    auth: TypedSession<AuthSession>,
+) -> Result<impl IntoResponse, AdminError> {
+    let current_user = CurrentUserView::from_session(auth.data());
+    let names = schema_names(&state).await;
+
+    Ok(HtmlTemplate::new(UserFormTemplate {
+        is_edit: false,
+        username: String::new(),
+        display_name: String::new(),
+        available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
+        selected_roles: vec![],
+        schema_names: names,
+        errors: vec![],
+        current_user,
+    }))
+}
+
+/// POST /admin/users/new — Create user.
+pub async fn user_create(
+    State(state): State<ForgeState>,
+    auth: TypedSession<AuthSession>,
+    Form(form_data): Form<Vec<(String, String)>>,
+) -> Result<Response, AdminError> {
+    let current_user = CurrentUserView::from_session(auth.data());
+    let names = schema_names(&state).await;
+
+    let db = state
+        .surreal_client
+        .as_ref()
+        .ok_or_else(|| AdminError::Internal {
+            message: "SurrealDB client not configured".to_string(),
+        })?;
+
+    let username = form_data
+        .iter()
+        .find(|(k, _)| k == "username")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    let display_name = form_data
+        .iter()
+        .find(|(k, _)| k == "display_name")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    let password = form_data
+        .iter()
+        .find(|(k, _)| k == "password")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    let roles: Vec<String> = form_data
+        .iter()
+        .filter(|(k, _)| k == "roles")
+        .map(|(_, v)| v.clone())
+        .collect();
+
+    let mut errors = Vec::new();
+    if username.is_empty() {
+        errors.push("Username is required".to_string());
+    }
+    if password.is_empty() {
+        errors.push("Password is required".to_string());
+    }
+    if roles.is_empty() {
+        errors.push("At least one role is required".to_string());
+    }
+
+    if !errors.is_empty() {
+        return Ok(HtmlTemplate::new(UserFormTemplate {
+            is_edit: false,
+            username,
+            display_name,
+            available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
+            selected_roles: roles,
+            schema_names: names,
+            errors,
+            current_user,
+        })
+        .with_status(StatusCode::UNPROCESSABLE_ENTITY)
+        .into_response());
+    }
+
+    // Build roles array as SurrealQL literal
+    let roles_surql = format!(
+        "[{}]",
+        roles
+            .iter()
+            .map(|r| format!("'{}'", r.replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    db.query(format!(
+        "CREATE _forge_users SET \
+         username = $username, \
+         password_hash = crypto::argon2::generate($password), \
+         roles = {roles_surql}, \
+         display_name = $display_name, \
+         active = true"
+    ))
+    .bind(("username", username.to_string()))
+    .bind(("password", password.to_string()))
+    .bind(("display_name", display_name.to_string()))
+    .await
+    .map_err(|e| AdminError::Internal {
+        message: format!("User create failed: {e}"),
+    })?;
+
+    Ok(Redirect::to("/admin/users").into_response())
+}
+
+/// GET /admin/users/{username}/edit — Edit user form.
+pub async fn user_edit_form(
+    State(state): State<ForgeState>,
+    auth: TypedSession<AuthSession>,
+    Path(username): Path<String>,
+) -> Result<impl IntoResponse, AdminError> {
+    let current_user = CurrentUserView::from_session(auth.data());
+    let names = schema_names(&state).await;
+
+    let db = state
+        .surreal_client
+        .as_ref()
+        .ok_or_else(|| AdminError::Internal {
+            message: "SurrealDB client not configured".to_string(),
+        })?;
+
+    let mut response = db
+        .query("SELECT username, roles, display_name, active FROM _forge_users WHERE username = $username")
+        .bind(("username", username.to_string()))
+        .await
+        .map_err(|e| AdminError::Internal {
+            message: format!("User query failed: {e}"),
+        })?;
+
+    let users: Vec<crate::shared_auth::ForgeUser> =
+        response.take(0).map_err(|e| AdminError::Internal {
+            message: format!("User deserialize failed: {e}"),
+        })?;
+
+    let user = users.into_iter().next().ok_or_else(|| AdminError::Internal {
+        message: format!("User '{}' not found", username),
+    })?;
+
+    Ok(HtmlTemplate::new(UserFormTemplate {
+        is_edit: true,
+        username: user.username,
+        display_name: user.display_name.unwrap_or_default(),
+        available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
+        selected_roles: user.roles,
+        schema_names: names,
+        errors: vec![],
+        current_user,
+    }))
+}
+
+/// POST /admin/users/{username}/edit — Update user.
+pub async fn user_update(
+    State(state): State<ForgeState>,
+    auth: TypedSession<AuthSession>,
+    Path(username): Path<String>,
+    Form(form_data): Form<Vec<(String, String)>>,
+) -> Result<Response, AdminError> {
+    let current_user = CurrentUserView::from_session(auth.data());
+    let names = schema_names(&state).await;
+
+    let db = state
+        .surreal_client
+        .as_ref()
+        .ok_or_else(|| AdminError::Internal {
+            message: "SurrealDB client not configured".to_string(),
+        })?;
+
+    let display_name = form_data
+        .iter()
+        .find(|(k, _)| k == "display_name")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    let roles: Vec<String> = form_data
+        .iter()
+        .filter(|(k, _)| k == "roles")
+        .map(|(_, v)| v.clone())
+        .collect();
+
+    if roles.is_empty() {
+        return Ok(HtmlTemplate::new(UserFormTemplate {
+            is_edit: true,
+            username,
+            display_name,
+            available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
+            selected_roles: roles,
+            schema_names: names,
+            errors: vec!["At least one role is required".to_string()],
+            current_user,
+        })
+        .with_status(StatusCode::UNPROCESSABLE_ENTITY)
+        .into_response());
+    }
+
+    let roles_surql = format!(
+        "[{}]",
+        roles
+            .iter()
+            .map(|r| format!("'{}'", r.replace('\'', "\\'")))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    db.query(format!(
+        "UPDATE _forge_users SET \
+         roles = {roles_surql}, \
+         display_name = $display_name \
+         WHERE username = $username"
+    ))
+    .bind(("username", username.to_string()))
+    .bind(("display_name", display_name.to_string()))
+    .await
+    .map_err(|e| AdminError::Internal {
+        message: format!("User update failed: {e}"),
+    })?;
+
+    Ok(Redirect::to("/admin/users").into_response())
+}
+
+/// POST /admin/users/{username}/toggle — Toggle user active status.
+pub async fn user_toggle_active(
+    State(state): State<ForgeState>,
+    Path(username): Path<String>,
+) -> Result<impl IntoResponse, AdminError> {
+    let db = state
+        .surreal_client
+        .as_ref()
+        .ok_or_else(|| AdminError::Internal {
+            message: "SurrealDB client not configured".to_string(),
+        })?;
+
+    db.query(
+        "UPDATE _forge_users SET active = !active WHERE username = $username",
+    )
+    .bind(("username", username.to_string()))
+    .await
+    .map_err(|e| AdminError::Internal {
+        message: format!("User toggle failed: {e}"),
+    })?;
+
+    Ok(Redirect::to("/admin/users"))
 }
 
 /// Reconstruct a `SchemaEditorView` from raw form data for re-rendering on error.

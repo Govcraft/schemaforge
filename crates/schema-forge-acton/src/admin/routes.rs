@@ -12,6 +12,17 @@ use super::{auth, handlers};
 pub fn protected_routes() -> Router<ForgeState> {
     Router::new()
         .route("/", get(handlers::dashboard))
+        // User management
+        .route("/users", get(handlers::user_list))
+        .route(
+            "/users/new",
+            get(handlers::user_create_form).post(handlers::user_create),
+        )
+        .route(
+            "/users/{username}/edit",
+            get(handlers::user_edit_form).post(handlers::user_update),
+        )
+        .route("/users/{username}/toggle", post(handlers::user_toggle_active))
         // Schema editor: static paths first
         .route("/schemas/new", get(handlers::schema_create_form))
         .route("/schemas", post(handlers::schema_create))

@@ -1,7 +1,8 @@
-use acton_service::prelude::HtmlTemplate;
+use acton_service::prelude::{AuthSession, HtmlTemplate, TypedSession};
 use axum::extract::{Form, Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
+use schema_forge_backend::auth::AuthContext;
 use schema_forge_core::types::{Annotation, EntityId, FieldType, SchemaName};
 
 use crate::access::{
@@ -15,6 +16,7 @@ use crate::views::{EntityView, FieldView, PaginationView, SchemaView};
 
 use schema_forge_core::query::{AggregateOp, AggregateQuery, FieldPath};
 
+use super::auth::CloudUserView;
 use super::css;
 use super::templates::{
     CloudDashboardTemplate, CloudEntityDetailTemplate, CloudEntityFormTemplate,
@@ -22,14 +24,23 @@ use super::templates::{
     DashboardCard, NavSchemaEntry,
 };
 
-/// Build navigation entries from registered schemas, respecting theme ordering.
-async fn build_nav(state: &ForgeState, theme: &Theme) -> Vec<NavSchemaEntry> {
+/// Build navigation entries from registered schemas, respecting theme ordering
+/// and role-based access control.
+async fn build_nav(
+    state: &ForgeState,
+    theme: &Theme,
+    auth: Option<&AuthContext>,
+) -> Vec<NavSchemaEntry> {
     let all = state.registry.list().await;
     let mut entries: Vec<NavSchemaEntry> = all
         .iter()
         .filter(|s| {
             // Hide system schemas from nav
             !s.annotations.iter().any(|a| matches!(a, Annotation::System))
+        })
+        .filter(|s| {
+            // Filter by role-based access control
+            check_schema_access(s, auth, AccessAction::Read).is_ok()
         })
         .map(|s| {
             let name = s.name.as_str().to_string();
@@ -85,10 +96,12 @@ fn detail_style_name(style: &DetailStyle) -> &str {
 /// GET /app/ — Dashboard.
 pub async fn dashboard(
     State(state): State<ForgeState>,
-    OptionalAuth(_auth): OptionalAuth,
+    OptionalAuth(auth): OptionalAuth,
+    session: TypedSession<AuthSession>,
 ) -> Result<impl IntoResponse, CloudError> {
+    let current_user = CloudUserView::from_session(session.data());
     let theme = state.theme.load();
-    let nav_schemas = build_nav(&state, &theme).await;
+    let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
     // Build schema cards with aggregate widgets
     let all_schemas = state.registry.list().await;
@@ -107,6 +120,12 @@ pub async fn dashboard(
             .filter(|s| !s.annotations.iter().any(|a| matches!(a, Annotation::System)))
             .collect()
     };
+
+    // Filter schemas by access control
+    let schemas_to_show: Vec<_> = schemas_to_show
+        .into_iter()
+        .filter(|s| check_schema_access(s, auth.as_ref(), AccessAction::Read).is_ok())
+        .collect();
 
     for schema in schemas_to_show {
         // Extract @dashboard widget specs, default to ["count"]
@@ -160,6 +179,7 @@ pub async fn dashboard(
         nav_schemas,
         active_nav: "dashboard".to_string(),
         schema_cards,
+        current_user,
     }))
 }
 
@@ -224,9 +244,11 @@ fn build_filter(
 pub async fn entity_list(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
+    session: TypedSession<AuthSession>,
     Path(name): Path<String>,
     Query(raw_params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, CloudError> {
+    let current_user = CloudUserView::from_session(session.data());
     let schema_def = state
         .registry
         .get(&name)
@@ -275,7 +297,7 @@ pub async fn entity_list(
                 crate::views::group_entities_by_field(entities, &field_name, &variants);
             let mut schema = SchemaView::from_definition(&schema_def);
             schema.apply_theme_labels(&theme);
-            let nav_schemas = build_nav(&state, &theme).await;
+            let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
             return Ok(HtmlTemplate::new(CloudEntityListKanbanTemplate {
                 app_title: theme.app_title(),
@@ -286,6 +308,7 @@ pub async fn entity_list(
                 schema,
                 columns,
                 kanban_field: field_name,
+                current_user,
             })
             .into_response());
         }
@@ -318,7 +341,7 @@ pub async fn entity_list(
     let mut schema = SchemaView::from_definition(&schema_def);
 
     schema.apply_theme_labels(&theme);
-    let nav_schemas = build_nav(&state, &theme).await;
+    let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
     let filter_fields = crate::views::extract_filter_fields(&schema_def, &params.filters);
 
@@ -333,6 +356,7 @@ pub async fn entity_list(
         pagination,
         list_style: list_style_name(list_style).to_string(),
         filter_fields,
+        current_user,
     })
     .into_response())
 }
@@ -398,8 +422,10 @@ pub async fn entity_table_fragment(
 pub async fn entity_create_form(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
+    session: TypedSession<AuthSession>,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, CloudError> {
+    let current_user = CloudUserView::from_session(session.data());
     let schema_def = state
         .registry
         .get(&name)
@@ -418,7 +444,7 @@ pub async fn entity_create_form(
 
     let theme = state.theme.load();
     schema.apply_theme_labels(&theme);
-    let nav_schemas = build_nav(&state, &theme).await;
+    let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
     Ok(HtmlTemplate::new(CloudEntityFormTemplate {
         app_title: theme.app_title(),
@@ -430,6 +456,7 @@ pub async fn entity_create_form(
         fields,
         entity_id: None,
         errors: vec![],
+        current_user,
     }))
 }
 
@@ -437,9 +464,11 @@ pub async fn entity_create_form(
 pub async fn entity_create(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
+    session: TypedSession<AuthSession>,
     Path(name): Path<String>,
     Form(form_data): Form<Vec<(String, String)>>,
 ) -> Result<Response, CloudError> {
+    let current_user = CloudUserView::from_session(session.data());
     let schema_def = state
         .registry
         .get(&name)
@@ -482,7 +511,7 @@ pub async fn entity_create(
 
             let theme = state.theme.load();
             schema.apply_theme_labels(&theme);
-            let nav_schemas = build_nav(&state, &theme).await;
+            let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
             Ok((
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -496,6 +525,7 @@ pub async fn entity_create(
                     fields,
                     entity_id: None,
                     errors,
+                    current_user,
                 }),
             )
                 .into_response())
@@ -507,8 +537,10 @@ pub async fn entity_create(
 pub async fn entity_detail(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
+    session: TypedSession<AuthSession>,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, CloudError> {
+    let current_user = CloudUserView::from_session(session.data());
     let schema_def = state
         .registry
         .get(&name)
@@ -542,7 +574,7 @@ pub async fn entity_detail(
 
     let theme = state.theme.load();
     schema.apply_theme_labels(&theme);
-    let nav_schemas = build_nav(&state, &theme).await;
+    let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
     let detail_style = theme.resolve_detail_style(&name);
 
     Ok(HtmlTemplate::new(CloudEntityDetailTemplate {
@@ -554,6 +586,7 @@ pub async fn entity_detail(
         schema,
         entity: entity_view,
         detail_style: detail_style_name(detail_style).to_string(),
+        current_user,
     }))
 }
 
@@ -561,8 +594,10 @@ pub async fn entity_detail(
 pub async fn entity_edit_form(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
+    session: TypedSession<AuthSession>,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, CloudError> {
+    let current_user = CloudUserView::from_session(session.data());
     let schema_def = state
         .registry
         .get(&name)
@@ -595,7 +630,7 @@ pub async fn entity_edit_form(
 
     let theme = state.theme.load();
     schema.apply_theme_labels(&theme);
-    let nav_schemas = build_nav(&state, &theme).await;
+    let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
     Ok(HtmlTemplate::new(CloudEntityFormTemplate {
         app_title: theme.app_title(),
@@ -607,6 +642,7 @@ pub async fn entity_edit_form(
         fields,
         entity_id: Some(id),
         errors: vec![],
+        current_user,
     }))
 }
 
@@ -614,9 +650,11 @@ pub async fn entity_edit_form(
 pub async fn entity_update(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
+    session: TypedSession<AuthSession>,
     Path((name, id)): Path<(String, String)>,
     Form(form_data): Form<Vec<(String, String)>>,
 ) -> Result<Response, CloudError> {
+    let current_user = CloudUserView::from_session(session.data());
     let schema_def = state
         .registry
         .get(&name)
@@ -661,7 +699,7 @@ pub async fn entity_update(
 
             let theme = state.theme.load();
             schema.apply_theme_labels(&theme);
-            let nav_schemas = build_nav(&state, &theme).await;
+            let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
             Ok((
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -675,6 +713,7 @@ pub async fn entity_update(
                     fields,
                     entity_id: Some(id),
                     errors,
+                    current_user,
                 }),
             )
                 .into_response())
@@ -920,7 +959,26 @@ impl IntoResponse for CloudError {
                 (StatusCode::NOT_FOUND, format!("Not found: {msg}")).into_response()
             }
             CloudError::Forbidden(msg) => {
-                (StatusCode::FORBIDDEN, format!("Forbidden: {msg}")).into_response()
+                let html = format!(
+                    r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Access Denied</title>
+    <link rel="stylesheet" href="/app/theme.css">
+</head>
+<body class="sf-app">
+    <div class="sf-error-page">
+        <div class="sf-error-code">403</div>
+        <div class="sf-error-message">{}</div>
+        <a href="/app/" class="sf-btn sf-btn-primary">Back to Dashboard</a>
+    </div>
+</body>
+</html>"#,
+                    html_escape(&msg),
+                );
+                (StatusCode::FORBIDDEN, Html(html)).into_response()
             }
             CloudError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

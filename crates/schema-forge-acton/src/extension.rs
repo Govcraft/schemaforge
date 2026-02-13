@@ -32,13 +32,13 @@ pub struct SchemaForgeExtensionBuilder {
     backend: Option<Arc<dyn DynForgeBackend>>,
     auth_provider: Option<Arc<dyn crate::auth::AuthProvider>>,
     record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
-    #[cfg(feature = "admin-ui")]
+    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
     surreal_client: Option<
         schema_forge_surrealdb::surrealdb::Surreal<
             schema_forge_surrealdb::surrealdb::engine::any::Any,
         >,
     >,
-    #[cfg(feature = "admin-ui")]
+    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
     admin_credentials: Option<(String, String)>,
 }
 
@@ -49,9 +49,9 @@ impl SchemaForgeExtensionBuilder {
             backend: None,
             auth_provider: None,
             record_access_policy: None,
-            #[cfg(feature = "admin-ui")]
+            #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
             surreal_client: None,
-            #[cfg(feature = "admin-ui")]
+            #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
             admin_credentials: None,
         }
     }
@@ -101,7 +101,7 @@ impl SchemaForgeExtensionBuilder {
     ///
     /// The same client used for `SurrealBackend::from_client()` can be cloned
     /// and passed here for auth queries against the `_forge_users` table.
-    #[cfg(feature = "admin-ui")]
+    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
     pub fn with_surreal_client(
         mut self,
         client: schema_forge_surrealdb::surrealdb::Surreal<
@@ -116,7 +116,7 @@ impl SchemaForgeExtensionBuilder {
     ///
     /// If the `_forge_users` table is empty during `build()`, an admin user
     /// will be created with these credentials.
-    #[cfg(feature = "admin-ui")]
+    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
     pub fn with_admin_credentials(mut self, username: String, password: String) -> Self {
         self.admin_credentials = Some((username, password));
         self
@@ -144,14 +144,19 @@ impl SchemaForgeExtensionBuilder {
         crate::system::seed_system_schemas(&registry, backend.as_ref()).await?;
 
         // Bootstrap admin user if configured
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         if let (Some(ref db), Some((ref username, ref password))) =
             (&self.surreal_client, &self.admin_credentials)
         {
-            crate::admin::auth::bootstrap_admin(db, username, password)
+            crate::shared_auth::bootstrap_admin(db, username, password)
                 .await
                 .map_err(|e| ForgeError::Internal {
                     message: format!("Admin bootstrap failed: {e}"),
+                })?;
+            crate::shared_auth::bootstrap_demo_users(db)
+                .await
+                .map_err(|e| ForgeError::Internal {
+                    message: format!("Demo user bootstrap failed: {e}"),
                 })?;
         }
 
@@ -192,7 +197,7 @@ impl SchemaForgeExtensionBuilder {
             theme,
             #[cfg(feature = "graphql")]
             graphql_schema,
-            #[cfg(feature = "admin-ui")]
+            #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
             surreal_client: self.surreal_client,
         };
 
@@ -349,11 +354,15 @@ impl SchemaForgeExtension {
         use axum::response::Redirect;
         use axum::routing::get;
 
+        let session_config = acton_service::session::SessionConfig {
+            secure: false,
+            cookie_name: "forge_cloud".to_string(),
+            ..Default::default()
+        };
+        let session_layer = acton_service::session::create_memory_session_layer(&session_config);
+
         let cloud_router = crate::cloud::routes::cloud_routes()
-            .route_layer(axum::middleware::from_fn_with_state(
-                self.state.clone(),
-                crate::middleware::auth_middleware,
-            ))
+            .layer(session_layer)
             .with_state(self.state.clone());
         router
             .nest("/app/", cloud_router)

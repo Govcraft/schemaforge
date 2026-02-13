@@ -293,8 +293,8 @@ pub struct ForgeState {
     /// Dynamic GraphQL schema, atomically swappable on schema changes.
     #[cfg(feature = "graphql")]
     pub graphql_schema: Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>>,
-    /// SurrealDB client for auth queries (admin UI only).
-    #[cfg(feature = "admin-ui")]
+    /// SurrealDB client for auth queries (admin/cloud UI).
+    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
     pub surreal_client: Option<
         schema_forge_surrealdb::surrealdb::Surreal<
             schema_forge_surrealdb::surrealdb::engine::any::Any,

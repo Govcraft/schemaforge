@@ -5,6 +5,7 @@ use super::views::{
     DashboardEntry, EntityView, FieldEditorRow, FieldView, MigrationPreviewView, PaginationView,
     SchemaEditorView, SchemaGraphView, SchemaView,
 };
+use crate::shared_auth::ForgeUser;
 
 /// Login page — standalone, no base.html.
 #[derive(Template)]
@@ -132,4 +133,27 @@ pub struct DslPreviewFragment {
 #[template(path = "admin/fragments/migration_preview.html")]
 pub struct MigrationPreviewFragment {
     pub migration: MigrationPreviewView,
+}
+
+/// User management list page.
+#[derive(Template)]
+#[template(path = "admin/user_list.html")]
+pub struct UserListTemplate {
+    pub users: Vec<ForgeUser>,
+    pub schema_names: Vec<String>,
+    pub current_user: Option<CurrentUserView>,
+}
+
+/// User create/edit form page.
+#[derive(Template)]
+#[template(path = "admin/user_form.html")]
+pub struct UserFormTemplate {
+    pub is_edit: bool,
+    pub username: String,
+    pub display_name: String,
+    pub available_roles: Vec<String>,
+    pub selected_roles: Vec<String>,
+    pub schema_names: Vec<String>,
+    pub errors: Vec<String>,
+    pub current_user: Option<CurrentUserView>,
 }

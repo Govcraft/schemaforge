@@ -211,6 +211,35 @@ const BASE_SF_STYLES: &str = r#"
 .sf-kanban-card-title a:hover { color: var(--sf-primary); }
 .sf-kanban-card-fields { font-size: 0.8125rem; color: var(--sf-secondary); }
 
+/* Login Page */
+.sf-login-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: var(--sf-background); }
+.sf-login-card { background: var(--sf-surface); border: 1px solid var(--sf-secondary); border-radius: var(--sf-border-radius); padding: 2rem; width: 100%; max-width: 24rem; }
+.sf-login-logo { max-height: 3rem; margin-bottom: 1rem; }
+.sf-login-title { font-weight: 700; font-size: 1.5rem; color: var(--sf-primary); margin: 0 0 0.25rem 0; }
+.sf-login-subtitle { color: var(--sf-secondary); font-size: 0.875rem; margin: 0 0 1.5rem 0; }
+.sf-login-error { margin-bottom: 1rem; }
+.sf-login-form { display: flex; flex-direction: column; gap: 1rem; }
+.sf-login-submit { width: 100%; justify-content: center; margin-top: 0.5rem; }
+.sf-login-demo { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--sf-secondary); }
+.sf-login-demo-title { font-size: 0.75rem; font-weight: 600; color: var(--sf-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 0.5rem 0; }
+.sf-login-demo-table { width: 100%; font-size: 0.75rem; border-collapse: collapse; }
+.sf-login-demo-table th { text-align: left; padding: 0.25rem 0.5rem; color: var(--sf-secondary); font-weight: 600; border-bottom: 1px solid var(--sf-secondary); }
+.sf-login-demo-table td { padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--sf-background); }
+
+/* Nav User Indicator */
+.sf-nav-spacer { flex: 1; }
+.sf-nav[data-nav-style="sidebar"] .sf-nav-spacer { flex: 1; }
+.sf-nav[data-nav-style="topnav"] .sf-nav-spacer { flex: 1; }
+.sf-nav-user { display: flex; flex-direction: column; gap: 0.125rem; padding: 0.5rem 0.75rem; font-size: 0.8125rem; border-top: 1px solid var(--sf-secondary); }
+.sf-nav[data-nav-style="topnav"] .sf-nav-user { flex-direction: row; align-items: center; gap: 0.5rem; border-top: none; border-left: 1px solid var(--sf-secondary); padding: 0 0 0 1rem; }
+.sf-nav-username { font-weight: 600; }
+.sf-nav-roles { font-size: 0.75rem; color: var(--sf-secondary); }
+
+/* Error Page */
+.sf-error-page { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 60vh; text-align: center; padding: 2rem; }
+.sf-error-code { font-size: 4rem; font-weight: 700; color: var(--sf-error); margin-bottom: 0.5rem; }
+.sf-error-message { font-size: 1.125rem; color: var(--sf-secondary); margin-bottom: 1.5rem; max-width: 30rem; }
+
 /* Filter Pills */
 .sf-filters { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
 .sf-filter-group { display: flex; align-items: center; gap: 0.25rem; flex-wrap: wrap; }

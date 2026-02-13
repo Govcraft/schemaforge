@@ -24,6 +24,8 @@
             {% for name in schema_names %}
             <li><a href="/admin/schemas/{{ name }}">{{ name }}</a></li>
             {% endfor %}
+            <li class="menu-title">Administration</li>
+            <li><a href="/admin/users">Users</a></li>
         </ul>
         {% if let Some(user) = current_user %}
         <div class="border-t border-base-300 p-4">

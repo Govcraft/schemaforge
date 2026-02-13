@@ -43,7 +43,7 @@ pub async fn run(
     #[allow(unused_mut)]
     let mut builder = SchemaForgeExtension::builder();
 
-    #[cfg(feature = "admin-ui")]
+    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
     {
         let client = backend.client().clone();
         builder = builder.with_surreal_client(client);

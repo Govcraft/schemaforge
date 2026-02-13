@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - {{ app_title }}</title>
+    <link rel="stylesheet" href="/app/theme.css">
+</head>
+<body class="sf-app">
+    <div class="sf-login-page">
+        <div class="sf-login-card">
+            {% if let Some(logo) = logo_url %}
+            <img src="{{ logo }}" alt="{{ app_title }}" class="sf-login-logo">
+            {% else %}
+            <h1 class="sf-login-title">{{ app_title }}</h1>
+            {% endif %}
+            <p class="sf-login-subtitle">Sign in to continue</p>
+            {% if let Some(err) = error %}
+            <div class="sf-alert sf-alert-error sf-login-error">{{ err }}</div>
+            {% endif %}
+            <form method="post" action="/app/login" class="sf-login-form">
+                <div class="sf-form-group">
+                    <label class="sf-form-label" for="username">Username</label>
+                    <input type="text" id="username" name="username" class="sf-form-input" required autofocus>
+                </div>
+                <div class="sf-form-group">
+                    <label class="sf-form-label" for="password">Password</label>
+                    <input type="password" id="password" name="password" class="sf-form-input" required>
+                </div>
+                <button type="submit" class="sf-btn sf-btn-primary sf-login-submit">Sign In</button>
+            </form>
+            <div class="sf-login-demo">
+                <p class="sf-login-demo-title">Demo Accounts</p>
+                <table class="sf-login-demo-table">
+                    <thead><tr><th>Username</th><th>Password</th><th>Roles</th></tr></thead>
+                    <tbody>
+                        <tr><td>admin</td><td>(your --admin-password)</td><td>admin</td></tr>
+                        <tr><td>alice</td><td>password</td><td>sales, marketing</td></tr>
+                        <tr><td>bob</td><td>password</td><td>hr</td></tr>
+                        <tr><td>charlie</td><td>password</td><td>member</td></tr>
+                        <tr><td>dana</td><td>password</td><td>finance, manager</td></tr>
+                        <tr><td>eve</td><td>password</td><td>member, manager</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

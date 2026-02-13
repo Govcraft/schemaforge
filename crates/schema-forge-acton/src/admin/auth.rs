@@ -1,7 +1,6 @@
 use axum::extract::{Form, Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
-use serde::Deserialize;
 
 use acton_service::prelude::{AuthSession, HtmlTemplate, TypedSession};
 
@@ -10,14 +9,8 @@ use crate::state::ForgeState;
 use super::error::AdminError;
 use super::templates::LoginTemplate;
 
-/// SurrealDB user record (without password_hash).
-#[derive(Debug, Clone, Deserialize)]
-pub struct ForgeUser {
-    pub username: String,
-    pub roles: Vec<String>,
-    pub display_name: Option<String>,
-    pub active: bool,
-}
+// Re-export shared types so existing admin code continues to compile.
+pub use crate::shared_auth::{ForgeUser, LoginForm};
 
 /// Template-friendly view of the current user.
 #[derive(Debug, Clone)]
@@ -50,89 +43,6 @@ impl CurrentUserView {
             is_admin: auth.has_role("admin"),
         })
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LoginForm {
-    pub username: String,
-    pub password: String,
-}
-
-/// Validate credentials against `_forge_users` table.
-///
-/// Uses SurrealDB's `crypto::argon2::compare()` — the password never leaves the DB.
-pub async fn validate_credentials(
-    db: &schema_forge_surrealdb::surrealdb::Surreal<
-        schema_forge_surrealdb::surrealdb::engine::any::Any,
-    >,
-    username: &str,
-    password: &str,
-) -> Result<Option<ForgeUser>, AdminError> {
-    let mut response = db
-        .query(
-            "SELECT username, roles, display_name, active FROM _forge_users \
-             WHERE username = $username \
-             AND crypto::argon2::compare(password_hash, $password) \
-             AND active = true",
-        )
-        .bind(("username", username.to_string()))
-        .bind(("password", password.to_string()))
-        .await
-        .map_err(|e| AdminError::Internal {
-            message: format!("Auth query failed: {e}"),
-        })?;
-
-    let users: Vec<ForgeUser> = response.take(0).map_err(|e| AdminError::Internal {
-        message: format!("Auth deserialize failed: {e}"),
-    })?;
-
-    Ok(users.into_iter().next())
-}
-
-/// Create initial admin user if `_forge_users` table is empty.
-pub async fn bootstrap_admin(
-    db: &schema_forge_surrealdb::surrealdb::Surreal<
-        schema_forge_surrealdb::surrealdb::engine::any::Any,
-    >,
-    username: &str,
-    password: &str,
-) -> Result<(), AdminError> {
-    #[derive(Deserialize)]
-    struct CountResult {
-        count: usize,
-    }
-
-    let mut response = db
-        .query("SELECT count() FROM _forge_users GROUP ALL")
-        .await
-        .map_err(|e| AdminError::Internal {
-            message: format!("Bootstrap check failed: {e}"),
-        })?;
-
-    let count: Option<CountResult> = response.take(0).map_err(|e| AdminError::Internal {
-        message: format!("Bootstrap count failed: {e}"),
-    })?;
-
-    if count.map(|c| c.count).unwrap_or(0) > 0 {
-        return Ok(());
-    }
-
-    db.query(
-        "CREATE _forge_users SET \
-         username = $username, \
-         password_hash = crypto::argon2::generate($password), \
-         roles = ['admin'], \
-         display_name = 'Administrator', \
-         active = true",
-    )
-    .bind(("username", username.to_string()))
-    .bind(("password", password.to_string()))
-    .await
-    .map_err(|e| AdminError::Internal {
-        message: format!("Bootstrap create failed: {e}"),
-    })?;
-
-    Ok(())
 }
 
 /// Middleware: redirect to `/admin/login` if not authenticated.
@@ -169,7 +79,10 @@ pub async fn login_submit(
             message: "SurrealDB client not configured for auth".to_string(),
         })?;
 
-    match validate_credentials(db, &form.username, &form.password).await? {
+    match crate::shared_auth::validate_credentials(db, &form.username, &form.password)
+        .await
+        .map_err(|e| AdminError::Internal { message: e })?
+    {
         Some(user) => {
             let display_name = user.display_name.unwrap_or_else(|| user.username.clone());
             auth.data_mut().login(user.username.clone(), user.roles);

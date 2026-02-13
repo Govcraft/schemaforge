@@ -1,0 +1,53 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Users - SchemaForge Admin{% endblock %}
+
+{% block content %}
+<div class="container mx-auto p-6">
+    <div class="flex justify-between items-center mb-6">
+        <h2 class="text-2xl font-bold">User Management</h2>
+        <a href="/admin/users/new" class="btn btn-primary">+ New User</a>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="table table-zebra w-full">
+            <thead>
+                <tr>
+                    <th>Username</th>
+                    <th>Display Name</th>
+                    <th>Roles</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td class="font-mono">{{ user.username }}</td>
+                    <td>{{ user.display_name.as_deref().unwrap_or("-") }}</td>
+                    <td>
+                        {% for role in user.roles %}
+                        <span class="badge badge-sm{% if role == "admin" %} badge-primary{% endif %}">{{ role }}</span>
+                        {% endfor %}
+                    </td>
+                    <td>
+                        {% if user.active %}
+                        <span class="badge badge-success badge-sm">Active</span>
+                        {% else %}
+                        <span class="badge badge-error badge-sm">Inactive</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <a href="/admin/users/{{ user.username }}/edit" class="btn btn-ghost btn-xs">Edit</a>
+                        <form method="post" action="/admin/users/{{ user.username }}/toggle" style="display:inline;">
+                            <button type="submit" class="btn btn-ghost btn-xs">
+                                {% if user.active %}Deactivate{% else %}Activate{% endif %}
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

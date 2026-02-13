@@ -31,7 +31,7 @@ acton-service = { version = "0.16.0", default-features = false, features = ["htt
 
 [features]
 admin-ui = ["schema-forge-acton/admin-ui", "schema-forge-ai/admin-ui", "acton-service/htmx-full"]
-cloud-ui = ["schema-forge-acton/cloud-ui"]
+cloud-ui = ["schema-forge-acton/cloud-ui", "schema-forge-ai/cloud-ui"]
 
 [dev-dependencies]
 assert_cmd = "2"

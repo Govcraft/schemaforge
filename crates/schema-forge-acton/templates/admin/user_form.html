@@ -1,0 +1,52 @@
+{% extends "admin/base.html" %}
+
+{% block title %}{% if is_edit %}Edit User{% else %}New User{% endif %} - SchemaForge Admin{% endblock %}
+
+{% block content %}
+<div class="container mx-auto p-6 max-w-xl">
+    <h2 class="text-2xl font-bold mb-6">{% if is_edit %}Edit User: {{ username }}{% else %}Create User{% endif %}</h2>
+    {% if !errors.is_empty() %}
+    <div class="alert alert-error mb-4">
+        <ul>
+            {% for err in errors %}
+            <li>{{ err }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+    <form method="post" action="{% if is_edit %}/admin/users/{{ username }}/edit{% else %}/admin/users/new{% endif %}">
+        {% if !is_edit %}
+        <div class="form-control mb-4">
+            <label class="label"><span class="label-text">Username</span></label>
+            <input type="text" name="username" class="input input-bordered" required value="{{ username }}">
+        </div>
+        {% endif %}
+        <div class="form-control mb-4">
+            <label class="label"><span class="label-text">Display Name</span></label>
+            <input type="text" name="display_name" class="input input-bordered" value="{{ display_name }}">
+        </div>
+        {% if !is_edit %}
+        <div class="form-control mb-4">
+            <label class="label"><span class="label-text">Password</span></label>
+            <input type="password" name="password" class="input input-bordered" required>
+        </div>
+        {% endif %}
+        <div class="form-control mb-6">
+            <label class="label"><span class="label-text">Roles</span></label>
+            <div class="flex flex-wrap gap-3">
+                {% for role in available_roles %}
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" name="roles" value="{{ role }}" class="checkbox checkbox-sm"
+                        {% if selected_roles.contains(&role.to_string()) %}checked{% endif %}>
+                    <span class="text-sm">{{ role }}</span>
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="flex gap-2">
+            <button type="submit" class="btn btn-primary">{% if is_edit %}Update{% else %}Create{% endif %}</button>
+            <a href="/admin/users" class="btn btn-ghost">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -17,6 +17,7 @@ arc-swap = { version = "1", optional = true }
 
 [features]
 admin-ui = ["schema-forge-acton/admin-ui", "dep:arc-swap"]
+cloud-ui = ["schema-forge-acton/cloud-ui", "dep:arc-swap"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

@@ -51,7 +51,7 @@ async fn test_state() -> ForgeState {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     }
 }
@@ -586,7 +586,7 @@ async fn request_with_noop_auth_succeeds() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -635,7 +635,7 @@ async fn request_with_failing_auth_returns_401() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -715,7 +715,7 @@ async fn access_test_state(
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state.clone());
@@ -836,7 +836,7 @@ async fn open_access_request_always_succeeds() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -924,7 +924,7 @@ async fn field_filtering_hides_restricted_fields() {
         theme: test_theme(),
         #[cfg(feature = "graphql")]
         graphql_schema: test_graphql_schema(),
-        #[cfg(feature = "admin-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
     };
     let app = test_app_with_state(state);
@@ -1023,7 +1023,7 @@ async fn cloud_theme_css_endpoint_returns_css() {
 
 #[cfg(feature = "cloud-ui")]
 #[tokio::test]
-async fn cloud_dashboard_returns_200() {
+async fn cloud_dashboard_redirects_unauthenticated_to_login() {
     let extension = schema_forge_acton::SchemaForgeExtension::builder()
         .with_backend(
             schema_forge_surrealdb::SurrealBackend::connect_memory("cloud_dash", "test")
@@ -1042,11 +1042,39 @@ async fn cloud_dashboard_returns_200() {
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
 
+    // Unauthenticated requests redirect to login
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers().get("location").unwrap().to_str().unwrap(),
+        "/app/login"
+    );
+}
+
+#[cfg(feature = "cloud-ui")]
+#[tokio::test]
+async fn cloud_login_page_returns_200() {
+    let extension = schema_forge_acton::SchemaForgeExtension::builder()
+        .with_backend(
+            schema_forge_surrealdb::SurrealBackend::connect_memory("cloud_login", "test")
+                .await
+                .unwrap(),
+        )
+        .build()
+        .await
+        .unwrap();
+
+    let app = extension.register_cloud_routes(Router::new());
+
+    let request = Request::builder()
+        .uri("/app/login")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+
     assert_eq!(response.status(), StatusCode::OK);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let html = String::from_utf8(body.to_vec()).unwrap();
-    assert!(html.contains("sf-app"));
-    assert!(html.contains("Dashboard"));
+    assert!(html.contains("login"));
 }

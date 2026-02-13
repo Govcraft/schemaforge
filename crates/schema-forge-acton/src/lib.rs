@@ -18,6 +18,9 @@ pub mod views;
 #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
 pub mod theme;
 
+#[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+pub mod shared_auth;
+
 #[cfg(feature = "admin-ui")]
 pub mod admin;
 
