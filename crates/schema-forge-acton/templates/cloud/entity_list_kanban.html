@@ -1,0 +1,81 @@
+{% extends "cloud/base.html" %}
+
+{% block title %}{{ schema.name }} - {{ app_title }}{% endblock %}
+
+{% block content %}
+<div class="sf-breadcrumbs">
+    <a href="/app/">Dashboard</a>
+    <span class="sf-breadcrumbs-sep"></span>
+    <span>{{ schema.name }}</span>
+</div>
+<div class="sf-page-header">
+    <div>
+        <h1 class="sf-page-title">{{ schema.name }}</h1>
+    </div>
+    <a href="/app/{{ schema.url_name }}/entities/new" class="sf-btn sf-btn-primary">Create New</a>
+</div>
+<div class="sf-kanban" id="sf-kanban" data-schema="{{ schema.url_name }}" data-field="{{ kanban_field }}">
+    {% for col in columns %}
+    <div class="sf-kanban-column" data-variant="{{ col.variant }}"
+         ondragover="event.preventDefault();this.classList.add('drag-over')"
+         ondragleave="this.classList.remove('drag-over')"
+         ondrop="sfKanbanDrop(event, this)">
+        <div class="sf-kanban-header">
+            <span class="sf-kanban-header-label">{{ col.label }}</span>
+            <span class="sf-kanban-count" data-count>{{ col.count }}</span>
+        </div>
+        <div class="sf-kanban-body">
+            {% for entity in col.entities %}
+            <div class="sf-kanban-card" draggable="true" data-entity-id="{{ entity.id }}"
+                 ondragstart="sfKanbanDragStart(event, this)">
+                <div class="sf-kanban-card-title">
+                    <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}">{{ entity.display_value }}</a>
+                </div>
+                <div class="sf-kanban-card-fields">
+                    {% for field in entity.summary_fields() %}{% if field.name != kanban_field %}
+                    <div>{{ field.label }}: {% include "cloud/atoms/field_display.html" %}</div>
+                    {% endif %}{% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+<script>
+function sfKanbanDragStart(e, card) {
+    e.dataTransfer.setData('text/plain', card.dataset.entityId);
+    card.classList.add('dragging');
+    setTimeout(() => card.classList.remove('dragging'), 0);
+}
+function sfKanbanDrop(e, col) {
+    e.preventDefault();
+    col.classList.remove('drag-over');
+    var entityId = e.dataTransfer.getData('text/plain');
+    var card = document.querySelector('[data-entity-id="' + entityId + '"]');
+    if (!card) return;
+    var sourceCol = card.closest('.sf-kanban-column');
+    var targetVariant = col.dataset.variant;
+    var kanban = document.getElementById('sf-kanban');
+    var schema = kanban.dataset.schema;
+    var field = kanban.dataset.field;
+    // Optimistic DOM move
+    col.querySelector('.sf-kanban-body').appendChild(card);
+    // Update counts
+    if (sourceCol) {
+        var sc = sourceCol.querySelector('[data-count]');
+        sc.textContent = sourceCol.querySelector('.sf-kanban-body').children.length;
+    }
+    var tc = col.querySelector('[data-count]');
+    tc.textContent = col.querySelector('.sf-kanban-body').children.length;
+    // PATCH to server
+    htmx.ajax('PATCH', '/app/' + schema + '/entities/' + entityId + '/move', {
+        values: {field: field, value: targetVariant},
+        swap: 'none'
+    }).catch(function() {
+        // Revert on error
+        if (sourceCol) sourceCol.querySelector('.sf-kanban-body').appendChild(card);
+    });
+}
+</script>
+{% endblock %}

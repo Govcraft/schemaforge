@@ -4,9 +4,9 @@
         <span class="forge-entity-id">{{ entity.id }}</span>
     </div>
     <div class="forge-split-grid">
-        {% for (label, value) in entity.field_values %}
-        <div class="forge-split-label">{{ label }}</div>
-        <div class="forge-split-value">{% if value.is_empty() %}<span class="forge-empty">-</span>{% else %}{{ value }}{% endif %}</div>
+        {% for field in entity.field_values %}
+        <div class="forge-split-label">{{ field.label }}</div>
+        <div class="forge-split-value">{% if field.is_empty %}<span class="forge-empty">-</span>{% else %}{% include "atoms/field_display.html" %}{% endif %}</div>
         {% endfor %}
     </div>
     <div class="forge-detail-actions">

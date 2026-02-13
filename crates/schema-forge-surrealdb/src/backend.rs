@@ -412,11 +412,9 @@ impl EntityStore for SurrealBackend {
         let rows = self.execute_and_take_rows(&sql).await?;
 
         // SurrealDB returns [{ "count": N }] for GROUP ALL, or [] if no rows.
-        if let Some(row) = rows.first() {
-            if let surrealdb::sql::Value::Object(obj) = row {
-                if let Some(surrealdb::sql::Value::Number(n)) = obj.get("count") {
-                    return Ok(n.as_usize());
-                }
+        if let Some(surrealdb::sql::Value::Object(obj)) = rows.first() {
+            if let Some(surrealdb::sql::Value::Number(n)) = obj.get("count") {
+                return Ok(n.as_usize());
             }
         }
         Ok(0)

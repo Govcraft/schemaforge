@@ -156,6 +156,69 @@ const BASE_SF_STYLES: &str = r#"
 .sf-page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
 .sf-page-title { font-weight: 700; font-size: 1.5rem; }
 .sf-page-subtitle { font-size: 0.875rem; color: var(--sf-secondary); }
+
+/* Widget — Status Badge */
+.sf-badge { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: capitalize; }
+.sf-badge-success { background: color-mix(in srgb, #10B981 15%, transparent); color: #059669; }
+.sf-badge-error { background: color-mix(in srgb, #EF4444 15%, transparent); color: #DC2626; }
+.sf-badge-warning { background: color-mix(in srgb, #F59E0B 15%, transparent); color: #D97706; }
+.sf-badge-info { background: color-mix(in srgb, #3B82F6 15%, transparent); color: #2563EB; }
+.sf-badge-neutral { background: color-mix(in srgb, #6B7280 15%, transparent); color: #4B5563; }
+
+/* Widget — Progress */
+.sf-progress { width: 100%; background: var(--sf-surface); border-radius: var(--sf-border-radius); overflow: hidden; height: 1.25rem; border: 1px solid var(--sf-secondary); }
+.sf-progress-bar { height: 100%; background: var(--sf-primary); color: #fff; font-size: 0.6875rem; font-weight: 600; display: flex; align-items: center; justify-content: center; min-width: 2rem; transition: width 0.3s ease; }
+
+/* Widget — Relative Time */
+.sf-relative-time { color: var(--sf-secondary); font-size: 0.875rem; }
+
+/* Widget — Count Badge */
+.sf-count-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 1.5rem; height: 1.5rem; padding: 0 0.375rem; border-radius: 9999px; background: var(--sf-primary); color: #fff; font-size: 0.75rem; font-weight: 700; }
+
+/* Widget — Link / Email / Phone */
+.sf-link, .sf-email, .sf-phone { color: var(--sf-primary); text-decoration: none; }
+.sf-link:hover, .sf-email:hover, .sf-phone:hover { text-decoration: underline; }
+
+/* Widget — Color Swatch */
+.sf-color-swatch { display: inline-block; width: 1rem; height: 1rem; border-radius: 0.125rem; border: 1px solid var(--sf-secondary); vertical-align: middle; }
+
+/* Widget — Tags */
+.sf-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.sf-tag { display: inline-block; padding: 0.0625rem 0.375rem; border-radius: var(--sf-border-radius); background: var(--sf-surface); border: 1px solid var(--sf-secondary); font-size: 0.75rem; }
+
+/* Widget — Image Thumb */
+.sf-image-thumb { max-width: 4rem; max-height: 4rem; border-radius: var(--sf-border-radius); object-fit: cover; }
+
+/* Widget — Code */
+.sf-code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.8125rem; background: var(--sf-surface); padding: 0.125rem 0.375rem; border-radius: 0.25rem; }
+
+/* Widget — Markdown */
+.sf-markdown { line-height: 1.5; }
+
+/* Kanban Board */
+.sf-kanban { display: flex; gap: 1rem; overflow-x: auto; padding-bottom: 1rem; min-height: 400px; }
+.sf-kanban-column { flex: 0 0 280px; background: var(--sf-surface); border: 1px solid var(--sf-secondary); border-radius: var(--sf-border-radius); display: flex; flex-direction: column; max-height: 80vh; }
+.sf-kanban-header { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid var(--sf-secondary); }
+.sf-kanban-header-label { font-weight: 600; font-size: 0.875rem; }
+.sf-kanban-count { font-size: 0.75rem; color: var(--sf-secondary); }
+.sf-kanban-body { flex: 1; overflow-y: auto; padding: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.sf-kanban-card { background: var(--sf-background); border: 1px solid var(--sf-secondary); border-radius: var(--sf-border-radius); padding: 0.75rem; cursor: grab; transition: box-shadow 0.15s, opacity 0.15s; }
+.sf-kanban-card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+.sf-kanban-card.dragging { opacity: 0.5; }
+.sf-kanban-column.drag-over { border-color: var(--sf-primary); border-width: 2px; }
+.sf-kanban-card-title { font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; }
+.sf-kanban-card-title a { color: inherit; text-decoration: none; }
+.sf-kanban-card-title a:hover { color: var(--sf-primary); }
+.sf-kanban-card-fields { font-size: 0.8125rem; color: var(--sf-secondary); }
+
+/* Filter Pills */
+.sf-filters { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
+.sf-filter-group { display: flex; align-items: center; gap: 0.25rem; flex-wrap: wrap; }
+.sf-filter-label { font-size: 0.75rem; font-weight: 600; color: var(--sf-secondary); margin-right: 0.25rem; }
+.sf-filter-pill { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; text-decoration: none; color: var(--sf-text); background: var(--sf-surface); border: 1px solid var(--sf-secondary); cursor: pointer; transition: background 0.15s; }
+.sf-filter-pill:hover { background: var(--sf-background); }
+.sf-filter-pill-active { background: var(--sf-primary); color: #fff; border-color: var(--sf-primary); }
+.sf-filter-pill-active:hover { opacity: 0.85; }
 "#;
 
 #[cfg(test)]

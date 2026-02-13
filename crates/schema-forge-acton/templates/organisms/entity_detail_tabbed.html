@@ -7,10 +7,10 @@
         <input type="radio" name="detail-tabs-{{ entity.id }}" id="tab-fields-{{ entity.id }}" class="forge-tab-radio" checked>
         <label for="tab-fields-{{ entity.id }}" class="forge-tab-label">Fields</label>
         <div class="forge-tab-content">
-            {% for (label, value) in entity.field_values %}
+            {% for field in entity.field_values %}
             <div class="forge-field">
-                <div class="forge-field-label">{{ label }}</div>
-                <div class="forge-field-value">{% if value.is_empty() %}<span class="forge-empty">-</span>{% else %}{{ value }}{% endif %}</div>
+                <div class="forge-field-label">{{ field.label }}</div>
+                <div class="forge-field-value">{% if field.is_empty %}<span class="forge-empty">-</span>{% else %}{% include "atoms/field_display.html" %}{% endif %}</div>
             </div>
             {% endfor %}
         </div>

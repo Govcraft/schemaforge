@@ -17,6 +17,7 @@ pub enum ListStyle {
     Table,
     Cards,
     Compact,
+    Kanban,
 }
 
 /// How entity detail pages are rendered.
@@ -236,6 +237,7 @@ impl Theme {
             ListStyle::Table => "table",
             ListStyle::Cards => "cards",
             ListStyle::Compact => "compact",
+            ListStyle::Kanban => "kanban",
         }
     }
 }
@@ -466,8 +468,10 @@ mod tests {
 
     #[test]
     fn density_padding_values() {
-        let mut theme = Theme::default();
-        theme.density = Density::Compact;
+        let mut theme = Theme {
+            density: Density::Compact,
+            ..Default::default()
+        };
         assert_eq!(theme.density_padding(), "0.25rem");
         theme.density = Density::Comfortable;
         assert_eq!(theme.density_padding(), "0.5rem");

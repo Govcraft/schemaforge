@@ -1,6 +1,6 @@
 use acton_service::prelude::Template;
 
-use crate::views::{EntityView, FieldView, PaginationView, SchemaView};
+use crate::views::{EntityView, FieldView, FilterField, KanbanColumn, PaginationView, SchemaView};
 
 /// Schema entry for navigation sidebar.
 #[derive(Debug, Clone)]
@@ -43,6 +43,7 @@ pub struct CloudEntityListTemplate {
     pub entities: Vec<EntityView>,
     pub pagination: PaginationView,
     pub list_style: String,
+    pub filter_fields: Vec<FilterField>,
 }
 
 /// Cloud entity list body fragment (for HTMX pagination).
@@ -53,6 +54,21 @@ pub struct CloudEntityListBodyTemplate {
     pub entities: Vec<EntityView>,
     pub pagination: PaginationView,
     pub list_style: String,
+    pub filter_fields: Vec<FilterField>,
+}
+
+/// Cloud kanban entity list page.
+#[derive(Template)]
+#[template(path = "cloud/entity_list_kanban.html")]
+pub struct CloudEntityListKanbanTemplate {
+    pub app_title: String,
+    pub nav_style: String,
+    pub logo_url: Option<String>,
+    pub nav_schemas: Vec<NavSchemaEntry>,
+    pub active_nav: String,
+    pub schema: SchemaView,
+    pub columns: Vec<KanbanColumn>,
+    pub kanban_field: String,
 }
 
 /// Cloud entity form page (create/edit).

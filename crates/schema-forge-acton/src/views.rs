@@ -35,7 +35,7 @@ pub struct SchemaView {
 pub struct EntityView {
     pub id: String,
     pub display_value: String,
-    pub field_values: Vec<(String, String)>,
+    pub field_values: Vec<FieldDisplayView>,
 }
 
 /// Pagination view model.
@@ -81,6 +81,284 @@ impl PaginationView {
     pub fn next_offset(&self) -> usize {
         self.offset + self.limit
     }
+}
+
+/// Template-friendly representation of a field value with widget metadata.
+#[derive(Debug, Clone)]
+pub struct FieldDisplayView {
+    /// snake_case field name (for kanban exclusion, filter targeting).
+    pub name: String,
+    /// Human-readable label.
+    pub label: String,
+    /// Pre-formatted display string (human-readable).
+    pub value: String,
+    /// Unformatted original value (for datetime ISO, href URLs, etc.).
+    pub raw_value: String,
+    /// From `@widget` annotation.
+    pub widget_type: Option<String>,
+    /// Type category: "text","integer","enum","datetime","boolean","float","relation","json","array","composite".
+    pub field_type: String,
+    /// CSS class for status_badge color — computed from value, not field def.
+    pub badge_class: Option<String>,
+    /// True when value is empty/null.
+    pub is_empty: bool,
+}
+
+/// Map a FieldType to a simple type name string for template use.
+pub fn field_type_name(ft: &FieldType) -> &'static str {
+    match ft {
+        FieldType::Text(_) => "text",
+        FieldType::RichText => "text",
+        FieldType::Integer(_) => "integer",
+        FieldType::Float(_) => "float",
+        FieldType::Boolean => "boolean",
+        FieldType::DateTime => "datetime",
+        FieldType::Enum(_) => "enum",
+        FieldType::Json => "json",
+        FieldType::Relation { .. } => "relation",
+        FieldType::Array(_) => "array",
+        FieldType::Composite(_) => "composite",
+        _ => "text",
+    }
+}
+
+/// Return a CSS class for status badge coloring based on the variant value.
+pub fn badge_color_class(variant: &str) -> &'static str {
+    let lower = variant.to_lowercase();
+    let lower = lower.as_str();
+    match lower {
+        // Success
+        "active" | "done" | "completed" | "closed_won" | "approved" | "published" | "resolved"
+        | "won" | "hired" | "accepted" => "sf-badge-success",
+        // Error
+        "inactive" | "terminated" | "cancelled" | "closed_lost" | "rejected" | "lost"
+        | "fired" | "declined" | "failed" => "sf-badge-error",
+        // Warning
+        "pending" | "on_hold" | "in_review" | "draft" | "on_leave" | "paused" | "waiting"
+        | "suspended" => "sf-badge-warning",
+        // Info
+        "in_progress" | "proposal" | "negotiation" | "qualification" | "todo" | "prospecting"
+        | "open" | "new" | "interview" | "review" => "sf-badge-info",
+        // Neutral
+        "backlog" | "archived" | "other" | "closed" | "unknown" => "sf-badge-neutral",
+        // Fallback: hash to one of the 5 classes
+        _ => {
+            let hash: u32 = lower.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            match hash % 5 {
+                0 => "sf-badge-success",
+                1 => "sf-badge-info",
+                2 => "sf-badge-warning",
+                3 => "sf-badge-error",
+                _ => "sf-badge-neutral",
+            }
+        }
+    }
+}
+
+/// Server-side relative time display. The `now` parameter enables deterministic testing.
+pub fn relative_time_display(dt_str: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let dt = match chrono::DateTime::parse_from_rfc3339(dt_str) {
+        Ok(d) => d.with_timezone(&chrono::Utc),
+        Err(_) => {
+            // Try parsing as naive datetime (from dynamic_value_display format)
+            match chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%dT%H:%M") {
+                Ok(naive) => naive.and_utc(),
+                Err(_) => {
+                    match chrono::NaiveDateTime::parse_from_str(dt_str, "%Y-%m-%dT%H:%M:%S") {
+                        Ok(naive) => naive.and_utc(),
+                        Err(_) => return dt_str.to_string(),
+                    }
+                }
+            }
+        }
+    };
+
+    let duration = now.signed_duration_since(dt);
+    let seconds = duration.num_seconds();
+
+    if seconds < 0 {
+        return dt.format("%b %d, %Y").to_string();
+    }
+
+    if seconds < 60 {
+        "just now".to_string()
+    } else if seconds < 3600 {
+        let mins = seconds / 60;
+        if mins == 1 {
+            "1 minute ago".to_string()
+        } else {
+            format!("{mins} minutes ago")
+        }
+    } else if seconds < 86400 {
+        let hrs = seconds / 3600;
+        if hrs == 1 {
+            "1 hour ago".to_string()
+        } else {
+            format!("{hrs} hours ago")
+        }
+    } else if seconds < 604800 {
+        let days = seconds / 86400;
+        if days == 1 {
+            "1 day ago".to_string()
+        } else {
+            format!("{days} days ago")
+        }
+    } else {
+        dt.format("%b %d, %Y").to_string()
+    }
+}
+
+/// A kanban column with its variant, label, and grouped entities.
+#[derive(Debug, Clone)]
+pub struct KanbanColumn {
+    pub variant: String,
+    pub label: String,
+    pub entities: Vec<EntityView>,
+    pub count: usize,
+}
+
+/// Detect the kanban field for a schema.
+///
+/// Precedence:
+/// 1. First field with `@kanban_column` annotation (explicit)
+/// 2. If no `@kanban_column`, check `@dashboard(group_by: "X")` — find that field, verify it's an enum
+/// 3. Neither found → `None`
+///
+/// Returns `(field_name, enum_variants)`.
+pub fn find_kanban_field(schema: &SchemaDefinition) -> Option<(String, Vec<String>)> {
+    // 1. Explicit @kanban_column
+    for f in &schema.fields {
+        if f.has_kanban_column() {
+            if let FieldType::Enum(variants) = &f.field_type {
+                return Some((
+                    f.name.as_str().to_string(),
+                    variants.as_slice().to_vec(),
+                ));
+            }
+        }
+    }
+
+    // 2. @dashboard(group_by: "X") fallback
+    for ann in &schema.annotations {
+        if let Annotation::Dashboard {
+            group_by: Some(field_name),
+            ..
+        } = ann
+        {
+            for f in &schema.fields {
+                if f.name.as_str() == field_name.as_str() {
+                    if let FieldType::Enum(variants) = &f.field_type {
+                        return Some((
+                            f.name.as_str().to_string(),
+                            variants.as_slice().to_vec(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Group entities into kanban columns by a field value.
+///
+/// `variants` defines the column order. Entities without a matching value go into the first column.
+pub fn group_entities_by_field(
+    entities: Vec<EntityView>,
+    field_name: &str,
+    variants: &[String],
+) -> Vec<KanbanColumn> {
+    let mut columns: Vec<KanbanColumn> = variants
+        .iter()
+        .map(|v| KanbanColumn {
+            variant: v.clone(),
+            label: snake_to_label(v),
+            entities: Vec::new(),
+            count: 0,
+        })
+        .collect();
+
+    for entity in entities {
+        let field_value = entity
+            .field_values
+            .iter()
+            .find(|f| f.name == field_name)
+            .map(|f| f.raw_value.as_str())
+            .unwrap_or("");
+
+        let col_idx = columns
+            .iter()
+            .position(|c| c.variant == field_value)
+            .unwrap_or(0);
+
+        if let Some(col) = columns.get_mut(col_idx) {
+            col.entities.push(entity);
+        }
+    }
+
+    for col in &mut columns {
+        col.count = col.entities.len();
+    }
+
+    columns
+}
+
+/// A single filter variant pill with pre-computed active state.
+#[derive(Debug, Clone)]
+pub struct FilterPill {
+    pub value: String,
+    pub is_active: bool,
+}
+
+/// Filter field descriptor for UI filter pills.
+#[derive(Debug, Clone)]
+pub struct FilterField {
+    pub name: String,
+    pub label: String,
+    pub pills: Vec<FilterPill>,
+    /// True when no variant is selected (the "All" pill is active).
+    pub all_active: bool,
+    /// The currently active filter value (empty = no filter).
+    pub active_value: String,
+}
+
+/// Extract enum fields from a schema for use as filter pills.
+///
+/// `active_filters` provides the currently selected value per field (if any).
+pub fn extract_filter_fields(
+    schema: &SchemaDefinition,
+    active_filters: &std::collections::HashMap<String, String>,
+) -> Vec<FilterField> {
+    schema
+        .fields
+        .iter()
+        .filter_map(|f| {
+            if let FieldType::Enum(variants) = &f.field_type {
+                let active = active_filters
+                    .get(f.name.as_str())
+                    .cloned()
+                    .unwrap_or_default();
+                let pills = variants
+                    .as_slice()
+                    .iter()
+                    .map(|v| FilterPill {
+                        value: v.clone(),
+                        is_active: active == *v,
+                    })
+                    .collect();
+                Some(FilterField {
+                    name: f.name.as_str().to_string(),
+                    label: snake_to_label(f.name.as_str()),
+                    pills,
+                    all_active: active.is_empty(),
+                    active_value: active,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Convert a snake_case field name to a human-readable label.
@@ -200,6 +478,20 @@ impl EntityView {
         Self::from_entity_with_refs(entity, schema, &std::collections::HashMap::new())
     }
 
+    /// Select max 3 most important fields: prefer widget-annotated fields, then others. Skips empty.
+    pub fn summary_fields(&self) -> Vec<&FieldDisplayView> {
+        self.field_values
+            .iter()
+            .filter(|f| f.widget_type.is_some() && !f.is_empty)
+            .chain(
+                self.field_values
+                    .iter()
+                    .filter(|f| f.widget_type.is_none() && !f.is_empty),
+            )
+            .take(3)
+            .collect()
+    }
+
     /// Create an EntityView with resolved relation display values.
     ///
     /// `ref_display` maps entity IDs to their human-readable display strings.
@@ -244,11 +536,44 @@ impl EntityView {
             .fields
             .iter()
             .map(|f| {
-                let val = entity
-                    .field(f.name.as_str())
+                let dv = entity.field(f.name.as_str());
+                let raw_value = dv
+                    .map(dynamic_value_display)
+                    .unwrap_or_default();
+                let formatted = dv
                     .map(|v| format_with_refs(v, f, ref_display))
                     .unwrap_or_default();
-                (snake_to_label(f.name.as_str()), val)
+                let widget_type = f.widget_hint().map(|s| s.to_string());
+                let ft_name = field_type_name(&f.field_type).to_string();
+                let is_empty = formatted.is_empty();
+
+                // For relative_time widget on datetime fields, compute human-readable display
+                let value = if widget_type.as_deref() == Some("relative_time")
+                    && ft_name == "datetime"
+                    && !is_empty
+                {
+                    relative_time_display(&raw_value, chrono::Utc::now())
+                } else {
+                    formatted
+                };
+
+                // For status_badge widget, compute badge class from value
+                let badge_class = if widget_type.as_deref() == Some("status_badge") && !is_empty {
+                    Some(badge_color_class(&raw_value).to_string())
+                } else {
+                    None
+                };
+
+                FieldDisplayView {
+                    name: f.name.as_str().to_string(),
+                    label: snake_to_label(f.name.as_str()),
+                    value,
+                    raw_value,
+                    widget_type,
+                    field_type: ft_name,
+                    badge_class,
+                    is_empty,
+                }
             })
             .collect();
 
@@ -1138,5 +1463,436 @@ mod tests {
         );
         let view = FieldView::from_definition(&field);
         assert_eq!(view.default_value, Some("true".to_string()));
+    }
+
+    // --- badge_color_class tests ---
+
+    #[test]
+    fn badge_color_class_known_success() {
+        assert_eq!(badge_color_class("active"), "sf-badge-success");
+        assert_eq!(badge_color_class("Active"), "sf-badge-success");
+        assert_eq!(badge_color_class("completed"), "sf-badge-success");
+        assert_eq!(badge_color_class("published"), "sf-badge-success");
+    }
+
+    #[test]
+    fn badge_color_class_known_error() {
+        assert_eq!(badge_color_class("inactive"), "sf-badge-error");
+        assert_eq!(badge_color_class("cancelled"), "sf-badge-error");
+        assert_eq!(badge_color_class("rejected"), "sf-badge-error");
+    }
+
+    #[test]
+    fn badge_color_class_known_warning() {
+        assert_eq!(badge_color_class("pending"), "sf-badge-warning");
+        assert_eq!(badge_color_class("draft"), "sf-badge-warning");
+        assert_eq!(badge_color_class("on_hold"), "sf-badge-warning");
+    }
+
+    #[test]
+    fn badge_color_class_known_info() {
+        assert_eq!(badge_color_class("in_progress"), "sf-badge-info");
+        assert_eq!(badge_color_class("todo"), "sf-badge-info");
+        assert_eq!(badge_color_class("prospecting"), "sf-badge-info");
+    }
+
+    #[test]
+    fn badge_color_class_known_neutral() {
+        assert_eq!(badge_color_class("backlog"), "sf-badge-neutral");
+        assert_eq!(badge_color_class("archived"), "sf-badge-neutral");
+    }
+
+    #[test]
+    fn badge_color_class_unknown_deterministic() {
+        // Unknown values should consistently hash to the same class
+        let first = badge_color_class("custom_status");
+        let second = badge_color_class("custom_status");
+        assert_eq!(first, second);
+        // Should be one of the 5 classes
+        assert!(
+            ["sf-badge-success", "sf-badge-info", "sf-badge-warning", "sf-badge-error", "sf-badge-neutral"]
+                .contains(&first)
+        );
+    }
+
+    // --- relative_time_display tests ---
+
+    #[test]
+    fn relative_time_just_now() {
+        let now = chrono::Utc::now();
+        let dt = (now - chrono::TimeDelta::seconds(30))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+        assert_eq!(relative_time_display(&dt, now), "just now");
+    }
+
+    #[test]
+    fn relative_time_minutes() {
+        let now = chrono::Utc::now();
+        let dt = (now - chrono::TimeDelta::minutes(5))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+        assert_eq!(relative_time_display(&dt, now), "5 minutes ago");
+    }
+
+    #[test]
+    fn relative_time_hours() {
+        let now = chrono::Utc::now();
+        let dt = (now - chrono::TimeDelta::hours(3))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+        assert_eq!(relative_time_display(&dt, now), "3 hours ago");
+    }
+
+    #[test]
+    fn relative_time_days() {
+        let now = chrono::Utc::now();
+        let dt = (now - chrono::TimeDelta::days(2))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+        assert_eq!(relative_time_display(&dt, now), "2 days ago");
+    }
+
+    #[test]
+    fn relative_time_old_shows_date() {
+        let now = chrono::Utc::now();
+        let dt = (now - chrono::TimeDelta::days(10))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+        let result = relative_time_display(&dt, now);
+        // Should be a formatted date like "Jan 15, 2024"
+        assert!(result.contains(','), "Expected formatted date, got: {result}");
+    }
+
+    #[test]
+    fn relative_time_unparseable_passthrough() {
+        let now = chrono::Utc::now();
+        assert_eq!(relative_time_display("not a date", now), "not a date");
+    }
+
+    // --- field_type_name tests ---
+
+    #[test]
+    fn field_type_name_values() {
+        assert_eq!(field_type_name(&FieldType::Text(TextConstraints::unconstrained())), "text");
+        assert_eq!(field_type_name(&FieldType::Integer(IntegerConstraints::unconstrained())), "integer");
+        assert_eq!(field_type_name(&FieldType::Float(FloatConstraints::unconstrained())), "float");
+        assert_eq!(field_type_name(&FieldType::Boolean), "boolean");
+        assert_eq!(field_type_name(&FieldType::DateTime), "datetime");
+        assert_eq!(field_type_name(&FieldType::Json), "json");
+    }
+
+    // --- FieldDisplayView population tests ---
+
+    #[test]
+    fn field_display_view_widget_type_extracted() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("status").unwrap(),
+                FieldType::Enum(
+                    EnumVariants::new(vec!["active".into(), "done".into()]).unwrap(),
+                ),
+                vec![],
+                vec![schema_forge_core::types::FieldAnnotation::Widget {
+                    widget_type: "status_badge".into(),
+                }],
+            )],
+            vec![],
+        )
+        .unwrap();
+
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("status".to_string(), DynamicValue::Enum("active".into()));
+        let entity = Entity::new(SchemaName::new("Task").unwrap(), fields);
+
+        let view = EntityView::from_entity(&entity, &schema);
+        assert_eq!(view.field_values.len(), 1);
+        assert_eq!(
+            view.field_values[0].widget_type,
+            Some("status_badge".to_string())
+        );
+        assert_eq!(view.field_values[0].badge_class, Some("sf-badge-success".to_string()));
+        assert_eq!(view.field_values[0].field_type, "enum");
+        assert_eq!(view.field_values[0].raw_value, "active");
+        assert!(!view.field_values[0].is_empty);
+    }
+
+    #[test]
+    fn field_display_view_no_widget() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![make_field("title", FieldType::Text(TextConstraints::unconstrained()))],
+            vec![],
+        )
+        .unwrap();
+
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("title".to_string(), DynamicValue::Text("Hello".into()));
+        let entity = Entity::new(SchemaName::new("Task").unwrap(), fields);
+
+        let view = EntityView::from_entity(&entity, &schema);
+        assert_eq!(view.field_values[0].widget_type, None);
+        assert_eq!(view.field_values[0].badge_class, None);
+        assert_eq!(view.field_values[0].value, "Hello");
+    }
+
+    #[test]
+    fn field_display_view_empty_field() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![make_field("title", FieldType::Text(TextConstraints::unconstrained()))],
+            vec![],
+        )
+        .unwrap();
+
+        let fields = std::collections::BTreeMap::new();
+        let entity = Entity::new(SchemaName::new("Task").unwrap(), fields);
+
+        let view = EntityView::from_entity(&entity, &schema);
+        assert!(view.field_values[0].is_empty);
+    }
+
+    // --- summary_fields tests ---
+
+    #[test]
+    fn summary_fields_prefers_widget_annotated() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![
+                make_field("title", FieldType::Text(TextConstraints::unconstrained())),
+                make_field("description", FieldType::Text(TextConstraints::unconstrained())),
+                FieldDefinition::with_annotations(
+                    FieldName::new("status").unwrap(),
+                    FieldType::Enum(EnumVariants::new(vec!["active".into()]).unwrap()),
+                    vec![],
+                    vec![schema_forge_core::types::FieldAnnotation::Widget {
+                        widget_type: "status_badge".into(),
+                    }],
+                ),
+                make_field("notes", FieldType::Text(TextConstraints::unconstrained())),
+            ],
+            vec![],
+        )
+        .unwrap();
+
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("title".to_string(), DynamicValue::Text("T1".into()));
+        fields.insert("description".to_string(), DynamicValue::Text("Desc".into()));
+        fields.insert("status".to_string(), DynamicValue::Enum("active".into()));
+        fields.insert("notes".to_string(), DynamicValue::Text("Note".into()));
+        let entity = Entity::new(SchemaName::new("Task").unwrap(), fields);
+
+        let view = EntityView::from_entity(&entity, &schema);
+        let summary = view.summary_fields();
+        assert_eq!(summary.len(), 3);
+        // Widget-annotated field should come first
+        assert_eq!(summary[0].name, "status");
+    }
+
+    #[test]
+    fn summary_fields_skips_empty_caps_at_three() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![
+                make_field("a", FieldType::Text(TextConstraints::unconstrained())),
+                make_field("b", FieldType::Text(TextConstraints::unconstrained())),
+                make_field("c", FieldType::Text(TextConstraints::unconstrained())),
+                make_field("d", FieldType::Text(TextConstraints::unconstrained())),
+                make_field("e", FieldType::Text(TextConstraints::unconstrained())),
+            ],
+            vec![],
+        )
+        .unwrap();
+
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("a".to_string(), DynamicValue::Text("v1".into()));
+        // b is empty
+        fields.insert("c".to_string(), DynamicValue::Text("v3".into()));
+        fields.insert("d".to_string(), DynamicValue::Text("v4".into()));
+        fields.insert("e".to_string(), DynamicValue::Text("v5".into()));
+        let entity = Entity::new(SchemaName::new("Task").unwrap(), fields);
+
+        let view = EntityView::from_entity(&entity, &schema);
+        let summary = view.summary_fields();
+        assert_eq!(summary.len(), 3);
+        assert_eq!(summary[0].name, "a");
+        assert_eq!(summary[1].name, "c");
+        assert_eq!(summary[2].name, "d");
+    }
+
+    // --- find_kanban_field tests ---
+
+    #[test]
+    fn find_kanban_field_explicit() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("status").unwrap(),
+                FieldType::Enum(
+                    EnumVariants::new(vec!["todo".into(), "done".into()]).unwrap(),
+                ),
+                vec![],
+                vec![schema_forge_core::types::FieldAnnotation::KanbanColumn],
+            )],
+            vec![],
+        )
+        .unwrap();
+
+        let result = find_kanban_field(&schema);
+        assert!(result.is_some());
+        let (name, variants) = result.unwrap();
+        assert_eq!(name, "status");
+        assert_eq!(variants, vec!["todo", "done"]);
+    }
+
+    #[test]
+    fn find_kanban_field_dashboard_fallback() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Deal").unwrap(),
+            vec![make_field(
+                "stage",
+                FieldType::Enum(
+                    EnumVariants::new(vec!["new".into(), "won".into()]).unwrap(),
+                ),
+            )],
+            vec![Annotation::Dashboard {
+                widgets: vec![],
+                layout: Some("kanban".into()),
+                group_by: Some("stage".into()),
+                sort_default: None,
+            }],
+        )
+        .unwrap();
+
+        let result = find_kanban_field(&schema);
+        assert!(result.is_some());
+        let (name, _) = result.unwrap();
+        assert_eq!(name, "stage");
+    }
+
+    #[test]
+    fn find_kanban_field_none() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Contact").unwrap(),
+            vec![make_field("name", FieldType::Text(TextConstraints::unconstrained()))],
+            vec![],
+        )
+        .unwrap();
+
+        assert!(find_kanban_field(&schema).is_none());
+    }
+
+    // --- group_entities_by_field tests ---
+
+    #[test]
+    fn group_entities_correct_grouping() {
+        let variants = vec!["todo".to_string(), "done".to_string()];
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![
+                make_field("title", FieldType::Text(TextConstraints::unconstrained())),
+                make_field(
+                    "status",
+                    FieldType::Enum(EnumVariants::new(variants.clone()).unwrap()),
+                ),
+            ],
+            vec![],
+        )
+        .unwrap();
+
+        let mut e1_fields = std::collections::BTreeMap::new();
+        e1_fields.insert("title".to_string(), DynamicValue::Text("Task1".into()));
+        e1_fields.insert("status".to_string(), DynamicValue::Enum("todo".into()));
+        let e1 = EntityView::from_entity(
+            &Entity::new(SchemaName::new("Task").unwrap(), e1_fields),
+            &schema,
+        );
+
+        let mut e2_fields = std::collections::BTreeMap::new();
+        e2_fields.insert("title".to_string(), DynamicValue::Text("Task2".into()));
+        e2_fields.insert("status".to_string(), DynamicValue::Enum("done".into()));
+        let e2 = EntityView::from_entity(
+            &Entity::new(SchemaName::new("Task").unwrap(), e2_fields),
+            &schema,
+        );
+
+        let columns = group_entities_by_field(vec![e1, e2], "status", &variants);
+        assert_eq!(columns.len(), 2);
+        assert_eq!(columns[0].variant, "todo");
+        assert_eq!(columns[0].count, 1);
+        assert_eq!(columns[1].variant, "done");
+        assert_eq!(columns[1].count, 1);
+    }
+
+    #[test]
+    fn group_entities_empty_columns() {
+        let variants = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let columns = group_entities_by_field(vec![], "status", &variants);
+        assert_eq!(columns.len(), 3);
+        assert_eq!(columns[0].count, 0);
+        assert_eq!(columns[1].count, 0);
+        assert_eq!(columns[2].count, 0);
+    }
+
+    // --- extract_filter_fields tests ---
+
+    #[test]
+    fn extract_filter_fields_enum_only() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![
+                make_field("title", FieldType::Text(TextConstraints::unconstrained())),
+                make_field(
+                    "status",
+                    FieldType::Enum(
+                        EnumVariants::new(vec!["active".into(), "done".into()]).unwrap(),
+                    ),
+                ),
+                make_field("active", FieldType::Boolean),
+            ],
+            vec![],
+        )
+        .unwrap();
+
+        let filters = extract_filter_fields(&schema, &std::collections::HashMap::new());
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0].name, "status");
+        assert_eq!(filters[0].pills.len(), 2);
+        assert!(filters[0].all_active);
+    }
+
+    #[test]
+    fn extract_filter_fields_with_active() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![make_field(
+                "status",
+                FieldType::Enum(
+                    EnumVariants::new(vec!["active".into(), "done".into()]).unwrap(),
+                ),
+            )],
+            vec![],
+        )
+        .unwrap();
+
+        let mut active = std::collections::HashMap::new();
+        active.insert("status".to_string(), "active".to_string());
+        let filters = extract_filter_fields(&schema, &active);
+        assert!(!filters[0].all_active);
+        assert!(filters[0].pills[0].is_active); // "active" is active
+        assert!(!filters[0].pills[1].is_active); // "done" is not
     }
 }

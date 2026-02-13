@@ -11,10 +11,10 @@
             <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}" class="forge-card-title">{{ entity.display_value }}</a>
         </div>
         <div class="forge-card-body">
-            {% for (label, value) in entity.field_values %}
+            {% for field in entity.summary_fields() %}
             <div class="forge-card-field">
-                <span class="forge-card-label">{{ label }}</span>
-                <span class="forge-card-value">{% if value.is_empty() %}-{% else %}{{ value }}{% endif %}</span>
+                <span class="forge-card-label">{{ field.label }}</span>
+                <span class="forge-card-value">{% include "atoms/field_display.html" %}</span>
             </div>
             {% endfor %}
         </div>

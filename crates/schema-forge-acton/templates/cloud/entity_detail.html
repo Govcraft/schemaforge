@@ -26,10 +26,10 @@
 </div>
 <div class="sf-detail" data-detail-style="{{ detail_style }}">
     <div class="sf-detail-fields">
-        {% for (label, value) in entity.field_values %}
+        {% for field in entity.field_values %}
         <div class="sf-detail-field">
-            <div class="sf-detail-label">{{ label }}</div>
-            <div class="sf-detail-value">{% if value.is_empty() %}<span style="opacity: 0.4">-</span>{% else %}{{ value }}{% endif %}</div>
+            <div class="sf-detail-label">{{ field.label }}</div>
+            <div class="sf-detail-value">{% if field.is_empty %}<span style="opacity: 0.4">-</span>{% else %}{% include "cloud/atoms/field_display.html" %}{% endif %}</div>
         </div>
         {% endfor %}
     </div>

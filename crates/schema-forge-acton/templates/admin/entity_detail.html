@@ -32,10 +32,10 @@
 
 <div class="card card-border bg-base-200">
     <div class="card-body">
-        {% for (label, value) in entity.field_values %}
+        {% for field in entity.field_values %}
         <div class="detail-row">
-            <div class="detail-label">{{ label }}</div>
-            <div class="detail-value">{% if value.is_empty() %}<span class="text-base-content/60">-</span>{% else %}{{ value }}{% endif %}</div>
+            <div class="detail-label">{{ field.label }}</div>
+            <div class="detail-value">{% if field.is_empty %}<span class="text-base-content/60">-</span>{% else %}{% include "atoms/field_display.html" %}{% endif %}</div>
         </div>
         {% endfor %}
     </div>

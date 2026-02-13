@@ -53,13 +53,15 @@ fn render_entity_list(
             url_prefix,
         })
         .into_response(),
-        ListStyle::Compact => HtmlTemplate::fragment(WidgetEntityListCompactTemplate {
-            schema,
-            entities,
-            pagination,
-            url_prefix,
-        })
-        .into_response(),
+        ListStyle::Compact | ListStyle::Kanban => {
+            HtmlTemplate::fragment(WidgetEntityListCompactTemplate {
+                schema,
+                entities,
+                pagination,
+                url_prefix,
+            })
+            .into_response()
+        }
     }
 }
 

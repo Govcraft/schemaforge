@@ -1,4 +1,4 @@
-use axum::routing::get;
+use axum::routing::{get, patch};
 use axum::Router;
 
 use crate::state::ForgeState;
@@ -32,6 +32,11 @@ pub fn cloud_routes() -> Router<ForgeState> {
         .route(
             "/{schema}/entities/{id}/edit",
             get(handlers::entity_edit_form).put(handlers::entity_update),
+        )
+        // Kanban card move
+        .route(
+            "/{schema}/entities/{id}/move",
+            patch(handlers::entity_move),
         )
         // Relation options (shared with widget)
         .route(

@@ -3,10 +3,10 @@
         <span class="forge-entity-title">{{ entity.display_value }}</span>
         <span class="forge-entity-id">{{ entity.id }}</span>
     </div>
-    {% for (label, value) in entity.field_values %}
+    {% for field in entity.field_values %}
     <div class="forge-field">
-        <div class="forge-field-label">{{ label }}</div>
-        <div class="forge-field-value">{% if value.is_empty() %}<span class="forge-empty">-</span>{% else %}{{ value }}{% endif %}</div>
+        <div class="forge-field-label">{{ field.label }}</div>
+        <div class="forge-field-value">{% if field.is_empty %}<span class="forge-empty">-</span>{% else %}{% include "atoms/field_display.html" %}{% endif %}</div>
     </div>
     {% endfor %}
     <div class="forge-detail-actions">

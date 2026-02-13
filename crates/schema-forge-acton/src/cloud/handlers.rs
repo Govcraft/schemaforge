@@ -2,7 +2,7 @@ use acton_service::prelude::HtmlTemplate;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use schema_forge_core::types::{Annotation, EntityId, SchemaName};
+use schema_forge_core::types::{Annotation, EntityId, FieldType, SchemaName};
 
 use crate::access::{
     check_schema_access, filter_entity_fields, AccessAction, FieldFilterDirection, OptionalAuth,
@@ -18,7 +18,8 @@ use schema_forge_core::query::{AggregateOp, AggregateQuery, FieldPath};
 use super::css;
 use super::templates::{
     CloudDashboardTemplate, CloudEntityDetailTemplate, CloudEntityFormTemplate,
-    CloudEntityListBodyTemplate, CloudEntityListTemplate, DashboardCard, NavSchemaEntry,
+    CloudEntityListBodyTemplate, CloudEntityListKanbanTemplate, CloudEntityListTemplate,
+    DashboardCard, NavSchemaEntry,
 };
 
 /// Build navigation entries from registered schemas, respecting theme ordering.
@@ -68,6 +69,7 @@ fn list_style_name(style: &ListStyle) -> &str {
         ListStyle::Table => "table",
         ListStyle::Cards => "cards",
         ListStyle::Compact => "compact",
+        ListStyle::Kanban => "kanban",
     }
 }
 
@@ -171,11 +173,51 @@ pub async fn theme_css(State(state): State<ForgeState>) -> impl IntoResponse {
     )
 }
 
-/// Query params for entity list pagination.
-#[derive(Debug, serde::Deserialize, Default)]
-pub struct PaginationParams {
+/// Query params for entity list pagination and filtering.
+#[derive(Debug, Default)]
+pub struct ListParams {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub filters: std::collections::HashMap<String, String>,
+}
+
+/// Extract list params from a raw query string HashMap.
+fn parse_list_params(raw: &std::collections::HashMap<String, String>) -> ListParams {
+    let limit = raw.get("limit").and_then(|v| v.parse().ok());
+    let offset = raw.get("offset").and_then(|v| v.parse().ok());
+    let filters: std::collections::HashMap<String, String> = raw
+        .iter()
+        .filter_map(|(k, v)| {
+            k.strip_prefix("filter_")
+                .filter(|_| !v.is_empty())
+                .map(|field| (field.to_string(), v.clone()))
+        })
+        .collect();
+    ListParams {
+        limit,
+        offset,
+        filters,
+    }
+}
+
+/// Build a backend Filter from active filter params.
+fn build_filter(
+    filters: &std::collections::HashMap<String, String>,
+) -> Option<schema_forge_core::query::Filter> {
+    let parts: Vec<schema_forge_core::query::Filter> = filters
+        .iter()
+        .map(|(field, value)| {
+            schema_forge_core::query::Filter::eq(
+                FieldPath::single(field),
+                schema_forge_core::types::DynamicValue::Text(value.clone()),
+            )
+        })
+        .collect();
+    match parts.len() {
+        0 => None,
+        1 => Some(parts.into_iter().next().unwrap()),
+        _ => Some(schema_forge_core::query::Filter::and(parts)),
+    }
 }
 
 /// GET /app/{schema}/entities — Entity list page.
@@ -183,8 +225,8 @@ pub async fn entity_list(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
     Path(name): Path<String>,
-    Query(params): Query<PaginationParams>,
-) -> Result<impl IntoResponse, CloudError> {
+    Query(raw_params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, CloudError> {
     let schema_def = state
         .registry
         .get(&name)
@@ -194,12 +236,71 @@ pub async fn entity_list(
     check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)
         .map_err(|e| CloudError::Forbidden(e.to_string()))?;
 
+    let params = parse_list_params(&raw_params);
+    let theme = state.theme.load();
+    let list_style = theme.resolve_list_style(&name);
+
+    // Check if kanban should be used (explicit style OR @dashboard(layout: "kanban"))
+    let kanban_field = crate::views::find_kanban_field(&schema_def);
+    let use_kanban = matches!(list_style, ListStyle::Kanban) || {
+        kanban_field.is_some()
+            && schema_def.annotations.iter().any(|a| matches!(
+                a,
+                Annotation::Dashboard { layout: Some(l), .. } if l == "kanban"
+            ))
+    };
+
+    if use_kanban {
+        if let Some((field_name, variants)) = kanban_field {
+            // Kanban: fetch up to 500, no pagination
+            let mut query = schema_forge_core::query::Query::new(schema_def.id.clone())
+                .with_limit(500);
+            if let Some(filter) = build_filter(&params.filters) {
+                query = query.with_filter(filter);
+            }
+            let result = state
+                .backend
+                .query(&query)
+                .await
+                .map_err(|e| CloudError::Internal(e.to_string()))?;
+
+            let ref_display = resolve_ref_display(&state, &schema_def, &result.entities).await;
+            let entities: Vec<EntityView> = result
+                .entities
+                .iter()
+                .map(|e| EntityView::from_entity_with_refs(e, &schema_def, &ref_display))
+                .collect();
+
+            let columns =
+                crate::views::group_entities_by_field(entities, &field_name, &variants);
+            let mut schema = SchemaView::from_definition(&schema_def);
+            schema.apply_theme_labels(&theme);
+            let nav_schemas = build_nav(&state, &theme).await;
+
+            return Ok(HtmlTemplate::new(CloudEntityListKanbanTemplate {
+                app_title: theme.app_title(),
+                nav_style: nav_style_name(&theme).to_string(),
+                logo_url: theme.logo_url.clone(),
+                nav_schemas,
+                active_nav: name,
+                schema,
+                columns,
+                kanban_field: field_name,
+            })
+            .into_response());
+        }
+    }
+
+    // Standard list (table/cards/compact)
     let limit = params.limit.unwrap_or(25);
     let offset = params.offset.unwrap_or(0);
 
-    let query = schema_forge_core::query::Query::new(schema_def.id.clone())
+    let mut query = schema_forge_core::query::Query::new(schema_def.id.clone())
         .with_limit(limit)
         .with_offset(offset);
+    if let Some(filter) = build_filter(&params.filters) {
+        query = query.with_filter(filter);
+    }
     let result = state
         .backend
         .query(&query)
@@ -216,10 +317,10 @@ pub async fn entity_list(
     let pagination = PaginationView::new(total_count, limit, offset);
     let mut schema = SchemaView::from_definition(&schema_def);
 
-    let theme = state.theme.load();
     schema.apply_theme_labels(&theme);
     let nav_schemas = build_nav(&state, &theme).await;
-    let list_style = theme.resolve_list_style(&name);
+
+    let filter_fields = crate::views::extract_filter_fields(&schema_def, &params.filters);
 
     Ok(HtmlTemplate::new(CloudEntityListTemplate {
         app_title: theme.app_title(),
@@ -231,7 +332,9 @@ pub async fn entity_list(
         entities,
         pagination,
         list_style: list_style_name(list_style).to_string(),
-    }))
+        filter_fields,
+    })
+    .into_response())
 }
 
 /// GET /app/{schema}/entities/_table — HTMX pagination fragment.
@@ -239,7 +342,7 @@ pub async fn entity_table_fragment(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
     Path(name): Path<String>,
-    Query(params): Query<PaginationParams>,
+    Query(raw_params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<impl IntoResponse, CloudError> {
     let schema_def = state
         .registry
@@ -250,12 +353,16 @@ pub async fn entity_table_fragment(
     check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)
         .map_err(|e| CloudError::Forbidden(e.to_string()))?;
 
+    let params = parse_list_params(&raw_params);
     let limit = params.limit.unwrap_or(25);
     let offset = params.offset.unwrap_or(0);
 
-    let query = schema_forge_core::query::Query::new(schema_def.id.clone())
+    let mut query = schema_forge_core::query::Query::new(schema_def.id.clone())
         .with_limit(limit)
         .with_offset(offset);
+    if let Some(filter) = build_filter(&params.filters) {
+        query = query.with_filter(filter);
+    }
     let result = state
         .backend
         .query(&query)
@@ -276,11 +383,14 @@ pub async fn entity_table_fragment(
     schema.apply_theme_labels(&theme);
     let list_style = theme.resolve_list_style(&name);
 
+    let filter_fields = crate::views::extract_filter_fields(&schema_def, &params.filters);
+
     Ok(HtmlTemplate::fragment(CloudEntityListBodyTemplate {
         schema,
         entities,
         pagination,
         list_style: list_style_name(list_style).to_string(),
+        filter_fields,
     }))
 }
 
@@ -601,6 +711,72 @@ pub async fn entity_delete(
     if name == "Theme" {
         crate::theme::reload_theme(&state).await;
     }
+
+    Ok(StatusCode::OK)
+}
+
+/// PATCH /app/{schema}/entities/{id}/move — Move entity (kanban card drag).
+///
+/// Expects form data: `field=<field_name>&value=<new_value>`
+pub async fn entity_move(
+    State(state): State<ForgeState>,
+    OptionalAuth(auth): OptionalAuth,
+    Path((name, id)): Path<(String, String)>,
+    Form(form_data): Form<Vec<(String, String)>>,
+) -> Result<impl IntoResponse, CloudError> {
+    let schema_def = state
+        .registry
+        .get(&name)
+        .await
+        .ok_or_else(|| CloudError::NotFound(format!("Schema '{}' not found", name)))?;
+
+    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)
+        .map_err(|e| CloudError::Forbidden(e.to_string()))?;
+
+    let schema_name =
+        SchemaName::new(&name).map_err(|_| CloudError::NotFound(format!("Invalid schema: {name}")))?;
+    let entity_id = EntityId::parse(&id)
+        .map_err(|_| CloudError::NotFound(format!("Entity '{id}' not found")))?;
+
+    // Extract field and value from form data
+    let field_name = form_data
+        .iter()
+        .find(|(k, _)| k == "field")
+        .map(|(_, v)| v.clone())
+        .ok_or_else(|| CloudError::Internal("Missing 'field' parameter".to_string()))?;
+    let new_value = form_data
+        .iter()
+        .find(|(k, _)| k == "value")
+        .map(|(_, v)| v.clone())
+        .ok_or_else(|| CloudError::Internal("Missing 'value' parameter".to_string()))?;
+
+    // Fetch existing entity
+    let existing = state
+        .backend
+        .get(&schema_name, &entity_id)
+        .await
+        .map_err(|e| CloudError::Internal(e.to_string()))?;
+
+    // Merge the single field update
+    let mut fields = existing.fields.clone();
+    // Determine the right DynamicValue type — for kanban moves it's typically an enum
+    let dv = if let Some(fd) = schema_def.field(&field_name) {
+        if matches!(fd.field_type, FieldType::Enum(_)) {
+            schema_forge_core::types::DynamicValue::Enum(new_value)
+        } else {
+            schema_forge_core::types::DynamicValue::Text(new_value)
+        }
+    } else {
+        schema_forge_core::types::DynamicValue::Text(new_value)
+    };
+    fields.insert(field_name, dv);
+
+    let entity = schema_forge_backend::entity::Entity::with_id(entity_id, schema_name, fields);
+    state
+        .backend
+        .update(&entity)
+        .await
+        .map_err(|e| CloudError::Internal(e.to_string()))?;
 
     Ok(StatusCode::OK)
 }

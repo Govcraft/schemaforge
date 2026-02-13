@@ -1,6 +1,6 @@
 <tr id="entity-{{ entity.id }}">
-    {% for (_, value) in entity.field_values %}
-    <td>{% if value.is_empty() %}<span class="text-base-content/60">-</span>{% else %}{{ value }}{% endif %}</td>
+    {% for field in entity.field_values %}
+    <td>{% if field.is_empty %}<span class="text-base-content/60">-</span>{% else %}{% include "atoms/field_display.html" %}{% endif %}</td>
     {% endfor %}
     <td>
         <div class="flex gap-1.5">

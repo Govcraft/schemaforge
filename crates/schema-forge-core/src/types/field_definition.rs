@@ -91,6 +91,21 @@ impl FieldDefinition {
             .iter()
             .find(|a| matches!(a, FieldAnnotation::FieldAccess { .. }))
     }
+
+    /// Returns the widget type string if this field has a `@widget` annotation.
+    pub fn widget_hint(&self) -> Option<&str> {
+        self.annotations.iter().find_map(|a| match a {
+            FieldAnnotation::Widget { widget_type } => Some(widget_type.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Returns true if this field has the `@kanban_column` annotation.
+    pub fn has_kanban_column(&self) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| matches!(a, FieldAnnotation::KanbanColumn))
+    }
 }
 
 impl std::fmt::Display for FieldDefinition {
@@ -277,5 +292,47 @@ mod tests {
         let fd = FieldDefinition::new(FieldName::new("x").unwrap(), FieldType::Boolean);
         let json = serde_json::to_string(&fd).unwrap();
         assert!(!json.contains("annotations"));
+    }
+
+    #[test]
+    fn widget_hint_some() {
+        let fd = FieldDefinition::with_annotations(
+            FieldName::new("status").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Widget {
+                widget_type: "status_badge".into(),
+            }],
+        );
+        assert_eq!(fd.widget_hint(), Some("status_badge"));
+    }
+
+    #[test]
+    fn widget_hint_none() {
+        let fd = FieldDefinition::new(
+            FieldName::new("name").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        );
+        assert_eq!(fd.widget_hint(), None);
+    }
+
+    #[test]
+    fn has_kanban_column_true() {
+        let fd = FieldDefinition::with_annotations(
+            FieldName::new("stage").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::KanbanColumn],
+        );
+        assert!(fd.has_kanban_column());
+    }
+
+    #[test]
+    fn has_kanban_column_false() {
+        let fd = FieldDefinition::new(
+            FieldName::new("stage").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        );
+        assert!(!fd.has_kanban_column());
     }
 }

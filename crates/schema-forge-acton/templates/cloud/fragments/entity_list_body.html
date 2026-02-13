@@ -1,3 +1,20 @@
+{% if !filter_fields.is_empty() %}
+<div class="sf-filters">
+    {% for filter in filter_fields %}
+    <div class="sf-filter-group">
+        <span class="sf-filter-label">{{ filter.label }}:</span>
+        <a class="sf-filter-pill{% if filter.all_active %} sf-filter-pill-active{% endif %}"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?{% for f2 in filter_fields %}{% if !f2.all_active && !f2.active_value.is_empty() %}{% if f2.name != filter.name %}filter_{{ f2.name }}={{ f2.active_value }}&{% endif %}{% endif %}{% endfor %}"
+           hx-target="#sf-entity-table" hx-swap="innerHTML" hx-push-url="true">All</a>
+        {% for pill in filter.pills %}
+        <a class="sf-filter-pill{% if pill.is_active %} sf-filter-pill-active{% endif %}"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?filter_{{ filter.name }}={{ pill.value }}{% for f2 in filter_fields %}{% if !f2.all_active && !f2.active_value.is_empty() %}{% if f2.name != filter.name %}&filter_{{ f2.name }}={{ f2.active_value }}{% endif %}{% endif %}{% endfor %}"
+           hx-target="#sf-entity-table" hx-swap="innerHTML" hx-push-url="true">{{ pill.value }}</a>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
 {% if entities.is_empty() %}
 <div class="sf-empty">
     <p>No entities yet.</p>
@@ -14,8 +31,8 @@
     </div>
     {% for entity in entities %}
     <div class="sf-list-row" id="sf-entity-{{ entity.id }}">
-        {% for (_, value) in entity.field_values %}
-        <div class="sf-list-cell">{% if value.is_empty() %}<span class="sf-detail-value" style="opacity: 0.4">-</span>{% else %}{{ value }}{% endif %}</div>
+        {% for field in entity.field_values %}
+        <div class="sf-list-cell">{% if field.is_empty %}<span class="sf-detail-value" style="opacity: 0.4">-</span>{% else %}{% include "cloud/atoms/field_display.html" %}{% endif %}</div>
         {% endfor %}
         <div class="sf-list-cell">
             <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}" class="sf-btn sf-btn-secondary sf-btn-sm">View</a>
@@ -35,10 +52,10 @@
     {% for entity in entities %}
     <div class="sf-card" id="sf-entity-{{ entity.id }}">
         <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}" class="sf-card-title">{{ entity.display_value }}</a>
-        {% for (label, value) in entity.field_values %}
+        {% for field in entity.summary_fields() %}
         <div class="sf-card-field">
-            <span class="sf-card-label">{{ label }}</span>
-            <span>{% if value.is_empty() %}-{% else %}{{ value }}{% endif %}</span>
+            <span class="sf-card-label">{{ field.label }}</span>
+            <span>{% include "cloud/atoms/field_display.html" %}</span>
         </div>
         {% endfor %}
         <div style="margin-top: 0.5rem;">
@@ -78,14 +95,14 @@
     <div>
         {% if pagination.has_previous %}
         <a href="#" class="sf-btn sf-btn-secondary sf-btn-sm"
-           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.previous_offset() }}"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.previous_offset() }}{% for f in filter_fields %}{% if !f.active_value.is_empty() %}&filter_{{ f.name }}={{ f.active_value }}{% endif %}{% endfor %}"
            hx-target="#sf-entity-table"
            hx-swap="innerHTML"
         >Previous</a>
         {% endif %}
         {% if pagination.has_next %}
         <a href="#" class="sf-btn sf-btn-secondary sf-btn-sm"
-           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.next_offset() }}"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.next_offset() }}{% for f in filter_fields %}{% if !f.active_value.is_empty() %}&filter_{{ f.name }}={{ f.active_value }}{% endif %}{% endfor %}"
            hx-target="#sf-entity-table"
            hx-swap="innerHTML"
         >Next</a>

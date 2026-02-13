@@ -4,7 +4,7 @@
 //
 // Domain: A multi-tenant project management platform with CRM, HR, and
 // document management capabilities. Designed to exercise every DSL feature
-// including @widget, @dashboard, and @kanban_column annotations.
+// including @widget, @dashboard, @kanban_column, and @format annotations.
 //
 // Organization hierarchy:
 //   Organization (tenant root)
@@ -54,7 +54,7 @@ schema Department {
     description:      text
     head:             -> Employee
     parent_org:       -> Organization required
-    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"])
+    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"]) @format("currency:$")
     headcount_limit:  integer(min: 0) default(50)
     active:           boolean default(true)
 }
@@ -80,7 +80,7 @@ schema Employee {
     manager:          -> Employee
     hire_date:        datetime required @widget("relative_time")
     termination_date: datetime @widget("relative_time")
-    salary:           float(precision: 2) @field_access(read: ["hr", "admin"], write: ["hr", "admin"]) @widget("currency")
+    salary:           float(precision: 2) @field_access(read: ["hr", "admin"], write: ["hr", "admin"]) @widget("currency") @format("currency:$")
     ssn_last_four:    text(max: 4) @field_access(read: ["hr", "admin"], write: ["hr"])
     employment_type:  enum("full_time", "part_time", "contractor", "intern") default("full_time") @widget("status_badge")
     status:           enum("active", "on_leave", "terminated") default("active") @widget("status_badge")
@@ -147,7 +147,7 @@ schema Company {
     industry:         enum("technology", "finance", "healthcare", "education", "retail", "manufacturing", "consulting", "other") @widget("status_badge")
     size:             enum("startup", "smb", "mid_market", "enterprise") @widget("status_badge")
     employee_count:   integer(min: 0)
-    annual_revenue:   float(precision: 2) @field_access(read: ["finance", "sales", "admin"], write: ["finance"]) @widget("currency")
+    annual_revenue:   float(precision: 2) @field_access(read: ["finance", "sales", "admin"], write: ["finance"]) @widget("currency") @format("currency:$")
     website:          text @widget("link")
     description:      richtext
     founded_year:     integer(min: 1800, max: 2100)
@@ -177,10 +177,10 @@ schema Company {
 @access(read: ["sales", "finance", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
 schema Deal {
     name:             text(max: 255) required indexed
-    value:            float(precision: 2) required @field_access(read: ["sales", "finance", "admin"], write: ["sales"]) @widget("currency")
+    value:            float(precision: 2) required @field_access(read: ["sales", "finance", "admin"], write: ["sales"]) @widget("currency") @format("currency:$")
     currency:         text(max: 3) default("USD")
     stage:            enum("prospecting", "qualification", "proposal", "negotiation", "closed_won", "closed_lost") default("prospecting") @widget("status_badge") @kanban_column
-    probability:      integer(min: 0, max: 100) default(10) @widget("progress")
+    probability:      integer(min: 0, max: 100) default(10) @widget("progress") @format("percent")
     expected_close:   datetime @widget("relative_time")
     actual_close:     datetime @widget("relative_time")
     contact:          -> Contact required
@@ -233,8 +233,8 @@ schema Project {
     start_date:       datetime @widget("relative_time")
     target_end_date:  datetime @widget("relative_time")
     actual_end_date:  datetime @widget("relative_time")
-    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"]) @widget("currency")
-    spent:            float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance"]) @widget("currency")
+    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"]) @widget("currency") @format("currency:$")
+    spent:            float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance"]) @widget("currency") @format("currency:$")
     department:       -> Department
     lead:             -> Employee
     members:          -> Employee[]
