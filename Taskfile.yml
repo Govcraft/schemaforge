@@ -10,6 +10,8 @@ vars:
   CSS_INPUT: crates/schema-forge-acton/static/css/input.css
   CSS_OUTPUT: crates/schema-forge-acton/static/css/admin.css
   CSS_CONTENT: "crates/schema-forge-acton/templates/**/*.html"
+  CLOUD_CSS_INPUT: crates/schema-forge-acton/static/css/cloud-input.css
+  CLOUD_CSS_OUTPUT: crates/schema-forge-acton/templates/cloud/base.css
 
 tasks:
   build:
@@ -44,7 +46,11 @@ tasks:
       - |
         set -euo pipefail
 
-        # Build first
+        # Compile CSS
+        npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}'
+        npx @tailwindcss/cli -i {{.CLOUD_CSS_INPUT}} -o {{.CLOUD_CSS_OUTPUT}}
+
+        # Build
         cargo build -p schema-forge-cli --features {{.FEATURES}}
 
         # Start server in background with in-memory DB
@@ -85,6 +91,16 @@ tasks:
     desc: Watch and rebuild Tailwind CSS
     cmds:
       - npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}' --watch
+
+  css:cloud:
+    desc: Build cloud UI Tailwind CSS
+    cmds:
+      - npx @tailwindcss/cli -i {{.CLOUD_CSS_INPUT}} -o {{.CLOUD_CSS_OUTPUT}}
+
+  css:cloud:watch:
+    desc: Watch and rebuild cloud UI Tailwind CSS
+    cmds:
+      - npx @tailwindcss/cli -i {{.CLOUD_CSS_INPUT}} -o {{.CLOUD_CSS_OUTPUT}} --watch
 
   test:
     desc: Run all workspace tests
