@@ -14,31 +14,46 @@
 
 {% if nav_style == "sidebar" %}
   {% include "cloud/shells/sidebar.html" %}
+{% elif nav_style == "sidebar_simple" %}
+  {% include "cloud/shells/sidebar_simple.html" %}
+{% elif nav_style == "stacked_page_header" %}
+  {% include "cloud/shells/stacked_page_header.html" %}
+{% elif nav_style == "stacked_tab" %}
+  {% include "cloud/shells/stacked_tab.html" %}
 {% elif nav_style == "stacked_overlap" %}
   {% include "cloud/shells/stacked_overlap.html" %}
-{% elif nav_style == "minimal" or nav_style == "stacked_compact" %}
-  {% include "cloud/shells/stacked_compact.html" %}
+{% elif nav_style == "multicolumn_constrained" %}
+  {% include "cloud/shells/multicolumn_constrained.html" %}
+{% elif nav_style == "multicolumn_sidebar" %}
+  {% include "cloud/shells/multicolumn_sidebar.html" %}
+{% elif nav_style == "multicolumn_narrow" %}
+  {% include "cloud/shells/multicolumn_narrow.html" %}
 {% else %}
   {% include "cloud/shells/stacked.html" %}
-  </div>
-</main>
 {% endif %}
 
     {% block content %}{% endblock %}
 
-{% if nav_style == "sidebar" %}
+{% if nav_style == "stacked_overlap" %}
+      </div>{# sf-card-body #}
+{% endif %}
 {% if container_style == "narrow" %}</div>{% endif %}
-    </div>
-  </main>
-</div>
-{% elif nav_style == "stacked_overlap" %}
+{% if nav_style == "multicolumn_constrained" %}
       </div>
-{% if container_style == "narrow" %}</div>{% endif %}
+    </main>
+    <aside class="sticky top-8 hidden w-96 shrink-0 lg:block">
+      <!-- Right column placeholder -->
+    </aside>
+  </div>
+</div>
+{% elif nav_style == "multicolumn_sidebar" %}
     </div>
   </main>
+  <aside class="fixed inset-y-0 right-0 hidden w-96 overflow-y-auto border-l border-white/10 xl:block">
+    <!-- Secondary column placeholder -->
+  </aside>
 </div>
 {% else %}
-{% if container_style == "narrow" %}</div>{% endif %}
     </div>
   </main>
 </div>

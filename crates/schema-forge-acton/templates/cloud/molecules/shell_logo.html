@@ -1,0 +1,5 @@
+{% if logo_url %}
+<img src="{{ logo_url }}" alt="{{ app_title }}" class="h-8 w-auto" />
+{% else %}
+<span class="text-lg font-bold text-white">{{ app_title }}</span>
+{% endif %}

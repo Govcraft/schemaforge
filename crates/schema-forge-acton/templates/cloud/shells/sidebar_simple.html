@@ -24,21 +24,9 @@
   {% include "cloud/molecules/shell_sidebar_nav.html" %}
 </div>
 
-<!-- Main content with header -->
-<div class="lg:pl-72">
-  <div class="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-x-4 border-b border-white/10 bg-gray-900 px-4 shadow-xs sm:gap-x-6 sm:px-6 lg:px-8">
-    <button type="button" command="show-modal" commandfor="cloud-sidebar" class="-m-2.5 p-2.5 text-gray-400 hover:text-white lg:hidden">
-      <span class="sr-only">Open sidebar</span>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" class="size-6"><path d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
-    </button>
-    <div aria-hidden="true" class="h-6 w-px bg-white/10 lg:hidden"></div>
-    <div class="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
-      <div class="flex-1"></div>
-      <div class="flex items-center gap-x-4 lg:gap-x-6">
-        {% include "cloud/molecules/shell_header_user_controls.html" %}
-      </div>
-    </div>
-  </div>
-  <main class="py-10">
-    <div class="sf-container-{{ container_style }}">
+<!-- Mobile-only sticky bar -->
+{% include "cloud/molecules/shell_sidebar_mobile_bar.html" %}
+
+<main class="py-10 lg:pl-72">
+  <div class="sf-container-{{ container_style }}">
 {% if container_style == "narrow" %}<div class="sf-container-narrow-inner">{% endif %}

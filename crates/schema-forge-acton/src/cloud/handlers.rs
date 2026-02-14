@@ -111,6 +111,7 @@ async fn build_nav(
             NavSchemaEntry {
                 label: theme.schema_label(&name),
                 url_name: name,
+                entity_count: None,
             }
         })
         .collect();
@@ -133,7 +134,14 @@ async fn build_nav(
 fn nav_style_name(theme: &Theme) -> &str {
     match theme.nav_style {
         crate::theme::NavStyle::Sidebar => "sidebar",
-        crate::theme::NavStyle::TopNav => "topnav",
+        crate::theme::NavStyle::SidebarSimple => "sidebar_simple",
+        crate::theme::NavStyle::Stacked => "stacked",
+        crate::theme::NavStyle::StackedPageHeader => "stacked_page_header",
+        crate::theme::NavStyle::StackedTab => "stacked_tab",
+        crate::theme::NavStyle::StackedOverlap => "stacked_overlap",
+        crate::theme::NavStyle::MulticolumnConstrained => "multicolumn_constrained",
+        crate::theme::NavStyle::MulticolumnSidebar => "multicolumn_sidebar",
+        crate::theme::NavStyle::MulticolumnNarrow => "multicolumn_narrow",
         crate::theme::NavStyle::Minimal => "minimal",
     }
 }
@@ -270,8 +278,10 @@ pub async fn dashboard(
         &CloudDashboardTemplate {
             app_title: theme.app_title(),
             nav_style: nav_style_name(&theme).to_string(),
+            nav_color_scheme: theme.nav_color_scheme.clone(),
             logo_url: theme.logo_url.clone(),
             nav_schemas,
+            nav_teams: vec![],
             active_nav: "dashboard".to_string(),
             schema_cards,
             current_user,
@@ -424,8 +434,10 @@ pub async fn entity_list(
                 &CloudEntityListKanbanTemplate {
                     app_title: theme.app_title(),
                     nav_style: nav_style_name(&theme).to_string(),
+                    nav_color_scheme: theme.nav_color_scheme.clone(),
                     logo_url: theme.logo_url.clone(),
                     nav_schemas,
+                    nav_teams: vec![],
                     active_nav: name.clone(),
                     schema,
                     columns,
@@ -502,8 +514,10 @@ pub async fn entity_list(
         &CloudEntityListTemplate {
             app_title: theme.app_title(),
             nav_style: nav_style_name(&theme).to_string(),
+            nav_color_scheme: theme.nav_color_scheme.clone(),
             logo_url: theme.logo_url.clone(),
             nav_schemas,
+            nav_teams: vec![],
             active_nav: name.clone(),
             schema,
             entities,
@@ -641,8 +655,10 @@ pub async fn entity_create_form(
         &CloudEntityFormTemplate {
             app_title: theme.app_title(),
             nav_style: nav_style_name(&theme).to_string(),
+            nav_color_scheme: theme.nav_color_scheme.clone(),
             logo_url: theme.logo_url.clone(),
             nav_schemas,
+            nav_teams: vec![],
             active_nav: name.clone(),
             schema,
             fields,
@@ -738,8 +754,10 @@ pub async fn entity_create(
                     &CloudEntityFormTemplate {
                         app_title: theme.app_title(),
                         nav_style: nav_style_name(&theme).to_string(),
+                        nav_color_scheme: theme.nav_color_scheme.clone(),
                         logo_url: theme.logo_url.clone(),
                         nav_schemas,
+                        nav_teams: vec![],
                         active_nav: name.clone(),
                         schema,
                         fields,
@@ -829,8 +847,10 @@ pub async fn entity_detail(
         &CloudEntityDetailTemplate {
             app_title: theme.app_title(),
             nav_style: nav_style_name(&theme).to_string(),
+            nav_color_scheme: theme.nav_color_scheme.clone(),
             logo_url: theme.logo_url.clone(),
             nav_schemas,
+            nav_teams: vec![],
             active_nav: name.clone(),
             schema,
             entity: entity_view,
@@ -918,8 +938,10 @@ pub async fn entity_edit_form(
         &CloudEntityFormTemplate {
             app_title: theme.app_title(),
             nav_style: nav_style_name(&theme).to_string(),
+            nav_color_scheme: theme.nav_color_scheme.clone(),
             logo_url: theme.logo_url.clone(),
             nav_schemas,
+            nav_teams: vec![],
             active_nav: name.clone(),
             schema,
             fields,
@@ -1017,8 +1039,10 @@ pub async fn entity_update(
                     &CloudEntityFormTemplate {
                         app_title: theme.app_title(),
                         nav_style: nav_style_name(&theme).to_string(),
+                        nav_color_scheme: theme.nav_color_scheme.clone(),
                         logo_url: theme.logo_url.clone(),
                         nav_schemas,
+                        nav_teams: vec![],
                         active_nav: name.clone(),
                         schema,
                         fields,

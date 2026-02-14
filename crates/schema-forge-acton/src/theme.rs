@@ -38,11 +38,18 @@ pub enum DetailStyle {
 
 /// Navigation layout.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum NavStyle {
     Sidebar,
-    #[serde(rename = "topnav")]
-    TopNav,
+    SidebarSimple,
+    #[serde(alias = "topnav")]
+    Stacked,
+    StackedPageHeader,
+    StackedTab,
+    StackedOverlap,
+    MulticolumnConstrained,
+    MulticolumnSidebar,
+    MulticolumnNarrow,
     Minimal,
 }
 
@@ -135,6 +142,7 @@ pub struct Theme {
     pub list_style: ListStyle,
     pub detail_style: DetailStyle,
     pub nav_style: NavStyle,
+    pub nav_color_scheme: String,
     pub density: Density,
     pub heading_style: HeadingStyle,
     pub stats_style: StatsStyle,
@@ -169,7 +177,8 @@ impl Default for Theme {
             font_family: "system-ui, sans-serif".to_string(),
             list_style: ListStyle::Table,
             detail_style: DetailStyle::Full,
-            nav_style: NavStyle::Sidebar,
+            nav_style: NavStyle::SidebarSimple,
+            nav_color_scheme: "dark".to_string(),
             density: Density::Comfortable,
             heading_style: HeadingStyle::WithActions,
             stats_style: StatsStyle::Simple,
@@ -211,6 +220,7 @@ impl Theme {
             list_style: extract_enum(fields, "list_style").unwrap_or(defaults.list_style),
             detail_style: extract_enum(fields, "detail_style").unwrap_or(defaults.detail_style),
             nav_style: extract_enum(fields, "nav_style").unwrap_or(defaults.nav_style),
+            nav_color_scheme: extract_text(fields, "nav_color_scheme", &defaults.nav_color_scheme),
             density: extract_enum(fields, "density").unwrap_or(defaults.density),
             heading_style: extract_enum(fields, "heading_style").unwrap_or(defaults.heading_style),
             stats_style: extract_enum(fields, "stats_style").unwrap_or(defaults.stats_style),
@@ -543,7 +553,7 @@ mod tests {
         assert_eq!(theme.primary_color, "#3B82F6");
         assert_eq!(theme.list_style, ListStyle::Table);
         assert_eq!(theme.detail_style, DetailStyle::Full);
-        assert_eq!(theme.nav_style, NavStyle::Sidebar);
+        assert_eq!(theme.nav_style, NavStyle::SidebarSimple);
         assert_eq!(theme.density, Density::Comfortable);
         assert!(theme.active);
     }
@@ -1082,5 +1092,73 @@ mod tests {
         };
         assert_eq!(theme.resolve_list_style("Contact"), &ListStyle::GridProfile);
         assert_eq!(theme.resolve_list_style("Company"), &ListStyle::Table);
+    }
+
+    #[test]
+    fn serde_roundtrip_nav_style_all_variants() {
+        let cases = [
+            (NavStyle::Sidebar, "\"sidebar\""),
+            (NavStyle::SidebarSimple, "\"sidebar_simple\""),
+            (NavStyle::Stacked, "\"stacked\""),
+            (NavStyle::StackedPageHeader, "\"stacked_page_header\""),
+            (NavStyle::StackedTab, "\"stacked_tab\""),
+            (NavStyle::StackedOverlap, "\"stacked_overlap\""),
+            (NavStyle::MulticolumnConstrained, "\"multicolumn_constrained\""),
+            (NavStyle::MulticolumnSidebar, "\"multicolumn_sidebar\""),
+            (NavStyle::MulticolumnNarrow, "\"multicolumn_narrow\""),
+            (NavStyle::Minimal, "\"minimal\""),
+        ];
+        for (variant, expected_json) in cases {
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, expected_json, "serialize failed for {:?}", variant);
+            let back: NavStyle = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant, "deserialize failed for {json}");
+        }
+    }
+
+    #[test]
+    fn serde_nav_style_topnav_alias() {
+        let back: NavStyle = serde_json::from_str("\"topnav\"").unwrap();
+        assert_eq!(back, NavStyle::Stacked);
+    }
+
+    #[test]
+    fn from_entity_nav_color_scheme() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "nav_color_scheme".to_string(),
+            DynamicValue::Text("brand".to_string()),
+        );
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.nav_color_scheme, "brand");
+    }
+
+    #[test]
+    fn from_entity_nav_color_scheme_default() {
+        let fields = BTreeMap::new();
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.nav_color_scheme, "dark");
+    }
+
+    #[test]
+    fn from_entity_nav_style_stacked() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "nav_style".to_string(),
+            DynamicValue::Text("stacked".to_string()),
+        );
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.nav_style, NavStyle::Stacked);
+    }
+
+    #[test]
+    fn from_entity_nav_style_multicolumn() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "nav_style".to_string(),
+            DynamicValue::Text("multicolumn_constrained".to_string()),
+        );
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.nav_style, NavStyle::MulticolumnConstrained);
     }
 }

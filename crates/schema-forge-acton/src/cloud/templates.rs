@@ -44,6 +44,16 @@ pub struct BreadcrumbItem {
 pub struct NavSchemaEntry {
     pub url_name: String,
     pub label: String,
+    /// Display string for entity count badge (e.g. "5", "12", "20+"). None = no badge.
+    pub entity_count: Option<String>,
+}
+
+/// Team/group entry for navigation sidebar "Your teams" section.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NavTeamEntry {
+    pub label: String,
+    pub letter: String,
+    pub url: String,
 }
 
 /// A stat item for standalone stats display components.
@@ -85,8 +95,10 @@ pub struct CloudLoginTemplate {
 pub struct CloudDashboardTemplate {
     pub app_title: String,
     pub nav_style: String,
+    pub nav_color_scheme: String,
     pub logo_url: Option<String>,
     pub nav_schemas: Vec<NavSchemaEntry>,
+    pub nav_teams: Vec<NavTeamEntry>,
     pub active_nav: String,
     pub schema_cards: Vec<DashboardCard>,
     pub current_user: Option<CloudUserView>,
@@ -115,8 +127,10 @@ pub struct CloudDashboardTemplate {
 pub struct CloudEntityListTemplate {
     pub app_title: String,
     pub nav_style: String,
+    pub nav_color_scheme: String,
     pub logo_url: Option<String>,
     pub nav_schemas: Vec<NavSchemaEntry>,
+    pub nav_teams: Vec<NavTeamEntry>,
     pub active_nav: String,
     pub schema: SchemaView,
     pub entities: Vec<EntityView>,
@@ -157,8 +171,10 @@ pub struct CloudEntityListBodyTemplate {
 pub struct CloudEntityListKanbanTemplate {
     pub app_title: String,
     pub nav_style: String,
+    pub nav_color_scheme: String,
     pub logo_url: Option<String>,
     pub nav_schemas: Vec<NavSchemaEntry>,
+    pub nav_teams: Vec<NavTeamEntry>,
     pub active_nav: String,
     pub schema: SchemaView,
     pub columns: Vec<KanbanColumn>,
@@ -186,8 +202,10 @@ pub struct CloudEntityListKanbanTemplate {
 pub struct CloudEntityFormTemplate {
     pub app_title: String,
     pub nav_style: String,
+    pub nav_color_scheme: String,
     pub logo_url: Option<String>,
     pub nav_schemas: Vec<NavSchemaEntry>,
+    pub nav_teams: Vec<NavTeamEntry>,
     pub active_nav: String,
     pub schema: SchemaView,
     pub fields: Vec<FieldView>,
@@ -216,8 +234,10 @@ pub struct CloudEntityFormTemplate {
 pub struct CloudEntityDetailTemplate {
     pub app_title: String,
     pub nav_style: String,
+    pub nav_color_scheme: String,
     pub logo_url: Option<String>,
     pub nav_schemas: Vec<NavSchemaEntry>,
+    pub nav_teams: Vec<NavTeamEntry>,
     pub active_nav: String,
     pub schema: SchemaView,
     pub entity: EntityView,

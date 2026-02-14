@@ -22,6 +22,7 @@ pub struct CloudUserView {
     pub display_name: String,
     pub roles: Vec<String>,
     pub is_admin: bool,
+    pub avatar_url: Option<String>,
 }
 
 impl CloudUserView {
@@ -47,6 +48,7 @@ impl CloudUserView {
             display_name,
             is_admin: auth.has_role("admin"),
             roles,
+            avatar_url: None,
         })
     }
 }

@@ -1,0 +1,58 @@
+{#- Sidebar navigation atom macros.
+    Import via: {% from "cloud/atoms/sidebar_macros.html" import count_badge, nav_item, schema_nav_item, team_item, profile_footer %}
+-#}
+
+{#- Count badge pill — renders nothing if count is empty/falsy -#}
+{% macro count_badge(count, color_scheme) %}
+{% if count %}<span aria-hidden="true" class="ml-auto w-9 min-w-max rounded-full px-2.5 py-0.5 text-center text-xs/5 font-medium whitespace-nowrap text-white outline-1 -outline-offset-1 {% if color_scheme == 'brand' %}bg-indigo-800 outline-indigo-600/75{% else %}bg-gray-900 outline-white/15{% endif %}">{{ count }}</span>{% endif %}
+{% endmacro %}
+
+{#- Standard nav link with SVG icon (e.g. Dashboard) -#}
+{% macro nav_item(href, label, icon_svg, is_active, badge_count, color_scheme) %}
+<li>
+  <a href="{{ href }}" class="group flex gap-x-3 rounded-md p-2 text-sm/6 font-semibold {% if is_active %}{% if color_scheme == 'brand' %}bg-black/10 text-white{% else %}bg-white/5 text-white{% endif %}{% else %}{% if color_scheme == 'brand' %}text-indigo-100 hover:text-white hover:bg-black/10{% else %}text-gray-400 hover:text-white hover:bg-white/5{% endif %}{% endif %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" class="size-6 shrink-0 {% if is_active %}text-white{% else %}{% if color_scheme == 'brand' %}text-indigo-100 group-hover:text-white{% endif %}{% endif %}">{{ icon_svg }}</svg>
+    {{ label }}
+    {{ count_badge(badge_count, color_scheme) }}
+  </a>
+</li>
+{% endmacro %}
+
+{#- Schema nav link with letter avatar badge -#}
+{% macro schema_nav_item(href, label, letter, is_active, badge_count, color_scheme) %}
+<li>
+  <a href="{{ href }}" class="group flex gap-x-3 rounded-md p-2 text-sm/6 font-semibold {% if is_active %}{% if color_scheme == 'brand' %}bg-black/10 text-white{% else %}bg-white/5 text-white{% endif %}{% else %}{% if color_scheme == 'brand' %}text-indigo-100 hover:text-white hover:bg-black/10{% else %}text-gray-400 hover:text-white hover:bg-white/5{% endif %}{% endif %}">
+    <span class="flex size-6 shrink-0 items-center justify-center rounded-lg {% if color_scheme == 'brand' %}border border-indigo-500 bg-indigo-700 text-[0.625rem] font-medium text-white{% else %}border border-white/10 bg-white/5 text-[0.625rem] font-medium text-gray-400 group-hover:border-white/20 group-hover:text-white{% endif %}">{{ letter }}</span>
+    <span class="truncate">{{ label }}</span>
+    {{ count_badge(badge_count, color_scheme) }}
+  </a>
+</li>
+{% endmacro %}
+
+{#- Team/group nav link with letter avatar -#}
+{% macro team_item(href, label, letter, color_scheme) %}
+<li>
+  <a href="{{ href }}" class="group flex gap-x-3 rounded-md p-2 text-sm/6 font-semibold {% if color_scheme == 'brand' %}text-indigo-100 hover:bg-black/10 hover:text-white{% else %}text-gray-400 hover:bg-white/5 hover:text-white{% endif %}">
+    <span class="flex size-6 shrink-0 items-center justify-center rounded-lg {% if color_scheme == 'brand' %}border border-indigo-500 bg-indigo-700 text-[0.625rem] font-medium text-white{% else %}border border-white/10 bg-white/5 text-[0.625rem] font-medium text-gray-400 group-hover:border-white/20 group-hover:text-white{% endif %}">{{ letter }}</span>
+    <span class="truncate">{{ label }}</span>
+  </a>
+</li>
+{% endmacro %}
+
+{#- Profile footer with avatar + display name + subtle sign-out -#}
+{% macro profile_footer(user, color_scheme) %}
+<li class="-mx-6 mt-auto">
+  <a href="#" class="flex items-center gap-x-4 px-6 py-3 text-sm/6 font-semibold text-white {% if color_scheme == 'brand' %}hover:bg-black/10{% else %}hover:bg-white/5{% endif %}">
+    {% if user.avatar_url %}
+    <img src="{{ user.avatar_url }}" alt="" class="size-8 rounded-full {% if color_scheme == 'brand' %}bg-indigo-800{% else %}bg-gray-800{% endif %} outline -outline-offset-1 outline-white/10" />
+    {% else %}
+    <span class="flex size-8 shrink-0 items-center justify-center rounded-full {% if color_scheme == 'brand' %}bg-indigo-800{% else %}bg-gray-800{% endif %} outline -outline-offset-1 outline-white/10 text-sm font-medium text-white">{{ user.display_name[:1] | upper }}</span>
+    {% endif %}
+    <span class="sr-only">Your profile</span>
+    <span aria-hidden="true">{{ user.display_name }}</span>
+  </a>
+  <form method="post" action="/app/logout" class="px-6 pb-2">
+    <button type="submit" class="text-xs {% if color_scheme == 'brand' %}text-indigo-300 hover:text-white{% else %}text-gray-500 hover:text-gray-300{% endif %}">Sign out</button>
+  </form>
+</li>
+{% endmacro %}

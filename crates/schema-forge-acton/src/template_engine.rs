@@ -505,6 +505,9 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         "cloud/atoms/composite.html" => {
             Some(include_str!("../templates/cloud/atoms/composite.html"))
         }
+        "cloud/atoms/sidebar_macros.html" => {
+            Some(include_str!("../templates/cloud/atoms/sidebar_macros.html"))
+        }
         "cloud/base.css" => Some(include_str!("../templates/cloud/base.css")),
 
         // -----------------------------------------------------------------
@@ -516,11 +519,60 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         "cloud/shells/stacked_overlap.html" => {
             Some(include_str!("../templates/cloud/shells/stacked_overlap.html"))
         }
-        "cloud/shells/stacked_compact.html" => {
-            Some(include_str!("../templates/cloud/shells/stacked_compact.html"))
+        "cloud/shells/stacked_page_header.html" => {
+            Some(include_str!("../templates/cloud/shells/stacked_page_header.html"))
+        }
+        "cloud/shells/stacked_tab.html" => {
+            Some(include_str!("../templates/cloud/shells/stacked_tab.html"))
         }
         "cloud/shells/sidebar.html" => {
             Some(include_str!("../templates/cloud/shells/sidebar.html"))
+        }
+        "cloud/shells/sidebar_simple.html" => {
+            Some(include_str!("../templates/cloud/shells/sidebar_simple.html"))
+        }
+        "cloud/shells/multicolumn_constrained.html" => {
+            Some(include_str!("../templates/cloud/shells/multicolumn_constrained.html"))
+        }
+        "cloud/shells/multicolumn_sidebar.html" => {
+            Some(include_str!("../templates/cloud/shells/multicolumn_sidebar.html"))
+        }
+        "cloud/shells/multicolumn_narrow.html" => {
+            Some(include_str!("../templates/cloud/shells/multicolumn_narrow.html"))
+        }
+
+        // -----------------------------------------------------------------
+        // Cloud shell molecules (shared building blocks for shells)
+        // -----------------------------------------------------------------
+        "cloud/molecules/shell_logo.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_logo.html"))
+        }
+        "cloud/molecules/shell_sidebar_nav.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_sidebar_nav.html"))
+        }
+        "cloud/molecules/shell_stacked_nav_inner.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_stacked_nav_inner.html"))
+        }
+        "cloud/molecules/shell_mobile_disclosure.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_mobile_disclosure.html"))
+        }
+        "cloud/molecules/shell_header_user_controls.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_header_user_controls.html"))
+        }
+        "cloud/molecules/shell_sidebar_mobile_bar.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_sidebar_mobile_bar.html"))
+        }
+        "cloud/molecules/shell_sidebar_icon_nav.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_sidebar_icon_nav.html"))
+        }
+        "cloud/molecules/shell_stacked_tab_nav_inner.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_stacked_tab_nav_inner.html"))
+        }
+        "cloud/molecules/shell_stacked_page_header.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_stacked_page_header.html"))
+        }
+        "cloud/molecules/shell_multicolumn_header.html" => {
+            Some(include_str!("../templates/cloud/molecules/shell_multicolumn_header.html"))
         }
 
         // -----------------------------------------------------------------
@@ -691,11 +743,27 @@ mod tests {
             "cloud/atoms/field_display.html",
             "cloud/atoms/field_input.html",
             "cloud/atoms/composite.html",
+            "cloud/atoms/sidebar_macros.html",
             "cloud/base.css",
             "cloud/shells/stacked.html",
             "cloud/shells/stacked_overlap.html",
-            "cloud/shells/stacked_compact.html",
+            "cloud/shells/stacked_page_header.html",
+            "cloud/shells/stacked_tab.html",
             "cloud/shells/sidebar.html",
+            "cloud/shells/sidebar_simple.html",
+            "cloud/shells/multicolumn_constrained.html",
+            "cloud/shells/multicolumn_sidebar.html",
+            "cloud/shells/multicolumn_narrow.html",
+            "cloud/molecules/shell_logo.html",
+            "cloud/molecules/shell_sidebar_nav.html",
+            "cloud/molecules/shell_stacked_nav_inner.html",
+            "cloud/molecules/shell_mobile_disclosure.html",
+            "cloud/molecules/shell_header_user_controls.html",
+            "cloud/molecules/shell_sidebar_mobile_bar.html",
+            "cloud/molecules/shell_sidebar_icon_nav.html",
+            "cloud/molecules/shell_stacked_tab_nav_inner.html",
+            "cloud/molecules/shell_stacked_page_header.html",
+            "cloud/molecules/shell_multicolumn_header.html",
         ];
         for name in &names {
             assert!(

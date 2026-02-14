@@ -1,4 +1,4 @@
-<!-- Mobile sidebar dialog -->
+<!-- Mobile sidebar dialog (full nav for mobile) -->
 <el-dialog>
   <dialog id="cloud-sidebar" class="backdrop:bg-transparent lg:hidden">
     <el-dialog-backdrop class="fixed inset-0 bg-gray-900/80 transition-opacity duration-300 ease-linear data-closed:opacity-0"></el-dialog-backdrop>
@@ -12,20 +12,18 @@
             </svg>
           </button>
         </div>
-        <!-- Mobile sidebar content -->
         {% include "cloud/molecules/shell_sidebar_nav.html" %}
       </el-dialog-panel>
     </div>
   </dialog>
 </el-dialog>
 
-<!-- Desktop sidebar -->
-<div class="hidden lg:fixed lg:inset-y-0 lg:z-50 lg:flex lg:w-72 lg:flex-col">
-  {% include "cloud/molecules/shell_sidebar_nav.html" %}
+<!-- Desktop icon-only sidebar -->
+<div class="hidden lg:fixed lg:inset-y-0 lg:z-50 lg:flex lg:w-20 lg:flex-col">
+  {% include "cloud/molecules/shell_sidebar_icon_nav.html" %}
 </div>
 
-<!-- Main content with header -->
-<div class="lg:pl-72">
+<div class="lg:pl-20">
   <div class="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-x-4 border-b border-white/10 bg-gray-900 px-4 shadow-xs sm:gap-x-6 sm:px-6 lg:px-8">
     <button type="button" command="show-modal" commandfor="cloud-sidebar" class="-m-2.5 p-2.5 text-gray-400 hover:text-white lg:hidden">
       <span class="sr-only">Open sidebar</span>
@@ -39,6 +37,10 @@
       </div>
     </div>
   </div>
-  <main class="py-10">
-    <div class="sf-container-{{ container_style }}">
+  <!-- Secondary column (left of main on xl) -->
+  <aside class="fixed top-16 bottom-0 left-20 hidden w-96 overflow-y-auto border-r border-white/10 xl:block">
+    <!-- Secondary content placeholder -->
+  </aside>
+  <main class="xl:pl-96">
+    <div class="sf-container-{{ container_style }} py-10">
 {% if container_style == "narrow" %}<div class="sf-container-narrow-inner">{% endif %}

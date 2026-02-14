@@ -6,6 +6,7 @@
     <!-- Mobile menu (el-disclosure) -->
     {% include "cloud/molecules/shell_mobile_disclosure.html" %}
   </nav>
+  {% include "cloud/molecules/shell_stacked_page_header.html" %}
   <main>
-    <div class="sf-container-{{ container_style }} {% if nav_style == 'minimal' %}py-6{% else %}py-10{% endif %}">
+    <div class="sf-container-{{ container_style }} py-10">
 {% if container_style == "narrow" %}<div class="sf-container-narrow-inner">{% endif %}
