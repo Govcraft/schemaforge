@@ -444,7 +444,11 @@ impl EntityStore for SurrealBackend {
                     let value = match obj.get(&key) {
                         Some(surrealdb::sql::Value::Number(n)) => {
                             let v = n.as_float();
-                            if v.is_nan() { 0.0 } else { v }
+                            if v.is_nan() {
+                                0.0
+                            } else {
+                                v
+                            }
                         }
                         _ => 0.0,
                     };

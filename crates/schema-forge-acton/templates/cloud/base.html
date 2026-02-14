@@ -3,62 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}{{ app_title }}{% endblock %}</title>
-    {% if favicon_url %}<link rel="icon" href="{{ favicon_url }}">{% endif %}
-    <link rel="stylesheet" href="/app/theme.css">
-    {% if head_html %}{{ head_html }}{% endif %}
+    <title>{% block title %}SchemaForge{% endblock %}</title>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindplus/elements@1" type="module"></script>
 </head>
 <body class="h-full">
 
-{% if nav_style == "sidebar" %}
-  {% include "cloud/shells/sidebar.html" %}
-{% elif nav_style == "sidebar_simple" %}
-  {% include "cloud/shells/sidebar_simple.html" %}
-{% elif nav_style == "stacked_page_header" %}
-  {% include "cloud/shells/stacked_page_header.html" %}
-{% elif nav_style == "stacked_tab" %}
-  {% include "cloud/shells/stacked_tab.html" %}
-{% elif nav_style == "stacked_overlap" %}
-  {% include "cloud/shells/stacked_overlap.html" %}
-{% elif nav_style == "multicolumn_constrained" %}
-  {% include "cloud/shells/multicolumn_constrained.html" %}
-{% elif nav_style == "multicolumn_sidebar" %}
-  {% include "cloud/shells/multicolumn_sidebar.html" %}
-{% elif nav_style == "multicolumn_narrow" %}
-  {% include "cloud/shells/multicolumn_narrow.html" %}
-{% else %}
-  {% include "cloud/shells/stacked.html" %}
-{% endif %}
+{% include "cloud/shells/sidebar.html" %}
 
     {% block content %}{% endblock %}
 
-{% if nav_style == "stacked_overlap" %}
-      </div>{# sf-card-body #}
-{% endif %}
-{% if container_style == "narrow" %}</div>{% endif %}
-{% if nav_style == "multicolumn_constrained" %}
-      </div>
-    </main>
-    <aside class="sticky top-8 hidden w-96 shrink-0 lg:block">
-      <!-- Right column placeholder -->
-    </aside>
-  </div>
-</div>
-{% elif nav_style == "multicolumn_sidebar" %}
-    </div>
-  </main>
-  <aside class="fixed inset-y-0 right-0 hidden w-96 overflow-y-auto border-l border-white/10 xl:block">
-    <!-- Secondary column placeholder -->
-  </aside>
-</div>
-{% else %}
     </div>
   </main>
 </div>
-{% endif %}
 
-{% if footer_html %}<footer class="bg-gray-800/50 border-t border-white/10"><div class="sf-container-standard py-4 text-sm text-gray-400">{{ footer_html }}</div></footer>{% endif %}
 </body>
 </html>

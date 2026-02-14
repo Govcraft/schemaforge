@@ -1,7 +1,7 @@
-//! Shared authentication utilities for admin-ui and cloud-ui.
+//! Shared authentication utilities for admin-ui and widget-ui.
 //!
 //! Contains user validation, bootstrap logic, and shared types that both
-//! the admin and cloud UIs depend on.
+//! the admin and site UIs depend on.
 
 use serde::Deserialize;
 

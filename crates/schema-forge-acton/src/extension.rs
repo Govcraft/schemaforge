@@ -25,8 +25,6 @@ use crate::state::{DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState
 /// ```
 pub struct SchemaForgeExtension {
     state: ForgeState,
-    #[cfg(feature = "cloud-ui")]
-    static_dir: Option<std::path::PathBuf>,
 }
 
 /// Builder for `SchemaForgeExtension`.
@@ -34,17 +32,15 @@ pub struct SchemaForgeExtensionBuilder {
     backend: Option<Arc<dyn DynForgeBackend>>,
     auth_provider: Option<Arc<dyn crate::auth::AuthProvider>>,
     record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
-    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     surreal_client: Option<
         schema_forge_surrealdb::surrealdb::Surreal<
             schema_forge_surrealdb::surrealdb::engine::any::Any,
         >,
     >,
-    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     admin_credentials: Option<(String, String)>,
-    #[cfg(feature = "cloud-ui")]
-    static_dir: Option<std::path::PathBuf>,
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     template_dir: Option<std::path::PathBuf>,
 }
 
@@ -55,13 +51,11 @@ impl SchemaForgeExtensionBuilder {
             backend: None,
             auth_provider: None,
             record_access_policy: None,
-            #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             surreal_client: None,
-            #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             admin_credentials: None,
-            #[cfg(feature = "cloud-ui")]
-            static_dir: None,
-            #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             template_dir: None,
         }
     }
@@ -111,7 +105,7 @@ impl SchemaForgeExtensionBuilder {
     ///
     /// The same client used for `SurrealBackend::from_client()` can be cloned
     /// and passed here for auth queries against the `_forge_users` table.
-    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     pub fn with_surreal_client(
         mut self,
         client: schema_forge_surrealdb::surrealdb::Surreal<
@@ -126,24 +120,17 @@ impl SchemaForgeExtensionBuilder {
     ///
     /// If the `_forge_users` table is empty during `build()`, an admin user
     /// will be created with these credentials.
-    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     pub fn with_admin_credentials(mut self, username: String, password: String) -> Self {
         self.admin_credentials = Some((username, password));
         self
     }
 
-    /// Set the directory to serve static files from at `/app/static/`.
-    #[cfg(feature = "cloud-ui")]
-    pub fn with_static_dir(mut self, dir: std::path::PathBuf) -> Self {
-        self.static_dir = Some(dir);
-        self
-    }
-
-    /// Set the directory for MiniJinja template overrides.
+    /// Set the directory for MiniJinja templates.
     ///
-    /// When set, templates in this directory take priority over embedded defaults.
-    /// If not set, the engine auto-detects `~/.config/schema-forge/templates/`.
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+    /// Required when `admin-ui` or `widget-ui` features are enabled.
+    /// Templates are loaded exclusively from this directory (no embedded fallback).
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     pub fn with_template_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.template_dir = Some(dir);
         self
@@ -171,7 +158,7 @@ impl SchemaForgeExtensionBuilder {
         crate::system::seed_system_schemas(&registry, backend.as_ref()).await?;
 
         // Bootstrap admin user if configured
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         if let (Some(ref db), Some((ref username, ref password))) =
             (&self.surreal_client, &self.admin_credentials)
         {
@@ -199,14 +186,6 @@ impl SchemaForgeExtensionBuilder {
             None
         };
 
-        // Load active theme
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        let theme = {
-            let active_theme =
-                crate::theme::load_active_theme(&registry, backend.as_ref()).await;
-            Arc::new(arc_swap::ArcSwap::new(Arc::new(active_theme)))
-        };
-
         // Build initial GraphQL schema
         #[cfg(feature = "graphql")]
         let graphql_schema = {
@@ -214,20 +193,15 @@ impl SchemaForgeExtensionBuilder {
             Arc::new(arc_swap::ArcSwap::new(Arc::new(gql_schema)))
         };
 
-        // Construct MiniJinja template engine
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        // Construct MiniJinja template engine — filesystem-only, directory required
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         let template_engine = {
-            let override_dir = self.template_dir.or_else(|| {
-                #[cfg(feature = "cloud-ui")]
-                {
-                    dirs::config_dir().map(|d| d.join("schema-forge/templates"))
-                }
-                #[cfg(not(feature = "cloud-ui"))]
-                {
-                    None
-                }
-            });
-            Arc::new(crate::template_engine::TemplateEngine::new(override_dir))
+            let template_dir = self.template_dir.ok_or_else(|| ForgeError::Internal {
+                message: "Template directory required when admin-ui or widget-ui is enabled \
+                              (call .with_template_dir())"
+                    .to_string(),
+            })?;
+            Arc::new(crate::template_engine::TemplateEngine::new(template_dir))
         };
 
         let state = ForgeState {
@@ -236,21 +210,15 @@ impl SchemaForgeExtensionBuilder {
             auth_provider: self.auth_provider,
             tenant_config,
             record_access_policy: self.record_access_policy,
-            #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-            theme,
             #[cfg(feature = "graphql")]
             graphql_schema,
-            #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             surreal_client: self.surreal_client,
-            #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             template_engine,
         };
 
-        Ok(SchemaForgeExtension {
-            state,
-            #[cfg(feature = "cloud-ui")]
-            static_dir: self.static_dir,
-        })
+        Ok(SchemaForgeExtension { state })
     }
 }
 
@@ -386,17 +354,17 @@ impl SchemaForgeExtension {
         router.nest("/forge", widget_router)
     }
 
-    /// Register Cloud UI routes onto an existing Router.
+    /// Register site UI routes onto an existing Router.
     ///
-    /// Only available when the `cloud-ui` feature is enabled.
-    /// Nests cloud routes under `/app/`, providing a complete themed
-    /// application UI with `sf-` prefixed semantic HTML and CSS custom
-    /// properties from the active Theme.
+    /// Only available when the `widget-ui` feature is enabled.
+    /// Nests site routes under `/app/`, providing a complete application
+    /// UI with `sf-` prefixed semantic HTML.
     ///
-    /// Auth middleware is applied so cloud requests respect schema `@access`
-    /// annotations.
-    #[cfg(feature = "cloud-ui")]
-    pub fn register_cloud_routes<S>(&self, router: Router<S>) -> Router<S>
+    /// Applies an in-memory session layer for session-based authentication.
+    /// Protected routes require authentication; unauthenticated requests are
+    /// redirected to `/app/login`.
+    #[cfg(feature = "widget-ui")]
+    pub fn register_site_routes<S>(&self, router: Router<S>) -> Router<S>
     where
         S: Clone + Send + Sync + 'static,
     {
@@ -405,31 +373,17 @@ impl SchemaForgeExtension {
 
         let session_config = acton_service::session::SessionConfig {
             secure: false,
-            cookie_name: "forge_cloud".to_string(),
+            cookie_name: "forge_site".to_string(),
             ..Default::default()
         };
         let session_layer = acton_service::session::create_memory_session_layer(&session_config);
 
-        let cloud_router = crate::cloud::routes::cloud_routes()
+        let site_router = crate::widget::routes::site_routes()
             .layer(session_layer)
             .with_state(self.state.clone());
-        let router = router
-            .nest("/app/", cloud_router)
-            .route("/app", get(|| async { Redirect::permanent("/app/") }));
-
-        // Mount static file serving if configured
-        if let Some(ref dir) = self.static_dir {
-            if dir.is_dir() {
-                router.nest_service(
-                    "/app/static",
-                    tower_http::services::ServeDir::new(dir),
-                )
-            } else {
-                router
-            }
-        } else {
-            router
-        }
+        router
+            .nest("/app/", site_router)
+            .route("/app", get(|| async { Redirect::permanent("/app/") }))
     }
 
     /// Get a reference to the schema registry.

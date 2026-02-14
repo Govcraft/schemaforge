@@ -38,12 +38,13 @@ async fn admin_test_state() -> ForgeState {
         auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
-        theme: Arc::new(arc_swap::ArcSwap::new(Arc::new(
-            schema_forge_acton::theme::Theme::default(),
-        ))),
+        #[cfg(feature = "graphql")]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
         surreal_client: None,
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     }
 }
@@ -617,6 +618,7 @@ async fn register_admin_routes_mounts_under_admin() {
 
     let extension = SchemaForgeExtension::builder()
         .with_backend(backend)
+        .with_template_dir(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"))
         .build()
         .await
         .expect("extension");

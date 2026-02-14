@@ -11,13 +11,12 @@ use schema_forge_core::types::EntityId;
 use crate::shared_auth::LoginForm;
 use crate::state::ForgeState;
 
-use super::css;
-use super::handlers::{render_cloud, CloudError};
-use super::templates::CloudLoginTemplate;
+use super::handlers::{render_site, SiteError};
+use super::templates::SiteLoginTemplate;
 
-/// Template-friendly view of the current cloud user.
+/// Template-friendly view of the current site user.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct CloudUserView {
+pub struct SiteUserView {
     pub username: String,
     pub display_name: String,
     pub roles: Vec<String>,
@@ -25,7 +24,7 @@ pub struct CloudUserView {
     pub avatar_url: Option<String>,
 }
 
-impl CloudUserView {
+impl SiteUserView {
     /// Build from session data. Returns `None` if not authenticated.
     pub fn from_session(auth: &AuthSession) -> Option<Self> {
         if !auth.is_authenticated() {
@@ -57,7 +56,7 @@ impl CloudUserView {
 ///
 /// Unauthenticated requests redirect to /app/login.
 /// HTMX requests get HX-Redirect header instead of 302.
-pub async fn require_cloud_auth(
+pub async fn require_site_auth(
     auth_session: TypedSession<AuthSession>,
     mut request: Request,
     next: Next,
@@ -94,14 +93,11 @@ pub async fn login_page(
     if auth.data().is_authenticated() {
         return Redirect::to("/app/").into_response();
     }
-    let theme = state.theme.load();
-    render_cloud(&state, "cloud/login.html", &CloudLoginTemplate {
-        app_title: theme.app_title(),
-        logo_url: theme.logo_url.clone(),
-        error: None,
-        favicon_url: theme.favicon_url.clone(),
-        head_html: theme.head_html.as_ref().map(|h| css::sanitize_html(h)),
-    })
+    render_site(
+        &state,
+        "cloud/login.html",
+        &SiteLoginTemplate { error: None },
+    )
 }
 
 /// POST /app/login — validates via shared_auth::validate_credentials()
@@ -109,40 +105,36 @@ pub async fn login_submit(
     State(state): State<ForgeState>,
     mut auth: TypedSession<AuthSession>,
     Form(form): Form<LoginForm>,
-) -> Result<Response, CloudError> {
-    let db = state
-        .surreal_client
-        .as_ref()
-        .ok_or_else(|| CloudError::Internal("SurrealDB client not configured for auth".to_string()))?;
+) -> Result<Response, SiteError> {
+    let db = state.surreal_client.as_ref().ok_or_else(|| {
+        SiteError::Internal("SurrealDB client not configured for auth".to_string())
+    })?;
 
     match crate::shared_auth::validate_credentials(db, &form.username, &form.password)
         .await
-        .map_err(CloudError::Internal)?
+        .map_err(SiteError::Internal)?
     {
         Some(user) => {
             let display_name = user.display_name.unwrap_or_else(|| user.username.clone());
             auth.data_mut().login(user.username.clone(), user.roles);
             auth.data_mut().set_extra("username", user.username);
             auth.data_mut().set_extra("display_name", display_name);
-            auth.save().await.map_err(|e| {
-                CloudError::Internal(format!("Session save failed: {e}"))
-            })?;
-            auth.regenerate().await.map_err(|e| {
-                CloudError::Internal(format!("Session regenerate failed: {e}"))
-            })?;
+            auth.save()
+                .await
+                .map_err(|e| SiteError::Internal(format!("Session save failed: {e}")))?;
+            auth.regenerate()
+                .await
+                .map_err(|e| SiteError::Internal(format!("Session regenerate failed: {e}")))?;
 
             Ok(Redirect::to("/app/").into_response())
         }
-        None => {
-            let theme = state.theme.load();
-            Ok(render_cloud(&state, "cloud/login.html", &CloudLoginTemplate {
-                app_title: theme.app_title(),
-                logo_url: theme.logo_url.clone(),
+        None => Ok(render_site(
+            &state,
+            "cloud/login.html",
+            &SiteLoginTemplate {
                 error: Some("Invalid username or password".to_string()),
-                favicon_url: theme.favicon_url.clone(),
-                head_html: theme.head_html.as_ref().map(|h| css::sanitize_html(h)),
-            }))
-        }
+            },
+        )),
     }
 }
 
@@ -159,13 +151,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cloud_user_view_from_unauthenticated_session() {
+    fn site_user_view_from_unauthenticated_session() {
         let session = AuthSession::default();
-        assert!(CloudUserView::from_session(&session).is_none());
+        assert!(SiteUserView::from_session(&session).is_none());
     }
 
     #[test]
-    fn cloud_user_view_from_authenticated_session() {
+    fn site_user_view_from_authenticated_session() {
         let mut session = AuthSession::default();
         session.login(
             "user1".to_string(),
@@ -174,7 +166,7 @@ mod tests {
         session.set_extra("username", "alice");
         session.set_extra("display_name", "Alice Chen");
 
-        let view = CloudUserView::from_session(&session).unwrap();
+        let view = SiteUserView::from_session(&session).unwrap();
         assert_eq!(view.username, "alice");
         assert_eq!(view.display_name, "Alice Chen");
         assert!(view.is_admin);
@@ -182,12 +174,12 @@ mod tests {
     }
 
     #[test]
-    fn cloud_user_view_non_admin() {
+    fn site_user_view_non_admin() {
         let mut session = AuthSession::default();
         session.login("user2".to_string(), vec!["member".to_string()]);
         session.set_extra("username", "bob");
 
-        let view = CloudUserView::from_session(&session).unwrap();
+        let view = SiteUserView::from_session(&session).unwrap();
         assert_eq!(view.username, "bob");
         assert!(!view.is_admin);
         assert_eq!(view.roles, vec!["member"]);

@@ -22,7 +22,10 @@ pub fn protected_routes() -> Router<ForgeState> {
             "/users/{username}/edit",
             get(handlers::user_edit_form).post(handlers::user_update),
         )
-        .route("/users/{username}/toggle", post(handlers::user_toggle_active))
+        .route(
+            "/users/{username}/toggle",
+            post(handlers::user_toggle_active),
+        )
         // Schema editor: static paths first
         .route("/schemas/new", get(handlers::schema_create_form))
         .route("/schemas", post(handlers::schema_create))

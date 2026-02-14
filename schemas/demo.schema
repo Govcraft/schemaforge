@@ -334,7 +334,7 @@ schema Comment {
 // CONFIGURATION — Theme, tags, and workflows
 // =============================================================================
 
-/* Theme controls the cloud UI appearance: colors, typography, layout styles,
+/* Theme controls the site UI appearance: colors, typography, layout styles,
    and per-schema overrides. The @system annotation marks it as a protected
    system schema — it's auto-created at startup if not already present.
    Use schema_overrides (JSON) to set per-schema list_style, detail_style,

@@ -142,8 +142,8 @@ pub fn badge_color_class(variant: &str) -> &'static str {
         "active" | "done" | "completed" | "closed_won" | "approved" | "published" | "resolved"
         | "won" | "hired" | "accepted" => "sf-badge-success",
         // Error
-        "inactive" | "terminated" | "cancelled" | "closed_lost" | "rejected" | "lost"
-        | "fired" | "declined" | "failed" => "sf-badge-error",
+        "inactive" | "terminated" | "cancelled" | "closed_lost" | "rejected" | "lost" | "fired"
+        | "declined" | "failed" => "sf-badge-error",
         // Warning
         "pending" | "on_hold" | "in_review" | "draft" | "on_leave" | "paused" | "waiting"
         | "suspended" => "sf-badge-warning",
@@ -154,7 +154,9 @@ pub fn badge_color_class(variant: &str) -> &'static str {
         "backlog" | "archived" | "other" | "closed" | "unknown" => "sf-badge-neutral",
         // Fallback: hash to one of the 5 classes
         _ => {
-            let hash: u32 = lower.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            let hash: u32 = lower
+                .bytes()
+                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
             match hash % 5 {
                 0 => "sf-badge-success",
                 1 => "sf-badge-info",
@@ -241,10 +243,7 @@ pub fn find_kanban_field(schema: &SchemaDefinition) -> Option<(String, Vec<Strin
     for f in &schema.fields {
         if f.has_kanban_column() {
             if let FieldType::Enum(variants) = &f.field_type {
-                return Some((
-                    f.name.as_str().to_string(),
-                    variants.as_slice().to_vec(),
-                ));
+                return Some((f.name.as_str().to_string(), variants.as_slice().to_vec()));
             }
         }
     }
@@ -259,10 +258,7 @@ pub fn find_kanban_field(schema: &SchemaDefinition) -> Option<(String, Vec<Strin
             for f in &schema.fields {
                 if f.name.as_str() == field_name.as_str() {
                     if let FieldType::Enum(variants) = &f.field_type {
-                        return Some((
-                            f.name.as_str().to_string(),
-                            variants.as_slice().to_vec(),
-                        ));
+                        return Some((f.name.as_str().to_string(), variants.as_slice().to_vec()));
                     }
                 }
             }
@@ -430,15 +426,6 @@ impl FieldView {
             relation_target,
         }
     }
-
-    /// Apply theme-based label overrides to this field and its children.
-    #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-    pub fn apply_theme_labels(&mut self, schema_name: &str, theme: &crate::theme::Theme) {
-        self.label = theme.field_label(schema_name, &self.name);
-        for child in &mut self.children {
-            child.apply_theme_labels(schema_name, theme);
-        }
-    }
 }
 
 impl SchemaView {
@@ -469,16 +456,6 @@ impl SchemaView {
             version,
             fields,
             url_name,
-        }
-    }
-
-    /// Apply theme-based label overrides to the schema name and its fields.
-    #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-    pub fn apply_theme_labels(&mut self, theme: &crate::theme::Theme) {
-        // Override display name but keep url_name unchanged for routing
-        self.name = theme.schema_label(&self.url_name);
-        for field in &mut self.fields {
-            field.apply_theme_labels(&self.url_name, theme);
         }
     }
 }
@@ -548,9 +525,7 @@ impl EntityView {
             .iter()
             .map(|f| {
                 let dv = entity.field(f.name.as_str());
-                let raw_value = dv
-                    .map(dynamic_value_display)
-                    .unwrap_or_default();
+                let raw_value = dv.map(dynamic_value_display).unwrap_or_default();
                 let formatted = dv
                     .map(|v| format_with_refs(v, f, ref_display))
                     .unwrap_or_default();
@@ -1533,10 +1508,14 @@ mod tests {
         let second = badge_color_class("custom_status");
         assert_eq!(first, second);
         // Should be one of the 5 classes
-        assert!(
-            ["sf-badge-success", "sf-badge-info", "sf-badge-warning", "sf-badge-error", "sf-badge-neutral"]
-                .contains(&first)
-        );
+        assert!([
+            "sf-badge-success",
+            "sf-badge-info",
+            "sf-badge-warning",
+            "sf-badge-error",
+            "sf-badge-neutral"
+        ]
+        .contains(&first));
     }
 
     // --- relative_time_display tests ---
@@ -1585,7 +1564,10 @@ mod tests {
             .to_string();
         let result = relative_time_display(&dt, now);
         // Should be a formatted date like "Jan 15, 2024"
-        assert!(result.contains(','), "Expected formatted date, got: {result}");
+        assert!(
+            result.contains(','),
+            "Expected formatted date, got: {result}"
+        );
     }
 
     #[test]
@@ -1598,9 +1580,18 @@ mod tests {
 
     #[test]
     fn field_type_name_values() {
-        assert_eq!(field_type_name(&FieldType::Text(TextConstraints::unconstrained())), "text");
-        assert_eq!(field_type_name(&FieldType::Integer(IntegerConstraints::unconstrained())), "integer");
-        assert_eq!(field_type_name(&FieldType::Float(FloatConstraints::unconstrained())), "float");
+        assert_eq!(
+            field_type_name(&FieldType::Text(TextConstraints::unconstrained())),
+            "text"
+        );
+        assert_eq!(
+            field_type_name(&FieldType::Integer(IntegerConstraints::unconstrained())),
+            "integer"
+        );
+        assert_eq!(
+            field_type_name(&FieldType::Float(FloatConstraints::unconstrained())),
+            "float"
+        );
         assert_eq!(field_type_name(&FieldType::Boolean), "boolean");
         assert_eq!(field_type_name(&FieldType::DateTime), "datetime");
         assert_eq!(field_type_name(&FieldType::Json), "json");
@@ -1615,9 +1606,7 @@ mod tests {
             SchemaName::new("Task").unwrap(),
             vec![FieldDefinition::with_annotations(
                 FieldName::new("status").unwrap(),
-                FieldType::Enum(
-                    EnumVariants::new(vec!["active".into(), "done".into()]).unwrap(),
-                ),
+                FieldType::Enum(EnumVariants::new(vec!["active".into(), "done".into()]).unwrap()),
                 vec![],
                 vec![schema_forge_core::types::FieldAnnotation::Widget {
                     widget_type: "status_badge".into(),
@@ -1637,7 +1626,10 @@ mod tests {
             view.field_values[0].widget_type,
             Some("status_badge".to_string())
         );
-        assert_eq!(view.field_values[0].badge_class, Some("sf-badge-success".to_string()));
+        assert_eq!(
+            view.field_values[0].badge_class,
+            Some("sf-badge-success".to_string())
+        );
         assert_eq!(view.field_values[0].field_type, "enum");
         assert_eq!(view.field_values[0].raw_value, "active");
         assert!(!view.field_values[0].is_empty);
@@ -1648,7 +1640,10 @@ mod tests {
         let schema = SchemaDefinition::new(
             SchemaId::new(),
             SchemaName::new("Task").unwrap(),
-            vec![make_field("title", FieldType::Text(TextConstraints::unconstrained()))],
+            vec![make_field(
+                "title",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
             vec![],
         )
         .unwrap();
@@ -1668,7 +1663,10 @@ mod tests {
         let schema = SchemaDefinition::new(
             SchemaId::new(),
             SchemaName::new("Task").unwrap(),
-            vec![make_field("title", FieldType::Text(TextConstraints::unconstrained()))],
+            vec![make_field(
+                "title",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
             vec![],
         )
         .unwrap();
@@ -1689,7 +1687,10 @@ mod tests {
             SchemaName::new("Task").unwrap(),
             vec![
                 make_field("title", FieldType::Text(TextConstraints::unconstrained())),
-                make_field("description", FieldType::Text(TextConstraints::unconstrained())),
+                make_field(
+                    "description",
+                    FieldType::Text(TextConstraints::unconstrained()),
+                ),
                 FieldDefinition::with_annotations(
                     FieldName::new("status").unwrap(),
                     FieldType::Enum(EnumVariants::new(vec!["active".into()]).unwrap()),
@@ -1759,9 +1760,7 @@ mod tests {
             SchemaName::new("Task").unwrap(),
             vec![FieldDefinition::with_annotations(
                 FieldName::new("status").unwrap(),
-                FieldType::Enum(
-                    EnumVariants::new(vec!["todo".into(), "done".into()]).unwrap(),
-                ),
+                FieldType::Enum(EnumVariants::new(vec!["todo".into(), "done".into()]).unwrap()),
                 vec![],
                 vec![schema_forge_core::types::FieldAnnotation::KanbanColumn],
             )],
@@ -1783,9 +1782,7 @@ mod tests {
             SchemaName::new("Deal").unwrap(),
             vec![make_field(
                 "stage",
-                FieldType::Enum(
-                    EnumVariants::new(vec!["new".into(), "won".into()]).unwrap(),
-                ),
+                FieldType::Enum(EnumVariants::new(vec!["new".into(), "won".into()]).unwrap()),
             )],
             vec![Annotation::Dashboard {
                 widgets: vec![],
@@ -1807,7 +1804,10 @@ mod tests {
         let schema = SchemaDefinition::new(
             SchemaId::new(),
             SchemaName::new("Contact").unwrap(),
-            vec![make_field("name", FieldType::Text(TextConstraints::unconstrained()))],
+            vec![make_field(
+                "name",
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
             vec![],
         )
         .unwrap();
@@ -1904,9 +1904,7 @@ mod tests {
             SchemaName::new("Task").unwrap(),
             vec![make_field(
                 "status",
-                FieldType::Enum(
-                    EnumVariants::new(vec!["active".into(), "done".into()]).unwrap(),
-                ),
+                FieldType::Enum(EnumVariants::new(vec!["active".into(), "done".into()]).unwrap()),
             )],
             vec![],
         )

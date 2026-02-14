@@ -288,11 +288,6 @@ pub async fn entity_create(
                 .await
                 .map_err(AdminError::from)?;
 
-            // Hot-reload theme if Theme entity was created
-            if name == "Theme" {
-                crate::theme::reload_theme(&state).await;
-            }
-
             Ok(Redirect::to(&format!(
                 "/admin/schemas/{}/entities/{}",
                 name,
@@ -457,11 +452,6 @@ pub async fn entity_update(
                 .await
                 .map_err(AdminError::from)?;
 
-            // Hot-reload theme if Theme entity was updated
-            if name == "Theme" {
-                crate::theme::reload_theme(&state).await;
-            }
-
             Ok(Redirect::to(&format!("/admin/schemas/{}/entities/{}", name, id)).into_response())
         }
         Err(errors) => {
@@ -510,11 +500,6 @@ pub async fn entity_delete(
         .delete(&schema_name, &entity_id)
         .await
         .map_err(AdminError::from)?;
-
-    // Hot-reload theme if Theme entity was deleted
-    if name == "Theme" {
-        crate::theme::reload_theme(&state).await;
-    }
 
     // Return empty body — HTMX will remove the row
     Ok(StatusCode::OK)
@@ -883,7 +868,13 @@ fn extract_renames(form_data: &[(String, String)]) -> Vec<(FieldName, FieldName)
 
 /// Available roles for user management checkboxes.
 const AVAILABLE_ROLES: &[&str] = &[
-    "admin", "member", "manager", "hr", "sales", "marketing", "finance",
+    "admin",
+    "member",
+    "manager",
+    "hr",
+    "sales",
+    "marketing",
+    "finance",
 ];
 
 /// GET /admin/users — User management list.
@@ -1075,9 +1066,12 @@ pub async fn user_edit_form(
             message: format!("User deserialize failed: {e}"),
         })?;
 
-    let user = users.into_iter().next().ok_or_else(|| AdminError::Internal {
-        message: format!("User '{}' not found", username),
-    })?;
+    let user = users
+        .into_iter()
+        .next()
+        .ok_or_else(|| AdminError::Internal {
+            message: format!("User '{}' not found", username),
+        })?;
 
     Ok(render_template(
         &state.template_engine,
@@ -1180,14 +1174,12 @@ pub async fn user_toggle_active(
             message: "SurrealDB client not configured".to_string(),
         })?;
 
-    db.query(
-        "UPDATE _forge_users SET active = !active WHERE username = $username",
-    )
-    .bind(("username", username.to_string()))
-    .await
-    .map_err(|e| AdminError::Internal {
-        message: format!("User toggle failed: {e}"),
-    })?;
+    db.query("UPDATE _forge_users SET active = !active WHERE username = $username")
+        .bind(("username", username.to_string()))
+        .await
+        .map_err(|e| AdminError::Internal {
+            message: format!("User toggle failed: {e}"),
+        })?;
 
     Ok(Redirect::to("/admin/users"))
 }

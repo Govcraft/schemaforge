@@ -34,28 +34,6 @@ use tower::ServiceExt;
 // Helpers
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "graphql")]
-fn test_graphql_schema() -> Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>> {
-    use async_graphql::dynamic::{Field, FieldFuture, FieldValue, Object, Schema, TypeRef};
-    let query = Object::new("Query").field(Field::new(
-        "_empty",
-        TypeRef::named(TypeRef::BOOLEAN),
-        |_ctx| FieldFuture::new(async { Ok(None::<FieldValue>) }),
-    ));
-    let schema = Schema::build("Query", None, None)
-        .register(query)
-        .finish()
-        .expect("test GraphQL schema");
-    Arc::new(arc_swap::ArcSwap::new(Arc::new(schema)))
-}
-
-#[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-fn test_theme() -> Arc<arc_swap::ArcSwap<schema_forge_acton::theme::Theme>> {
-    Arc::new(arc_swap::ArcSwap::new(Arc::new(
-        schema_forge_acton::theme::Theme::default(),
-    )))
-}
-
 fn test_app_with_state(state: ForgeState) -> Router {
     forge_routes()
         .route_layer(axum::middleware::from_fn_with_state(
@@ -149,11 +127,15 @@ async fn demo_system_schemas_seeded_at_startup() {
     let backend = SurrealBackend::connect_memory("test", "demo_system")
         .await
         .unwrap();
-    let extension = schema_forge_acton::SchemaForgeExtension::builder()
-        .with_backend(backend)
-        .build()
-        .await
-        .expect("extension build");
+    let mut builder = schema_forge_acton::SchemaForgeExtension::builder();
+    builder = builder.with_backend(backend);
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+    {
+        builder = builder.with_template_dir(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+        );
+    }
+    let extension = builder.build().await.expect("extension build");
 
     let schemas = extension.registry().list().await;
     let names: Vec<&str> = schemas.iter().map(|s| s.name.as_str()).collect();
@@ -169,8 +151,7 @@ async fn demo_system_schemas_seeded_at_startup() {
         names.contains(&"TenantMembership"),
         "TenantMembership schema should be seeded"
     );
-    assert!(names.contains(&"Theme"), "Theme schema should be seeded");
-    assert_eq!(schemas.len(), 5);
+    assert_eq!(schemas.len(), 4);
 
     // Verify system schemas are protected from deletion
     let user_schema = schemas.iter().find(|s| s.name.as_str() == "User").unwrap();
@@ -245,15 +226,15 @@ async fn demo_schema_access_control() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["editor".into()]))),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -280,15 +261,15 @@ async fn demo_schema_access_control() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["viewer".into()]))),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -378,15 +359,15 @@ async fn demo_field_access_filtering() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["hr".into()]))),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -414,15 +395,15 @@ async fn demo_field_access_filtering() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".into()]))),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -498,15 +479,15 @@ async fn demo_record_ownership() {
         auth_provider: Some(alice_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -540,15 +521,15 @@ async fn demo_record_ownership() {
         auth_provider: Some(bob_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -583,15 +564,15 @@ async fn demo_record_ownership() {
         auth_provider: Some(admin_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -703,15 +684,15 @@ async fn demo_multi_tenancy_isolation() {
         auth_provider: Some(tenant_a_provider),
         tenant_config: Some(tenant_config.clone()),
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -752,15 +733,15 @@ async fn demo_multi_tenancy_isolation() {
         auth_provider: Some(tenant_b_provider),
         tenant_config: Some(tenant_config.clone()),
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -1033,15 +1014,15 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(employee_state);
@@ -1088,15 +1069,15 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(manager_state);
@@ -1124,15 +1105,15 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(admin_state);
@@ -1159,15 +1140,15 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(guest_state);
@@ -1191,15 +1172,15 @@ async fn demo_all_auth_layers_combined() {
         })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(author_state);

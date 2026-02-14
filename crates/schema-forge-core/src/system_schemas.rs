@@ -43,44 +43,6 @@ schema TenantMembership {
 }
 "#;
 
-/// DSL text for the system Theme schema.
-pub const THEME_SCHEMA: &str = r##"
-@system @display("name")
-schema Theme {
-    name:              text(max: 128) required indexed
-    primary_color:     text(max: 32) default("#3B82F6")
-    secondary_color:   text(max: 32) default("#6B7280")
-    accent_color:      text(max: 32) default("#10B981")
-    error_color:       text(max: 32) default("#EF4444")
-    background_color:  text(max: 32) default("#111827")
-    surface_color:     text(max: 32) default("#1F2937")
-    text_color:        text(max: 32) default("#F1F5F9")
-    border_radius:     text(max: 16) default("0.5rem")
-    font_family:       text(max: 256) default("system-ui, sans-serif")
-    list_style:        enum("table", "cards", "compact", "grid_badge", "grid_profile", "grid_directory", "grid_link", "grid_gallery", "grid_detail", "grid_actions") default("table")
-    detail_style:      enum("full", "split", "tabbed") default("full")
-    nav_style:         enum("sidebar", "sidebar_simple", "stacked", "stacked_page_header", "stacked_tab", "stacked_overlap", "multicolumn_constrained", "multicolumn_sidebar", "multicolumn_narrow", "minimal") default("sidebar")
-    nav_color_scheme:  enum("dark", "brand") default("dark")
-    density:           enum("compact", "comfortable", "spacious") default("comfortable")
-    heading_style:     enum("with_actions", "with_actions_and_breadcrumbs", "card_with_avatar_and_stats", "with_avatar_and_actions", "with_banner_image", "with_filters_and_actions", "with_logo_meta_and_actions", "with_meta_actions_and_breadcrumbs", "with_meta_and_actions") default("with_actions")
-    stats_style:       enum("simple", "cards", "with_icons", "shared_borders", "trending", "grid_actions", "grid_badge") default("simple")
-    card_style:        enum("basic", "well", "edge_to_edge", "well_edge_to_edge") default("basic")
-    container_style:   enum("standard", "full_mobile", "breakpoint", "breakpoint_full_mobile", "narrow") default("standard")
-    schema_labels:     json
-    field_labels:      json
-    schema_overrides:  json
-    view_overrides:    json
-    dashboard_schemas: text[]
-    logo_url:          text
-    favicon_url:       text
-    head_html:         richtext
-    nav_extra_html:    richtext
-    footer_html:       richtext
-    custom_css:        richtext
-    active:            boolean default(true)
-}
-"##;
-
 /// Returns all system schema DSL texts in dependency order.
 ///
 /// Permission is first (no dependencies), then Role (depends on Permission),
@@ -91,6 +53,5 @@ pub fn all_system_schemas() -> Vec<&'static str> {
         ROLE_SCHEMA,
         USER_SCHEMA,
         TENANT_MEMBERSHIP_SCHEMA,
-        THEME_SCHEMA,
     ]
 }

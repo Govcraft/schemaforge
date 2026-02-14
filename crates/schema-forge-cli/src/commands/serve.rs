@@ -43,7 +43,7 @@ pub async fn run(
     #[allow(unused_mut)]
     let mut builder = SchemaForgeExtension::builder();
 
-    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     {
         let client = backend.client().clone();
         builder = builder.with_surreal_client(client);
@@ -52,11 +52,8 @@ pub async fn run(
         }
     }
 
-    #[cfg(feature = "cloud-ui")]
+    #[cfg(feature = "widget-ui")]
     {
-        if let Some(ref dir) = args.static_dir {
-            builder = builder.with_static_dir(dir.clone());
-        }
         if let Some(ref dir) = args.template_dir {
             builder = builder.with_template_dir(dir.clone());
         }
@@ -139,7 +136,7 @@ pub async fn run(
     output.status("    DEL  /api/v1/forge/schemas/:schema/entities/:id");
     #[cfg(feature = "admin-ui")]
     output.status("    GET  /admin/");
-    #[cfg(feature = "cloud-ui")]
+    #[cfg(feature = "widget-ui")]
     output.status("    GET  /app/");
     output.status("  Press Ctrl+C to stop.");
 
@@ -169,12 +166,12 @@ fn build_versioned_routes(
             extension.register_versioned_routes(router)
         });
 
-    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     let builder = builder.with_frontend_routes(|router| {
         #[cfg(feature = "admin-ui")]
         let router = extension.register_admin_routes(router);
-        #[cfg(feature = "cloud-ui")]
-        let router = extension.register_cloud_routes(router);
+        #[cfg(feature = "widget-ui")]
+        let router = extension.register_site_routes(router);
         router
     });
 
@@ -202,6 +199,7 @@ mod tests {
             .expect("in-memory backend");
         let extension = SchemaForgeExtension::builder()
             .with_backend(backend)
+            .with_template_dir(std::env::temp_dir().join("forge_cli_test_templates"))
             .build()
             .await
             .expect("extension");
@@ -228,10 +226,10 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         // list_schemas returns { "schemas": [...], "count": N }
-        // After seeding, 5 system schemas should be present
-        assert_eq!(json["count"], 5);
+        // After seeding, 4 system schemas should be present
+        assert_eq!(json["count"], 4);
         assert!(json["schemas"].is_array());
-        assert_eq!(json["schemas"].as_array().unwrap().len(), 5);
+        assert_eq!(json["schemas"].as_array().unwrap().len(), 4);
     }
 
     #[test]

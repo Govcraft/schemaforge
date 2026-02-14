@@ -287,21 +287,18 @@ pub struct ForgeState {
     /// Optional record-level access policy.
     /// When `Some`, entity handlers check ownership before allowing modify/delete.
     pub record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
-    /// Active theme, atomically swappable on theme changes.
-    #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-    pub theme: Arc<arc_swap::ArcSwap<crate::theme::Theme>>,
     /// Dynamic GraphQL schema, atomically swappable on schema changes.
     #[cfg(feature = "graphql")]
     pub graphql_schema: Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>>,
-    /// SurrealDB client for auth queries (admin/cloud UI).
-    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    /// SurrealDB client for auth queries (admin/widget UI).
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     pub surreal_client: Option<
         schema_forge_surrealdb::surrealdb::Surreal<
             schema_forge_surrealdb::surrealdb::engine::any::Any,
         >,
     >,
-    /// MiniJinja template engine for UI rendering (admin, widget, cloud).
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+    /// MiniJinja template engine for UI rendering (admin, widget).
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     pub template_engine: std::sync::Arc<crate::template_engine::TemplateEngine>,
 }
 

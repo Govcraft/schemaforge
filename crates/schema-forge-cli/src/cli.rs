@@ -106,13 +106,6 @@ pub enum Commands {
         command: PolicyCommands,
     },
 
-    /// Manage cloud UI templates
-    #[cfg(feature = "cloud-ui")]
-    Templates {
-        #[command(subcommand)]
-        command: TemplateCommands,
-    },
-
     /// Generate shell completion scripts
     Completions(CompletionsArgs),
 }
@@ -242,23 +235,18 @@ pub struct ServeArgs {
     #[arg(long = "log-level")]
     pub log_level: Option<String>,
 
-    /// Admin username for the admin/cloud UI (bootstraps on first run)
-    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    /// Admin username for the admin/widget UI (bootstraps on first run)
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     #[arg(long = "admin-user", env = "FORGE_ADMIN_USER", default_value = "admin")]
     pub admin_user: String,
 
-    /// Admin password for the admin/cloud UI (bootstraps on first run)
-    #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+    /// Admin password for the admin/widget UI (bootstraps on first run)
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     #[arg(long = "admin-password", env = "FORGE_ADMIN_PASSWORD")]
     pub admin_password: Option<String>,
 
-    /// Directory to serve static files from at /app/static/
-    #[cfg(feature = "cloud-ui")]
-    #[arg(long = "static-dir", env = "FORGE_STATIC_DIR")]
-    pub static_dir: Option<PathBuf>,
-
-    /// Directory for MiniJinja template overrides
-    #[cfg(feature = "cloud-ui")]
+    /// Directory for MiniJinja site templates
+    #[cfg(feature = "widget-ui")]
     #[arg(long = "template-dir", env = "FORGE_TEMPLATE_DIR")]
     pub template_dir: Option<PathBuf>,
 }
@@ -335,33 +323,6 @@ pub struct PolicyRegenerateArgs {
     /// Overwrite existing generated policies
     #[arg(short = 'f', long = "force")]
     pub force: bool,
-}
-
-/// Template subcommands.
-#[cfg(feature = "cloud-ui")]
-#[derive(Subcommand)]
-pub enum TemplateCommands {
-    /// List all embedded cloud UI templates
-    List,
-
-    /// Export embedded templates for customization
-    Export(TemplateExportArgs),
-}
-
-/// Arguments for `schema-forge templates export`.
-#[cfg(feature = "cloud-ui")]
-#[derive(Args)]
-pub struct TemplateExportArgs {
-    /// Template name to export (omit for all)
-    pub name: Option<String>,
-
-    /// Filter by atomic design level: atom, molecule, organism, page
-    #[arg(long = "level")]
-    pub level: Option<String>,
-
-    /// Output directory (default: ~/.config/schema-forge/templates/)
-    #[arg(short = 'o', long = "output-dir")]
-    pub output_dir: Option<PathBuf>,
 }
 
 /// Arguments for `schema-forge completions`.

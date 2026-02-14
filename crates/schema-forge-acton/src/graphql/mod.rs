@@ -52,6 +52,24 @@ pub async fn rebuild_graphql_schema(state: &ForgeState) {
     }
 }
 
+/// Create an empty GraphQL schema wrapped for `ForgeState`.
+///
+/// Useful for constructing `ForgeState` in non-GraphQL contexts (e.g. AI agent)
+/// when the `graphql` feature is enabled.
+pub fn empty_graphql_schema() -> Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>> {
+    use async_graphql::dynamic::{Field, FieldFuture, FieldValue, Object, Schema, TypeRef};
+    let query = Object::new("Query").field(Field::new(
+        "_empty",
+        TypeRef::named(TypeRef::BOOLEAN),
+        |_ctx| FieldFuture::new(async { Ok(None::<FieldValue>) }),
+    ));
+    let schema = Schema::build("Query", None, None)
+        .register(query)
+        .finish()
+        .expect("empty GraphQL schema");
+    Arc::new(arc_swap::ArcSwap::new(Arc::new(schema)))
+}
+
 /// Build the initial GraphQL schema from a list of schema definitions.
 ///
 /// Called during `SchemaForgeExtension::build()`.

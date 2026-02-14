@@ -1,18 +1,17 @@
 version: '3'
 
 vars:
-  FEATURES: admin-ui,cloud-ui
+  FEATURES: admin-ui,widget-ui
   PORT: 3000
   ADMIN_PASSWORD: changeme
   BASE_URL: "http://127.0.0.1:{{.PORT}}"
-  STATIC_DIR: public
-  TEMPLATE_DIR: ""
+  TEMPLATE_DIR: crates/schema-forge-acton/templates
   CSS_INPUT: crates/schema-forge-acton/static/css/input.css
   CSS_OUTPUT: crates/schema-forge-acton/static/css/admin.css
   CSS_CONTENT: "crates/schema-forge-acton/templates/**/*.html"
-  CLOUD_CSS_INPUT: crates/schema-forge-acton/static/css/cloud-input.css
-  CLOUD_CSS_OUTPUT: crates/schema-forge-acton/templates/cloud/base.css
-  CLOUD_CSS_CONTENT: "crates/schema-forge-acton/templates/**/*.html"
+  SITE_CSS_INPUT: crates/schema-forge-acton/static/css/cloud-input.css
+  SITE_CSS_OUTPUT: crates/schema-forge-acton/templates/cloud/base.css
+  SITE_CSS_CONTENT: "crates/schema-forge-acton/templates/**/*.html"
 
 tasks:
   build:
@@ -31,8 +30,7 @@ tasks:
       - >-
         cargo run -p schema-forge-cli --features {{.FEATURES}} -- serve
         --admin-password {{.ADMIN_PASSWORD}}
-        {{if .STATIC_DIR}}--static-dir {{.STATIC_DIR}}{{end}}
-        {{if .TEMPLATE_DIR}}--template-dir {{.TEMPLATE_DIR}}{{end}}
+        --template-dir {{.TEMPLATE_DIR}}
 
   seed:
     desc: Seed demo data (expects server already running)
@@ -49,13 +47,13 @@ tasks:
 
         # Compile CSS
         npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}'
-        npx @tailwindcss/cli -i {{.CLOUD_CSS_INPUT}} -o {{.CLOUD_CSS_OUTPUT}} --content '{{.CLOUD_CSS_CONTENT}}'
+        npx @tailwindcss/cli -i {{.SITE_CSS_INPUT}} -o {{.SITE_CSS_OUTPUT}} --content '{{.SITE_CSS_CONTENT}}'
 
         # Build
         cargo build -p schema-forge-cli --features {{.FEATURES}}
 
         # Start server in background with in-memory DB
-        ./target/debug/schema-forge serve --admin-password {{.ADMIN_PASSWORD}} --db-url "mem://" {{if .STATIC_DIR}}--static-dir {{.STATIC_DIR}}{{end}} {{if .TEMPLATE_DIR}}--template-dir {{.TEMPLATE_DIR}}{{end}} &
+        ./target/debug/schema-forge serve --admin-password {{.ADMIN_PASSWORD}} --db-url "mem://" --template-dir {{.TEMPLATE_DIR}} &
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null' EXIT
 
@@ -79,7 +77,7 @@ tasks:
         echo ""
         echo "Demo server running at {{.BASE_URL}}"
         echo "Admin UI: {{.BASE_URL}}/admin/"
-        echo "Cloud UI: {{.BASE_URL}}/app/"
+        echo "Site UI: {{.BASE_URL}}/app/"
         echo "Press Ctrl+C to stop."
         wait $SERVER_PID
 
@@ -93,30 +91,20 @@ tasks:
     cmds:
       - npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}' --watch
 
-  css:cloud:
-    desc: Build cloud UI Tailwind CSS
+  css:site:
+    desc: Build site UI Tailwind CSS
     cmds:
-      - npx @tailwindcss/cli -i {{.CLOUD_CSS_INPUT}} -o {{.CLOUD_CSS_OUTPUT}} --content '{{.CLOUD_CSS_CONTENT}}'
+      - npx @tailwindcss/cli -i {{.SITE_CSS_INPUT}} -o {{.SITE_CSS_OUTPUT}} --content '{{.SITE_CSS_CONTENT}}'
 
-  css:cloud:watch:
-    desc: Watch and rebuild cloud UI Tailwind CSS
+  css:site:watch:
+    desc: Watch and rebuild site UI Tailwind CSS
     cmds:
-      - npx @tailwindcss/cli -i {{.CLOUD_CSS_INPUT}} -o {{.CLOUD_CSS_OUTPUT}} --content '{{.CLOUD_CSS_CONTENT}}' --watch
+      - npx @tailwindcss/cli -i {{.SITE_CSS_INPUT}} -o {{.SITE_CSS_OUTPUT}} --content '{{.SITE_CSS_CONTENT}}' --watch
 
   test:
     desc: Run all workspace tests
     cmds:
       - cargo test --workspace
-
-  templates:list:
-    desc: List all embedded cloud UI templates
-    cmds:
-      - cargo run -p schema-forge-cli --features {{.FEATURES}} -- templates list
-
-  templates:export:
-    desc: Export embedded templates for customization
-    cmds:
-      - cargo run -p schema-forge-cli --features {{.FEATURES}} -- templates export {{.CLI_ARGS}}
 
   check:
     desc: Run clippy and format checks

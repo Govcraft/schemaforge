@@ -13,28 +13,6 @@ use tower::ServiceExt;
 // Test helpers
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "graphql")]
-fn test_graphql_schema() -> Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>> {
-    use async_graphql::dynamic::{Field, FieldFuture, FieldValue, Object, Schema, TypeRef};
-    let query = Object::new("Query").field(Field::new(
-        "_empty",
-        TypeRef::named(TypeRef::BOOLEAN),
-        |_ctx| FieldFuture::new(async { Ok(None::<FieldValue>) }),
-    ));
-    let schema = Schema::build("Query", None, None)
-        .register(query)
-        .finish()
-        .expect("test GraphQL schema");
-    Arc::new(arc_swap::ArcSwap::new(Arc::new(schema)))
-}
-
-#[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-fn test_theme() -> Arc<arc_swap::ArcSwap<schema_forge_acton::theme::Theme>> {
-    Arc::new(arc_swap::ArcSwap::new(Arc::new(
-        schema_forge_acton::theme::Theme::default(),
-    )))
-}
-
 /// Create a test ForgeState with in-memory SurrealDB.
 async fn test_state() -> ForgeState {
     let backend = SurrealBackend::connect_memory("test", "test")
@@ -47,15 +25,15 @@ async fn test_state() -> ForgeState {
         auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     }
 }
@@ -520,15 +498,19 @@ async fn extension_builder_with_backend_loads_schemas() {
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
-    let extension = SchemaForgeExtension::builder()
-        .with_backend(backend)
-        .build()
-        .await
-        .expect("failed to build extension");
+    let mut builder = SchemaForgeExtension::builder();
+    builder = builder.with_backend(backend);
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+    {
+        builder = builder.with_template_dir(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+        );
+    }
+    let extension = builder.build().await.expect("failed to build extension");
 
-    // Registry should contain exactly the 5 system schemas after seeding
+    // Registry should contain exactly the 4 system schemas after seeding
     let schemas = extension.registry().list().await;
-    assert_eq!(schemas.len(), 5);
+    assert_eq!(schemas.len(), 4);
     let names: Vec<String> = schemas
         .iter()
         .map(|s| s.name.as_str().to_string())
@@ -547,11 +529,15 @@ async fn extension_register_routes_nests_under_forge() {
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
-    let extension = SchemaForgeExtension::builder()
-        .with_backend(backend)
-        .build()
-        .await
-        .expect("failed to build extension");
+    let mut builder = SchemaForgeExtension::builder();
+    builder = builder.with_backend(backend);
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+    {
+        builder = builder.with_template_dir(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+        );
+    }
+    let extension = builder.build().await.expect("failed to build extension");
 
     let router: Router = Router::new();
     let router = extension.register_routes(router);
@@ -586,15 +572,15 @@ async fn request_with_noop_auth_succeeds() {
         auth_provider: Some(Arc::new(NoopAuthProvider::admin())),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -639,15 +625,15 @@ async fn request_with_failing_auth_returns_401() {
         auth_provider: Some(Arc::new(FailingAuthProvider)),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -723,15 +709,15 @@ async fn access_test_state(
         auth_provider: Some(Arc::new(NoopAuthProvider::new(user_roles))),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state.clone());
@@ -848,15 +834,15 @@ async fn open_access_request_always_succeeds() {
         auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -940,15 +926,15 @@ async fn field_filtering_hides_restricted_fields() {
         auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".to_string()]))),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
-        theme: test_theme(),
         #[cfg(feature = "graphql")]
-        graphql_schema: test_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+            ),
         ),
     };
     let app = test_app_with_state(state);
@@ -990,115 +976,4 @@ async fn field_filtering_hides_restricted_fields() {
         "salary field should be filtered from GET response, got: {:?}",
         get_json["fields"]
     );
-}
-
-// ---------------------------------------------------------------------------
-// Cloud UI tests
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "cloud-ui")]
-#[tokio::test]
-async fn cloud_theme_css_endpoint_returns_css() {
-    let state = test_state().await;
-
-    // Seed system schemas so Theme is available
-    schema_forge_acton::system::seed_system_schemas(&state.registry, state.backend.as_ref())
-        .await
-        .unwrap();
-
-    let extension = schema_forge_acton::SchemaForgeExtension::builder()
-        .with_backend(
-            schema_forge_surrealdb::SurrealBackend::connect_memory("cloud_css", "test")
-                .await
-                .unwrap(),
-        )
-        .build()
-        .await
-        .unwrap();
-
-    let app = extension.register_cloud_routes(Router::new());
-
-    let request = Request::builder()
-        .uri("/app/theme.css")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(request).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .map(|v| v.to_str().unwrap().to_string())
-        .unwrap_or_default();
-    assert!(
-        content_type.contains("text/css"),
-        "Expected text/css, got: {}",
-        content_type
-    );
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let css = String::from_utf8(body.to_vec()).unwrap();
-    assert!(css.contains("--sf-primary: #3B82F6;"));
-    assert!(css.contains(".sf-app"));
-    assert!(css.contains(".sf-btn"));
-}
-
-#[cfg(feature = "cloud-ui")]
-#[tokio::test]
-async fn cloud_dashboard_redirects_unauthenticated_to_login() {
-    let extension = schema_forge_acton::SchemaForgeExtension::builder()
-        .with_backend(
-            schema_forge_surrealdb::SurrealBackend::connect_memory("cloud_dash", "test")
-                .await
-                .unwrap(),
-        )
-        .build()
-        .await
-        .unwrap();
-
-    let app = extension.register_cloud_routes(Router::new());
-
-    let request = Request::builder()
-        .uri("/app/")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(request).await.unwrap();
-
-    // Unauthenticated requests redirect to login
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        response.headers().get("location").unwrap().to_str().unwrap(),
-        "/app/login"
-    );
-}
-
-#[cfg(feature = "cloud-ui")]
-#[tokio::test]
-async fn cloud_login_page_returns_200() {
-    let extension = schema_forge_acton::SchemaForgeExtension::builder()
-        .with_backend(
-            schema_forge_surrealdb::SurrealBackend::connect_memory("cloud_login", "test")
-                .await
-                .unwrap(),
-        )
-        .build()
-        .await
-        .unwrap();
-
-    let app = extension.register_cloud_routes(Router::new());
-
-    let request = Request::builder()
-        .uri("/app/login")
-        .body(Body::empty())
-        .unwrap();
-    let response = app.oneshot(request).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let html = String::from_utf8(body.to_vec()).unwrap();
-    assert!(html.contains("login"));
 }

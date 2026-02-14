@@ -81,15 +81,15 @@ impl SchemaForgeAgent {
             auth_provider: None,
             tenant_config: None,
             record_access_policy: None,
-            #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
-            theme: std::sync::Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(
-                schema_forge_acton::theme::Theme::default(),
-            ))),
-            #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
+            #[cfg(feature = "graphql")]
+            graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
+            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             surreal_client: None,
-            #[cfg(feature = "cloud-ui")]
+            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             template_engine: std::sync::Arc::new(
-                schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+                schema_forge_acton::template_engine::TemplateEngine::new(std::path::PathBuf::from(
+                    "templates",
+                )),
             ),
         }
     }
