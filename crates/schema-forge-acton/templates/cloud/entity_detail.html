@@ -3,27 +3,25 @@
 {% block title %}{{ entity.display_value }} - {{ schema.name }} - {{ app_title }}{% endblock %}
 
 {% block content %}
-<div class="sf-breadcrumbs">
-    <a href="/app/">Dashboard</a>
-    <span class="sf-breadcrumbs-sep"></span>
-    <a href="/app/{{ schema.url_name }}/entities">{{ schema.name }}</a>
-    <span class="sf-breadcrumbs-sep"></span>
-    <span>{{ entity.display_value }}</span>
-</div>
-<div class="sf-page-header">
-    <div>
-        <h1 class="sf-page-title">{{ entity.display_value }}</h1>
-        <div class="sf-page-subtitle">ID: {{ entity.id }}</div>
-    </div>
-    <div>
-        <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="sf-btn sf-btn-primary sf-btn-sm">Edit</a>
-        <button class="sf-btn sf-btn-danger sf-btn-sm"
-            hx-delete="/app/{{ schema.url_name }}/entities/{{ entity.id }}"
-            hx-confirm="Delete this entity?"
-            hx-target="body"
-        >Delete</button>
-    </div>
-</div>
+{% if heading_style == "with_actions_and_breadcrumbs" %}
+    {% include "shared/organisms/heading_with_actions_and_breadcrumbs.html" %}
+{% elif heading_style == "card_with_avatar_and_stats" %}
+    {% include "shared/organisms/heading_card_with_avatar_and_stats.html" %}
+{% elif heading_style == "with_avatar_and_actions" %}
+    {% include "shared/organisms/heading_with_avatar_and_actions.html" %}
+{% elif heading_style == "with_banner_image" %}
+    {% include "shared/organisms/heading_with_banner_image.html" %}
+{% elif heading_style == "with_filters_and_actions" %}
+    {% include "shared/organisms/heading_with_filters_and_actions.html" %}
+{% elif heading_style == "with_logo_meta_and_actions" %}
+    {% include "shared/organisms/heading_with_logo_meta_and_actions.html" %}
+{% elif heading_style == "with_meta_actions_and_breadcrumbs" %}
+    {% include "shared/organisms/heading_with_meta_actions_and_breadcrumbs.html" %}
+{% elif heading_style == "with_meta_and_actions" %}
+    {% include "shared/organisms/heading_with_meta_and_actions.html" %}
+{% else %}
+    {% include "shared/organisms/heading_with_actions.html" %}
+{% endif %}
 <div class="sf-detail" data-detail-style="{{ detail_style }}">
     <div class="sf-detail-fields">
         {% for field in entity.field_values %}

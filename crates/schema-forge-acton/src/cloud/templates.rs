@@ -2,6 +2,43 @@ use crate::views::{EntityView, FieldView, FilterField, KanbanColumn, PaginationV
 
 use super::auth::CloudUserView;
 
+/// A single action button in a page heading.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HeadingAction {
+    pub url: String,
+    pub label: String,
+    pub class: String,
+}
+
+/// A metadata item displayed in meta-row heading variants.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HeadingMetaItem {
+    pub icon: String,
+    pub text: String,
+}
+
+/// A stat cell displayed in the card heading variant.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HeadingStatItem {
+    pub label: String,
+    pub value: String,
+}
+
+/// A filter tab in the filters heading variant.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HeadingFilterTab {
+    pub label: String,
+    pub url: String,
+    pub active: bool,
+}
+
+/// A breadcrumb item.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BreadcrumbItem {
+    pub label: String,
+    pub url: Option<String>,
+}
+
 /// Schema entry for navigation sidebar.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct NavSchemaEntry {
@@ -42,6 +79,15 @@ pub struct CloudDashboardTemplate {
     pub head_html: Option<String>,
     pub nav_extra_html: Option<String>,
     pub footer_html: Option<String>,
+    pub heading_style: String,
+    pub heading_actions: Vec<HeadingAction>,
+    pub breadcrumbs: Vec<BreadcrumbItem>,
+    pub heading_meta: Vec<HeadingMetaItem>,
+    pub heading_stats: Vec<HeadingStatItem>,
+    pub heading_avatar_url: Option<String>,
+    pub heading_banner_url: Option<String>,
+    pub heading_filter_tabs: Vec<HeadingFilterTab>,
+    pub heading_logo_url: Option<String>,
 }
 
 /// Cloud entity list page.
@@ -62,6 +108,15 @@ pub struct CloudEntityListTemplate {
     pub head_html: Option<String>,
     pub nav_extra_html: Option<String>,
     pub footer_html: Option<String>,
+    pub heading_style: String,
+    pub heading_actions: Vec<HeadingAction>,
+    pub breadcrumbs: Vec<BreadcrumbItem>,
+    pub heading_meta: Vec<HeadingMetaItem>,
+    pub heading_stats: Vec<HeadingStatItem>,
+    pub heading_avatar_url: Option<String>,
+    pub heading_banner_url: Option<String>,
+    pub heading_filter_tabs: Vec<HeadingFilterTab>,
+    pub heading_logo_url: Option<String>,
 }
 
 /// Cloud entity list body fragment (for HTMX pagination).
@@ -90,6 +145,15 @@ pub struct CloudEntityListKanbanTemplate {
     pub head_html: Option<String>,
     pub nav_extra_html: Option<String>,
     pub footer_html: Option<String>,
+    pub heading_style: String,
+    pub heading_actions: Vec<HeadingAction>,
+    pub breadcrumbs: Vec<BreadcrumbItem>,
+    pub heading_meta: Vec<HeadingMetaItem>,
+    pub heading_stats: Vec<HeadingStatItem>,
+    pub heading_avatar_url: Option<String>,
+    pub heading_banner_url: Option<String>,
+    pub heading_filter_tabs: Vec<HeadingFilterTab>,
+    pub heading_logo_url: Option<String>,
 }
 
 /// Cloud entity form page (create/edit).
@@ -109,6 +173,15 @@ pub struct CloudEntityFormTemplate {
     pub head_html: Option<String>,
     pub nav_extra_html: Option<String>,
     pub footer_html: Option<String>,
+    pub heading_style: String,
+    pub heading_actions: Vec<HeadingAction>,
+    pub breadcrumbs: Vec<BreadcrumbItem>,
+    pub heading_meta: Vec<HeadingMetaItem>,
+    pub heading_stats: Vec<HeadingStatItem>,
+    pub heading_avatar_url: Option<String>,
+    pub heading_banner_url: Option<String>,
+    pub heading_filter_tabs: Vec<HeadingFilterTab>,
+    pub heading_logo_url: Option<String>,
 }
 
 /// Cloud entity detail page.
@@ -127,4 +200,13 @@ pub struct CloudEntityDetailTemplate {
     pub head_html: Option<String>,
     pub nav_extra_html: Option<String>,
     pub footer_html: Option<String>,
+    pub heading_style: String,
+    pub heading_actions: Vec<HeadingAction>,
+    pub breadcrumbs: Vec<BreadcrumbItem>,
+    pub heading_meta: Vec<HeadingMetaItem>,
+    pub heading_stats: Vec<HeadingStatItem>,
+    pub heading_avatar_url: Option<String>,
+    pub heading_banner_url: Option<String>,
+    pub heading_filter_tabs: Vec<HeadingFilterTab>,
+    pub heading_logo_url: Option<String>,
 }

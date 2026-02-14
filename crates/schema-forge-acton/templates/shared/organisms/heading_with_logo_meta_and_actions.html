@@ -1,0 +1,14 @@
+<div class="sf-heading sf-heading-with-actions">
+    <div class="sf-heading-logo-row">
+        {% if heading_logo_url %}
+        <img src="{{ heading_logo_url }}" alt="" class="sf-heading-logo" />
+        {% endif %}
+        <div class="sf-heading-logo-info">
+            {% include "shared/atoms/heading_title.html" %}
+        </div>
+    </div>
+    <div class="sf-heading-actions-desktop">
+        {% include "shared/molecules/button_group.html" %}
+    </div>
+    {% include "shared/molecules/mobile_dropdown.html" %}
+</div>

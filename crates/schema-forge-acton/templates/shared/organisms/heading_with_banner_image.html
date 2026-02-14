@@ -1,0 +1,14 @@
+<div class="sf-heading sf-heading-banner">
+    {% if heading_banner_url %}
+    <img src="{{ heading_banner_url }}" alt="" class="sf-heading-banner-image" />
+    {% endif %}
+    <div class="sf-heading-banner-content">
+        <div class="sf-heading-banner-info">
+            {% include "shared/atoms/avatar.html" %}
+            <div>
+                {% include "shared/atoms/heading_title.html" %}
+            </div>
+        </div>
+        {% include "shared/molecules/button_group.html" %}
+    </div>
+</div>

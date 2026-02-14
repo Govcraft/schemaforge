@@ -1,0 +1,7 @@
+{% if heading_actions %}
+<div class="sf-heading-actions">
+    {% for action in heading_actions %}
+    {% include "shared/atoms/button.html" %}
+    {% endfor %}
+</div>
+{% endif %}

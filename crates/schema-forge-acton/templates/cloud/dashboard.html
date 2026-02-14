@@ -3,11 +3,25 @@
 {% block title %}Dashboard - {{ app_title }}{% endblock %}
 
 {% block content %}
-<div class="sf-page-header">
-    <div>
-        <h1 class="sf-page-title">Dashboard</h1>
-    </div>
-</div>
+{% if heading_style == "with_actions_and_breadcrumbs" %}
+    {% include "shared/organisms/heading_with_actions_and_breadcrumbs.html" %}
+{% elif heading_style == "card_with_avatar_and_stats" %}
+    {% include "shared/organisms/heading_card_with_avatar_and_stats.html" %}
+{% elif heading_style == "with_avatar_and_actions" %}
+    {% include "shared/organisms/heading_with_avatar_and_actions.html" %}
+{% elif heading_style == "with_banner_image" %}
+    {% include "shared/organisms/heading_with_banner_image.html" %}
+{% elif heading_style == "with_filters_and_actions" %}
+    {% include "shared/organisms/heading_with_filters_and_actions.html" %}
+{% elif heading_style == "with_logo_meta_and_actions" %}
+    {% include "shared/organisms/heading_with_logo_meta_and_actions.html" %}
+{% elif heading_style == "with_meta_actions_and_breadcrumbs" %}
+    {% include "shared/organisms/heading_with_meta_actions_and_breadcrumbs.html" %}
+{% elif heading_style == "with_meta_and_actions" %}
+    {% include "shared/organisms/heading_with_meta_and_actions.html" %}
+{% else %}
+    {% include "shared/organisms/heading_with_actions.html" %}
+{% endif %}
 <div class="sf-dashboard">
     {% for card in schema_cards %}
     {% include "shared/molecules/dashboard_card.html" %}

@@ -61,6 +61,7 @@ schema Theme {
     detail_style:      enum("full", "split", "tabbed") default("full")
     nav_style:         enum("sidebar", "topnav", "minimal") default("sidebar")
     density:           enum("compact", "comfortable", "spacious") default("comfortable")
+    heading_style:     enum("with_actions", "with_actions_and_breadcrumbs", "card_with_avatar_and_stats", "with_avatar_and_actions", "with_banner_image", "with_filters_and_actions", "with_logo_meta_and_actions", "with_meta_actions_and_breadcrumbs", "with_meta_and_actions") default("with_actions")
     schema_labels:     json
     field_labels:      json
     schema_overrides:  json

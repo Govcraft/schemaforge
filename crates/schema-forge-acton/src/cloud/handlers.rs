@@ -19,14 +19,38 @@ use schema_forge_core::query::{AggregateOp, AggregateQuery, FieldPath};
 use super::auth::CloudUserView;
 use super::css;
 use super::templates::{
-    CloudDashboardTemplate, CloudEntityDetailTemplate, CloudEntityFormTemplate,
+    BreadcrumbItem, CloudDashboardTemplate, CloudEntityDetailTemplate, CloudEntityFormTemplate,
     CloudEntityListBodyTemplate, CloudEntityListKanbanTemplate, CloudEntityListTemplate,
-    DashboardCard, NavSchemaEntry,
+    DashboardCard, HeadingAction, HeadingFilterTab, HeadingMetaItem, HeadingStatItem,
+    NavSchemaEntry,
 };
 
 // ---------------------------------------------------------------------------
 // Theme slot fields
 // ---------------------------------------------------------------------------
+
+/// Default empty heading context fields (for future data plumbing).
+struct HeadingDefaults {
+    heading_meta: Vec<HeadingMetaItem>,
+    heading_stats: Vec<HeadingStatItem>,
+    heading_avatar_url: Option<String>,
+    heading_banner_url: Option<String>,
+    heading_filter_tabs: Vec<HeadingFilterTab>,
+    heading_logo_url: Option<String>,
+}
+
+impl HeadingDefaults {
+    fn empty() -> Self {
+        Self {
+            heading_meta: vec![],
+            heading_stats: vec![],
+            heading_avatar_url: None,
+            heading_banner_url: None,
+            heading_filter_tabs: vec![],
+            heading_logo_url: None,
+        }
+    }
+}
 
 /// Sanitized theme slot fields for template rendering.
 struct ThemeSlots {
@@ -213,6 +237,7 @@ pub async fn dashboard(
     }
 
     let slots = theme_slots(&theme);
+    let hd = HeadingDefaults::empty();
     Ok(render_cloud(
         &state,
         "cloud/dashboard.html",
@@ -228,6 +253,15 @@ pub async fn dashboard(
             head_html: slots.head_html,
             nav_extra_html: slots.nav_extra_html,
             footer_html: slots.footer_html,
+            heading_style: "with_actions".to_string(),
+            heading_actions: vec![],
+            breadcrumbs: vec![],
+            heading_meta: hd.heading_meta,
+            heading_stats: hd.heading_stats,
+            heading_avatar_url: hd.heading_avatar_url,
+            heading_banner_url: hd.heading_banner_url,
+            heading_filter_tabs: hd.heading_filter_tabs,
+            heading_logo_url: hd.heading_logo_url,
         },
     ))
 }
@@ -348,7 +382,9 @@ pub async fn entity_list(
             schema.apply_theme_labels(&theme);
             let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
+            let heading_style = theme.heading_style_name(&name).to_string();
             let slots = theme_slots(&theme);
+            let hd = HeadingDefaults::empty();
             return Ok(render_cloud(
                 &state,
                 "cloud/entity_list_kanban.html",
@@ -357,7 +393,7 @@ pub async fn entity_list(
                     nav_style: nav_style_name(&theme).to_string(),
                     logo_url: theme.logo_url.clone(),
                     nav_schemas,
-                    active_nav: name,
+                    active_nav: name.clone(),
                     schema,
                     columns,
                     kanban_field: field_name,
@@ -366,6 +402,24 @@ pub async fn entity_list(
                     head_html: slots.head_html,
                     nav_extra_html: slots.nav_extra_html,
                     footer_html: slots.footer_html,
+                    heading_style,
+                    heading_actions: vec![
+                        HeadingAction {
+                            url: format!("/app/{}/entities/new", name),
+                            label: "Create New".to_string(),
+                            class: "sf-btn-primary".to_string(),
+                        },
+                    ],
+                    breadcrumbs: vec![
+                        BreadcrumbItem { label: "Dashboard".to_string(), url: Some("/app/".to_string()) },
+                        BreadcrumbItem { label: theme.schema_label(&name), url: None },
+                    ],
+                    heading_meta: hd.heading_meta,
+                    heading_stats: hd.heading_stats,
+                    heading_avatar_url: hd.heading_avatar_url,
+                    heading_banner_url: hd.heading_banner_url,
+                    heading_filter_tabs: hd.heading_filter_tabs,
+                    heading_logo_url: hd.heading_logo_url,
                 },
             ));
         }
@@ -402,7 +456,9 @@ pub async fn entity_list(
 
     let filter_fields = crate::views::extract_filter_fields(&schema_def, &params.filters);
 
+    let heading_style = theme.heading_style_name(&name).to_string();
     let slots = theme_slots(&theme);
+    let hd = HeadingDefaults::empty();
     Ok(render_cloud(
         &state,
         "cloud/entity_list.html",
@@ -422,6 +478,24 @@ pub async fn entity_list(
             head_html: slots.head_html,
             nav_extra_html: slots.nav_extra_html,
             footer_html: slots.footer_html,
+            heading_style,
+            heading_actions: vec![
+                HeadingAction {
+                    url: format!("/app/{}/entities/new", name),
+                    label: "Create New".to_string(),
+                    class: "sf-btn-primary".to_string(),
+                },
+            ],
+            breadcrumbs: vec![
+                BreadcrumbItem { label: "Dashboard".to_string(), url: Some("/app/".to_string()) },
+                BreadcrumbItem { label: theme.schema_label(&name), url: None },
+            ],
+            heading_meta: hd.heading_meta,
+            heading_stats: hd.heading_stats,
+            heading_avatar_url: hd.heading_avatar_url,
+            heading_banner_url: hd.heading_banner_url,
+            heading_filter_tabs: hd.heading_filter_tabs,
+            heading_logo_url: hd.heading_logo_url,
         },
     ))
 }
@@ -515,7 +589,9 @@ pub async fn entity_create_form(
     schema.apply_theme_labels(&theme);
     let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
+    let heading_style = theme.heading_style_name(&name).to_string();
     let slots = theme_slots(&theme);
+    let hd = HeadingDefaults::empty();
     Ok(render_cloud(
         &state,
         "cloud/entity_form.html",
@@ -524,7 +600,7 @@ pub async fn entity_create_form(
             nav_style: nav_style_name(&theme).to_string(),
             logo_url: theme.logo_url.clone(),
             nav_schemas,
-            active_nav: name,
+            active_nav: name.clone(),
             schema,
             fields,
             entity_id: None,
@@ -534,6 +610,19 @@ pub async fn entity_create_form(
             head_html: slots.head_html,
             nav_extra_html: slots.nav_extra_html,
             footer_html: slots.footer_html,
+            heading_style,
+            heading_actions: vec![],
+            breadcrumbs: vec![
+                BreadcrumbItem { label: "Dashboard".to_string(), url: Some("/app/".to_string()) },
+                BreadcrumbItem { label: theme.schema_label(&name), url: Some(format!("/app/{}/entities", name)) },
+                BreadcrumbItem { label: "New".to_string(), url: None },
+            ],
+            heading_meta: hd.heading_meta,
+            heading_stats: hd.heading_stats,
+            heading_avatar_url: hd.heading_avatar_url,
+            heading_banner_url: hd.heading_banner_url,
+            heading_filter_tabs: hd.heading_filter_tabs,
+            heading_logo_url: hd.heading_logo_url,
         },
     ))
 }
@@ -591,7 +680,9 @@ pub async fn entity_create(
             schema.apply_theme_labels(&theme);
             let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
+            let heading_style = theme.heading_style_name(&name).to_string();
             let slots = theme_slots(&theme);
+            let hd = HeadingDefaults::empty();
             Ok((
                 StatusCode::UNPROCESSABLE_ENTITY,
                 render_cloud(
@@ -602,7 +693,7 @@ pub async fn entity_create(
                         nav_style: nav_style_name(&theme).to_string(),
                         logo_url: theme.logo_url.clone(),
                         nav_schemas,
-                        active_nav: name,
+                        active_nav: name.clone(),
                         schema,
                         fields,
                         entity_id: None,
@@ -612,6 +703,19 @@ pub async fn entity_create(
                         head_html: slots.head_html,
                         nav_extra_html: slots.nav_extra_html,
                         footer_html: slots.footer_html,
+                        heading_style,
+                        heading_actions: vec![],
+                        breadcrumbs: vec![
+                            BreadcrumbItem { label: "Dashboard".to_string(), url: Some("/app/".to_string()) },
+                            BreadcrumbItem { label: theme.schema_label(&name), url: Some(format!("/app/{}/entities", name)) },
+                            BreadcrumbItem { label: "New".to_string(), url: None },
+                        ],
+                        heading_meta: hd.heading_meta,
+                        heading_stats: hd.heading_stats,
+                        heading_avatar_url: hd.heading_avatar_url,
+                        heading_banner_url: hd.heading_banner_url,
+                        heading_filter_tabs: hd.heading_filter_tabs,
+                        heading_logo_url: hd.heading_logo_url,
                     },
                 ),
             )
@@ -664,7 +768,10 @@ pub async fn entity_detail(
     let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
     let detail_style = theme.resolve_detail_style(&name);
 
+    let heading_style = theme.heading_style_name(&name).to_string();
+    let display_val = entity_view.display_value.clone();
     let slots = theme_slots(&theme);
+    let hd = HeadingDefaults::empty();
     Ok(render_cloud(
         &state,
         "cloud/entity_detail.html",
@@ -673,7 +780,7 @@ pub async fn entity_detail(
             nav_style: nav_style_name(&theme).to_string(),
             logo_url: theme.logo_url.clone(),
             nav_schemas,
-            active_nav: name,
+            active_nav: name.clone(),
             schema,
             entity: entity_view,
             detail_style: detail_style_name(detail_style).to_string(),
@@ -682,6 +789,25 @@ pub async fn entity_detail(
             head_html: slots.head_html,
             nav_extra_html: slots.nav_extra_html,
             footer_html: slots.footer_html,
+            heading_style,
+            heading_actions: vec![
+                HeadingAction {
+                    url: format!("/app/{}/entities/{}/edit", name, id),
+                    label: "Edit".to_string(),
+                    class: "sf-btn-primary sf-btn-sm".to_string(),
+                },
+            ],
+            breadcrumbs: vec![
+                BreadcrumbItem { label: "Dashboard".to_string(), url: Some("/app/".to_string()) },
+                BreadcrumbItem { label: theme.schema_label(&name), url: Some(format!("/app/{}/entities", name)) },
+                BreadcrumbItem { label: display_val, url: None },
+            ],
+            heading_meta: hd.heading_meta,
+            heading_stats: hd.heading_stats,
+            heading_avatar_url: hd.heading_avatar_url,
+            heading_banner_url: hd.heading_banner_url,
+            heading_filter_tabs: hd.heading_filter_tabs,
+            heading_logo_url: hd.heading_logo_url,
         },
     ))
 }
@@ -728,7 +854,9 @@ pub async fn entity_edit_form(
     schema.apply_theme_labels(&theme);
     let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
+    let heading_style = theme.heading_style_name(&name).to_string();
     let slots = theme_slots(&theme);
+    let hd = HeadingDefaults::empty();
     Ok(render_cloud(
         &state,
         "cloud/entity_form.html",
@@ -737,16 +865,29 @@ pub async fn entity_edit_form(
             nav_style: nav_style_name(&theme).to_string(),
             logo_url: theme.logo_url.clone(),
             nav_schemas,
-            active_nav: name,
+            active_nav: name.clone(),
             schema,
             fields,
-            entity_id: Some(id),
+            entity_id: Some(id.clone()),
             errors: vec![],
             current_user,
             favicon_url: slots.favicon_url,
             head_html: slots.head_html,
             nav_extra_html: slots.nav_extra_html,
             footer_html: slots.footer_html,
+            heading_style,
+            heading_actions: vec![],
+            breadcrumbs: vec![
+                BreadcrumbItem { label: "Dashboard".to_string(), url: Some("/app/".to_string()) },
+                BreadcrumbItem { label: theme.schema_label(&name), url: Some(format!("/app/{}/entities", name)) },
+                BreadcrumbItem { label: format!("Edit {}", id), url: None },
+            ],
+            heading_meta: hd.heading_meta,
+            heading_stats: hd.heading_stats,
+            heading_avatar_url: hd.heading_avatar_url,
+            heading_banner_url: hd.heading_banner_url,
+            heading_filter_tabs: hd.heading_filter_tabs,
+            heading_logo_url: hd.heading_logo_url,
         },
     ))
 }
@@ -806,7 +947,9 @@ pub async fn entity_update(
             schema.apply_theme_labels(&theme);
             let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
+            let heading_style = theme.heading_style_name(&name).to_string();
             let slots = theme_slots(&theme);
+            let hd = HeadingDefaults::empty();
             Ok((
                 StatusCode::UNPROCESSABLE_ENTITY,
                 render_cloud(
@@ -817,16 +960,29 @@ pub async fn entity_update(
                         nav_style: nav_style_name(&theme).to_string(),
                         logo_url: theme.logo_url.clone(),
                         nav_schemas,
-                        active_nav: name,
+                        active_nav: name.clone(),
                         schema,
                         fields,
-                        entity_id: Some(id),
+                        entity_id: Some(id.clone()),
                         errors,
                         current_user,
                         favicon_url: slots.favicon_url,
                         head_html: slots.head_html,
                         nav_extra_html: slots.nav_extra_html,
                         footer_html: slots.footer_html,
+                        heading_style,
+                        heading_actions: vec![],
+                        breadcrumbs: vec![
+                            BreadcrumbItem { label: "Dashboard".to_string(), url: Some("/app/".to_string()) },
+                            BreadcrumbItem { label: theme.schema_label(&name), url: Some(format!("/app/{}/entities", name)) },
+                            BreadcrumbItem { label: format!("Edit {}", id), url: None },
+                        ],
+                        heading_meta: hd.heading_meta,
+                        heading_stats: hd.heading_stats,
+                        heading_avatar_url: hd.heading_avatar_url,
+                        heading_banner_url: hd.heading_banner_url,
+                        heading_filter_tabs: hd.heading_filter_tabs,
+                        heading_logo_url: hd.heading_logo_url,
                     },
                 ),
             )

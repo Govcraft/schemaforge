@@ -3,16 +3,25 @@
 {% block title %}{% if entity_id %}Edit{% else %}New{% endif %} {{ schema.name }} - {{ app_title }}{% endblock %}
 
 {% block content %}
-<div class="sf-breadcrumbs">
-    <a href="/app/">Dashboard</a>
-    <span class="sf-breadcrumbs-sep"></span>
-    <a href="/app/{{ schema.url_name }}/entities">{{ schema.name }}</a>
-    <span class="sf-breadcrumbs-sep"></span>
-    <span>{% if entity_id %}Edit {{ entity_id }}{% else %}New{% endif %}</span>
-</div>
-<div class="sf-page-header">
-    <h1 class="sf-page-title">{% if entity_id %}Edit{% else %}New{% endif %} {{ schema.name }}</h1>
-</div>
+{% if heading_style == "with_actions_and_breadcrumbs" %}
+    {% include "shared/organisms/heading_with_actions_and_breadcrumbs.html" %}
+{% elif heading_style == "card_with_avatar_and_stats" %}
+    {% include "shared/organisms/heading_card_with_avatar_and_stats.html" %}
+{% elif heading_style == "with_avatar_and_actions" %}
+    {% include "shared/organisms/heading_with_avatar_and_actions.html" %}
+{% elif heading_style == "with_banner_image" %}
+    {% include "shared/organisms/heading_with_banner_image.html" %}
+{% elif heading_style == "with_filters_and_actions" %}
+    {% include "shared/organisms/heading_with_filters_and_actions.html" %}
+{% elif heading_style == "with_logo_meta_and_actions" %}
+    {% include "shared/organisms/heading_with_logo_meta_and_actions.html" %}
+{% elif heading_style == "with_meta_actions_and_breadcrumbs" %}
+    {% include "shared/organisms/heading_with_meta_actions_and_breadcrumbs.html" %}
+{% elif heading_style == "with_meta_and_actions" %}
+    {% include "shared/organisms/heading_with_meta_and_actions.html" %}
+{% else %}
+    {% include "shared/organisms/heading_with_actions.html" %}
+{% endif %}
 {% if errors %}
 <div class="sf-alert sf-alert-error">
     <ul>

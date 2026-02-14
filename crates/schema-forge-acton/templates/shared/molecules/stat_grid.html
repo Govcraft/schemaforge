@@ -1,0 +1,7 @@
+{% if heading_stats %}
+<div class="sf-heading-stat-grid">
+    {% for stat in heading_stats %}
+    {% include "shared/atoms/stat_cell.html" %}
+    {% endfor %}
+</div>
+{% endif %}

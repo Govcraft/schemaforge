@@ -48,11 +48,27 @@ pub enum Density {
     Spacious,
 }
 
+/// Page heading style.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadingStyle {
+    WithActions,
+    WithActionsAndBreadcrumbs,
+    CardWithAvatarAndStats,
+    WithAvatarAndActions,
+    WithBannerImage,
+    WithFiltersAndActions,
+    WithLogoMetaAndActions,
+    WithMetaActionsAndBreadcrumbs,
+    WithMetaAndActions,
+}
+
 /// Per-schema style overrides.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThemeOverride {
     pub list_style: Option<ListStyle>,
     pub detail_style: Option<DetailStyle>,
+    pub heading_style: Option<HeadingStyle>,
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +92,7 @@ pub struct Theme {
     pub detail_style: DetailStyle,
     pub nav_style: NavStyle,
     pub density: Density,
+    pub heading_style: HeadingStyle,
     pub schema_labels: HashMap<String, String>,
     pub field_labels: HashMap<String, HashMap<String, String>>,
     pub schema_overrides: HashMap<String, ThemeOverride>,
@@ -107,6 +124,7 @@ impl Default for Theme {
             detail_style: DetailStyle::Full,
             nav_style: NavStyle::Sidebar,
             density: Density::Comfortable,
+            heading_style: HeadingStyle::WithActions,
             schema_labels: HashMap::new(),
             field_labels: HashMap::new(),
             schema_overrides: HashMap::new(),
@@ -144,6 +162,7 @@ impl Theme {
             detail_style: extract_enum(fields, "detail_style").unwrap_or(defaults.detail_style),
             nav_style: extract_enum(fields, "nav_style").unwrap_or(defaults.nav_style),
             density: extract_enum(fields, "density").unwrap_or(defaults.density),
+            heading_style: extract_enum(fields, "heading_style").unwrap_or(defaults.heading_style),
             schema_labels: extract_json_map(fields, "schema_labels"),
             field_labels: extract_json_map(fields, "field_labels"),
             schema_overrides: extract_json_map(fields, "schema_overrides"),
@@ -240,6 +259,32 @@ impl Theme {
             Density::Compact => "0.25rem",
             Density::Comfortable => "0.5rem",
             Density::Spacious => "1rem",
+        }
+    }
+
+    /// Resolve the heading style for a given schema, cascading:
+    /// schema override → global → system default.
+    pub fn resolve_heading_style(&self, schema: &str) -> &HeadingStyle {
+        if let Some(ovr) = self.schema_overrides.get(schema) {
+            if let Some(ref hs) = ovr.heading_style {
+                return hs;
+            }
+        }
+        &self.heading_style
+    }
+
+    /// String name of the current heading style (for template selection).
+    pub fn heading_style_name(&self, schema: &str) -> &str {
+        match self.resolve_heading_style(schema) {
+            HeadingStyle::WithActions => "with_actions",
+            HeadingStyle::WithActionsAndBreadcrumbs => "with_actions_and_breadcrumbs",
+            HeadingStyle::CardWithAvatarAndStats => "card_with_avatar_and_stats",
+            HeadingStyle::WithAvatarAndActions => "with_avatar_and_actions",
+            HeadingStyle::WithBannerImage => "with_banner_image",
+            HeadingStyle::WithFiltersAndActions => "with_filters_and_actions",
+            HeadingStyle::WithLogoMetaAndActions => "with_logo_meta_and_actions",
+            HeadingStyle::WithMetaActionsAndBreadcrumbs => "with_meta_actions_and_breadcrumbs",
+            HeadingStyle::WithMetaAndActions => "with_meta_and_actions",
         }
     }
 
@@ -428,7 +473,7 @@ mod tests {
             "Contact".to_string(),
             ThemeOverride {
                 list_style: Some(ListStyle::Compact),
-                detail_style: None,
+                ..Default::default()
             },
         );
         let theme = Theme {
@@ -561,6 +606,7 @@ mod tests {
         let ovr = ThemeOverride {
             list_style: Some(ListStyle::Compact),
             detail_style: Some(DetailStyle::Split),
+            heading_style: Some(HeadingStyle::WithBannerImage),
         };
         let json = serde_json::to_string(&ovr).unwrap();
         let back: ThemeOverride = serde_json::from_str(&json).unwrap();
@@ -576,6 +622,77 @@ mod tests {
         let theme = Theme::from_entity(&fields);
         assert_eq!(theme.schema_label("Contact"), "People");
         assert_eq!(theme.schema_label("Company"), "Org");
+    }
+
+    #[test]
+    fn serde_roundtrip_heading_style() {
+        let json = serde_json::to_string(&HeadingStyle::WithMetaAndActions).unwrap();
+        assert_eq!(json, "\"with_meta_and_actions\"");
+        let back: HeadingStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, HeadingStyle::WithMetaAndActions);
+    }
+
+    #[test]
+    fn resolve_heading_style_global() {
+        let theme = Theme {
+            heading_style: HeadingStyle::WithBannerImage,
+            ..Theme::default()
+        };
+        assert_eq!(
+            theme.resolve_heading_style("Contact"),
+            &HeadingStyle::WithBannerImage
+        );
+    }
+
+    #[test]
+    fn resolve_heading_style_schema_override() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "Deal".to_string(),
+            ThemeOverride {
+                heading_style: Some(HeadingStyle::CardWithAvatarAndStats),
+                ..Default::default()
+            },
+        );
+        let theme = Theme {
+            heading_style: HeadingStyle::WithActions,
+            schema_overrides: overrides,
+            ..Theme::default()
+        };
+        assert_eq!(
+            theme.resolve_heading_style("Deal"),
+            &HeadingStyle::CardWithAvatarAndStats
+        );
+        assert_eq!(
+            theme.resolve_heading_style("Contact"),
+            &HeadingStyle::WithActions
+        );
+    }
+
+    #[test]
+    fn heading_style_name_values() {
+        let theme = Theme::default();
+        assert_eq!(theme.heading_style_name("Contact"), "with_actions");
+
+        let theme = Theme {
+            heading_style: HeadingStyle::WithMetaActionsAndBreadcrumbs,
+            ..Theme::default()
+        };
+        assert_eq!(
+            theme.heading_style_name("Contact"),
+            "with_meta_actions_and_breadcrumbs"
+        );
+    }
+
+    #[test]
+    fn from_entity_heading_style() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "heading_style".to_string(),
+            DynamicValue::Text("with_banner_image".to_string()),
+        );
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.heading_style, HeadingStyle::WithBannerImage);
     }
 
     #[test]

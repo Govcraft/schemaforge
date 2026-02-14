@@ -1,0 +1,12 @@
+{% if heading_actions %}
+<div class="sf-heading-mobile-dropdown">
+    <details>
+        <summary class="sf-btn sf-btn-secondary sf-btn-sm">More</summary>
+        <div class="sf-heading-mobile-dropdown-menu">
+            {% for action in heading_actions %}
+            <a href="{{ action.url }}" class="sf-heading-mobile-dropdown-item">{{ action.label }}</a>
+            {% endfor %}
+        </div>
+    </details>
+</div>
+{% endif %}

@@ -354,6 +354,233 @@
     color: var(--sf-secondary);
 }
 
+/* Heading — Avatar */
+.sf-avatar {
+    @apply inline-flex items-center justify-center rounded-full overflow-hidden;
+    background: var(--sf-surface);
+    border: 2px solid var(--sf-background);
+}
+.sf-avatar img {
+    @apply w-full h-full object-cover;
+}
+.sf-avatar-sm { width: 2rem; height: 2rem; }
+.sf-avatar-md { width: 3rem; height: 3rem; }
+.sf-avatar-lg { width: 4rem; height: 4rem; }
+.sf-avatar-xl { width: 5rem; height: 5rem; }
+.sf-avatar-initials {
+    @apply font-bold;
+    color: var(--sf-primary);
+    font-size: 0.875em;
+}
+
+/* Heading — Shared */
+.sf-heading {
+    margin-bottom: 1.5rem;
+}
+
+/* Heading — Action buttons */
+.sf-heading-actions {
+    @apply flex gap-2;
+}
+.sf-heading-actions-row {
+    @apply flex items-center gap-2;
+}
+.sf-heading-actions-desktop {
+    @apply hidden;
+}
+@media (min-width: 640px) {
+    .sf-heading-actions-desktop {
+        @apply flex gap-2;
+    }
+}
+
+/* Heading — Mobile dropdown */
+.sf-heading-mobile-dropdown {
+    @apply relative;
+}
+@media (min-width: 640px) {
+    .sf-heading-mobile-dropdown {
+        @apply hidden;
+    }
+}
+.sf-heading-mobile-dropdown summary {
+    @apply cursor-pointer list-none;
+    padding: 0.375rem;
+    border-radius: var(--sf-border-radius);
+    color: var(--sf-secondary);
+}
+.sf-heading-mobile-dropdown summary:hover {
+    background: var(--sf-surface);
+}
+.sf-heading-mobile-dropdown .sf-dropdown-menu {
+    @apply absolute right-0 flex flex-col gap-1;
+    top: 100%;
+    min-width: 10rem;
+    padding: 0.25rem;
+    background: var(--sf-background);
+    border: 1px solid var(--sf-secondary);
+    border-radius: var(--sf-border-radius);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    z-index: 10;
+}
+.sf-heading-mobile-dropdown .sf-dropdown-menu a {
+    @apply block no-underline text-sm;
+    padding: 0.375rem 0.75rem;
+    color: var(--sf-text);
+    border-radius: var(--sf-border-radius);
+}
+.sf-heading-mobile-dropdown .sf-dropdown-menu a:hover {
+    background: var(--sf-surface);
+}
+
+/* Heading — Breadcrumbs */
+.sf-heading-breadcrumbs-mobile {
+    @apply block mb-2;
+}
+@media (min-width: 640px) {
+    .sf-heading-breadcrumbs-mobile {
+        @apply hidden;
+    }
+}
+.sf-heading-breadcrumbs-desktop {
+    @apply hidden;
+}
+@media (min-width: 640px) {
+    .sf-heading-breadcrumbs-desktop {
+        @apply flex text-sm;
+        gap: 0.25rem;
+        color: var(--sf-secondary);
+    }
+}
+.sf-heading-breadcrumb-link {
+    @apply no-underline;
+    color: var(--sf-primary);
+}
+.sf-heading-breadcrumb-link:hover {
+    @apply underline;
+}
+.sf-heading-breadcrumb-current {
+    color: var(--sf-secondary);
+}
+.sf-heading-back {
+    @apply inline-flex items-center gap-1 text-sm no-underline;
+    color: var(--sf-primary);
+}
+.sf-heading-back:hover {
+    @apply underline;
+}
+
+/* Heading — Meta row */
+.sf-heading-meta-row {
+    @apply flex flex-wrap gap-4;
+    margin-top: 0.5rem;
+}
+.sf-heading-meta-item {
+    @apply flex items-center gap-1 text-sm;
+    color: var(--sf-secondary);
+}
+.sf-heading-meta-icon {
+    @apply text-base;
+    color: var(--sf-secondary);
+}
+
+/* Heading — Filter tabs */
+.sf-heading-filter-tabs {
+    @apply flex;
+    gap: 0;
+    border-bottom: 1px solid var(--sf-surface);
+}
+.sf-heading-filter-tab {
+    @apply no-underline text-sm;
+    padding: 0.5rem 1rem;
+    color: var(--sf-secondary);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+}
+.sf-heading-filter-tab:hover {
+    color: var(--sf-text);
+}
+.sf-heading-filter-tab-active {
+    @apply font-semibold;
+    color: var(--sf-primary);
+    border-bottom-color: var(--sf-primary);
+}
+
+/* Heading — Stat grid */
+.sf-heading-stat-grid {
+    @apply grid;
+    grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
+    gap: 1rem;
+    border-top: 1px solid var(--sf-surface);
+    padding-top: 1rem;
+    margin-top: 1rem;
+}
+.sf-heading-stat {
+    @apply text-center;
+}
+.sf-heading-stat-value {
+    @apply text-xl font-bold;
+}
+.sf-heading-stat-label {
+    @apply text-xs;
+    color: var(--sf-secondary);
+}
+
+/* Heading — Card variant */
+.sf-heading-card {
+    background: var(--sf-surface);
+    border: 1px solid var(--sf-secondary);
+    border-radius: var(--sf-border-radius);
+    overflow: hidden;
+}
+.sf-heading-card-top {
+    @apply flex items-end gap-4;
+    padding: 1.5rem;
+}
+.sf-heading-card-info {
+    @apply flex-1;
+}
+
+/* Heading — Avatar + info row */
+.sf-heading-avatar-row {
+    @apply flex items-center gap-4;
+}
+.sf-heading-avatar-info {
+    @apply flex-1;
+}
+
+/* Heading — Banner image */
+.sf-heading-banner-image {
+    @apply w-full object-cover;
+    height: 12rem;
+}
+.sf-heading-banner-content {
+    @apply flex items-end gap-4;
+    padding: 0 1.5rem 1.5rem;
+    margin-top: -2.5rem;
+    position: relative;
+}
+.sf-heading-banner-info {
+    @apply flex-1;
+    padding-top: 0.5rem;
+}
+
+/* Heading — Logo variant */
+.sf-heading-logo-row {
+    @apply flex items-start gap-4;
+}
+.sf-heading-logo {
+    @apply flex-shrink-0;
+    width: 3rem;
+    height: 3rem;
+    border-radius: var(--sf-border-radius);
+    object-fit: contain;
+    border: 1px solid var(--sf-secondary);
+}
+.sf-heading-logo-info {
+    @apply flex-1;
+}
+
 /* Widget — Status Badge */
 .sf-badge {
     @apply inline-block rounded-full text-xs font-semibold capitalize;

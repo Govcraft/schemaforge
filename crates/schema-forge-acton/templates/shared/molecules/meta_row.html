@@ -1,0 +1,7 @@
+{% if heading_meta %}
+<div class="sf-heading-meta-row">
+    {% for item in heading_meta %}
+    {% include "shared/atoms/meta_item.html" %}
+    {% endfor %}
+</div>
+{% endif %}

@@ -173,6 +173,21 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         "shared/atoms/fallback_input.html" => {
             Some(include_str!("../templates/shared/atoms/fallback_input.html"))
         }
+        "shared/atoms/avatar.html" => {
+            Some(include_str!("../templates/shared/atoms/avatar.html"))
+        }
+        "shared/atoms/heading_title.html" => {
+            Some(include_str!("../templates/shared/atoms/heading_title.html"))
+        }
+        "shared/atoms/meta_item.html" => {
+            Some(include_str!("../templates/shared/atoms/meta_item.html"))
+        }
+        "shared/atoms/stat_cell.html" => {
+            Some(include_str!("../templates/shared/atoms/stat_cell.html"))
+        }
+        "shared/atoms/button.html" => {
+            Some(include_str!("../templates/shared/atoms/button.html"))
+        }
 
         // -----------------------------------------------------------------
         // Shared molecules
@@ -198,6 +213,24 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         "shared/molecules/empty_state.html" => {
             Some(include_str!("../templates/shared/molecules/empty_state.html"))
         }
+        "shared/molecules/button_group.html" => {
+            Some(include_str!("../templates/shared/molecules/button_group.html"))
+        }
+        "shared/molecules/heading_breadcrumbs.html" => {
+            Some(include_str!("../templates/shared/molecules/heading_breadcrumbs.html"))
+        }
+        "shared/molecules/meta_row.html" => {
+            Some(include_str!("../templates/shared/molecules/meta_row.html"))
+        }
+        "shared/molecules/filter_tabs.html" => {
+            Some(include_str!("../templates/shared/molecules/filter_tabs.html"))
+        }
+        "shared/molecules/stat_grid.html" => {
+            Some(include_str!("../templates/shared/molecules/stat_grid.html"))
+        }
+        "shared/molecules/mobile_dropdown.html" => {
+            Some(include_str!("../templates/shared/molecules/mobile_dropdown.html"))
+        }
 
         // -----------------------------------------------------------------
         // Shared organisms
@@ -219,6 +252,33 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         }
         "shared/organisms/entity_detail_tabbed.html" => {
             Some(include_str!("../templates/shared/organisms/entity_detail_tabbed.html"))
+        }
+        "shared/organisms/heading_with_actions.html" => {
+            Some(include_str!("../templates/shared/organisms/heading_with_actions.html"))
+        }
+        "shared/organisms/heading_with_actions_and_breadcrumbs.html" => {
+            Some(include_str!("../templates/shared/organisms/heading_with_actions_and_breadcrumbs.html"))
+        }
+        "shared/organisms/heading_card_with_avatar_and_stats.html" => {
+            Some(include_str!("../templates/shared/organisms/heading_card_with_avatar_and_stats.html"))
+        }
+        "shared/organisms/heading_with_avatar_and_actions.html" => {
+            Some(include_str!("../templates/shared/organisms/heading_with_avatar_and_actions.html"))
+        }
+        "shared/organisms/heading_with_banner_image.html" => {
+            Some(include_str!("../templates/shared/organisms/heading_with_banner_image.html"))
+        }
+        "shared/organisms/heading_with_filters_and_actions.html" => {
+            Some(include_str!("../templates/shared/organisms/heading_with_filters_and_actions.html"))
+        }
+        "shared/organisms/heading_with_logo_meta_and_actions.html" => {
+            Some(include_str!("../templates/shared/organisms/heading_with_logo_meta_and_actions.html"))
+        }
+        "shared/organisms/heading_with_meta_actions_and_breadcrumbs.html" => {
+            Some(include_str!("../templates/shared/organisms/heading_with_meta_actions_and_breadcrumbs.html"))
+        }
+        "shared/organisms/heading_with_meta_and_actions.html" => {
+            Some(include_str!("../templates/shared/organisms/heading_with_meta_and_actions.html"))
         }
 
         // -----------------------------------------------------------------
@@ -353,6 +413,11 @@ mod tests {
             "shared/atoms/array_input.html",
             "shared/atoms/composite.html",
             "shared/atoms/fallback_input.html",
+            "shared/atoms/avatar.html",
+            "shared/atoms/heading_title.html",
+            "shared/atoms/meta_item.html",
+            "shared/atoms/stat_cell.html",
+            "shared/atoms/button.html",
             "shared/molecules/dashboard_card.html",
             "shared/molecules/entity_row.html",
             "shared/molecules/pagination.html",
@@ -360,12 +425,27 @@ mod tests {
             "shared/molecules/page_header.html",
             "shared/molecules/alert.html",
             "shared/molecules/empty_state.html",
+            "shared/molecules/button_group.html",
+            "shared/molecules/heading_breadcrumbs.html",
+            "shared/molecules/meta_row.html",
+            "shared/molecules/filter_tabs.html",
+            "shared/molecules/stat_grid.html",
+            "shared/molecules/mobile_dropdown.html",
             "shared/organisms/entity_list_table.html",
             "shared/organisms/entity_list_cards.html",
             "shared/organisms/entity_list_compact.html",
             "shared/organisms/entity_detail_full.html",
             "shared/organisms/entity_detail_split.html",
             "shared/organisms/entity_detail_tabbed.html",
+            "shared/organisms/heading_with_actions.html",
+            "shared/organisms/heading_with_actions_and_breadcrumbs.html",
+            "shared/organisms/heading_card_with_avatar_and_stats.html",
+            "shared/organisms/heading_with_avatar_and_actions.html",
+            "shared/organisms/heading_with_banner_image.html",
+            "shared/organisms/heading_with_filters_and_actions.html",
+            "shared/organisms/heading_with_logo_meta_and_actions.html",
+            "shared/organisms/heading_with_meta_actions_and_breadcrumbs.html",
+            "shared/organisms/heading_with_meta_and_actions.html",
             "forge/entity_list_table.html",
             "forge/entity_list_cards.html",
             "forge/entity_list_compact.html",
