@@ -1,0 +1,7 @@
+<div class="bg-gray-900">
+    <dl class="grid grid-cols-1 gap-px bg-white/10 sm:grid-cols-2 lg:grid-cols-4">
+        {% for stat in stats %}
+        {% include "shared/molecules/stat_item_trending.html" %}
+        {% endfor %}
+    </dl>
+</div>

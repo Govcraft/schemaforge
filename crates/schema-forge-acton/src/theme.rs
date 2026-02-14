@@ -12,12 +12,19 @@ use crate::views::snake_to_label;
 
 /// How entity lists are rendered.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum ListStyle {
     Table,
     Cards,
     Compact,
     Kanban,
+    GridBadge,
+    GridProfile,
+    GridDirectory,
+    GridLink,
+    GridGallery,
+    GridDetail,
+    GridActions,
 }
 
 /// How entity detail pages are rendered.
@@ -48,6 +55,40 @@ pub enum Density {
     Spacious,
 }
 
+/// Dashboard stats display style.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StatsStyle {
+    Simple,
+    Cards,
+    WithIcons,
+    SharedBorders,
+    Trending,
+    GridActions,
+    GridBadge,
+}
+
+/// Card container style.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CardStyle {
+    Basic,
+    Well,
+    EdgeToEdge,
+    WellEdgeToEdge,
+}
+
+/// Content container width constraint and mobile padding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerStyle {
+    Standard,
+    FullMobile,
+    Breakpoint,
+    BreakpointFullMobile,
+    Narrow,
+}
+
 /// Page heading style.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -69,6 +110,9 @@ pub struct ThemeOverride {
     pub list_style: Option<ListStyle>,
     pub detail_style: Option<DetailStyle>,
     pub heading_style: Option<HeadingStyle>,
+    pub stats_style: Option<StatsStyle>,
+    pub card_style: Option<CardStyle>,
+    pub container_style: Option<ContainerStyle>,
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +137,9 @@ pub struct Theme {
     pub nav_style: NavStyle,
     pub density: Density,
     pub heading_style: HeadingStyle,
+    pub stats_style: StatsStyle,
+    pub card_style: CardStyle,
+    pub container_style: ContainerStyle,
     pub schema_labels: HashMap<String, String>,
     pub field_labels: HashMap<String, HashMap<String, String>>,
     pub schema_overrides: HashMap<String, ThemeOverride>,
@@ -115,9 +162,9 @@ impl Default for Theme {
             secondary_color: "#6B7280".to_string(),
             accent_color: "#10B981".to_string(),
             error_color: "#EF4444".to_string(),
-            background_color: "#FFFFFF".to_string(),
-            surface_color: "#F3F4F6".to_string(),
-            text_color: "#111827".to_string(),
+            background_color: "#111827".to_string(),
+            surface_color: "#1F2937".to_string(),
+            text_color: "#F1F5F9".to_string(),
             border_radius: "0.5rem".to_string(),
             font_family: "system-ui, sans-serif".to_string(),
             list_style: ListStyle::Table,
@@ -125,6 +172,9 @@ impl Default for Theme {
             nav_style: NavStyle::Sidebar,
             density: Density::Comfortable,
             heading_style: HeadingStyle::WithActions,
+            stats_style: StatsStyle::Simple,
+            card_style: CardStyle::Basic,
+            container_style: ContainerStyle::Standard,
             schema_labels: HashMap::new(),
             field_labels: HashMap::new(),
             schema_overrides: HashMap::new(),
@@ -163,6 +213,9 @@ impl Theme {
             nav_style: extract_enum(fields, "nav_style").unwrap_or(defaults.nav_style),
             density: extract_enum(fields, "density").unwrap_or(defaults.density),
             heading_style: extract_enum(fields, "heading_style").unwrap_or(defaults.heading_style),
+            stats_style: extract_enum(fields, "stats_style").unwrap_or(defaults.stats_style),
+            card_style: extract_enum(fields, "card_style").unwrap_or(defaults.card_style),
+            container_style: extract_enum(fields, "container_style").unwrap_or(defaults.container_style),
             schema_labels: extract_json_map(fields, "schema_labels"),
             field_labels: extract_json_map(fields, "field_labels"),
             schema_overrides: extract_json_map(fields, "schema_overrides"),
@@ -288,6 +341,70 @@ impl Theme {
         }
     }
 
+    /// Resolve the stats style, cascading: schema override → global → system default.
+    pub fn resolve_stats_style(&self, schema: &str) -> &StatsStyle {
+        if let Some(ovr) = self.schema_overrides.get(schema) {
+            if let Some(ref ss) = ovr.stats_style {
+                return ss;
+            }
+        }
+        &self.stats_style
+    }
+
+    /// String name of the current stats style (for template selection).
+    pub fn stats_style_name(&self, schema: &str) -> &str {
+        match self.resolve_stats_style(schema) {
+            StatsStyle::Simple => "simple",
+            StatsStyle::Cards => "cards",
+            StatsStyle::WithIcons => "with_icons",
+            StatsStyle::SharedBorders => "shared_borders",
+            StatsStyle::Trending => "trending",
+            StatsStyle::GridActions => "grid_actions",
+            StatsStyle::GridBadge => "grid_badge",
+        }
+    }
+
+    /// Resolve the card style, cascading: schema override → global → system default.
+    pub fn resolve_card_style(&self, schema: &str) -> &CardStyle {
+        if let Some(ovr) = self.schema_overrides.get(schema) {
+            if let Some(ref cs) = ovr.card_style {
+                return cs;
+            }
+        }
+        &self.card_style
+    }
+
+    /// String name of the current card style (for CSS class selection).
+    pub fn card_style_name(&self, schema: &str) -> &str {
+        match self.resolve_card_style(schema) {
+            CardStyle::Basic => "basic",
+            CardStyle::Well => "well",
+            CardStyle::EdgeToEdge => "edge-to-edge",
+            CardStyle::WellEdgeToEdge => "well-edge-to-edge",
+        }
+    }
+
+    /// Resolve the container style, cascading: schema override → global → system default.
+    pub fn resolve_container_style(&self, schema: &str) -> &ContainerStyle {
+        if let Some(ovr) = self.schema_overrides.get(schema) {
+            if let Some(ref cs) = ovr.container_style {
+                return cs;
+            }
+        }
+        &self.container_style
+    }
+
+    /// String name of the current container style (for CSS class selection).
+    pub fn container_style_name(&self, schema: &str) -> &str {
+        match self.resolve_container_style(schema) {
+            ContainerStyle::Standard => "standard",
+            ContainerStyle::FullMobile => "full-mobile",
+            ContainerStyle::Breakpoint => "breakpoint",
+            ContainerStyle::BreakpointFullMobile => "breakpoint-full-mobile",
+            ContainerStyle::Narrow => "narrow",
+        }
+    }
+
     /// String name of the current list style (for template selection).
     pub fn list_style_name(&self, schema: &str) -> &str {
         match self.resolve_list_style(schema) {
@@ -295,6 +412,13 @@ impl Theme {
             ListStyle::Cards => "cards",
             ListStyle::Compact => "compact",
             ListStyle::Kanban => "kanban",
+            ListStyle::GridBadge => "grid_badge",
+            ListStyle::GridProfile => "grid_profile",
+            ListStyle::GridDirectory => "grid_directory",
+            ListStyle::GridLink => "grid_link",
+            ListStyle::GridGallery => "grid_gallery",
+            ListStyle::GridDetail => "grid_detail",
+            ListStyle::GridActions => "grid_actions",
         }
     }
 }
@@ -607,6 +731,9 @@ mod tests {
             list_style: Some(ListStyle::Compact),
             detail_style: Some(DetailStyle::Split),
             heading_style: Some(HeadingStyle::WithBannerImage),
+            stats_style: Some(StatsStyle::Cards),
+            card_style: Some(CardStyle::Well),
+            container_style: Some(ContainerStyle::Narrow),
         };
         let json = serde_json::to_string(&ovr).unwrap();
         let back: ThemeOverride = serde_json::from_str(&json).unwrap();
@@ -708,5 +835,252 @@ mod tests {
 
         let theme = Theme::from_entity(&fields);
         assert_eq!(theme.dashboard_schemas, vec!["Deal", "Contact"]);
+    }
+
+    #[test]
+    fn serde_roundtrip_stats_style() {
+        let json = serde_json::to_string(&StatsStyle::WithIcons).unwrap();
+        assert_eq!(json, "\"with_icons\"");
+        let back: StatsStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, StatsStyle::WithIcons);
+    }
+
+    #[test]
+    fn from_entity_stats_style() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "stats_style".to_string(),
+            DynamicValue::Text("shared_borders".to_string()),
+        );
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.stats_style, StatsStyle::SharedBorders);
+    }
+
+    #[test]
+    fn resolve_stats_style_global() {
+        let theme = Theme {
+            stats_style: StatsStyle::Cards,
+            ..Theme::default()
+        };
+        assert_eq!(theme.resolve_stats_style("Contact"), &StatsStyle::Cards);
+    }
+
+    #[test]
+    fn resolve_stats_style_schema_override() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "Deal".to_string(),
+            ThemeOverride {
+                stats_style: Some(StatsStyle::Trending),
+                ..Default::default()
+            },
+        );
+        let theme = Theme {
+            stats_style: StatsStyle::Simple,
+            schema_overrides: overrides,
+            ..Theme::default()
+        };
+        assert_eq!(theme.resolve_stats_style("Deal"), &StatsStyle::Trending);
+        assert_eq!(theme.resolve_stats_style("Contact"), &StatsStyle::Simple);
+    }
+
+    #[test]
+    fn stats_style_name_values() {
+        let theme = Theme::default();
+        assert_eq!(theme.stats_style_name("Contact"), "simple");
+
+        let theme = Theme {
+            stats_style: StatsStyle::WithIcons,
+            ..Theme::default()
+        };
+        assert_eq!(theme.stats_style_name("Contact"), "with_icons");
+    }
+
+    #[test]
+    fn serde_roundtrip_card_style() {
+        let json = serde_json::to_string(&CardStyle::WellEdgeToEdge).unwrap();
+        assert_eq!(json, "\"well_edge_to_edge\"");
+        let back: CardStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, CardStyle::WellEdgeToEdge);
+    }
+
+    #[test]
+    fn from_entity_card_style() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "card_style".to_string(),
+            DynamicValue::Text("well".to_string()),
+        );
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.card_style, CardStyle::Well);
+    }
+
+    #[test]
+    fn resolve_card_style_global() {
+        let theme = Theme {
+            card_style: CardStyle::Well,
+            ..Theme::default()
+        };
+        assert_eq!(theme.resolve_card_style("Contact"), &CardStyle::Well);
+    }
+
+    #[test]
+    fn resolve_card_style_schema_override() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "Deal".to_string(),
+            ThemeOverride {
+                card_style: Some(CardStyle::EdgeToEdge),
+                ..Default::default()
+            },
+        );
+        let theme = Theme {
+            card_style: CardStyle::Basic,
+            schema_overrides: overrides,
+            ..Theme::default()
+        };
+        assert_eq!(theme.resolve_card_style("Deal"), &CardStyle::EdgeToEdge);
+        assert_eq!(theme.resolve_card_style("Contact"), &CardStyle::Basic);
+    }
+
+    #[test]
+    fn card_style_name_values() {
+        let theme = Theme::default();
+        assert_eq!(theme.card_style_name("Contact"), "basic");
+
+        let theme = Theme {
+            card_style: CardStyle::WellEdgeToEdge,
+            ..Theme::default()
+        };
+        assert_eq!(theme.card_style_name("Contact"), "well-edge-to-edge");
+    }
+
+    #[test]
+    fn serde_roundtrip_container_style() {
+        let json = serde_json::to_string(&ContainerStyle::BreakpointFullMobile).unwrap();
+        assert_eq!(json, "\"breakpoint_full_mobile\"");
+        let back: ContainerStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ContainerStyle::BreakpointFullMobile);
+    }
+
+    #[test]
+    fn from_entity_container_style() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "container_style".to_string(),
+            DynamicValue::Text("narrow".to_string()),
+        );
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.container_style, ContainerStyle::Narrow);
+    }
+
+    #[test]
+    fn resolve_container_style_global() {
+        let theme = Theme {
+            container_style: ContainerStyle::Breakpoint,
+            ..Theme::default()
+        };
+        assert_eq!(
+            theme.resolve_container_style("Contact"),
+            &ContainerStyle::Breakpoint
+        );
+    }
+
+    #[test]
+    fn resolve_container_style_schema_override() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "Deal".to_string(),
+            ThemeOverride {
+                container_style: Some(ContainerStyle::Narrow),
+                ..Default::default()
+            },
+        );
+        let theme = Theme {
+            container_style: ContainerStyle::Standard,
+            schema_overrides: overrides,
+            ..Theme::default()
+        };
+        assert_eq!(
+            theme.resolve_container_style("Deal"),
+            &ContainerStyle::Narrow
+        );
+        assert_eq!(
+            theme.resolve_container_style("Contact"),
+            &ContainerStyle::Standard
+        );
+    }
+
+    #[test]
+    fn container_style_name_values() {
+        let theme = Theme::default();
+        assert_eq!(theme.container_style_name("Contact"), "standard");
+
+        let theme = Theme {
+            container_style: ContainerStyle::BreakpointFullMobile,
+            ..Theme::default()
+        };
+        assert_eq!(
+            theme.container_style_name("Contact"),
+            "breakpoint-full-mobile"
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_list_style_grid() {
+        let json = serde_json::to_string(&ListStyle::GridBadge).unwrap();
+        assert_eq!(json, "\"grid_badge\"");
+        let back: ListStyle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ListStyle::GridBadge);
+    }
+
+    #[test]
+    fn list_style_name_grid_variants() {
+        let cases = [
+            (ListStyle::GridBadge, "grid_badge"),
+            (ListStyle::GridProfile, "grid_profile"),
+            (ListStyle::GridDirectory, "grid_directory"),
+            (ListStyle::GridLink, "grid_link"),
+            (ListStyle::GridGallery, "grid_gallery"),
+            (ListStyle::GridDetail, "grid_detail"),
+            (ListStyle::GridActions, "grid_actions"),
+        ];
+        for (style, expected) in cases {
+            let theme = Theme {
+                list_style: style,
+                ..Theme::default()
+            };
+            assert_eq!(theme.list_style_name("Contact"), expected);
+        }
+    }
+
+    #[test]
+    fn from_entity_grid_list_style() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "list_style".to_string(),
+            DynamicValue::Text("grid_detail".to_string()),
+        );
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.list_style, ListStyle::GridDetail);
+    }
+
+    #[test]
+    fn resolve_list_style_grid_override() {
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "Contact".to_string(),
+            ThemeOverride {
+                list_style: Some(ListStyle::GridProfile),
+                ..Default::default()
+            },
+        );
+        let theme = Theme {
+            list_style: ListStyle::Table,
+            schema_overrides: overrides,
+            ..Theme::default()
+        };
+        assert_eq!(theme.resolve_list_style("Contact"), &ListStyle::GridProfile);
+        assert_eq!(theme.resolve_list_style("Company"), &ListStyle::Table);
     }
 }

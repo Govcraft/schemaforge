@@ -46,6 +46,21 @@ pub struct NavSchemaEntry {
     pub label: String,
 }
 
+/// A stat item for standalone stats display components.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StatItem {
+    pub label: String,
+    pub value: String,
+    pub unit: Option<String>,
+    pub trend_value: Option<String>,
+    /// "up" or "down"
+    pub trend_direction: Option<String>,
+    pub previous_value: Option<String>,
+    pub icon_svg: Option<String>,
+    pub link_url: Option<String>,
+    pub link_label: Option<String>,
+}
+
 /// Schema card for dashboard — one card per aggregate widget.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DashboardCard {
@@ -88,6 +103,11 @@ pub struct CloudDashboardTemplate {
     pub heading_banner_url: Option<String>,
     pub heading_filter_tabs: Vec<HeadingFilterTab>,
     pub heading_logo_url: Option<String>,
+    pub stats: Vec<StatItem>,
+    pub stats_style: String,
+    pub stats_heading: Option<String>,
+    pub card_style: String,
+    pub container_style: String,
 }
 
 /// Cloud entity list page.
@@ -117,6 +137,8 @@ pub struct CloudEntityListTemplate {
     pub heading_banner_url: Option<String>,
     pub heading_filter_tabs: Vec<HeadingFilterTab>,
     pub heading_logo_url: Option<String>,
+    pub card_style: String,
+    pub container_style: String,
 }
 
 /// Cloud entity list body fragment (for HTMX pagination).
@@ -127,6 +149,7 @@ pub struct CloudEntityListBodyTemplate {
     pub pagination: PaginationView,
     pub list_style: String,
     pub filter_fields: Vec<FilterField>,
+    pub card_style: String,
 }
 
 /// Cloud kanban entity list page.
@@ -154,6 +177,8 @@ pub struct CloudEntityListKanbanTemplate {
     pub heading_banner_url: Option<String>,
     pub heading_filter_tabs: Vec<HeadingFilterTab>,
     pub heading_logo_url: Option<String>,
+    pub card_style: String,
+    pub container_style: String,
 }
 
 /// Cloud entity form page (create/edit).
@@ -182,6 +207,8 @@ pub struct CloudEntityFormTemplate {
     pub heading_banner_url: Option<String>,
     pub heading_filter_tabs: Vec<HeadingFilterTab>,
     pub heading_logo_url: Option<String>,
+    pub card_style: String,
+    pub container_style: String,
 }
 
 /// Cloud entity detail page.
@@ -209,4 +236,6 @@ pub struct CloudEntityDetailTemplate {
     pub heading_banner_url: Option<String>,
     pub heading_filter_tabs: Vec<HeadingFilterTab>,
     pub heading_logo_url: Option<String>,
+    pub card_style: String,
+    pub container_style: String,
 }

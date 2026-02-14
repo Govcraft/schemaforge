@@ -1,6 +1,6 @@
 <div class="min-h-full">
   <nav class="bg-gray-800/50">
-    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    <div class="sf-container-standard">
       <div class="flex h-16 items-center justify-between">
         <!-- Left: logo + desktop nav links -->
         <div class="flex items-center">
@@ -85,4 +85,5 @@
     </el-disclosure>
   </nav>
   <main>
-    <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <div class="sf-container-{{ container_style }} py-10">
+{% if container_style == "narrow" %}<div class="sf-container-narrow-inner">{% endif %}

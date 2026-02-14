@@ -1,0 +1,10 @@
+{# Description list (key-value pairs) from entity.summary fields.
+   Variables: entity (EntityView) #}
+<dl class="sf-grid-dl">
+    {% for field in entity.summary %}
+    <div class="sf-grid-dl-row">
+        <dt class="sf-grid-dl-label">{{ field.label }}</dt>
+        <dd class="sf-grid-dl-value">{% include "cloud/atoms/field_display.html" %}</dd>
+    </div>
+    {% endfor %}
+</dl>

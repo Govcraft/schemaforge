@@ -22,7 +22,7 @@ use super::templates::{
     BreadcrumbItem, CloudDashboardTemplate, CloudEntityDetailTemplate, CloudEntityFormTemplate,
     CloudEntityListBodyTemplate, CloudEntityListKanbanTemplate, CloudEntityListTemplate,
     DashboardCard, HeadingAction, HeadingFilterTab, HeadingMetaItem, HeadingStatItem,
-    NavSchemaEntry,
+    NavSchemaEntry, StatItem,
 };
 
 // ---------------------------------------------------------------------------
@@ -145,6 +145,13 @@ fn list_style_name(style: &ListStyle) -> &str {
         ListStyle::Cards => "cards",
         ListStyle::Compact => "compact",
         ListStyle::Kanban => "kanban",
+        ListStyle::GridBadge => "grid_badge",
+        ListStyle::GridProfile => "grid_profile",
+        ListStyle::GridDirectory => "grid_directory",
+        ListStyle::GridLink => "grid_link",
+        ListStyle::GridGallery => "grid_gallery",
+        ListStyle::GridDetail => "grid_detail",
+        ListStyle::GridActions => "grid_actions",
     }
 }
 
@@ -236,6 +243,25 @@ pub async fn dashboard(
         }
     }
 
+    // Build stat items from schema cards for the stats section
+    let stats: Vec<StatItem> = schema_cards
+        .iter()
+        .map(|card| StatItem {
+            label: format!("{} {}", card.label, card.widget_label),
+            value: card.display_value.clone(),
+            unit: None,
+            trend_value: None,
+            trend_direction: None,
+            previous_value: None,
+            icon_svg: None,
+            link_url: Some(format!("/app/{}/entities", card.url_name)),
+            link_label: Some(format!("View all {}", card.label)),
+        })
+        .collect();
+    let stats_style = theme.stats_style_name("_dashboard").to_string();
+    let card_style = theme.card_style_name("_dashboard").to_string();
+    let container_style = theme.container_style_name("_dashboard").to_string();
+
     let slots = theme_slots(&theme);
     let hd = HeadingDefaults::empty();
     Ok(render_cloud(
@@ -262,6 +288,11 @@ pub async fn dashboard(
             heading_banner_url: hd.heading_banner_url,
             heading_filter_tabs: hd.heading_filter_tabs,
             heading_logo_url: hd.heading_logo_url,
+            stats,
+            stats_style,
+            stats_heading: None,
+            card_style,
+            container_style,
         },
     ))
 }
@@ -383,6 +414,8 @@ pub async fn entity_list(
             let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
             let heading_style = theme.heading_style_name(&name).to_string();
+            let card_style = theme.card_style_name(&name).to_string();
+            let container_style = theme.container_style_name(&name).to_string();
             let slots = theme_slots(&theme);
             let hd = HeadingDefaults::empty();
             return Ok(render_cloud(
@@ -420,6 +453,8 @@ pub async fn entity_list(
                     heading_banner_url: hd.heading_banner_url,
                     heading_filter_tabs: hd.heading_filter_tabs,
                     heading_logo_url: hd.heading_logo_url,
+                    card_style,
+                    container_style,
                 },
             ));
         }
@@ -457,6 +492,8 @@ pub async fn entity_list(
     let filter_fields = crate::views::extract_filter_fields(&schema_def, &params.filters);
 
     let heading_style = theme.heading_style_name(&name).to_string();
+    let card_style = theme.card_style_name(&name).to_string();
+    let container_style = theme.container_style_name(&name).to_string();
     let slots = theme_slots(&theme);
     let hd = HeadingDefaults::empty();
     Ok(render_cloud(
@@ -496,6 +533,8 @@ pub async fn entity_list(
             heading_banner_url: hd.heading_banner_url,
             heading_filter_tabs: hd.heading_filter_tabs,
             heading_logo_url: hd.heading_logo_url,
+            card_style,
+            container_style,
         },
     ))
 }
@@ -545,6 +584,7 @@ pub async fn entity_table_fragment(
     let theme = state.theme.load();
     schema.apply_theme_labels(&theme);
     let list_style = theme.resolve_list_style(&name);
+    let card_style = theme.card_style_name(&name).to_string();
 
     let filter_fields = crate::views::extract_filter_fields(&schema_def, &params.filters);
 
@@ -557,6 +597,7 @@ pub async fn entity_table_fragment(
             pagination,
             list_style: list_style_name(list_style).to_string(),
             filter_fields,
+            card_style,
         },
     ))
 }
@@ -590,6 +631,8 @@ pub async fn entity_create_form(
     let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
     let heading_style = theme.heading_style_name(&name).to_string();
+    let card_style = theme.card_style_name(&name).to_string();
+    let container_style = theme.container_style_name(&name).to_string();
     let slots = theme_slots(&theme);
     let hd = HeadingDefaults::empty();
     Ok(render_cloud(
@@ -623,6 +666,8 @@ pub async fn entity_create_form(
             heading_banner_url: hd.heading_banner_url,
             heading_filter_tabs: hd.heading_filter_tabs,
             heading_logo_url: hd.heading_logo_url,
+            card_style,
+            container_style,
         },
     ))
 }
@@ -681,6 +726,8 @@ pub async fn entity_create(
             let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
             let heading_style = theme.heading_style_name(&name).to_string();
+            let card_style = theme.card_style_name(&name).to_string();
+            let container_style = theme.container_style_name(&name).to_string();
             let slots = theme_slots(&theme);
             let hd = HeadingDefaults::empty();
             Ok((
@@ -716,6 +763,8 @@ pub async fn entity_create(
                         heading_banner_url: hd.heading_banner_url,
                         heading_filter_tabs: hd.heading_filter_tabs,
                         heading_logo_url: hd.heading_logo_url,
+                        card_style,
+                        container_style,
                     },
                 ),
             )
@@ -769,6 +818,8 @@ pub async fn entity_detail(
     let detail_style = theme.resolve_detail_style(&name);
 
     let heading_style = theme.heading_style_name(&name).to_string();
+    let card_style = theme.card_style_name(&name).to_string();
+    let container_style = theme.container_style_name(&name).to_string();
     let display_val = entity_view.display_value.clone();
     let slots = theme_slots(&theme);
     let hd = HeadingDefaults::empty();
@@ -808,6 +859,8 @@ pub async fn entity_detail(
             heading_banner_url: hd.heading_banner_url,
             heading_filter_tabs: hd.heading_filter_tabs,
             heading_logo_url: hd.heading_logo_url,
+            card_style,
+            container_style,
         },
     ))
 }
@@ -855,6 +908,8 @@ pub async fn entity_edit_form(
     let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
     let heading_style = theme.heading_style_name(&name).to_string();
+    let card_style = theme.card_style_name(&name).to_string();
+    let container_style = theme.container_style_name(&name).to_string();
     let slots = theme_slots(&theme);
     let hd = HeadingDefaults::empty();
     Ok(render_cloud(
@@ -888,6 +943,8 @@ pub async fn entity_edit_form(
             heading_banner_url: hd.heading_banner_url,
             heading_filter_tabs: hd.heading_filter_tabs,
             heading_logo_url: hd.heading_logo_url,
+            card_style,
+            container_style,
         },
     ))
 }
@@ -948,6 +1005,8 @@ pub async fn entity_update(
             let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
             let heading_style = theme.heading_style_name(&name).to_string();
+            let card_style = theme.card_style_name(&name).to_string();
+            let container_style = theme.container_style_name(&name).to_string();
             let slots = theme_slots(&theme);
             let hd = HeadingDefaults::empty();
             Ok((
@@ -983,6 +1042,8 @@ pub async fn entity_update(
                         heading_banner_url: hd.heading_banner_url,
                         heading_filter_tabs: hd.heading_filter_tabs,
                         heading_logo_url: hd.heading_logo_url,
+                        card_style,
+                        container_style,
                     },
                 ),
             )

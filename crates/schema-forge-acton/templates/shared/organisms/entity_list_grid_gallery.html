@@ -1,0 +1,12 @@
+{# Grid Gallery: large image (aspect 10:7) + title + detail below.
+   Variables: schema (SchemaView), entities (Vec<EntityView>) #}
+<div class="sf-entity-list" data-list-style="grid_gallery">
+    {% for entity in entities %}
+    {% set item_title = entity.display_value %}
+    {% set item_initials = entity.display_value | truncate(length=2, end="") | upper %}
+    {% set item_url = "/app/" ~ schema.url_name ~ "/entities/" ~ entity.id %}
+    {% set item_id = entity.id %}
+    {% set item_schema_url = schema.url_name %}
+    {% include "shared/molecules/grid_item_gallery.html" %}
+    {% endfor %}
+</div>

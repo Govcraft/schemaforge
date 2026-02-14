@@ -1,7 +1,7 @@
 <div class="min-h-full">
   <div class="relative bg-gray-800/50 pb-32">
     <nav class="bg-transparent">
-      <div class="mx-auto max-w-7xl sm:px-6 lg:px-8">
+      <div class="sf-container-full-mobile">
         <div class="border-b border-white/10">
           <div class="flex h-16 items-center justify-between px-4 sm:px-0">
             <!-- Left: logo + desktop nav links -->
@@ -88,11 +88,12 @@
       </el-disclosure>
     </nav>
     <header class="py-10">
-      <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+      <div class="sf-container-standard">
         <h1 class="text-3xl font-bold tracking-tight text-white">{{ app_title }}</h1>
       </div>
     </header>
   </div>
   <main class="relative -mt-32">
-    <div class="mx-auto max-w-7xl px-4 pb-12 sm:px-6 lg:px-8">
-      <div class="rounded-lg bg-gray-800 px-5 py-6 outline -outline-offset-1 outline-white/10 sm:px-6">
+    <div class="sf-container-{{ container_style }} pb-12">
+{% if container_style == "narrow" %}<div class="sf-container-narrow-inner">{% endif %}
+      <div class="sf-card-basic sf-card-body">

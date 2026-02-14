@@ -1,0 +1,17 @@
+<div class="relative overflow-hidden rounded-lg bg-gray-800/75 px-4 pt-5 pb-12 shadow-sm inset-ring inset-ring-white/10 sm:px-6 sm:pt-6">
+    <dt>
+        {% include "shared/atoms/stat_icon_box.html" %}
+        <p class="ml-16 truncate text-sm font-medium text-gray-400">{{ stat.label }}</p>
+    </dt>
+    <dd class="ml-16 flex items-baseline pb-6 sm:pb-7">
+        <p class="text-2xl font-semibold text-white">{{ stat.value }}</p>
+        {% include "shared/atoms/stat_trend_inline.html" %}
+        {% if stat.link_url %}
+        <div class="absolute inset-x-0 bottom-0 bg-gray-700/20 px-4 py-4 sm:px-6">
+            <div class="text-sm">
+                <a href="{{ stat.link_url }}" class="font-medium text-indigo-400 hover:text-indigo-300">{{ stat.link_label | default(value="View all") }}<span class="sr-only"> {{ stat.label }} stats</span></a>
+            </div>
+        </div>
+        {% endif %}
+    </dd>
+</div>

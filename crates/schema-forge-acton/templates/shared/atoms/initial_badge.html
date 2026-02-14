@@ -1,0 +1,3 @@
+{# Initial letter badge — colored circle/square/strip with 1-2 character initials.
+   Variables: initials (str), badge_style ("circle"|"square"|"strip"), badge_size ("sm"|"md"|"lg"|"xl") #}
+<span class="sf-initial-badge sf-initial-badge-{{ badge_style | default(value='circle') }} sf-initial-badge-{{ badge_size | default(value='md') }}">{{ initials }}</span>

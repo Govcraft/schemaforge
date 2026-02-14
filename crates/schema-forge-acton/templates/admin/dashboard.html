@@ -23,7 +23,7 @@
 {% else %}
 
 {% if graph.has_edges %}
-<div class="rounded-lg bg-white/5 ring-1 ring-white/10 mb-8">
+<div class="sf-card-basic mb-8">
     <div class="p-6">
         <div class="flex justify-between items-center mb-4">
             <h3 class="text-sm font-semibold uppercase tracking-wider text-gray-500 m-0">Schema Relationships</h3>
@@ -446,8 +446,8 @@
 
 <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-5">
     {% for entry in entries %}
-    <a href="/admin/schemas/{{ entry.schema.url_name }}/entities" class="rounded-lg bg-white/5 ring-1 ring-white/10 no-underline text-inherit relative overflow-hidden transition-all duration-200 hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(99,102,241,0.06)] before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:bg-gradient-to-r before:from-indigo-500 before:to-indigo-500/30 before:opacity-0 before:transition-opacity hover:before:opacity-100">
-        <div class="p-6">
+    <a href="/admin/schemas/{{ entry.schema.url_name }}/entities" class="sf-card-basic sf-card-body no-underline text-inherit relative transition-all duration-200 hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(99,102,241,0.06)] before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:bg-gradient-to-r before:from-indigo-500 before:to-indigo-500/30 before:opacity-0 before:transition-opacity hover:before:opacity-100">
+        <div>
             <h3 class="mb-1">{{ entry.schema.name }}</h3>
             <div class="text-[0.8125rem] text-gray-400">
                 {{ entry.schema.fields|length }} fields

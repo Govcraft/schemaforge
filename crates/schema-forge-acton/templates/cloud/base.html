@@ -20,25 +20,30 @@
   {% include "cloud/shells/stacked_compact.html" %}
 {% else %}
   {% include "cloud/shells/stacked.html" %}
+  </div>
+</main>
 {% endif %}
 
     {% block content %}{% endblock %}
 
 {% if nav_style == "sidebar" %}
+{% if container_style == "narrow" %}</div>{% endif %}
     </div>
   </main>
 </div>
 {% elif nav_style == "stacked_overlap" %}
       </div>
+{% if container_style == "narrow" %}</div>{% endif %}
     </div>
   </main>
 </div>
 {% else %}
+{% if container_style == "narrow" %}</div>{% endif %}
     </div>
   </main>
 </div>
 {% endif %}
 
-{% if footer_html %}<footer class="bg-gray-800/50 border-t border-white/10"><div class="mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8 text-sm text-gray-400">{{ footer_html }}</div></footer>{% endif %}
+{% if footer_html %}<footer class="bg-gray-800/50 border-t border-white/10"><div class="sf-container-standard py-4 text-sm text-gray-400">{{ footer_html }}</div></footer>{% endif %}
 </body>
 </html>

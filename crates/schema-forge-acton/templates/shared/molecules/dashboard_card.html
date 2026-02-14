@@ -1,5 +1,5 @@
-<a href="/app/{{ card.url_name }}/entities" class="block no-underline rounded-lg bg-white/5 ring-1 ring-white/10 p-5 text-inherit transition-shadow hover:shadow-lg hover:shadow-black/20 hover:ring-white/20">
-    <div class="font-semibold text-base text-white mb-1">{{ card.label }}</div>
-    <div class="text-4xl font-bold text-indigo-400">{{ card.display_value }}</div>
-    <div class="text-xs uppercase tracking-wide text-gray-500">{{ card.widget_label }}</div>
+<a href="/app/{{ card.url_name }}/entities" class="sf-card-{{ card_style | default(value='basic') }} sf-card-body sf-dashboard-card sf-link">
+    <div class="sf-dashboard-card-title">{{ card.label }}</div>
+    <div class="sf-dashboard-card-value">{{ card.display_value }}</div>
+    <div class="sf-dashboard-card-widget-label">{{ card.widget_label }}</div>
 </a>

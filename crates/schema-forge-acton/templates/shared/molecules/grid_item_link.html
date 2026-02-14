@@ -1,0 +1,21 @@
+{# Grid item: minimal clickable card with small initial circle + name + subtitle.
+   Generic variables: item_title, item_initials, item_url, item_id, item_subtitle.
+   Entity mode: when `entity` is in scope, renders first summary field as subtitle. #}
+<a href="{{ item_url | default(value='#') }}" class="sf-grid-link-card"{% if item_id %} id="sf-entity-{{ item_id }}"{% endif %}>
+    <div class="sf-grid-link-badge">
+        {% set badge_style = "circle" %}
+        {% set badge_size = "sm" %}
+        {% set initials = item_initials %}
+        {% include "shared/atoms/initial_badge.html" %}
+    </div>
+    <div class="sf-grid-link-content">
+        <p class="sf-grid-link-name">{{ item_title }}</p>
+        {% if entity %}
+            {% for field in entity.summary %}{% if loop.first %}
+            <p class="sf-grid-link-subtitle">{{ field.value }}</p>
+            {% endif %}{% endfor %}
+        {% elif item_subtitle %}
+            <p class="sf-grid-link-subtitle">{{ item_subtitle }}</p>
+        {% endif %}
+    </div>
+</a>

@@ -59,7 +59,15 @@ fn render_entity_list(
                 url_prefix,
             },
         ),
-        ListStyle::Compact | ListStyle::Kanban => render_fragment(
+        ListStyle::Compact
+        | ListStyle::Kanban
+        | ListStyle::GridBadge
+        | ListStyle::GridProfile
+        | ListStyle::GridDirectory
+        | ListStyle::GridLink
+        | ListStyle::GridGallery
+        | ListStyle::GridDetail
+        | ListStyle::GridActions => render_fragment(
             &state.template_engine,
             "forge/entity_list_compact.html",
             &WidgetEntityListCompactTemplate {

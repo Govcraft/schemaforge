@@ -1,22 +1,24 @@
-<div class="rounded-lg bg-white/5 ring-1 ring-white/10 p-6" id="forge-detail-{{ entity.id }}">
-    <div class="flex items-center justify-between mb-4">
-        <span class="text-lg font-bold text-white">{{ entity.display_value }}</span>
-        <span class="text-sm text-gray-400">{{ entity.id }}</span>
+<div class="sf-card-{{ card_style | default(value='basic') }} sf-card-divided" id="forge-detail-{{ entity.id }}">
+    <div class="sf-card-header sf-detail-header flex items-center justify-between">
+        <span class="sf-detail-title">{{ entity.display_value }}</span>
+        <span class="sf-detail-id">{{ entity.id }}</span>
     </div>
-    {% for field in entity.field_values %}
-    <div class="flex flex-col gap-1 py-3 border-b border-white/5">
-        <div class="text-sm font-semibold text-gray-400 uppercase tracking-wider">{{ field.label }}</div>
-        <div class="text-sm text-gray-300">{% if field.is_empty %}<span class="text-gray-500">-</span>{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</div>
+    <div class="sf-card-body">
+        {% for field in entity.field_values %}
+        <div class="sf-detail-field">
+            <div class="sf-detail-label uppercase tracking-wider">{{ field.label }}</div>
+            <div class="sf-detail-value">{% if field.is_empty %}<span style="color: var(--sf-secondary)">-</span>{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</div>
+        </div>
+        {% endfor %}
     </div>
-    {% endfor %}
-    <div class="flex gap-1.5 mt-4 pt-4 border-t border-white/10">
+    <div class="sf-card-footer flex gap-1.5">
         <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit"
-           class="rounded-md bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/20" hx-get="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit"
-           hx-target="closest .rounded-lg" hx-swap="outerHTML">Edit</a>
-        <button class="rounded-md bg-red-500 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-red-400"
+           class="sf-btn sf-btn-secondary" hx-get="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit"
+           hx-target="closest [id^='forge-detail-']" hx-swap="outerHTML">Edit</a>
+        <button class="sf-btn sf-btn-danger sf-btn-xs"
             hx-delete="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}"
             hx-confirm="Delete this entity?"
-            hx-target="closest .rounded-lg"
+            hx-target="closest [id^='forge-detail-']"
             hx-swap="outerHTML"
         >Delete</button>
     </div>

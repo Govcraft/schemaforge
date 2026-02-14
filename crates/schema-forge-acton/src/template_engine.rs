@@ -41,6 +41,22 @@ impl TemplateEngine {
             value.split(sep).map(|s| s.to_string()).collect()
         });
 
+        // Register custom `truncate` filter: `value | truncate(length=N, end="...")`
+        env.add_filter(
+            "truncate",
+            |value: &str, kwargs: minijinja::value::Kwargs| -> Result<String, minijinja::Error> {
+                let length: usize = kwargs.get("length").unwrap_or(255);
+                let end: String = kwargs.get("end").unwrap_or_else(|_| "...".to_string());
+                kwargs.assert_all_used()?;
+                if value.len() <= length {
+                    Ok(value.to_string())
+                } else {
+                    let truncated: String = value.chars().take(length).collect();
+                    Ok(format!("{truncated}{end}"))
+                }
+            },
+        );
+
         Self { env }
     }
 
@@ -188,6 +204,27 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         "shared/atoms/button.html" => {
             Some(include_str!("../templates/shared/atoms/button.html"))
         }
+        "shared/atoms/stat_trend_badge.html" => {
+            Some(include_str!("../templates/shared/atoms/stat_trend_badge.html"))
+        }
+        "shared/atoms/stat_trend_inline.html" => {
+            Some(include_str!("../templates/shared/atoms/stat_trend_inline.html"))
+        }
+        "shared/atoms/stat_trend_text.html" => {
+            Some(include_str!("../templates/shared/atoms/stat_trend_text.html"))
+        }
+        "shared/atoms/stat_icon_box.html" => {
+            Some(include_str!("../templates/shared/atoms/stat_icon_box.html"))
+        }
+        "shared/atoms/initial_badge.html" => {
+            Some(include_str!("../templates/shared/atoms/initial_badge.html"))
+        }
+        "shared/atoms/grid_action_arrow.html" => {
+            Some(include_str!("../templates/shared/atoms/grid_action_arrow.html"))
+        }
+        "shared/atoms/action_divider.html" => {
+            Some(include_str!("../templates/shared/atoms/action_divider.html"))
+        }
 
         // -----------------------------------------------------------------
         // Shared molecules
@@ -230,6 +267,51 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         }
         "shared/molecules/mobile_dropdown.html" => {
             Some(include_str!("../templates/shared/molecules/mobile_dropdown.html"))
+        }
+        "shared/molecules/stat_item_simple.html" => {
+            Some(include_str!("../templates/shared/molecules/stat_item_simple.html"))
+        }
+        "shared/molecules/stat_item_card.html" => {
+            Some(include_str!("../templates/shared/molecules/stat_item_card.html"))
+        }
+        "shared/molecules/stat_item_icon.html" => {
+            Some(include_str!("../templates/shared/molecules/stat_item_icon.html"))
+        }
+        "shared/molecules/stat_item_comparison.html" => {
+            Some(include_str!("../templates/shared/molecules/stat_item_comparison.html"))
+        }
+        "shared/molecules/stat_item_trending.html" => {
+            Some(include_str!("../templates/shared/molecules/stat_item_trending.html"))
+        }
+        "shared/molecules/grid_item_badge.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_item_badge.html"))
+        }
+        "shared/molecules/grid_item_profile.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_item_profile.html"))
+        }
+        "shared/molecules/grid_item_directory.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_item_directory.html"))
+        }
+        "shared/molecules/grid_item_link.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_item_link.html"))
+        }
+        "shared/molecules/grid_item_gallery.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_item_gallery.html"))
+        }
+        "shared/molecules/grid_item_detail.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_item_detail.html"))
+        }
+        "shared/molecules/grid_item_action.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_item_action.html"))
+        }
+        "shared/molecules/grid_card_actions.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_card_actions.html"))
+        }
+        "shared/molecules/grid_card_inline_actions.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_card_inline_actions.html"))
+        }
+        "shared/molecules/grid_entity_dl.html" => {
+            Some(include_str!("../templates/shared/molecules/grid_entity_dl.html"))
         }
 
         // -----------------------------------------------------------------
@@ -279,6 +361,100 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         }
         "shared/organisms/heading_with_meta_and_actions.html" => {
             Some(include_str!("../templates/shared/organisms/heading_with_meta_and_actions.html"))
+        }
+        "shared/organisms/stats_simple.html" => {
+            Some(include_str!("../templates/shared/organisms/stats_simple.html"))
+        }
+        "shared/organisms/stats_cards.html" => {
+            Some(include_str!("../templates/shared/organisms/stats_cards.html"))
+        }
+        "shared/organisms/stats_with_icons.html" => {
+            Some(include_str!("../templates/shared/organisms/stats_with_icons.html"))
+        }
+        "shared/organisms/stats_shared_borders.html" => {
+            Some(include_str!("../templates/shared/organisms/stats_shared_borders.html"))
+        }
+        "shared/organisms/stats_trending.html" => {
+            Some(include_str!("../templates/shared/organisms/stats_trending.html"))
+        }
+        "shared/organisms/stats_grid_actions.html" => {
+            Some(include_str!(
+                "../templates/shared/organisms/stats_grid_actions.html"
+            ))
+        }
+        "shared/organisms/stats_grid_badge.html" => {
+            Some(include_str!(
+                "../templates/shared/organisms/stats_grid_badge.html"
+            ))
+        }
+        "shared/organisms/stats_section.html" => {
+            Some(include_str!("../templates/shared/organisms/stats_section.html"))
+        }
+        "shared/organisms/card_basic.html" => {
+            Some(include_str!("../templates/shared/organisms/card_basic.html"))
+        }
+        "shared/organisms/card_edge_to_edge.html" => {
+            Some(include_str!("../templates/shared/organisms/card_edge_to_edge.html"))
+        }
+        "shared/organisms/card_with_header.html" => {
+            Some(include_str!("../templates/shared/organisms/card_with_header.html"))
+        }
+        "shared/organisms/card_with_footer.html" => {
+            Some(include_str!("../templates/shared/organisms/card_with_footer.html"))
+        }
+        "shared/organisms/card_with_header_and_footer.html" => {
+            Some(include_str!("../templates/shared/organisms/card_with_header_and_footer.html"))
+        }
+        "shared/organisms/card_with_gray_body.html" => {
+            Some(include_str!("../templates/shared/organisms/card_with_gray_body.html"))
+        }
+        "shared/organisms/card_with_gray_footer.html" => {
+            Some(include_str!("../templates/shared/organisms/card_with_gray_footer.html"))
+        }
+        "shared/organisms/card_with_well.html" => {
+            Some(include_str!("../templates/shared/organisms/card_with_well.html"))
+        }
+        "shared/organisms/card_with_well_edge_to_edge.html" => {
+            Some(include_str!("../templates/shared/organisms/card_with_well_edge_to_edge.html"))
+        }
+        "shared/organisms/card_with_well_on_gray.html" => {
+            Some(include_str!("../templates/shared/organisms/card_with_well_on_gray.html"))
+        }
+        "shared/organisms/container_standard.html" => {
+            Some(include_str!("../templates/shared/organisms/container_standard.html"))
+        }
+        "shared/organisms/container_full_mobile.html" => {
+            Some(include_str!("../templates/shared/organisms/container_full_mobile.html"))
+        }
+        "shared/organisms/container_breakpoint.html" => {
+            Some(include_str!("../templates/shared/organisms/container_breakpoint.html"))
+        }
+        "shared/organisms/container_breakpoint_full_mobile.html" => {
+            Some(include_str!("../templates/shared/organisms/container_breakpoint_full_mobile.html"))
+        }
+        "shared/organisms/container_narrow.html" => {
+            Some(include_str!("../templates/shared/organisms/container_narrow.html"))
+        }
+        "shared/organisms/entity_list_grid_badge.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_grid_badge.html"))
+        }
+        "shared/organisms/entity_list_grid_profile.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_grid_profile.html"))
+        }
+        "shared/organisms/entity_list_grid_directory.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_grid_directory.html"))
+        }
+        "shared/organisms/entity_list_grid_link.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_grid_link.html"))
+        }
+        "shared/organisms/entity_list_grid_gallery.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_grid_gallery.html"))
+        }
+        "shared/organisms/entity_list_grid_detail.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_grid_detail.html"))
+        }
+        "shared/organisms/entity_list_grid_actions.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_grid_actions.html"))
         }
 
         // -----------------------------------------------------------------
@@ -418,6 +594,13 @@ mod tests {
             "shared/atoms/meta_item.html",
             "shared/atoms/stat_cell.html",
             "shared/atoms/button.html",
+            "shared/atoms/stat_trend_badge.html",
+            "shared/atoms/stat_trend_inline.html",
+            "shared/atoms/stat_trend_text.html",
+            "shared/atoms/stat_icon_box.html",
+            "shared/atoms/initial_badge.html",
+            "shared/atoms/grid_action_arrow.html",
+            "shared/atoms/action_divider.html",
             "shared/molecules/dashboard_card.html",
             "shared/molecules/entity_row.html",
             "shared/molecules/pagination.html",
@@ -431,6 +614,21 @@ mod tests {
             "shared/molecules/filter_tabs.html",
             "shared/molecules/stat_grid.html",
             "shared/molecules/mobile_dropdown.html",
+            "shared/molecules/stat_item_simple.html",
+            "shared/molecules/stat_item_card.html",
+            "shared/molecules/stat_item_icon.html",
+            "shared/molecules/stat_item_comparison.html",
+            "shared/molecules/stat_item_trending.html",
+            "shared/molecules/grid_item_badge.html",
+            "shared/molecules/grid_item_profile.html",
+            "shared/molecules/grid_item_directory.html",
+            "shared/molecules/grid_item_link.html",
+            "shared/molecules/grid_item_gallery.html",
+            "shared/molecules/grid_item_detail.html",
+            "shared/molecules/grid_item_action.html",
+            "shared/molecules/grid_card_actions.html",
+            "shared/molecules/grid_card_inline_actions.html",
+            "shared/molecules/grid_entity_dl.html",
             "shared/organisms/entity_list_table.html",
             "shared/organisms/entity_list_cards.html",
             "shared/organisms/entity_list_compact.html",
@@ -446,6 +644,36 @@ mod tests {
             "shared/organisms/heading_with_logo_meta_and_actions.html",
             "shared/organisms/heading_with_meta_actions_and_breadcrumbs.html",
             "shared/organisms/heading_with_meta_and_actions.html",
+            "shared/organisms/stats_simple.html",
+            "shared/organisms/stats_cards.html",
+            "shared/organisms/stats_with_icons.html",
+            "shared/organisms/stats_shared_borders.html",
+            "shared/organisms/stats_trending.html",
+            "shared/organisms/stats_grid_actions.html",
+            "shared/organisms/stats_grid_badge.html",
+            "shared/organisms/stats_section.html",
+            "shared/organisms/card_basic.html",
+            "shared/organisms/card_edge_to_edge.html",
+            "shared/organisms/card_with_header.html",
+            "shared/organisms/card_with_footer.html",
+            "shared/organisms/card_with_header_and_footer.html",
+            "shared/organisms/card_with_gray_body.html",
+            "shared/organisms/card_with_gray_footer.html",
+            "shared/organisms/card_with_well.html",
+            "shared/organisms/card_with_well_edge_to_edge.html",
+            "shared/organisms/card_with_well_on_gray.html",
+            "shared/organisms/container_standard.html",
+            "shared/organisms/container_full_mobile.html",
+            "shared/organisms/container_breakpoint.html",
+            "shared/organisms/container_breakpoint_full_mobile.html",
+            "shared/organisms/container_narrow.html",
+            "shared/organisms/entity_list_grid_badge.html",
+            "shared/organisms/entity_list_grid_profile.html",
+            "shared/organisms/entity_list_grid_directory.html",
+            "shared/organisms/entity_list_grid_link.html",
+            "shared/organisms/entity_list_grid_gallery.html",
+            "shared/organisms/entity_list_grid_detail.html",
+            "shared/organisms/entity_list_grid_actions.html",
             "forge/entity_list_table.html",
             "forge/entity_list_cards.html",
             "forge/entity_list_compact.html",
