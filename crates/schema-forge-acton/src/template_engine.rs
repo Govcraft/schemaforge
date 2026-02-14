@@ -140,73 +140,85 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         // -----------------------------------------------------------------
         // Shared atoms (used by admin + widget templates via include)
         // -----------------------------------------------------------------
-        "atoms/field_display.html" => {
-            Some(include_str!("../templates/atoms/field_display.html"))
+        "shared/atoms/field_display.html" => {
+            Some(include_str!("../templates/shared/atoms/field_display.html"))
         }
-        "atoms/text_input.html" => {
-            Some(include_str!("../templates/atoms/text_input.html"))
+        "shared/atoms/text_input.html" => {
+            Some(include_str!("../templates/shared/atoms/text_input.html"))
         }
-        "atoms/textarea.html" => {
-            Some(include_str!("../templates/atoms/textarea.html"))
+        "shared/atoms/textarea.html" => {
+            Some(include_str!("../templates/shared/atoms/textarea.html"))
         }
-        "atoms/number_input.html" => {
-            Some(include_str!("../templates/atoms/number_input.html"))
+        "shared/atoms/number_input.html" => {
+            Some(include_str!("../templates/shared/atoms/number_input.html"))
         }
-        "atoms/checkbox.html" => {
-            Some(include_str!("../templates/atoms/checkbox.html"))
+        "shared/atoms/checkbox.html" => {
+            Some(include_str!("../templates/shared/atoms/checkbox.html"))
         }
-        "atoms/datetime_input.html" => {
-            Some(include_str!("../templates/atoms/datetime_input.html"))
+        "shared/atoms/datetime_input.html" => {
+            Some(include_str!("../templates/shared/atoms/datetime_input.html"))
         }
-        "atoms/select.html" => {
-            Some(include_str!("../templates/atoms/select.html"))
+        "shared/atoms/select.html" => {
+            Some(include_str!("../templates/shared/atoms/select.html"))
         }
-        "atoms/json_editor.html" => {
-            Some(include_str!("../templates/atoms/json_editor.html"))
+        "shared/atoms/json_editor.html" => {
+            Some(include_str!("../templates/shared/atoms/json_editor.html"))
         }
-        "atoms/array_input.html" => {
-            Some(include_str!("../templates/atoms/array_input.html"))
+        "shared/atoms/array_input.html" => {
+            Some(include_str!("../templates/shared/atoms/array_input.html"))
         }
-        "atoms/composite.html" => {
-            Some(include_str!("../templates/atoms/composite.html"))
+        "shared/atoms/composite.html" => {
+            Some(include_str!("../templates/shared/atoms/composite.html"))
         }
-        "atoms/fallback_input.html" => {
-            Some(include_str!("../templates/atoms/fallback_input.html"))
+        "shared/atoms/fallback_input.html" => {
+            Some(include_str!("../templates/shared/atoms/fallback_input.html"))
         }
 
         // -----------------------------------------------------------------
         // Shared molecules
         // -----------------------------------------------------------------
-        "molecules/dashboard_card.html" => {
-            Some(include_str!("../templates/molecules/dashboard_card.html"))
+        "shared/molecules/dashboard_card.html" => {
+            Some(include_str!("../templates/shared/molecules/dashboard_card.html"))
         }
-        "molecules/entity_row.html" => {
-            Some(include_str!("../templates/molecules/entity_row.html"))
+        "shared/molecules/entity_row.html" => {
+            Some(include_str!("../templates/shared/molecules/entity_row.html"))
         }
-        "molecules/pagination.html" => {
-            Some(include_str!("../templates/molecules/pagination.html"))
+        "shared/molecules/pagination.html" => {
+            Some(include_str!("../templates/shared/molecules/pagination.html"))
+        }
+        "shared/molecules/breadcrumbs.html" => {
+            Some(include_str!("../templates/shared/molecules/breadcrumbs.html"))
+        }
+        "shared/molecules/page_header.html" => {
+            Some(include_str!("../templates/shared/molecules/page_header.html"))
+        }
+        "shared/molecules/alert.html" => {
+            Some(include_str!("../templates/shared/molecules/alert.html"))
+        }
+        "shared/molecules/empty_state.html" => {
+            Some(include_str!("../templates/shared/molecules/empty_state.html"))
         }
 
         // -----------------------------------------------------------------
         // Shared organisms
         // -----------------------------------------------------------------
-        "organisms/entity_list_table.html" => {
-            Some(include_str!("../templates/organisms/entity_list_table.html"))
+        "shared/organisms/entity_list_table.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_table.html"))
         }
-        "organisms/entity_list_cards.html" => {
-            Some(include_str!("../templates/organisms/entity_list_cards.html"))
+        "shared/organisms/entity_list_cards.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_cards.html"))
         }
-        "organisms/entity_list_compact.html" => {
-            Some(include_str!("../templates/organisms/entity_list_compact.html"))
+        "shared/organisms/entity_list_compact.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_list_compact.html"))
         }
-        "organisms/entity_detail_full.html" => {
-            Some(include_str!("../templates/organisms/entity_detail_full.html"))
+        "shared/organisms/entity_detail_full.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_detail_full.html"))
         }
-        "organisms/entity_detail_split.html" => {
-            Some(include_str!("../templates/organisms/entity_detail_split.html"))
+        "shared/organisms/entity_detail_split.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_detail_split.html"))
         }
-        "organisms/entity_detail_tabbed.html" => {
-            Some(include_str!("../templates/organisms/entity_detail_tabbed.html"))
+        "shared/organisms/entity_detail_tabbed.html" => {
+            Some(include_str!("../templates/shared/organisms/entity_detail_tabbed.html"))
         }
 
         // -----------------------------------------------------------------
@@ -259,6 +271,30 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         }
         "cloud/base.css" => Some(include_str!("../templates/cloud/base.css")),
 
+        // -----------------------------------------------------------------
+        // Backward-compatible aliases (old paths -> shared)
+        // -----------------------------------------------------------------
+        "atoms/field_display.html" => embedded_template("shared/atoms/field_display.html"),
+        "atoms/text_input.html" => embedded_template("shared/atoms/text_input.html"),
+        "atoms/textarea.html" => embedded_template("shared/atoms/textarea.html"),
+        "atoms/number_input.html" => embedded_template("shared/atoms/number_input.html"),
+        "atoms/checkbox.html" => embedded_template("shared/atoms/checkbox.html"),
+        "atoms/datetime_input.html" => embedded_template("shared/atoms/datetime_input.html"),
+        "atoms/select.html" => embedded_template("shared/atoms/select.html"),
+        "atoms/json_editor.html" => embedded_template("shared/atoms/json_editor.html"),
+        "atoms/array_input.html" => embedded_template("shared/atoms/array_input.html"),
+        "atoms/composite.html" => embedded_template("shared/atoms/composite.html"),
+        "atoms/fallback_input.html" => embedded_template("shared/atoms/fallback_input.html"),
+        "molecules/dashboard_card.html" => embedded_template("shared/molecules/dashboard_card.html"),
+        "molecules/entity_row.html" => embedded_template("shared/molecules/entity_row.html"),
+        "molecules/pagination.html" => embedded_template("shared/molecules/pagination.html"),
+        "organisms/entity_list_table.html" => embedded_template("shared/organisms/entity_list_table.html"),
+        "organisms/entity_list_cards.html" => embedded_template("shared/organisms/entity_list_cards.html"),
+        "organisms/entity_list_compact.html" => embedded_template("shared/organisms/entity_list_compact.html"),
+        "organisms/entity_detail_full.html" => embedded_template("shared/organisms/entity_detail_full.html"),
+        "organisms/entity_detail_split.html" => embedded_template("shared/organisms/entity_detail_split.html"),
+        "organisms/entity_detail_tabbed.html" => embedded_template("shared/organisms/entity_detail_tabbed.html"),
+
         _ => None,
     }
 }
@@ -290,26 +326,30 @@ mod tests {
             "admin/fragments/dsl_preview.html",
             "admin/fragments/migration_preview.html",
             "admin/fragments/field_input.html",
-            "atoms/field_display.html",
-            "atoms/text_input.html",
-            "atoms/textarea.html",
-            "atoms/number_input.html",
-            "atoms/checkbox.html",
-            "atoms/datetime_input.html",
-            "atoms/select.html",
-            "atoms/json_editor.html",
-            "atoms/array_input.html",
-            "atoms/composite.html",
-            "atoms/fallback_input.html",
-            "molecules/dashboard_card.html",
-            "molecules/entity_row.html",
-            "molecules/pagination.html",
-            "organisms/entity_list_table.html",
-            "organisms/entity_list_cards.html",
-            "organisms/entity_list_compact.html",
-            "organisms/entity_detail_full.html",
-            "organisms/entity_detail_split.html",
-            "organisms/entity_detail_tabbed.html",
+            "shared/atoms/field_display.html",
+            "shared/atoms/text_input.html",
+            "shared/atoms/textarea.html",
+            "shared/atoms/number_input.html",
+            "shared/atoms/checkbox.html",
+            "shared/atoms/datetime_input.html",
+            "shared/atoms/select.html",
+            "shared/atoms/json_editor.html",
+            "shared/atoms/array_input.html",
+            "shared/atoms/composite.html",
+            "shared/atoms/fallback_input.html",
+            "shared/molecules/dashboard_card.html",
+            "shared/molecules/entity_row.html",
+            "shared/molecules/pagination.html",
+            "shared/molecules/breadcrumbs.html",
+            "shared/molecules/page_header.html",
+            "shared/molecules/alert.html",
+            "shared/molecules/empty_state.html",
+            "shared/organisms/entity_list_table.html",
+            "shared/organisms/entity_list_cards.html",
+            "shared/organisms/entity_list_compact.html",
+            "shared/organisms/entity_detail_full.html",
+            "shared/organisms/entity_detail_split.html",
+            "shared/organisms/entity_detail_tabbed.html",
             "forge/entity_list_table.html",
             "forge/entity_list_cards.html",
             "forge/entity_list_compact.html",
@@ -364,7 +404,7 @@ mod tests {
                 widget_label: "Count".into(),
             },
         };
-        let result = engine.render("molecules/dashboard_card.html", &ctx);
+        let result = engine.render("shared/molecules/dashboard_card.html", &ctx);
         assert!(result.is_ok(), "render failed: {:?}", result.err());
         let html = result.unwrap();
         assert!(html.contains("Contacts"));
@@ -375,7 +415,7 @@ mod tests {
     #[test]
     fn render_filesystem_override() {
         let dir = tempfile::tempdir().unwrap();
-        let override_path = dir.path().join("molecules");
+        let override_path = dir.path().join("shared").join("molecules");
         std::fs::create_dir_all(&override_path).unwrap();
         std::fs::write(
             override_path.join("dashboard_card.html"),
@@ -399,7 +439,7 @@ mod tests {
             },
         };
         let result = engine
-            .render("molecules/dashboard_card.html", &ctx)
+            .render("shared/molecules/dashboard_card.html", &ctx)
             .unwrap();
         assert!(result.contains("OVERRIDE: Test"));
     }
@@ -429,7 +469,7 @@ mod tests {
             },
         };
         let result = engine
-            .render("molecules/dashboard_card.html", &ctx)
+            .render("shared/molecules/dashboard_card.html", &ctx)
             .unwrap();
         assert!(result.contains("Fallback"));
     }

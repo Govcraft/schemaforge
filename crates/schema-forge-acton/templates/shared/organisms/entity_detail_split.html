@@ -6,7 +6,7 @@
     <div class="forge-split-grid">
         {% for field in entity.field_values %}
         <div class="forge-split-label">{{ field.label }}</div>
-        <div class="forge-split-value">{% if field.is_empty %}<span class="forge-empty">-</span>{% else %}{% include "atoms/field_display.html" %}{% endif %}</div>
+        <div class="forge-split-value">{% if field.is_empty %}<span class="forge-empty">-</span>{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</div>
         {% endfor %}
     </div>
     <div class="forge-detail-actions">

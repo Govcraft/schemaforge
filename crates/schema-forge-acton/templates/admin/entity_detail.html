@@ -35,7 +35,7 @@
         {% for field in entity.field_values %}
         <div class="detail-row">
             <div class="detail-label">{{ field.label }}</div>
-            <div class="detail-value">{% if field.is_empty %}<span class="text-base-content/60">-</span>{% else %}{% include "atoms/field_display.html" %}{% endif %}</div>
+            <div class="detail-value">{% if field.is_empty %}<span class="text-base-content/60">-</span>{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</div>
         </div>
         {% endfor %}
     </div>

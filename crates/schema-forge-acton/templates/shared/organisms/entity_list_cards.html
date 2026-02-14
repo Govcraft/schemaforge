@@ -14,7 +14,7 @@
             {% for field in entity.summary_fields %}
             <div class="forge-card-field">
                 <span class="forge-card-label">{{ field.label }}</span>
-                <span class="forge-card-value">{% include "atoms/field_display.html" %}</span>
+                <span class="forge-card-value">{% include "shared/atoms/field_display.html" %}</span>
             </div>
             {% endfor %}
         </div>
@@ -30,5 +30,5 @@
     </div>
     {% endfor %}
 </div>
-{% include "molecules/pagination.html" %}
+{% include "shared/molecules/pagination.html" %}
 {% endif %}
