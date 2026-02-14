@@ -87,6 +87,10 @@ impl SchemaForgeAgent {
             ))),
             #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
             surreal_client: None,
+            #[cfg(feature = "cloud-ui")]
+            template_engine: std::sync::Arc::new(
+                schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+            ),
         }
     }
 

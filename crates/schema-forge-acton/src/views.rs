@@ -4,7 +4,7 @@ use schema_forge_core::types::{
 };
 
 /// Template-friendly representation of a field definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FieldView {
     pub name: String,
     pub label: String,
@@ -21,7 +21,7 @@ pub struct FieldView {
 }
 
 /// Template-friendly representation of a schema.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SchemaView {
     pub name: String,
     pub display_field: Option<String>,
@@ -31,15 +31,17 @@ pub struct SchemaView {
 }
 
 /// Template-friendly representation of an entity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct EntityView {
     pub id: String,
     pub display_value: String,
     pub field_values: Vec<FieldDisplayView>,
+    /// Pre-computed summary fields (max 3, widget-annotated first, skips empty).
+    pub summary: Vec<FieldDisplayView>,
 }
 
 /// Pagination view model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PaginationView {
     pub current_page: usize,
     pub total_pages: usize,
@@ -48,6 +50,12 @@ pub struct PaginationView {
     pub offset: usize,
     pub has_previous: bool,
     pub has_next: bool,
+    /// Pre-computed: `min(offset + limit, total_count)`.
+    pub end_showing: usize,
+    /// Pre-computed: `offset.saturating_sub(limit)`.
+    pub previous_offset: usize,
+    /// Pre-computed: `offset + limit`.
+    pub next_offset: usize,
 }
 
 impl PaginationView {
@@ -67,6 +75,9 @@ impl PaginationView {
             offset,
             has_previous: offset > 0,
             has_next: offset + limit < total_count,
+            end_showing: std::cmp::min(offset + limit, total_count),
+            previous_offset: offset.saturating_sub(limit),
+            next_offset: offset + limit,
         }
     }
 
@@ -84,7 +95,7 @@ impl PaginationView {
 }
 
 /// Template-friendly representation of a field value with widget metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FieldDisplayView {
     /// snake_case field name (for kanban exclusion, filter targeting).
     pub name: String,
@@ -209,7 +220,7 @@ pub fn relative_time_display(dt_str: &str, now: chrono::DateTime<chrono::Utc>) -
 }
 
 /// A kanban column with its variant, label, and grouped entities.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct KanbanColumn {
     pub variant: String,
     pub label: String,
@@ -305,14 +316,14 @@ pub fn group_entities_by_field(
 }
 
 /// A single filter variant pill with pre-computed active state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FilterPill {
     pub value: String,
     pub is_active: bool,
 }
 
 /// Filter field descriptor for UI filter pills.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FilterField {
     pub name: String,
     pub label: String,
@@ -532,7 +543,7 @@ impl EntityView {
                 .unwrap_or_else(|| id.clone())
         };
 
-        let field_values = schema
+        let field_values: Vec<FieldDisplayView> = schema
             .fields
             .iter()
             .map(|f| {
@@ -577,10 +588,23 @@ impl EntityView {
             })
             .collect();
 
+        let summary = field_values
+            .iter()
+            .filter(|f| f.widget_type.is_some() && !f.is_empty)
+            .chain(
+                field_values
+                    .iter()
+                    .filter(|f| f.widget_type.is_none() && !f.is_empty),
+            )
+            .take(3)
+            .cloned()
+            .collect();
+
         Self {
             id,
             display_value,
             field_values,
+            summary,
         }
     }
 }

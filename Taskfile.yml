@@ -5,6 +5,8 @@ vars:
   PORT: 3000
   ADMIN_PASSWORD: changeme
   BASE_URL: "http://127.0.0.1:{{.PORT}}"
+  STATIC_DIR: public
+  TEMPLATE_DIR: ""
   CSS_INPUT: crates/schema-forge-acton/static/css/input.css
   CSS_OUTPUT: crates/schema-forge-acton/static/css/admin.css
   CSS_CONTENT: "crates/schema-forge-acton/templates/**/*.html"
@@ -18,7 +20,11 @@ tasks:
   serve:
     desc: Start the SchemaForge server (Ctrl+C to stop)
     cmds:
-      - cargo run -p schema-forge-cli --features {{.FEATURES}} -- serve --admin-password {{.ADMIN_PASSWORD}}
+      - >-
+        cargo run -p schema-forge-cli --features {{.FEATURES}} -- serve
+        --admin-password {{.ADMIN_PASSWORD}}
+        {{if .STATIC_DIR}}--static-dir {{.STATIC_DIR}}{{end}}
+        {{if .TEMPLATE_DIR}}--template-dir {{.TEMPLATE_DIR}}{{end}}
 
   seed:
     desc: Seed demo data (expects server already running)
@@ -37,7 +43,7 @@ tasks:
         cargo build -p schema-forge-cli --features {{.FEATURES}}
 
         # Start server in background with in-memory DB
-        ./target/debug/schema-forge serve --admin-password {{.ADMIN_PASSWORD}} --db-url "mem://" &
+        ./target/debug/schema-forge serve --admin-password {{.ADMIN_PASSWORD}} --db-url "mem://" {{if .STATIC_DIR}}--static-dir {{.STATIC_DIR}}{{end}} {{if .TEMPLATE_DIR}}--template-dir {{.TEMPLATE_DIR}}{{end}} &
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null' EXIT
 
@@ -79,6 +85,16 @@ tasks:
     desc: Run all workspace tests
     cmds:
       - cargo test --workspace
+
+  templates:list:
+    desc: List all embedded cloud UI templates
+    cmds:
+      - cargo run -p schema-forge-cli --features {{.FEATURES}} -- templates list
+
+  templates:export:
+    desc: Export embedded templates for customization
+    cmds:
+      - cargo run -p schema-forge-cli --features {{.FEATURES}} -- templates export {{.CLI_ARGS}}
 
   check:
     desc: Run clippy and format checks

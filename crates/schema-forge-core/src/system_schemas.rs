@@ -67,6 +67,10 @@ schema Theme {
     view_overrides:    json
     dashboard_schemas: text[]
     logo_url:          text
+    favicon_url:       text
+    head_html:         richtext
+    nav_extra_html:    richtext
+    footer_html:       richtext
     custom_css:        richtext
     active:            boolean default(true)
 }

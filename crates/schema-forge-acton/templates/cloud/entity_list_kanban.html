@@ -32,7 +32,7 @@
                     <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}">{{ entity.display_value }}</a>
                 </div>
                 <div class="sf-kanban-card-fields">
-                    {% for field in entity.summary_fields() %}{% if field.name != kanban_field %}
+                    {% for field in entity.summary %}{% if field.name != kanban_field %}
                     <div>{{ field.label }}: {% include "cloud/atoms/field_display.html" %}</div>
                     {% endif %}{% endfor %}
                 </div>

@@ -28,6 +28,18 @@ async fn main() {
         cli::Commands::Policies { command } => {
             commands::policies::run(command, &cli.global, &output).await
         }
+        #[cfg(feature = "cloud-ui")]
+        cli::Commands::Templates { command } => {
+            match command {
+                cli::TemplateCommands::List => {
+                    commands::templates::list(&output);
+                    Ok(())
+                }
+                cli::TemplateCommands::Export(args) => {
+                    commands::templates::export(&args, &output)
+                }
+            }
+        }
         cli::Commands::Completions(args) => commands::completions::run(args),
     };
 

@@ -1,18 +1,16 @@
-use acton_service::prelude::Template;
-
 use crate::views::{EntityView, FieldView, FilterField, KanbanColumn, PaginationView, SchemaView};
 
 use super::auth::CloudUserView;
 
 /// Schema entry for navigation sidebar.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct NavSchemaEntry {
     pub url_name: String,
     pub label: String,
 }
 
 /// Schema card for dashboard — one card per aggregate widget.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DashboardCard {
     pub url_name: String,
     pub label: String,
@@ -21,17 +19,17 @@ pub struct DashboardCard {
 }
 
 /// Cloud login page — standalone, no base.html.
-#[derive(Template)]
-#[template(path = "cloud/login.html")]
+#[derive(serde::Serialize)]
 pub struct CloudLoginTemplate {
     pub app_title: String,
     pub logo_url: Option<String>,
     pub error: Option<String>,
+    pub favicon_url: Option<String>,
+    pub head_html: Option<String>,
 }
 
 /// Cloud dashboard page.
-#[derive(Template)]
-#[template(path = "cloud/dashboard.html")]
+#[derive(serde::Serialize)]
 pub struct CloudDashboardTemplate {
     pub app_title: String,
     pub nav_style: String,
@@ -40,11 +38,14 @@ pub struct CloudDashboardTemplate {
     pub active_nav: String,
     pub schema_cards: Vec<DashboardCard>,
     pub current_user: Option<CloudUserView>,
+    pub favicon_url: Option<String>,
+    pub head_html: Option<String>,
+    pub nav_extra_html: Option<String>,
+    pub footer_html: Option<String>,
 }
 
 /// Cloud entity list page.
-#[derive(Template)]
-#[template(path = "cloud/entity_list.html")]
+#[derive(serde::Serialize)]
 pub struct CloudEntityListTemplate {
     pub app_title: String,
     pub nav_style: String,
@@ -57,11 +58,14 @@ pub struct CloudEntityListTemplate {
     pub list_style: String,
     pub filter_fields: Vec<FilterField>,
     pub current_user: Option<CloudUserView>,
+    pub favicon_url: Option<String>,
+    pub head_html: Option<String>,
+    pub nav_extra_html: Option<String>,
+    pub footer_html: Option<String>,
 }
 
 /// Cloud entity list body fragment (for HTMX pagination).
-#[derive(Template)]
-#[template(path = "cloud/fragments/entity_list_body.html")]
+#[derive(serde::Serialize)]
 pub struct CloudEntityListBodyTemplate {
     pub schema: SchemaView,
     pub entities: Vec<EntityView>,
@@ -71,8 +75,7 @@ pub struct CloudEntityListBodyTemplate {
 }
 
 /// Cloud kanban entity list page.
-#[derive(Template)]
-#[template(path = "cloud/entity_list_kanban.html")]
+#[derive(serde::Serialize)]
 pub struct CloudEntityListKanbanTemplate {
     pub app_title: String,
     pub nav_style: String,
@@ -83,11 +86,14 @@ pub struct CloudEntityListKanbanTemplate {
     pub columns: Vec<KanbanColumn>,
     pub kanban_field: String,
     pub current_user: Option<CloudUserView>,
+    pub favicon_url: Option<String>,
+    pub head_html: Option<String>,
+    pub nav_extra_html: Option<String>,
+    pub footer_html: Option<String>,
 }
 
 /// Cloud entity form page (create/edit).
-#[derive(Template)]
-#[template(path = "cloud/entity_form.html")]
+#[derive(serde::Serialize)]
 pub struct CloudEntityFormTemplate {
     pub app_title: String,
     pub nav_style: String,
@@ -99,11 +105,14 @@ pub struct CloudEntityFormTemplate {
     pub entity_id: Option<String>,
     pub errors: Vec<String>,
     pub current_user: Option<CloudUserView>,
+    pub favicon_url: Option<String>,
+    pub head_html: Option<String>,
+    pub nav_extra_html: Option<String>,
+    pub footer_html: Option<String>,
 }
 
 /// Cloud entity detail page.
-#[derive(Template)]
-#[template(path = "cloud/entity_detail.html")]
+#[derive(serde::Serialize)]
 pub struct CloudEntityDetailTemplate {
     pub app_title: String,
     pub nav_style: String,
@@ -114,4 +123,8 @@ pub struct CloudEntityDetailTemplate {
     pub entity: EntityView,
     pub detail_style: String,
     pub current_user: Option<CloudUserView>,
+    pub favicon_url: Option<String>,
+    pub head_html: Option<String>,
+    pub nav_extra_html: Option<String>,
+    pub footer_html: Option<String>,
 }

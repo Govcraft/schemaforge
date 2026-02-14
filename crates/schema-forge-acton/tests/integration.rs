@@ -53,6 +53,10 @@ async fn test_state() -> ForgeState {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     }
 }
 
@@ -588,6 +592,10 @@ async fn request_with_noop_auth_succeeds() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -637,6 +645,10 @@ async fn request_with_failing_auth_returns_401() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -717,6 +729,10 @@ async fn access_test_state(
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state.clone());
     (state, app)
@@ -838,6 +854,10 @@ async fn open_access_request_always_succeeds() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -926,6 +946,10 @@ async fn field_filtering_hides_restricted_fields() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 

@@ -25,6 +25,8 @@ use crate::state::{DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState
 /// ```
 pub struct SchemaForgeExtension {
     state: ForgeState,
+    #[cfg(feature = "cloud-ui")]
+    static_dir: Option<std::path::PathBuf>,
 }
 
 /// Builder for `SchemaForgeExtension`.
@@ -40,6 +42,10 @@ pub struct SchemaForgeExtensionBuilder {
     >,
     #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
     admin_credentials: Option<(String, String)>,
+    #[cfg(feature = "cloud-ui")]
+    static_dir: Option<std::path::PathBuf>,
+    #[cfg(feature = "cloud-ui")]
+    template_dir: Option<std::path::PathBuf>,
 }
 
 impl SchemaForgeExtensionBuilder {
@@ -53,6 +59,10 @@ impl SchemaForgeExtensionBuilder {
             surreal_client: None,
             #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
             admin_credentials: None,
+            #[cfg(feature = "cloud-ui")]
+            static_dir: None,
+            #[cfg(feature = "cloud-ui")]
+            template_dir: None,
         }
     }
 
@@ -122,6 +132,23 @@ impl SchemaForgeExtensionBuilder {
         self
     }
 
+    /// Set the directory to serve static files from at `/app/static/`.
+    #[cfg(feature = "cloud-ui")]
+    pub fn with_static_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.static_dir = Some(dir);
+        self
+    }
+
+    /// Set the directory for MiniJinja template overrides.
+    ///
+    /// When set, templates in this directory take priority over embedded defaults.
+    /// If not set, the engine auto-detects `~/.config/schema-forge/templates/`.
+    #[cfg(feature = "cloud-ui")]
+    pub fn with_template_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.template_dir = Some(dir);
+        self
+    }
+
     /// Build the `SchemaForgeExtension`.
     ///
     /// Loads existing schemas from the backend into the in-memory registry.
@@ -187,6 +214,15 @@ impl SchemaForgeExtensionBuilder {
             Arc::new(arc_swap::ArcSwap::new(Arc::new(gql_schema)))
         };
 
+        // Construct MiniJinja template engine
+        #[cfg(feature = "cloud-ui")]
+        let template_engine = {
+            let override_dir = self.template_dir.or_else(|| {
+                dirs::config_dir().map(|d| d.join("schema-forge/templates"))
+            });
+            Arc::new(crate::cloud::overrides::TemplateEngine::new(override_dir))
+        };
+
         let state = ForgeState {
             registry,
             backend,
@@ -199,9 +235,15 @@ impl SchemaForgeExtensionBuilder {
             graphql_schema,
             #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
             surreal_client: self.surreal_client,
+            #[cfg(feature = "cloud-ui")]
+            template_engine,
         };
 
-        Ok(SchemaForgeExtension { state })
+        Ok(SchemaForgeExtension {
+            state,
+            #[cfg(feature = "cloud-ui")]
+            static_dir: self.static_dir,
+        })
     }
 }
 
@@ -364,9 +406,23 @@ impl SchemaForgeExtension {
         let cloud_router = crate::cloud::routes::cloud_routes()
             .layer(session_layer)
             .with_state(self.state.clone());
-        router
+        let router = router
             .nest("/app/", cloud_router)
-            .route("/app", get(|| async { Redirect::permanent("/app/") }))
+            .route("/app", get(|| async { Redirect::permanent("/app/") }));
+
+        // Mount static file serving if configured
+        if let Some(ref dir) = self.static_dir {
+            if dir.is_dir() {
+                router.nest_service(
+                    "/app/static",
+                    tower_http::services::ServeDir::new(dir),
+                )
+            } else {
+                router
+            }
+        } else {
+            router
+        }
     }
 
     /// Get a reference to the schema registry.

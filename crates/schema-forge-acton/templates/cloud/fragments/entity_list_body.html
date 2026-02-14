@@ -1,21 +1,21 @@
-{% if !filter_fields.is_empty() %}
+{% if filter_fields %}
 <div class="sf-filters">
     {% for filter in filter_fields %}
     <div class="sf-filter-group">
         <span class="sf-filter-label">{{ filter.label }}:</span>
         <a class="sf-filter-pill{% if filter.all_active %} sf-filter-pill-active{% endif %}"
-           hx-get="/app/{{ schema.url_name }}/entities/_table?{% for f2 in filter_fields %}{% if !f2.all_active && !f2.active_value.is_empty() %}{% if f2.name != filter.name %}filter_{{ f2.name }}={{ f2.active_value }}&{% endif %}{% endif %}{% endfor %}"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?{% for f2 in filter_fields %}{% if not f2.all_active and f2.active_value %}{% if f2.name != filter.name %}filter_{{ f2.name }}={{ f2.active_value }}&{% endif %}{% endif %}{% endfor %}"
            hx-target="#sf-entity-table" hx-swap="innerHTML" hx-push-url="true">All</a>
         {% for pill in filter.pills %}
         <a class="sf-filter-pill{% if pill.is_active %} sf-filter-pill-active{% endif %}"
-           hx-get="/app/{{ schema.url_name }}/entities/_table?filter_{{ filter.name }}={{ pill.value }}{% for f2 in filter_fields %}{% if !f2.all_active && !f2.active_value.is_empty() %}{% if f2.name != filter.name %}&filter_{{ f2.name }}={{ f2.active_value }}{% endif %}{% endif %}{% endfor %}"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?filter_{{ filter.name }}={{ pill.value }}{% for f2 in filter_fields %}{% if not f2.all_active and f2.active_value %}{% if f2.name != filter.name %}&filter_{{ f2.name }}={{ f2.active_value }}{% endif %}{% endif %}{% endfor %}"
            hx-target="#sf-entity-table" hx-swap="innerHTML" hx-push-url="true">{{ pill.value }}</a>
         {% endfor %}
     </div>
     {% endfor %}
 </div>
 {% endif %}
-{% if entities.is_empty() %}
+{% if not entities %}
 <div class="sf-empty">
     <p>No entities yet.</p>
     <a href="/app/{{ schema.url_name }}/entities/new" class="sf-btn sf-btn-primary">Create First Entity</a>
@@ -47,12 +47,12 @@
     </div>
     {% endfor %}
 </div>
-{% else if list_style == "cards" %}
+{% elif list_style == "cards" %}
 <div class="sf-entity-list" data-list-style="cards">
     {% for entity in entities %}
     <div class="sf-card" id="sf-entity-{{ entity.id }}">
         <a href="/app/{{ schema.url_name }}/entities/{{ entity.id }}" class="sf-card-title">{{ entity.display_value }}</a>
-        {% for field in entity.summary_fields() %}
+        {% for field in entity.summary %}
         <div class="sf-card-field">
             <span class="sf-card-label">{{ field.label }}</span>
             <span>{% include "cloud/atoms/field_display.html" %}</span>
@@ -89,20 +89,20 @@
 {% endif %}
 <div class="sf-pagination">
     <span class="sf-pagination-info">
-        Showing {{ pagination.offset + 1 }}-{{ pagination.end_showing() }}
+        Showing {{ pagination.offset + 1 }}-{{ pagination.end_showing }}
         of {{ pagination.total_count }}
     </span>
     <div>
         {% if pagination.has_previous %}
         <a href="#" class="sf-btn sf-btn-secondary sf-btn-sm"
-           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.previous_offset() }}{% for f in filter_fields %}{% if !f.active_value.is_empty() %}&filter_{{ f.name }}={{ f.active_value }}{% endif %}{% endfor %}"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.previous_offset }}{% for f in filter_fields %}{% if f.active_value %}&filter_{{ f.name }}={{ f.active_value }}{% endif %}{% endfor %}"
            hx-target="#sf-entity-table"
            hx-swap="innerHTML"
         >Previous</a>
         {% endif %}
         {% if pagination.has_next %}
         <a href="#" class="sf-btn sf-btn-secondary sf-btn-sm"
-           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.next_offset() }}{% for f in filter_fields %}{% if !f.active_value.is_empty() %}&filter_{{ f.name }}={{ f.active_value }}{% endif %}{% endfor %}"
+           hx-get="/app/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.next_offset }}{% for f in filter_fields %}{% if f.active_value %}&filter_{{ f.name }}={{ f.active_value }}{% endif %}{% endfor %}"
            hx-target="#sf-entity-table"
            hx-swap="innerHTML"
         >Next</a>

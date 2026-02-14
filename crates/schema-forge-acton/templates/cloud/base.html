@@ -4,14 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{{ app_title }}{% endblock %}</title>
+    {% if favicon_url %}<link rel="icon" href="{{ favicon_url }}">{% endif %}
     <link rel="stylesheet" href="/app/theme.css">
+    {% if head_html %}{{ head_html }}{% endif %}
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 </head>
 <body class="sf-app">
     <div class="sf-layout" data-nav-style="{{ nav_style }}">
         <nav class="sf-nav" data-nav-style="{{ nav_style }}">
-            {% if let Some(logo) = logo_url %}
-            <img src="{{ logo }}" alt="{{ app_title }}" class="sf-nav-logo">
+            {% if logo_url %}
+            <img src="{{ logo_url }}" alt="{{ app_title }}" class="sf-nav-logo">
             {% else %}
             <span class="sf-nav-brand">{{ app_title }}</span>
             {% endif %}
@@ -19,11 +21,12 @@
             {% for schema in nav_schemas %}
             <a href="/app/{{ schema.url_name }}/entities" class="sf-nav-link"{% if active_nav == schema.url_name %} aria-current="page"{% endif %}>{{ schema.label }}</a>
             {% endfor %}
+            {% if nav_extra_html %}{{ nav_extra_html }}{% endif %}
             <div class="sf-nav-spacer"></div>
-            {% if let Some(user) = current_user %}
+            {% if current_user %}
             <div class="sf-nav-user">
-                <span class="sf-nav-username">{{ user.display_name }}</span>
-                <span class="sf-nav-roles">{{ user.roles|join(", ") }}</span>
+                <span class="sf-nav-username">{{ current_user.display_name }}</span>
+                <span class="sf-nav-roles">{{ current_user.roles | join(", ") }}</span>
                 <form method="post" action="/app/logout" style="display:inline;">
                     <button type="submit" class="sf-btn sf-btn-secondary sf-btn-sm">Logout</button>
                 </form>
@@ -34,5 +37,6 @@
             {% block content %}{% endblock %}
         </main>
     </div>
+    {% if footer_html %}<footer class="sf-footer">{{ footer_html }}</footer>{% endif %}
 </body>
 </html>

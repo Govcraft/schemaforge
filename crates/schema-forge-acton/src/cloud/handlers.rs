@@ -1,4 +1,4 @@
-use acton_service::prelude::{AuthSession, HtmlTemplate, TypedSession};
+use acton_service::prelude::{AuthSession, TypedSession};
 use axum::extract::{Form, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
@@ -23,6 +23,46 @@ use super::templates::{
     CloudEntityListBodyTemplate, CloudEntityListKanbanTemplate, CloudEntityListTemplate,
     DashboardCard, NavSchemaEntry,
 };
+
+// ---------------------------------------------------------------------------
+// Theme slot fields
+// ---------------------------------------------------------------------------
+
+/// Sanitized theme slot fields for template rendering.
+struct ThemeSlots {
+    favicon_url: Option<String>,
+    head_html: Option<String>,
+    nav_extra_html: Option<String>,
+    footer_html: Option<String>,
+}
+
+/// Extract and sanitize theme slot fields.
+fn theme_slots(theme: &Theme) -> ThemeSlots {
+    ThemeSlots {
+        favicon_url: theme.favicon_url.clone(),
+        head_html: theme.head_html.as_ref().map(|h| css::sanitize_html(h)),
+        nav_extra_html: theme.nav_extra_html.as_ref().map(|h| css::sanitize_html(h)),
+        footer_html: theme.footer_html.as_ref().map(|h| css::sanitize_html(h)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MiniJinja render helper
+// ---------------------------------------------------------------------------
+
+/// Render a cloud template via MiniJinja.
+pub(crate) fn render_cloud<T: serde::Serialize>(state: &ForgeState, name: &str, ctx: &T) -> Response {
+    match state.template_engine.render(name, ctx) {
+        Ok(html) => Html(html).into_response(),
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Template error: {e}")).into_response()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Navigation helpers
+// ---------------------------------------------------------------------------
 
 /// Build navigation entries from registered schemas, respecting theme ordering
 /// and role-based access control.
@@ -98,7 +138,7 @@ pub async fn dashboard(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
     session: TypedSession<AuthSession>,
-) -> Result<impl IntoResponse, CloudError> {
+) -> Result<Response, CloudError> {
     let current_user = CloudUserView::from_session(session.data());
     let theme = state.theme.load();
     let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
@@ -172,15 +212,24 @@ pub async fn dashboard(
         }
     }
 
-    Ok(HtmlTemplate::new(CloudDashboardTemplate {
-        app_title: theme.app_title(),
-        nav_style: nav_style_name(&theme).to_string(),
-        logo_url: theme.logo_url.clone(),
-        nav_schemas,
-        active_nav: "dashboard".to_string(),
-        schema_cards,
-        current_user,
-    }))
+    let slots = theme_slots(&theme);
+    Ok(render_cloud(
+        &state,
+        "cloud/dashboard.html",
+        &CloudDashboardTemplate {
+            app_title: theme.app_title(),
+            nav_style: nav_style_name(&theme).to_string(),
+            logo_url: theme.logo_url.clone(),
+            nav_schemas,
+            active_nav: "dashboard".to_string(),
+            schema_cards,
+            current_user,
+            favicon_url: slots.favicon_url,
+            head_html: slots.head_html,
+            nav_extra_html: slots.nav_extra_html,
+            footer_html: slots.footer_html,
+        },
+    ))
 }
 
 /// GET /app/theme.css — Serve generated CSS.
@@ -299,18 +348,26 @@ pub async fn entity_list(
             schema.apply_theme_labels(&theme);
             let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
-            return Ok(HtmlTemplate::new(CloudEntityListKanbanTemplate {
-                app_title: theme.app_title(),
-                nav_style: nav_style_name(&theme).to_string(),
-                logo_url: theme.logo_url.clone(),
-                nav_schemas,
-                active_nav: name,
-                schema,
-                columns,
-                kanban_field: field_name,
-                current_user,
-            })
-            .into_response());
+            let slots = theme_slots(&theme);
+            return Ok(render_cloud(
+                &state,
+                "cloud/entity_list_kanban.html",
+                &CloudEntityListKanbanTemplate {
+                    app_title: theme.app_title(),
+                    nav_style: nav_style_name(&theme).to_string(),
+                    logo_url: theme.logo_url.clone(),
+                    nav_schemas,
+                    active_nav: name,
+                    schema,
+                    columns,
+                    kanban_field: field_name,
+                    current_user,
+                    favicon_url: slots.favicon_url,
+                    head_html: slots.head_html,
+                    nav_extra_html: slots.nav_extra_html,
+                    footer_html: slots.footer_html,
+                },
+            ));
         }
     }
 
@@ -345,20 +402,28 @@ pub async fn entity_list(
 
     let filter_fields = crate::views::extract_filter_fields(&schema_def, &params.filters);
 
-    Ok(HtmlTemplate::new(CloudEntityListTemplate {
-        app_title: theme.app_title(),
-        nav_style: nav_style_name(&theme).to_string(),
-        logo_url: theme.logo_url.clone(),
-        nav_schemas,
-        active_nav: name.clone(),
-        schema,
-        entities,
-        pagination,
-        list_style: list_style_name(list_style).to_string(),
-        filter_fields,
-        current_user,
-    })
-    .into_response())
+    let slots = theme_slots(&theme);
+    Ok(render_cloud(
+        &state,
+        "cloud/entity_list.html",
+        &CloudEntityListTemplate {
+            app_title: theme.app_title(),
+            nav_style: nav_style_name(&theme).to_string(),
+            logo_url: theme.logo_url.clone(),
+            nav_schemas,
+            active_nav: name.clone(),
+            schema,
+            entities,
+            pagination,
+            list_style: list_style_name(list_style).to_string(),
+            filter_fields,
+            current_user,
+            favicon_url: slots.favicon_url,
+            head_html: slots.head_html,
+            nav_extra_html: slots.nav_extra_html,
+            footer_html: slots.footer_html,
+        },
+    ))
 }
 
 /// GET /app/{schema}/entities/_table — HTMX pagination fragment.
@@ -367,7 +432,7 @@ pub async fn entity_table_fragment(
     OptionalAuth(auth): OptionalAuth,
     Path(name): Path<String>,
     Query(raw_params): Query<std::collections::HashMap<String, String>>,
-) -> Result<impl IntoResponse, CloudError> {
+) -> Result<Response, CloudError> {
     let schema_def = state
         .registry
         .get(&name)
@@ -409,13 +474,17 @@ pub async fn entity_table_fragment(
 
     let filter_fields = crate::views::extract_filter_fields(&schema_def, &params.filters);
 
-    Ok(HtmlTemplate::fragment(CloudEntityListBodyTemplate {
-        schema,
-        entities,
-        pagination,
-        list_style: list_style_name(list_style).to_string(),
-        filter_fields,
-    }))
+    Ok(render_cloud(
+        &state,
+        "cloud/fragments/entity_list_body.html",
+        &CloudEntityListBodyTemplate {
+            schema,
+            entities,
+            pagination,
+            list_style: list_style_name(list_style).to_string(),
+            filter_fields,
+        },
+    ))
 }
 
 /// GET /app/{schema}/entities/new — Create form.
@@ -424,7 +493,7 @@ pub async fn entity_create_form(
     OptionalAuth(auth): OptionalAuth,
     session: TypedSession<AuthSession>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, CloudError> {
+) -> Result<Response, CloudError> {
     let current_user = CloudUserView::from_session(session.data());
     let schema_def = state
         .registry
@@ -446,18 +515,27 @@ pub async fn entity_create_form(
     schema.apply_theme_labels(&theme);
     let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
-    Ok(HtmlTemplate::new(CloudEntityFormTemplate {
-        app_title: theme.app_title(),
-        nav_style: nav_style_name(&theme).to_string(),
-        logo_url: theme.logo_url.clone(),
-        nav_schemas,
-        active_nav: name,
-        schema,
-        fields,
-        entity_id: None,
-        errors: vec![],
-        current_user,
-    }))
+    let slots = theme_slots(&theme);
+    Ok(render_cloud(
+        &state,
+        "cloud/entity_form.html",
+        &CloudEntityFormTemplate {
+            app_title: theme.app_title(),
+            nav_style: nav_style_name(&theme).to_string(),
+            logo_url: theme.logo_url.clone(),
+            nav_schemas,
+            active_nav: name,
+            schema,
+            fields,
+            entity_id: None,
+            errors: vec![],
+            current_user,
+            favicon_url: slots.favicon_url,
+            head_html: slots.head_html,
+            nav_extra_html: slots.nav_extra_html,
+            footer_html: slots.footer_html,
+        },
+    ))
 }
 
 /// POST /app/{schema}/entities — Create entity.
@@ -513,20 +591,29 @@ pub async fn entity_create(
             schema.apply_theme_labels(&theme);
             let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
+            let slots = theme_slots(&theme);
             Ok((
                 StatusCode::UNPROCESSABLE_ENTITY,
-                HtmlTemplate::new(CloudEntityFormTemplate {
-                    app_title: theme.app_title(),
-                    nav_style: nav_style_name(&theme).to_string(),
-                    logo_url: theme.logo_url.clone(),
-                    nav_schemas,
-                    active_nav: name,
-                    schema,
-                    fields,
-                    entity_id: None,
-                    errors,
-                    current_user,
-                }),
+                render_cloud(
+                    &state,
+                    "cloud/entity_form.html",
+                    &CloudEntityFormTemplate {
+                        app_title: theme.app_title(),
+                        nav_style: nav_style_name(&theme).to_string(),
+                        logo_url: theme.logo_url.clone(),
+                        nav_schemas,
+                        active_nav: name,
+                        schema,
+                        fields,
+                        entity_id: None,
+                        errors,
+                        current_user,
+                        favicon_url: slots.favicon_url,
+                        head_html: slots.head_html,
+                        nav_extra_html: slots.nav_extra_html,
+                        footer_html: slots.footer_html,
+                    },
+                ),
             )
                 .into_response())
         }
@@ -539,7 +626,7 @@ pub async fn entity_detail(
     OptionalAuth(auth): OptionalAuth,
     session: TypedSession<AuthSession>,
     Path((name, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, CloudError> {
+) -> Result<Response, CloudError> {
     let current_user = CloudUserView::from_session(session.data());
     let schema_def = state
         .registry
@@ -577,17 +664,26 @@ pub async fn entity_detail(
     let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
     let detail_style = theme.resolve_detail_style(&name);
 
-    Ok(HtmlTemplate::new(CloudEntityDetailTemplate {
-        app_title: theme.app_title(),
-        nav_style: nav_style_name(&theme).to_string(),
-        logo_url: theme.logo_url.clone(),
-        nav_schemas,
-        active_nav: name,
-        schema,
-        entity: entity_view,
-        detail_style: detail_style_name(detail_style).to_string(),
-        current_user,
-    }))
+    let slots = theme_slots(&theme);
+    Ok(render_cloud(
+        &state,
+        "cloud/entity_detail.html",
+        &CloudEntityDetailTemplate {
+            app_title: theme.app_title(),
+            nav_style: nav_style_name(&theme).to_string(),
+            logo_url: theme.logo_url.clone(),
+            nav_schemas,
+            active_nav: name,
+            schema,
+            entity: entity_view,
+            detail_style: detail_style_name(detail_style).to_string(),
+            current_user,
+            favicon_url: slots.favicon_url,
+            head_html: slots.head_html,
+            nav_extra_html: slots.nav_extra_html,
+            footer_html: slots.footer_html,
+        },
+    ))
 }
 
 /// GET /app/{schema}/entities/{id}/edit — Edit form.
@@ -596,7 +692,7 @@ pub async fn entity_edit_form(
     OptionalAuth(auth): OptionalAuth,
     session: TypedSession<AuthSession>,
     Path((name, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, CloudError> {
+) -> Result<Response, CloudError> {
     let current_user = CloudUserView::from_session(session.data());
     let schema_def = state
         .registry
@@ -632,18 +728,27 @@ pub async fn entity_edit_form(
     schema.apply_theme_labels(&theme);
     let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
-    Ok(HtmlTemplate::new(CloudEntityFormTemplate {
-        app_title: theme.app_title(),
-        nav_style: nav_style_name(&theme).to_string(),
-        logo_url: theme.logo_url.clone(),
-        nav_schemas,
-        active_nav: name,
-        schema,
-        fields,
-        entity_id: Some(id),
-        errors: vec![],
-        current_user,
-    }))
+    let slots = theme_slots(&theme);
+    Ok(render_cloud(
+        &state,
+        "cloud/entity_form.html",
+        &CloudEntityFormTemplate {
+            app_title: theme.app_title(),
+            nav_style: nav_style_name(&theme).to_string(),
+            logo_url: theme.logo_url.clone(),
+            nav_schemas,
+            active_nav: name,
+            schema,
+            fields,
+            entity_id: Some(id),
+            errors: vec![],
+            current_user,
+            favicon_url: slots.favicon_url,
+            head_html: slots.head_html,
+            nav_extra_html: slots.nav_extra_html,
+            footer_html: slots.footer_html,
+        },
+    ))
 }
 
 /// PUT /app/{schema}/entities/{id} — Update entity.
@@ -701,20 +806,29 @@ pub async fn entity_update(
             schema.apply_theme_labels(&theme);
             let nav_schemas = build_nav(&state, &theme, auth.as_ref()).await;
 
+            let slots = theme_slots(&theme);
             Ok((
                 StatusCode::UNPROCESSABLE_ENTITY,
-                HtmlTemplate::new(CloudEntityFormTemplate {
-                    app_title: theme.app_title(),
-                    nav_style: nav_style_name(&theme).to_string(),
-                    logo_url: theme.logo_url.clone(),
-                    nav_schemas,
-                    active_nav: name,
-                    schema,
-                    fields,
-                    entity_id: Some(id),
-                    errors,
-                    current_user,
-                }),
+                render_cloud(
+                    &state,
+                    "cloud/entity_form.html",
+                    &CloudEntityFormTemplate {
+                        app_title: theme.app_title(),
+                        nav_style: nav_style_name(&theme).to_string(),
+                        logo_url: theme.logo_url.clone(),
+                        nav_schemas,
+                        active_nav: name,
+                        schema,
+                        fields,
+                        entity_id: Some(id),
+                        errors,
+                        current_user,
+                        favicon_url: slots.favicon_url,
+                        head_html: slots.head_html,
+                        nav_extra_html: slots.nav_extra_html,
+                        footer_html: slots.footer_html,
+                    },
+                ),
             )
                 .into_response())
         }

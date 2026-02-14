@@ -82,6 +82,10 @@ pub struct Theme {
     pub view_overrides: HashMap<String, ThemeOverride>,
     pub dashboard_schemas: Vec<String>,
     pub logo_url: Option<String>,
+    pub favicon_url: Option<String>,
+    pub head_html: Option<String>,
+    pub nav_extra_html: Option<String>,
+    pub footer_html: Option<String>,
     pub custom_css: Option<String>,
     pub active: bool,
 }
@@ -109,6 +113,10 @@ impl Default for Theme {
             view_overrides: HashMap::new(),
             dashboard_schemas: Vec::new(),
             logo_url: None,
+            favicon_url: None,
+            head_html: None,
+            nav_extra_html: None,
+            footer_html: None,
             custom_css: None,
             active: true,
         }
@@ -142,6 +150,10 @@ impl Theme {
             view_overrides: extract_json_map(fields, "view_overrides"),
             dashboard_schemas: extract_text_array(fields, "dashboard_schemas"),
             logo_url: extract_optional_text(fields, "logo_url"),
+            favicon_url: extract_optional_text(fields, "favicon_url"),
+            head_html: extract_optional_text(fields, "head_html"),
+            nav_extra_html: extract_optional_text(fields, "nav_extra_html"),
+            footer_html: extract_optional_text(fields, "footer_html"),
             custom_css: extract_optional_text(fields, "custom_css"),
             active: extract_bool(fields, "active", defaults.active),
         }
@@ -489,6 +501,51 @@ mod tests {
             ..Theme::default()
         };
         assert_eq!(theme.list_style_name("Contact"), "cards");
+    }
+
+    #[test]
+    fn default_theme_has_no_slots() {
+        let theme = Theme::default();
+        assert!(theme.favicon_url.is_none());
+        assert!(theme.head_html.is_none());
+        assert!(theme.nav_extra_html.is_none());
+        assert!(theme.footer_html.is_none());
+    }
+
+    #[test]
+    fn from_entity_slot_fields() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "favicon_url".to_string(),
+            DynamicValue::Text("/favicon.ico".to_string()),
+        );
+        fields.insert(
+            "head_html".to_string(),
+            DynamicValue::Text(r#"<meta name="robots" content="noindex">"#.to_string()),
+        );
+        fields.insert(
+            "nav_extra_html".to_string(),
+            DynamicValue::Text(r#"<a href="/docs">Docs</a>"#.to_string()),
+        );
+        fields.insert(
+            "footer_html".to_string(),
+            DynamicValue::Text("&copy; 2024 Acme Corp".to_string()),
+        );
+
+        let theme = Theme::from_entity(&fields);
+        assert_eq!(theme.favicon_url.as_deref(), Some("/favicon.ico"));
+        assert_eq!(
+            theme.head_html.as_deref(),
+            Some(r#"<meta name="robots" content="noindex">"#)
+        );
+        assert_eq!(
+            theme.nav_extra_html.as_deref(),
+            Some(r#"<a href="/docs">Docs</a>"#)
+        );
+        assert_eq!(
+            theme.footer_html.as_deref(),
+            Some("&copy; 2024 Acme Corp")
+        );
     }
 
     #[test]

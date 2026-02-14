@@ -4,7 +4,7 @@
     <div class="sf-form-group">
         <label class="sf-form-label" for="{{ field.name }}.{{ child.name }}">{{ child.label }}</label>
         <input type="text" id="{{ field.name }}.{{ child.name }}" name="{{ field.name }}.{{ child.name }}" class="sf-form-input"
-            {% if let Some(val) = child.current_value %}value="{{ val }}"{% endif %}>
+            {% if child.current_value %}value="{{ child.current_value }}"{% endif %}>
     </div>
     {% endfor %}
 </fieldset>

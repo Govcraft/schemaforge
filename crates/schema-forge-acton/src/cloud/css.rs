@@ -40,6 +40,69 @@ fn sanitize_css(css: &str) -> String {
     result
 }
 
+/// Sanitize user-provided HTML for slot fields (head_html, nav_extra_html, footer_html).
+///
+/// Strips dangerous elements and attributes:
+/// - `<script>`, `<iframe>`, `<object>`, `<embed>` tags
+/// - `on*` event handler attributes
+/// - `javascript:` protocol URLs
+/// - `data:text/html` URIs
+pub fn sanitize_html(html: &str) -> String {
+    use std::fmt::Write;
+
+    let mut result = String::with_capacity(html.len());
+    let mut chars = html.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '<' {
+            // Collect the tag
+            let mut tag = String::from('<');
+            for c in chars.by_ref() {
+                tag.push(c);
+                if c == '>' {
+                    break;
+                }
+            }
+
+            let tag_lower = tag.to_lowercase();
+            let tag_name = tag_lower
+                .trim_start_matches('<')
+                .trim_start_matches('/')
+                .trim()
+                .split(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                .next()
+                .unwrap_or("");
+
+            // Block dangerous tags
+            if matches!(tag_name, "script" | "iframe" | "object" | "embed") {
+                continue;
+            }
+
+            // Strip on* event handlers and dangerous protocols from attributes
+            if tag_lower.contains("javascript:") || tag_lower.contains("data:text/html") {
+                continue;
+            }
+
+            // Check for on* event handlers (onerror, onclick, etc.)
+            let has_event_handler = tag_lower
+                .split_whitespace()
+                .any(|attr| {
+                    let attr = attr.trim_start_matches('/').trim_end_matches('>');
+                    attr.starts_with("on") && attr.contains('=')
+                });
+            if has_event_handler {
+                continue;
+            }
+
+            let _ = write!(result, "{}", tag);
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
 /// Base semantic styles for sf-* classes, driven by CSS custom properties.
 const BASE_SF_STYLES: &str = r#"
 /* SchemaForge Cloud UI — Base Styles */
@@ -248,6 +311,9 @@ const BASE_SF_STYLES: &str = r#"
 .sf-filter-pill:hover { background: var(--sf-background); }
 .sf-filter-pill-active { background: var(--sf-primary); color: #fff; border-color: var(--sf-primary); }
 .sf-filter-pill-active:hover { opacity: 0.85; }
+
+/* Footer */
+.sf-footer { padding: 1rem 1.5rem; border-top: 1px solid var(--sf-secondary); font-size: 0.8125rem; color: var(--sf-secondary); }
 "#;
 
 #[cfg(test)]
@@ -317,6 +383,52 @@ mod tests {
         let input = ".htc { behavior: url(evil.htc); }";
         let result = sanitize_css(input);
         assert!(!result.contains("behavior:"));
+    }
+
+    #[test]
+    fn sanitize_html_strips_script_tags() {
+        let input = "<div>Hello</div><script>alert(1)</script><p>World</p>";
+        let result = sanitize_html(input);
+        assert!(!result.contains("<script>"));
+        assert!(result.contains("<div>Hello</div>"));
+        assert!(result.contains("<p>World</p>"));
+    }
+
+    #[test]
+    fn sanitize_html_strips_iframe() {
+        let input = r#"<iframe src="evil.com"></iframe><p>safe</p>"#;
+        let result = sanitize_html(input);
+        assert!(!result.contains("<iframe"));
+        assert!(result.contains("<p>safe</p>"));
+    }
+
+    #[test]
+    fn sanitize_html_strips_event_handlers() {
+        let input = r#"<img onerror="alert(1)" src="x.png">"#;
+        let result = sanitize_html(input);
+        assert!(!result.contains("onerror"));
+    }
+
+    #[test]
+    fn sanitize_html_strips_javascript_protocol() {
+        let input = r#"<a href="javascript:alert(1)">click</a>"#;
+        let result = sanitize_html(input);
+        assert!(!result.contains("javascript:"));
+    }
+
+    #[test]
+    fn sanitize_html_preserves_safe_content() {
+        let input = r##"<link rel="icon" href="/favicon.ico"><meta name="theme-color" content="#333">"##;
+        let result = sanitize_html(input);
+        assert!(result.contains("<link"));
+        assert!(result.contains("<meta"));
+    }
+
+    #[test]
+    fn sanitize_html_strips_data_uri() {
+        let input = r#"<a href="data:text/html,<script>alert(1)</script>">bad</a>"#;
+        let result = sanitize_html(input);
+        assert!(!result.contains("data:text/html"));
     }
 
     #[test]

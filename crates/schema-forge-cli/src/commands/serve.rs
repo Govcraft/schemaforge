@@ -52,6 +52,16 @@ pub async fn run(
         }
     }
 
+    #[cfg(feature = "cloud-ui")]
+    {
+        if let Some(ref dir) = args.static_dir {
+            builder = builder.with_static_dir(dir.clone());
+        }
+        if let Some(ref dir) = args.template_dir {
+            builder = builder.with_template_dir(dir.clone());
+        }
+    }
+
     let extension = builder
         .with_backend(backend)
         .build()

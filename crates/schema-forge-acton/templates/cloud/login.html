@@ -4,19 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - {{ app_title }}</title>
+    {% if favicon_url %}<link rel="icon" href="{{ favicon_url }}">{% endif %}
     <link rel="stylesheet" href="/app/theme.css">
+    {% if head_html %}{{ head_html }}{% endif %}
 </head>
 <body class="sf-app">
     <div class="sf-login-page">
         <div class="sf-login-card">
-            {% if let Some(logo) = logo_url %}
-            <img src="{{ logo }}" alt="{{ app_title }}" class="sf-login-logo">
+            {% if logo_url %}
+            <img src="{{ logo_url }}" alt="{{ app_title }}" class="sf-login-logo">
             {% else %}
             <h1 class="sf-login-title">{{ app_title }}</h1>
             {% endif %}
             <p class="sf-login-subtitle">Sign in to continue</p>
-            {% if let Some(err) = error %}
-            <div class="sf-alert sf-alert-error sf-login-error">{{ err }}</div>
+            {% if error %}
+            <div class="sf-alert sf-alert-error sf-login-error">{{ error }}</div>
             {% endif %}
             <form method="post" action="/app/login" class="sf-login-form">
                 <div class="sf-form-group">

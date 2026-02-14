@@ -8,6 +8,8 @@ pub mod migrate;
 pub mod parse;
 pub mod policies;
 pub mod serve;
+#[cfg(feature = "cloud-ui")]
+pub mod templates;
 
 use schema_forge_surrealdb::SurrealBackend;
 

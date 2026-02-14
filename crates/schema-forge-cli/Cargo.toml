@@ -28,10 +28,11 @@ dialoguer = "0.11"
 glob = "0.3"
 axum = { version = "0.8" }
 acton-service = { version = "0.16.0", default-features = false, features = ["http"] }
+dirs = { version = "6", optional = true }
 
 [features]
 admin-ui = ["schema-forge-acton/admin-ui", "schema-forge-ai/admin-ui", "acton-service/htmx-full"]
-cloud-ui = ["schema-forge-acton/cloud-ui", "schema-forge-ai/cloud-ui"]
+cloud-ui = ["schema-forge-acton/cloud-ui", "schema-forge-ai/cloud-ui", "dep:dirs"]
 
 [dev-dependencies]
 assert_cmd = "2"

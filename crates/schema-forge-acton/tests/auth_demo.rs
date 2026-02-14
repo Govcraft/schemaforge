@@ -251,6 +251,10 @@ async fn demo_schema_access_control() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -282,6 +286,10 @@ async fn demo_schema_access_control() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -376,6 +384,10 @@ async fn demo_field_access_filtering() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -408,6 +420,10 @@ async fn demo_field_access_filtering() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -488,6 +504,10 @@ async fn demo_record_ownership() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -526,6 +546,10 @@ async fn demo_record_ownership() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -565,6 +589,10 @@ async fn demo_record_ownership() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -681,6 +709,10 @@ async fn demo_multi_tenancy_isolation() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -726,6 +758,10 @@ async fn demo_multi_tenancy_isolation() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(state);
 
@@ -1003,6 +1039,10 @@ async fn demo_all_auth_layers_combined() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(employee_state);
 
@@ -1054,6 +1094,10 @@ async fn demo_all_auth_layers_combined() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(manager_state);
 
@@ -1086,6 +1130,10 @@ async fn demo_all_auth_layers_combined() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(admin_state);
 
@@ -1117,6 +1165,10 @@ async fn demo_all_auth_layers_combined() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(guest_state);
 
@@ -1145,6 +1197,10 @@ async fn demo_all_auth_layers_combined() {
         graphql_schema: test_graphql_schema(),
         #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
         surreal_client: None,
+        #[cfg(feature = "cloud-ui")]
+        template_engine: std::sync::Arc::new(
+            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+        ),
     };
     let app = test_app_with_state(author_state);
 

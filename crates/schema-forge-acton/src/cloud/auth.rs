@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use acton_service::prelude::{AuthSession, HtmlTemplate, TypedSession};
+use acton_service::prelude::{AuthSession, TypedSession};
 use axum::body::Body;
 use axum::extract::{Form, Request, State};
 use axum::middleware::Next;
@@ -11,11 +11,12 @@ use schema_forge_core::types::EntityId;
 use crate::shared_auth::LoginForm;
 use crate::state::ForgeState;
 
-use super::handlers::CloudError;
+use super::css;
+use super::handlers::{render_cloud, CloudError};
 use super::templates::CloudLoginTemplate;
 
 /// Template-friendly view of the current cloud user.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CloudUserView {
     pub username: String,
     pub display_name: String,
@@ -92,12 +93,13 @@ pub async fn login_page(
         return Redirect::to("/app/").into_response();
     }
     let theme = state.theme.load();
-    HtmlTemplate::new(CloudLoginTemplate {
+    render_cloud(&state, "cloud/login.html", &CloudLoginTemplate {
         app_title: theme.app_title(),
         logo_url: theme.logo_url.clone(),
         error: None,
+        favicon_url: theme.favicon_url.clone(),
+        head_html: theme.head_html.as_ref().map(|h| css::sanitize_html(h)),
     })
-    .into_response()
 }
 
 /// POST /app/login — validates via shared_auth::validate_credentials()
@@ -131,12 +133,13 @@ pub async fn login_submit(
         }
         None => {
             let theme = state.theme.load();
-            Ok(HtmlTemplate::new(CloudLoginTemplate {
+            Ok(render_cloud(&state, "cloud/login.html", &CloudLoginTemplate {
                 app_title: theme.app_title(),
                 logo_url: theme.logo_url.clone(),
                 error: Some("Invalid username or password".to_string()),
-            })
-            .into_response())
+                favicon_url: theme.favicon_url.clone(),
+                head_html: theme.head_html.as_ref().map(|h| css::sanitize_html(h)),
+            }))
         }
     }
 }
