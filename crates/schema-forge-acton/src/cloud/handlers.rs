@@ -235,7 +235,7 @@ pub async fn dashboard(
 /// GET /app/theme.css — Serve generated CSS.
 pub async fn theme_css(State(state): State<ForgeState>) -> impl IntoResponse {
     let theme = state.theme.load();
-    let css = css::generate_css(&theme);
+    let css = css::generate_css(&theme, &state.template_engine);
     (
         [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
         css,

@@ -80,6 +80,7 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         "molecules/dashboard_card.html" => {
             Some(include_str!("../../templates/molecules/dashboard_card.html"))
         }
+        "cloud/base.css" => Some(include_str!("../../templates/cloud/base.css")),
         _ => None,
     }
 }

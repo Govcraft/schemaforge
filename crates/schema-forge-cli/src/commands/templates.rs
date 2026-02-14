@@ -41,6 +41,12 @@ const TEMPLATE_CATALOG: &[TemplateMeta] = &[
         level: "organism",
         path: "cloud/fragments/entity_list_body.html",
     },
+    // Styles
+    TemplateMeta {
+        name: "base_css",
+        level: "style",
+        path: "cloud/base.css",
+    },
     // Pages
     TemplateMeta {
         name: "base",
@@ -81,7 +87,7 @@ const TEMPLATE_CATALOG: &[TemplateMeta] = &[
 
 /// Print all embedded templates grouped by atomic design level.
 pub fn list(output: &OutputContext) {
-    let levels = ["atom", "molecule", "organism", "page"];
+    let levels = ["atom", "molecule", "organism", "style", "page"];
 
     for level in levels {
         let entries: Vec<_> = TEMPLATE_CATALOG.iter().filter(|t| t.level == level).collect();
@@ -92,6 +98,7 @@ pub fn list(output: &OutputContext) {
             "atom" => "Atoms",
             "molecule" => "Molecules",
             "organism" => "Organisms",
+            "style" => "Styles",
             "page" => "Pages",
             _ => level,
         };
@@ -175,14 +182,14 @@ mod tests {
 
     #[test]
     fn catalog_has_all_templates() {
-        assert_eq!(TEMPLATE_CATALOG.len(), 12);
+        assert_eq!(TEMPLATE_CATALOG.len(), 13);
     }
 
     #[test]
     fn catalog_levels_are_valid() {
         for t in TEMPLATE_CATALOG {
             assert!(
-                matches!(t.level, "atom" | "molecule" | "organism" | "page"),
+                matches!(t.level, "atom" | "molecule" | "organism" | "style" | "page"),
                 "invalid level: {}",
                 t.level
             );
