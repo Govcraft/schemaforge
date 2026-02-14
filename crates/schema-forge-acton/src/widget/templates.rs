@@ -1,5 +1,3 @@
-use acton_service::prelude::Template;
-
 use crate::views::{EntityView, FieldView, PaginationView, SchemaView};
 
 // ---------------------------------------------------------------------------
@@ -7,8 +5,7 @@ use crate::views::{EntityView, FieldView, PaginationView, SchemaView};
 // ---------------------------------------------------------------------------
 
 /// Widget entity table — table layout (default).
-#[derive(Template)]
-#[template(path = "forge/entity_list_table.html")]
+#[derive(serde::Serialize)]
 pub struct WidgetEntityListTableTemplate {
     pub schema: SchemaView,
     pub entities: Vec<EntityView>,
@@ -17,8 +14,7 @@ pub struct WidgetEntityListTableTemplate {
 }
 
 /// Widget entity cards — card grid layout.
-#[derive(Template)]
-#[template(path = "forge/entity_list_cards.html")]
+#[derive(serde::Serialize)]
 pub struct WidgetEntityListCardsTemplate {
     pub schema: SchemaView,
     pub entities: Vec<EntityView>,
@@ -27,8 +23,7 @@ pub struct WidgetEntityListCardsTemplate {
 }
 
 /// Widget entity compact — dense single-line layout.
-#[derive(Template)]
-#[template(path = "forge/entity_list_compact.html")]
+#[derive(serde::Serialize)]
 pub struct WidgetEntityListCompactTemplate {
     pub schema: SchemaView,
     pub entities: Vec<EntityView>,
@@ -37,8 +32,7 @@ pub struct WidgetEntityListCompactTemplate {
 }
 
 /// Backwards-compatible alias — uses table layout.
-#[derive(Template)]
-#[template(path = "forge/entity_table.html")]
+#[derive(serde::Serialize)]
 pub struct WidgetEntityTableTemplate {
     pub schema: SchemaView,
     pub entities: Vec<EntityView>,
@@ -51,8 +45,7 @@ pub struct WidgetEntityTableTemplate {
 // ---------------------------------------------------------------------------
 
 /// Widget entity detail — full vertical layout (default).
-#[derive(Template)]
-#[template(path = "organisms/entity_detail_full.html")]
+#[derive(serde::Serialize)]
 pub struct WidgetEntityDetailFullTemplate {
     pub schema: SchemaView,
     pub entity: EntityView,
@@ -60,8 +53,7 @@ pub struct WidgetEntityDetailFullTemplate {
 }
 
 /// Widget entity detail — two-column split layout.
-#[derive(Template)]
-#[template(path = "organisms/entity_detail_split.html")]
+#[derive(serde::Serialize)]
 pub struct WidgetEntityDetailSplitTemplate {
     pub schema: SchemaView,
     pub entity: EntityView,
@@ -69,8 +61,7 @@ pub struct WidgetEntityDetailSplitTemplate {
 }
 
 /// Widget entity detail — tabbed layout.
-#[derive(Template)]
-#[template(path = "organisms/entity_detail_tabbed.html")]
+#[derive(serde::Serialize)]
 pub struct WidgetEntityDetailTabbedTemplate {
     pub schema: SchemaView,
     pub entity: EntityView,
@@ -78,8 +69,7 @@ pub struct WidgetEntityDetailTabbedTemplate {
 }
 
 /// Backwards-compatible alias — uses full layout.
-#[derive(Template)]
-#[template(path = "forge/entity_detail.html")]
+#[derive(serde::Serialize)]
 pub struct WidgetEntityDetailTemplate {
     pub schema: SchemaView,
     pub entity: EntityView,
@@ -91,8 +81,7 @@ pub struct WidgetEntityDetailTemplate {
 // ---------------------------------------------------------------------------
 
 /// Widget entity form — bare fragment for create/edit forms.
-#[derive(Template)]
-#[template(path = "forge/entity_form.html")]
+#[derive(serde::Serialize)]
 pub struct WidgetEntityFormTemplate {
     pub schema: SchemaView,
     pub fields: Vec<FieldView>,

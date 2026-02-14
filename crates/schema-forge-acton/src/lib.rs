@@ -15,6 +15,9 @@ pub mod state;
 pub mod system;
 pub mod views;
 
+#[cfg(any(feature = "widget-ui", feature = "admin-ui", feature = "cloud-ui"))]
+pub mod template_engine;
+
 #[cfg(any(feature = "widget-ui", feature = "admin-ui"))]
 pub mod theme;
 

@@ -3,5 +3,5 @@
     <textarea id="{{ field.name }}" name="{{ field.name }}" class="textarea"
         placeholder="One value per line"
         {% if field.required %}required{% endif %}
-    >{% if let Some(val) = field.current_value %}{{ val }}{% endif %}</textarea>
+    >{% if field.current_value %}{{ field.current_value }}{% endif %}</textarea>
 </fieldset>

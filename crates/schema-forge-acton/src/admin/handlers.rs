@@ -1,4 +1,3 @@
-use acton_service::prelude::HtmlTemplate;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -9,6 +8,7 @@ use schema_forge_core::types::{
 };
 
 use crate::state::ForgeState;
+use crate::template_engine::{render_fragment, render_template, render_template_with_status};
 
 use super::auth::CurrentUserView;
 use super::error::AdminError;
@@ -63,7 +63,7 @@ use crate::shared::resolve_ref_display;
 pub async fn dashboard(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let schemas = state.registry.list().await;
     let names = schema_names(&state).await;
@@ -86,12 +86,16 @@ pub async fn dashboard(
 
     let graph = SchemaGraphView::from_entries(&entries, &schemas);
 
-    Ok(HtmlTemplate::new(DashboardTemplate {
-        entries,
-        schema_names: names,
-        graph,
-        current_user,
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/dashboard.html",
+        &DashboardTemplate {
+            entries,
+            schema_names: names,
+            graph,
+            current_user,
+        },
+    ))
 }
 
 /// GET /admin/schemas/{name} — Schema detail with field definitions.
@@ -99,7 +103,7 @@ pub async fn schema_detail(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let schema_def = state
         .registry
@@ -110,11 +114,15 @@ pub async fn schema_detail(
     let names = schema_names(&state).await;
     let schema = SchemaView::from_definition(&schema_def);
 
-    Ok(HtmlTemplate::new(SchemaDetailTemplate {
-        schema,
-        schema_names: names,
-        current_user,
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/schema_detail.html",
+        &SchemaDetailTemplate {
+            schema,
+            schema_names: names,
+            current_user,
+        },
+    ))
 }
 
 /// GET /admin/schemas/{name}/entities — Paginated entity list.
@@ -123,7 +131,7 @@ pub async fn entity_list(
     auth: TypedSession<AuthSession>,
     Path(name): Path<String>,
     Query(params): Query<PaginationParams>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let schema_def = state
         .registry
@@ -154,14 +162,18 @@ pub async fn entity_list(
     let schema = SchemaView::from_definition(&schema_def);
     let names = schema_names(&state).await;
 
-    Ok(HtmlTemplate::new(EntityListTemplate {
-        schema,
-        entities,
-        pagination,
-        schema_names: names,
-        current_user,
-        url_prefix: ADMIN_URL_PREFIX.to_string(),
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/entity_list.html",
+        &EntityListTemplate {
+            schema,
+            entities,
+            pagination,
+            schema_names: names,
+            current_user,
+            url_prefix: ADMIN_URL_PREFIX.to_string(),
+        },
+    ))
 }
 
 /// GET /admin/schemas/{name}/entities/_table — HTMX fragment for pagination.
@@ -169,7 +181,7 @@ pub async fn entity_table_fragment(
     State(state): State<ForgeState>,
     Path(name): Path<String>,
     Query(params): Query<PaginationParams>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let schema_def = state
         .registry
         .get(&name)
@@ -198,12 +210,16 @@ pub async fn entity_table_fragment(
     let pagination = PaginationView::new(total_count, limit, offset);
     let schema = SchemaView::from_definition(&schema_def);
 
-    Ok(HtmlTemplate::fragment(EntityTableBodyFragment {
-        schema,
-        entities,
-        pagination,
-        url_prefix: ADMIN_URL_PREFIX.to_string(),
-    }))
+    Ok(render_fragment(
+        &state.template_engine,
+        "admin/fragments/entity_table_body.html",
+        &EntityTableBodyFragment {
+            schema,
+            entities,
+            pagination,
+            url_prefix: ADMIN_URL_PREFIX.to_string(),
+        },
+    ))
 }
 
 /// GET /admin/schemas/{name}/entities/new — Create form.
@@ -211,7 +227,7 @@ pub async fn entity_create_form(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let schema_def = state
         .registry
@@ -227,15 +243,19 @@ pub async fn entity_create_form(
     let schema = SchemaView::from_definition(&schema_def);
     let names = schema_names(&state).await;
 
-    Ok(HtmlTemplate::new(EntityFormTemplate {
-        schema,
-        fields,
-        entity_id: None,
-        schema_names: names,
-        errors: vec![],
-        current_user,
-        url_prefix: ADMIN_URL_PREFIX.to_string(),
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/entity_form.html",
+        &EntityFormTemplate {
+            schema,
+            fields,
+            entity_id: None,
+            schema_names: names,
+            errors: vec![],
+            current_user,
+            url_prefix: ADMIN_URL_PREFIX.to_string(),
+        },
+    ))
 }
 
 /// POST /admin/schemas/{name}/entities — Create entity from form.
@@ -286,17 +306,20 @@ pub async fn entity_create(
             let schema = SchemaView::from_definition(&schema_def);
             let names = schema_names(&state).await;
 
-            Ok(HtmlTemplate::new(EntityFormTemplate {
-                schema,
-                fields,
-                entity_id: None,
-                schema_names: names,
-                errors,
-                current_user,
-                url_prefix: ADMIN_URL_PREFIX.to_string(),
-            })
-            .with_status(StatusCode::UNPROCESSABLE_ENTITY)
-            .into_response())
+            Ok(render_template_with_status(
+                &state.template_engine,
+                "admin/entity_form.html",
+                &EntityFormTemplate {
+                    schema,
+                    fields,
+                    entity_id: None,
+                    schema_names: names,
+                    errors,
+                    current_user,
+                    url_prefix: ADMIN_URL_PREFIX.to_string(),
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ))
         }
     }
 }
@@ -306,7 +329,7 @@ pub async fn entity_detail(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
     Path((name, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let schema_def = state
         .registry
@@ -332,13 +355,17 @@ pub async fn entity_detail(
     let schema = SchemaView::from_definition(&schema_def);
     let names = schema_names(&state).await;
 
-    Ok(HtmlTemplate::new(EntityDetailTemplate {
-        schema,
-        entity: entity_view,
-        schema_names: names,
-        current_user,
-        url_prefix: ADMIN_URL_PREFIX.to_string(),
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/entity_detail.html",
+        &EntityDetailTemplate {
+            schema,
+            entity: entity_view,
+            schema_names: names,
+            current_user,
+            url_prefix: ADMIN_URL_PREFIX.to_string(),
+        },
+    ))
 }
 
 /// GET /admin/schemas/{name}/entities/{id}/edit — Edit form.
@@ -346,7 +373,7 @@ pub async fn entity_edit_form(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
     Path((name, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let schema_def = state
         .registry
@@ -378,15 +405,19 @@ pub async fn entity_edit_form(
     let schema = SchemaView::from_definition(&schema_def);
     let names = schema_names(&state).await;
 
-    Ok(HtmlTemplate::new(EntityFormTemplate {
-        schema,
-        fields,
-        entity_id: Some(id),
-        schema_names: names,
-        errors: vec![],
-        current_user,
-        url_prefix: ADMIN_URL_PREFIX.to_string(),
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/entity_form.html",
+        &EntityFormTemplate {
+            schema,
+            fields,
+            entity_id: Some(id),
+            schema_names: names,
+            errors: vec![],
+            current_user,
+            url_prefix: ADMIN_URL_PREFIX.to_string(),
+        },
+    ))
 }
 
 /// PUT /admin/schemas/{name}/entities/{id} — Update entity from form.
@@ -436,17 +467,20 @@ pub async fn entity_update(
             let schema = SchemaView::from_definition(&schema_def);
             let names = schema_names(&state).await;
 
-            Ok(HtmlTemplate::new(EntityFormTemplate {
-                schema,
-                fields,
-                entity_id: Some(id),
-                schema_names: names,
-                errors,
-                current_user,
-                url_prefix: ADMIN_URL_PREFIX.to_string(),
-            })
-            .with_status(StatusCode::UNPROCESSABLE_ENTITY)
-            .into_response())
+            Ok(render_template_with_status(
+                &state.template_engine,
+                "admin/entity_form.html",
+                &EntityFormTemplate {
+                    schema,
+                    fields,
+                    entity_id: Some(id),
+                    schema_names: names,
+                    errors,
+                    current_user,
+                    url_prefix: ADMIN_URL_PREFIX.to_string(),
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ))
         }
     }
 }
@@ -482,7 +516,7 @@ pub async fn entity_delete(
 pub async fn relation_options(
     State(state): State<ForgeState>,
     Path((target, _field)): Path<(String, String)>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let schema_def =
         state
             .registry
@@ -539,7 +573,11 @@ pub async fn relation_options(
         })
         .collect();
 
-    Ok(HtmlTemplate::fragment(RelationOptionsFragment { options }))
+    Ok(render_fragment(
+        &state.template_engine,
+        "admin/fragments/relation_options.html",
+        &RelationOptionsFragment { options },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -550,15 +588,19 @@ pub async fn relation_options(
 pub async fn schema_create_form(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let names = schema_names(&state).await;
-    Ok(HtmlTemplate::new(SchemaEditorTemplate {
-        editor: SchemaEditorView::new_empty(),
-        schema_names: names,
-        errors: vec![],
-        current_user,
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/schema_editor.html",
+        &SchemaEditorTemplate {
+            editor: SchemaEditorView::new_empty(),
+            schema_names: names,
+            errors: vec![],
+            current_user,
+        },
+    ))
 }
 
 /// POST /admin/schemas — Create schema from form.
@@ -596,14 +638,17 @@ pub async fn schema_create(
             let names = schema_names(&state).await;
             // Re-populate editor from form data best-effort
             let editor = editor_from_form_data(&form_data, false);
-            Ok(HtmlTemplate::new(SchemaEditorTemplate {
-                editor,
-                schema_names: names,
-                errors,
-                current_user,
-            })
-            .with_status(StatusCode::UNPROCESSABLE_ENTITY)
-            .into_response())
+            Ok(render_template_with_status(
+                &state.template_engine,
+                "admin/schema_editor.html",
+                &SchemaEditorTemplate {
+                    editor,
+                    schema_names: names,
+                    errors,
+                    current_user,
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ))
         }
     }
 }
@@ -613,7 +658,7 @@ pub async fn schema_edit_form(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let schema_def = state
         .registry
@@ -624,12 +669,16 @@ pub async fn schema_edit_form(
     let names = schema_names(&state).await;
     let editor = SchemaEditorView::from_definition(&schema_def);
 
-    Ok(HtmlTemplate::new(SchemaEditorTemplate {
-        editor,
-        schema_names: names,
-        errors: vec![],
-        current_user,
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/schema_editor.html",
+        &SchemaEditorTemplate {
+            editor,
+            schema_names: names,
+            errors: vec![],
+            current_user,
+        },
+    ))
 }
 
 /// POST /admin/schemas/{name} — Update schema from form.
@@ -675,14 +724,17 @@ pub async fn schema_update(
         Err(errors) => {
             let names = schema_names(&state).await;
             let editor = editor_from_form_data(&form_data, true);
-            Ok(HtmlTemplate::new(SchemaEditorTemplate {
-                editor,
-                schema_names: names,
-                errors,
-                current_user,
-            })
-            .with_status(StatusCode::UNPROCESSABLE_ENTITY)
-            .into_response())
+            Ok(render_template_with_status(
+                &state.template_engine,
+                "admin/schema_editor.html",
+                &SchemaEditorTemplate {
+                    editor,
+                    schema_names: names,
+                    errors,
+                    current_user,
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ))
         }
     }
 }
@@ -702,7 +754,7 @@ pub async fn schema_delete(
 pub async fn schema_preview(
     State(state): State<ForgeState>,
     Form(form_data): Form<Vec<(String, String)>>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     // Try to parse the form data best-effort
     match form_to_schema_definition(&form_data, None) {
         Ok(schema_def) => {
@@ -726,17 +778,25 @@ pub async fn schema_preview(
                 None
             };
 
-            Ok(HtmlTemplate::fragment(DslPreviewFragment {
-                dsl_text,
-                errors: vec![],
-                migration,
-            }))
+            Ok(render_fragment(
+                &state.template_engine,
+                "admin/fragments/dsl_preview.html",
+                &DslPreviewFragment {
+                    dsl_text,
+                    errors: vec![],
+                    migration,
+                },
+            ))
         }
-        Err(errors) => Ok(HtmlTemplate::fragment(DslPreviewFragment {
-            dsl_text: String::new(),
-            errors,
-            migration: None,
-        })),
+        Err(errors) => Ok(render_fragment(
+            &state.template_engine,
+            "admin/fragments/dsl_preview.html",
+            &DslPreviewFragment {
+                dsl_text: String::new(),
+                errors,
+                migration: None,
+            },
+        )),
     }
 }
 
@@ -747,21 +807,33 @@ pub struct TypeConstraintParams {
 }
 
 /// GET /admin/schemas/_field-row/{index} — New empty field row.
-pub async fn field_row_fragment(Path(index): Path<usize>) -> impl IntoResponse {
-    HtmlTemplate::fragment(FieldEditorRowFragment {
-        field: FieldEditorRow::empty(index),
-    })
+pub async fn field_row_fragment(
+    State(state): State<ForgeState>,
+    Path(index): Path<usize>,
+) -> Response {
+    render_fragment(
+        &state.template_engine,
+        "admin/fragments/field_editor_row.html",
+        &FieldEditorRowFragment {
+            field: FieldEditorRow::empty(index),
+        },
+    )
 }
 
 /// GET /admin/schemas/_type-constraints/{field_type} — Type-specific constraint inputs.
 pub async fn type_constraints_fragment(
+    State(state): State<ForgeState>,
     Path(field_type): Path<String>,
     Query(params): Query<TypeConstraintParams>,
-) -> impl IntoResponse {
-    HtmlTemplate::fragment(TypeConstraintsFragment {
-        field_type,
-        index: params.index.unwrap_or(0),
-    })
+) -> Response {
+    render_fragment(
+        &state.template_engine,
+        "admin/fragments/type_constraints.html",
+        &TypeConstraintsFragment {
+            field_type,
+            index: params.index.unwrap_or(0),
+        },
+    )
 }
 
 /// Extract rename pairs from form data.
@@ -806,7 +878,7 @@ const AVAILABLE_ROLES: &[&str] = &[
 pub async fn user_list(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let names = schema_names(&state).await;
 
@@ -829,31 +901,39 @@ pub async fn user_list(
             message: format!("User deserialize failed: {e}"),
         })?;
 
-    Ok(HtmlTemplate::new(UserListTemplate {
-        users,
-        schema_names: names,
-        current_user,
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/user_list.html",
+        &UserListTemplate {
+            users,
+            schema_names: names,
+            current_user,
+        },
+    ))
 }
 
 /// GET /admin/users/new — Create user form.
 pub async fn user_create_form(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let names = schema_names(&state).await;
 
-    Ok(HtmlTemplate::new(UserFormTemplate {
-        is_edit: false,
-        username: String::new(),
-        display_name: String::new(),
-        available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
-        selected_roles: vec![],
-        schema_names: names,
-        errors: vec![],
-        current_user,
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/user_form.html",
+        &UserFormTemplate {
+            is_edit: false,
+            username: String::new(),
+            display_name: String::new(),
+            available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
+            selected_roles: vec![],
+            schema_names: names,
+            errors: vec![],
+            current_user,
+        },
+    ))
 }
 
 /// POST /admin/users/new — Create user.
@@ -905,18 +985,21 @@ pub async fn user_create(
     }
 
     if !errors.is_empty() {
-        return Ok(HtmlTemplate::new(UserFormTemplate {
-            is_edit: false,
-            username,
-            display_name,
-            available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
-            selected_roles: roles,
-            schema_names: names,
-            errors,
-            current_user,
-        })
-        .with_status(StatusCode::UNPROCESSABLE_ENTITY)
-        .into_response());
+        return Ok(render_template_with_status(
+            &state.template_engine,
+            "admin/user_form.html",
+            &UserFormTemplate {
+                is_edit: false,
+                username,
+                display_name,
+                available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
+                selected_roles: roles,
+                schema_names: names,
+                errors,
+                current_user,
+            },
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ));
     }
 
     // Build roles array as SurrealQL literal
@@ -953,7 +1036,7 @@ pub async fn user_edit_form(
     State(state): State<ForgeState>,
     auth: TypedSession<AuthSession>,
     Path(username): Path<String>,
-) -> Result<impl IntoResponse, AdminError> {
+) -> Result<Response, AdminError> {
     let current_user = CurrentUserView::from_session(auth.data());
     let names = schema_names(&state).await;
 
@@ -981,16 +1064,20 @@ pub async fn user_edit_form(
         message: format!("User '{}' not found", username),
     })?;
 
-    Ok(HtmlTemplate::new(UserFormTemplate {
-        is_edit: true,
-        username: user.username,
-        display_name: user.display_name.unwrap_or_default(),
-        available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
-        selected_roles: user.roles,
-        schema_names: names,
-        errors: vec![],
-        current_user,
-    }))
+    Ok(render_template(
+        &state.template_engine,
+        "admin/user_form.html",
+        &UserFormTemplate {
+            is_edit: true,
+            username: user.username,
+            display_name: user.display_name.unwrap_or_default(),
+            available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
+            selected_roles: user.roles,
+            schema_names: names,
+            errors: vec![],
+            current_user,
+        },
+    ))
 }
 
 /// POST /admin/users/{username}/edit — Update user.
@@ -1022,18 +1109,21 @@ pub async fn user_update(
         .collect();
 
     if roles.is_empty() {
-        return Ok(HtmlTemplate::new(UserFormTemplate {
-            is_edit: true,
-            username,
-            display_name,
-            available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
-            selected_roles: roles,
-            schema_names: names,
-            errors: vec!["At least one role is required".to_string()],
-            current_user,
-        })
-        .with_status(StatusCode::UNPROCESSABLE_ENTITY)
-        .into_response());
+        return Ok(render_template_with_status(
+            &state.template_engine,
+            "admin/user_form.html",
+            &UserFormTemplate {
+                is_edit: true,
+                username,
+                display_name,
+                available_roles: AVAILABLE_ROLES.iter().map(|s| s.to_string()).collect(),
+                selected_roles: roles,
+                schema_names: names,
+                errors: vec!["At least one role is required".to_string()],
+                current_user,
+            },
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ));
     }
 
     let roles_surql = format!(

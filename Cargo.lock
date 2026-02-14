@@ -5707,7 +5707,6 @@ version = "0.7.0"
 dependencies = [
  "acton-service",
  "arc-swap",
- "askama",
  "async-graphql",
  "async-graphql-axum",
  "axum 0.8.8",

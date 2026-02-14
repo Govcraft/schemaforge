@@ -9,7 +9,7 @@ use schema_forge_core::types::{
 };
 
 /// Dashboard entry for a schema with entity count.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DashboardEntry {
     pub schema: SchemaView,
     pub entity_count: usize,
@@ -20,7 +20,7 @@ pub struct DashboardEntry {
 // ---------------------------------------------------------------------------
 
 /// A single field row in the schema editor form.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FieldEditorRow {
     pub index: usize,
     pub name: String,
@@ -222,7 +222,7 @@ impl FieldEditorRow {
 }
 
 /// Schema editor form view model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SchemaEditorView {
     pub schema_name: String,
     pub version: String,
@@ -306,7 +306,7 @@ pub struct SchemaGraphEdge {
 }
 
 /// Full graph data for the dashboard relationship visualization.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SchemaGraphView {
     pub json: String,
     pub has_edges: bool,
@@ -377,7 +377,7 @@ impl SchemaGraphView {
 }
 
 /// A single migration step for display.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MigrationStepView {
     pub description: String,
     pub safety: String,
@@ -402,7 +402,7 @@ impl MigrationStepView {
 }
 
 /// Migration preview panel view model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MigrationPreviewView {
     pub steps: Vec<MigrationStepView>,
     pub overall_safety: String,

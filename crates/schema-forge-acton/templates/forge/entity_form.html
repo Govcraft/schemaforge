@@ -1,5 +1,5 @@
 <div class="forge-entity-form" id="forge-form-{{ schema.url_name }}">
-{% if !errors.is_empty() %}
+{% if errors %}
 <div class="forge-errors">
     <ul>
         {% for error in errors %}
@@ -10,8 +10,8 @@
 {% endif %}
 
 <form
-    {% if let Some(id) = entity_id %}
-    hx-put="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ id }}"
+    {% if entity_id %}
+    hx-put="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity_id }}"
     {% else %}
     hx-post="{{ url_prefix }}/{{ schema.url_name }}/entities"
     {% endif %}
@@ -24,7 +24,7 @@
 
     <div class="forge-form-actions">
         <button type="submit" class="forge-btn forge-btn-primary">
-            {% if entity_id.is_some() %}Update{% else %}Create{% endif %}
+            {% if entity_id %}Update{% else %}Create{% endif %}
         </button>
     </div>
 </form>

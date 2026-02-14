@@ -2,7 +2,7 @@ use axum::extract::{Form, Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 
-use acton_service::prelude::{AuthSession, HtmlTemplate, TypedSession};
+use acton_service::prelude::{AuthSession, TypedSession};
 
 use crate::state::ForgeState;
 
@@ -13,7 +13,7 @@ use super::templates::LoginTemplate;
 pub use crate::shared_auth::{ForgeUser, LoginForm};
 
 /// Template-friendly view of the current user.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CurrentUserView {
     pub username: String,
     pub display_name: String,
@@ -59,11 +59,18 @@ pub async fn require_auth(
 }
 
 /// GET /admin/login
-pub async fn login_page(auth: TypedSession<AuthSession>) -> Response {
+pub async fn login_page(
+    State(state): State<ForgeState>,
+    auth: TypedSession<AuthSession>,
+) -> Response {
     if auth.data().is_authenticated() {
         return Redirect::to("/admin/").into_response();
     }
-    HtmlTemplate::new(LoginTemplate { error: None }).into_response()
+    crate::template_engine::render_template(
+        &state.template_engine,
+        "admin/login.html",
+        &LoginTemplate { error: None },
+    )
 }
 
 /// POST /admin/login
@@ -97,10 +104,13 @@ pub async fn login_submit(
 
             Ok(Redirect::to("/admin/").into_response())
         }
-        None => Ok(HtmlTemplate::new(LoginTemplate {
-            error: Some("Invalid username or password".to_string()),
-        })
-        .into_response()),
+        None => Ok(crate::template_engine::render_template(
+            &state.template_engine,
+            "admin/login.html",
+            &LoginTemplate {
+                error: Some("Invalid username or password".to_string()),
+            },
+        )),
     }
 }
 

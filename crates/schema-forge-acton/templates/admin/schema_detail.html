@@ -13,9 +13,9 @@
     <div>
         <h2>{{ schema.name }}</h2>
         <div class="text-sm text-base-content/60 mt-1">
-            {% if let Some(v) = schema.version %}Version {{ v }} &middot; {% endif %}
-            {{ schema.fields.len() }} fields
-            {% if let Some(df) = schema.display_field %} &middot; Display: {{ df }}{% endif %}
+            {% if schema.version %}Version {{ schema.version }} &middot; {% endif %}
+            {{ schema.fields|length }} fields
+            {% if schema.display_field %} &middot; Display: {{ schema.display_field }}{% endif %}
         </div>
     </div>
     <div class="flex gap-1.5">
@@ -51,8 +51,8 @@
                         {% endif %}
                     </td>
                     <td>
-                        {% if let Some(dv) = field.default_value %}
-                        <code>{{ dv }}</code>
+                        {% if field.default_value %}
+                        <code>{{ field.default_value }}</code>
                         {% endif %}
                     </td>
                 </tr>

@@ -42,9 +42,8 @@ async fn admin_test_state() -> ForgeState {
             schema_forge_acton::theme::Theme::default(),
         ))),
         surreal_client: None,
-        #[cfg(feature = "cloud-ui")]
         template_engine: std::sync::Arc::new(
-            schema_forge_acton::cloud::overrides::TemplateEngine::new(None),
+            schema_forge_acton::template_engine::TemplateEngine::new(None),
         ),
     }
 }

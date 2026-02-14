@@ -6,7 +6,7 @@
 use serde::Deserialize;
 
 /// SurrealDB user record (without password_hash).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct ForgeUser {
     pub username: String,
     pub roles: Vec<String>,

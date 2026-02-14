@@ -44,7 +44,7 @@ pub struct SchemaForgeExtensionBuilder {
     admin_credentials: Option<(String, String)>,
     #[cfg(feature = "cloud-ui")]
     static_dir: Option<std::path::PathBuf>,
-    #[cfg(feature = "cloud-ui")]
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
     template_dir: Option<std::path::PathBuf>,
 }
 
@@ -61,7 +61,7 @@ impl SchemaForgeExtensionBuilder {
             admin_credentials: None,
             #[cfg(feature = "cloud-ui")]
             static_dir: None,
-            #[cfg(feature = "cloud-ui")]
+            #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
             template_dir: None,
         }
     }
@@ -143,7 +143,7 @@ impl SchemaForgeExtensionBuilder {
     ///
     /// When set, templates in this directory take priority over embedded defaults.
     /// If not set, the engine auto-detects `~/.config/schema-forge/templates/`.
-    #[cfg(feature = "cloud-ui")]
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
     pub fn with_template_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.template_dir = Some(dir);
         self
@@ -215,12 +215,19 @@ impl SchemaForgeExtensionBuilder {
         };
 
         // Construct MiniJinja template engine
-        #[cfg(feature = "cloud-ui")]
+        #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
         let template_engine = {
             let override_dir = self.template_dir.or_else(|| {
-                dirs::config_dir().map(|d| d.join("schema-forge/templates"))
+                #[cfg(feature = "cloud-ui")]
+                {
+                    dirs::config_dir().map(|d| d.join("schema-forge/templates"))
+                }
+                #[cfg(not(feature = "cloud-ui"))]
+                {
+                    None
+                }
             });
-            Arc::new(crate::cloud::overrides::TemplateEngine::new(override_dir))
+            Arc::new(crate::template_engine::TemplateEngine::new(override_dir))
         };
 
         let state = ForgeState {
@@ -235,7 +242,7 @@ impl SchemaForgeExtensionBuilder {
             graphql_schema,
             #[cfg(any(feature = "admin-ui", feature = "cloud-ui"))]
             surreal_client: self.surreal_client,
-            #[cfg(feature = "cloud-ui")]
+            #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
             template_engine,
         };
 

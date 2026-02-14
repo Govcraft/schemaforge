@@ -1,4 +1,3 @@
-use acton_service::prelude::HtmlTemplate;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -10,10 +9,10 @@ use crate::access::{
 use crate::form::form_to_entity_fields;
 use crate::shared::resolve_ref_display;
 use crate::state::ForgeState;
+use crate::template_engine::{render_fragment, render_template_with_status};
 use crate::theme::{DetailStyle, ListStyle};
 use crate::views::{EntityView, FieldView, PaginationView, SchemaView};
 
-use super::error::WidgetError;
 use super::templates::{
     WidgetEntityDetailFullTemplate, WidgetEntityDetailSplitTemplate,
     WidgetEntityDetailTabbedTemplate, WidgetEntityFormTemplate, WidgetEntityListCardsTemplate,
@@ -32,6 +31,7 @@ pub struct PaginationParams {
 
 /// Render an entity list using the theme-selected layout variant.
 fn render_entity_list(
+    state: &ForgeState,
     schema: SchemaView,
     entities: Vec<EntityView>,
     pagination: PaginationView,
@@ -39,58 +39,75 @@ fn render_entity_list(
     list_style: &ListStyle,
 ) -> Response {
     match list_style {
-        ListStyle::Table => HtmlTemplate::fragment(WidgetEntityListTableTemplate {
-            schema,
-            entities,
-            pagination,
-            url_prefix,
-        })
-        .into_response(),
-        ListStyle::Cards => HtmlTemplate::fragment(WidgetEntityListCardsTemplate {
-            schema,
-            entities,
-            pagination,
-            url_prefix,
-        })
-        .into_response(),
-        ListStyle::Compact | ListStyle::Kanban => {
-            HtmlTemplate::fragment(WidgetEntityListCompactTemplate {
+        ListStyle::Table => render_fragment(
+            &state.template_engine,
+            "forge/entity_list_table.html",
+            &WidgetEntityListTableTemplate {
                 schema,
                 entities,
                 pagination,
                 url_prefix,
-            })
-            .into_response()
-        }
+            },
+        ),
+        ListStyle::Cards => render_fragment(
+            &state.template_engine,
+            "forge/entity_list_cards.html",
+            &WidgetEntityListCardsTemplate {
+                schema,
+                entities,
+                pagination,
+                url_prefix,
+            },
+        ),
+        ListStyle::Compact | ListStyle::Kanban => render_fragment(
+            &state.template_engine,
+            "forge/entity_list_compact.html",
+            &WidgetEntityListCompactTemplate {
+                schema,
+                entities,
+                pagination,
+                url_prefix,
+            },
+        ),
     }
 }
 
 /// Render an entity detail using the theme-selected layout variant.
 fn render_entity_detail(
+    state: &ForgeState,
     schema: SchemaView,
     entity: EntityView,
     url_prefix: String,
     detail_style: &DetailStyle,
 ) -> Response {
     match detail_style {
-        DetailStyle::Full => HtmlTemplate::fragment(WidgetEntityDetailFullTemplate {
-            schema,
-            entity,
-            url_prefix,
-        })
-        .into_response(),
-        DetailStyle::Split => HtmlTemplate::fragment(WidgetEntityDetailSplitTemplate {
-            schema,
-            entity,
-            url_prefix,
-        })
-        .into_response(),
-        DetailStyle::Tabbed => HtmlTemplate::fragment(WidgetEntityDetailTabbedTemplate {
-            schema,
-            entity,
-            url_prefix,
-        })
-        .into_response(),
+        DetailStyle::Full => render_fragment(
+            &state.template_engine,
+            "organisms/entity_detail_full.html",
+            &WidgetEntityDetailFullTemplate {
+                schema,
+                entity,
+                url_prefix,
+            },
+        ),
+        DetailStyle::Split => render_fragment(
+            &state.template_engine,
+            "organisms/entity_detail_split.html",
+            &WidgetEntityDetailSplitTemplate {
+                schema,
+                entity,
+                url_prefix,
+            },
+        ),
+        DetailStyle::Tabbed => render_fragment(
+            &state.template_engine,
+            "organisms/entity_detail_tabbed.html",
+            &WidgetEntityDetailTabbedTemplate {
+                schema,
+                entity,
+                url_prefix,
+            },
+        ),
     }
 }
 
@@ -136,6 +153,7 @@ pub async fn entity_list(
     let list_style = theme.resolve_list_style(&name);
 
     Ok(render_entity_list(
+        &state,
         schema,
         entities,
         pagination,
@@ -160,7 +178,7 @@ pub async fn entity_create_form(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, WidgetError> {
+) -> Result<Response, WidgetError> {
     let schema_def = state
         .registry
         .get(&name)
@@ -177,13 +195,17 @@ pub async fn entity_create_form(
         .collect();
     let schema = SchemaView::from_definition(&schema_def);
 
-    Ok(HtmlTemplate::fragment(WidgetEntityFormTemplate {
-        schema,
-        fields,
-        entity_id: None,
-        errors: vec![],
-        url_prefix: WIDGET_URL_PREFIX.to_string(),
-    }))
+    Ok(render_fragment(
+        &state.template_engine,
+        "forge/entity_form.html",
+        &WidgetEntityFormTemplate {
+            schema,
+            fields,
+            entity_id: None,
+            errors: vec![],
+            url_prefix: WIDGET_URL_PREFIX.to_string(),
+        },
+    ))
 }
 
 /// POST /forge/{schema}/entities — Create entity from form.
@@ -236,6 +258,7 @@ pub async fn entity_create(
             let detail_style = theme.resolve_detail_style(&name);
 
             Ok(render_entity_detail(
+                &state,
                 schema,
                 entity_view,
                 WIDGET_URL_PREFIX.to_string(),
@@ -250,17 +273,18 @@ pub async fn entity_create(
                 .collect();
             let schema = SchemaView::from_definition(&schema_def);
 
-            Ok((
-                StatusCode::UNPROCESSABLE_ENTITY,
-                HtmlTemplate::fragment(WidgetEntityFormTemplate {
+            Ok(render_template_with_status(
+                &state.template_engine,
+                "forge/entity_form.html",
+                &WidgetEntityFormTemplate {
                     schema,
                     fields,
                     entity_id: None,
                     errors,
                     url_prefix: WIDGET_URL_PREFIX.to_string(),
-                }),
-            )
-                .into_response())
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ))
         }
     }
 }
@@ -304,6 +328,7 @@ pub async fn entity_detail(
     let detail_style = theme.resolve_detail_style(&name);
 
     Ok(render_entity_detail(
+        &state,
         schema,
         entity_view,
         WIDGET_URL_PREFIX.to_string(),
@@ -316,7 +341,7 @@ pub async fn entity_edit_form(
     State(state): State<ForgeState>,
     OptionalAuth(auth): OptionalAuth,
     Path((name, id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, WidgetError> {
+) -> Result<Response, WidgetError> {
     let schema_def = state
         .registry
         .get(&name)
@@ -345,13 +370,17 @@ pub async fn entity_edit_form(
         .collect();
     let schema = SchemaView::from_definition(&schema_def);
 
-    Ok(HtmlTemplate::fragment(WidgetEntityFormTemplate {
-        schema,
-        fields,
-        entity_id: Some(id),
-        errors: vec![],
-        url_prefix: WIDGET_URL_PREFIX.to_string(),
-    }))
+    Ok(render_fragment(
+        &state.template_engine,
+        "forge/entity_form.html",
+        &WidgetEntityFormTemplate {
+            schema,
+            fields,
+            entity_id: Some(id),
+            errors: vec![],
+            url_prefix: WIDGET_URL_PREFIX.to_string(),
+        },
+    ))
 }
 
 /// PUT /forge/{schema}/entities/{id} — Update entity from form.
@@ -398,6 +427,7 @@ pub async fn entity_update(
             let detail_style = theme.resolve_detail_style(&name);
 
             Ok(render_entity_detail(
+                &state,
                 schema,
                 entity_view,
                 WIDGET_URL_PREFIX.to_string(),
@@ -412,17 +442,18 @@ pub async fn entity_update(
                 .collect();
             let schema = SchemaView::from_definition(&schema_def);
 
-            Ok((
-                StatusCode::UNPROCESSABLE_ENTITY,
-                HtmlTemplate::fragment(WidgetEntityFormTemplate {
+            Ok(render_template_with_status(
+                &state.template_engine,
+                "forge/entity_form.html",
+                &WidgetEntityFormTemplate {
                     schema,
                     fields,
                     entity_id: Some(id),
                     errors,
                     url_prefix: WIDGET_URL_PREFIX.to_string(),
-                }),
-            )
-                .into_response())
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ))
         }
     }
 }
@@ -533,3 +564,5 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
 }
+
+use super::error::WidgetError;

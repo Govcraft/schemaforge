@@ -1,5 +1,3 @@
-use acton_service::prelude::Template;
-
 use super::auth::CurrentUserView;
 use super::views::{
     DashboardEntry, EntityView, FieldEditorRow, FieldView, MigrationPreviewView, PaginationView,
@@ -8,15 +6,13 @@ use super::views::{
 use crate::shared_auth::ForgeUser;
 
 /// Login page — standalone, no base.html.
-#[derive(Template)]
-#[template(path = "admin/login.html")]
+#[derive(serde::Serialize)]
 pub struct LoginTemplate {
     pub error: Option<String>,
 }
 
 /// Dashboard page — lists all schemas with entity counts.
-#[derive(Template)]
-#[template(path = "admin/dashboard.html")]
+#[derive(serde::Serialize)]
 pub struct DashboardTemplate {
     pub entries: Vec<DashboardEntry>,
     pub schema_names: Vec<String>,
@@ -25,8 +21,7 @@ pub struct DashboardTemplate {
 }
 
 /// Schema detail page — shows field definitions.
-#[derive(Template)]
-#[template(path = "admin/schema_detail.html")]
+#[derive(serde::Serialize)]
 pub struct SchemaDetailTemplate {
     pub schema: SchemaView,
     pub schema_names: Vec<String>,
@@ -34,8 +29,7 @@ pub struct SchemaDetailTemplate {
 }
 
 /// Entity list page — paginated table of entities.
-#[derive(Template)]
-#[template(path = "admin/entity_list.html")]
+#[derive(serde::Serialize)]
 pub struct EntityListTemplate {
     pub schema: SchemaView,
     pub entities: Vec<EntityView>,
@@ -46,8 +40,7 @@ pub struct EntityListTemplate {
 }
 
 /// Entity create form.
-#[derive(Template)]
-#[template(path = "admin/entity_form.html")]
+#[derive(serde::Serialize)]
 pub struct EntityFormTemplate {
     pub schema: SchemaView,
     pub fields: Vec<FieldView>,
@@ -59,8 +52,7 @@ pub struct EntityFormTemplate {
 }
 
 /// Entity detail page.
-#[derive(Template)]
-#[template(path = "admin/entity_detail.html")]
+#[derive(serde::Serialize)]
 pub struct EntityDetailTemplate {
     pub schema: SchemaView,
     pub entity: EntityView,
@@ -70,8 +62,7 @@ pub struct EntityDetailTemplate {
 }
 
 /// Entity table body fragment (for HTMX pagination).
-#[derive(Template)]
-#[template(path = "admin/fragments/entity_table_body.html")]
+#[derive(serde::Serialize)]
 pub struct EntityTableBodyFragment {
     pub schema: SchemaView,
     pub entities: Vec<EntityView>,
@@ -80,23 +71,20 @@ pub struct EntityTableBodyFragment {
 }
 
 /// Flash message fragment.
-#[derive(Template)]
-#[template(path = "admin/fragments/flash_message.html")]
+#[derive(serde::Serialize)]
 pub struct FlashMessageFragment {
     pub message: String,
     pub is_error: bool,
 }
 
 /// Relation options fragment — `<option>` elements for select dropdowns.
-#[derive(Template)]
-#[template(path = "admin/fragments/relation_options.html")]
+#[derive(serde::Serialize)]
 pub struct RelationOptionsFragment {
     pub options: Vec<(String, String)>,
 }
 
 /// Schema editor page — create or edit a schema.
-#[derive(Template)]
-#[template(path = "admin/schema_editor.html")]
+#[derive(serde::Serialize)]
 pub struct SchemaEditorTemplate {
     pub editor: SchemaEditorView,
     pub schema_names: Vec<String>,
@@ -105,23 +93,20 @@ pub struct SchemaEditorTemplate {
 }
 
 /// Field editor row fragment — a single field row for HTMX append.
-#[derive(Template)]
-#[template(path = "admin/fragments/field_editor_row.html")]
+#[derive(serde::Serialize)]
 pub struct FieldEditorRowFragment {
     pub field: FieldEditorRow,
 }
 
 /// Type constraints fragment — type-specific inputs swapped via HTMX.
-#[derive(Template)]
-#[template(path = "admin/fragments/type_constraints.html")]
+#[derive(serde::Serialize)]
 pub struct TypeConstraintsFragment {
     pub field_type: String,
     pub index: usize,
 }
 
 /// DSL preview fragment — formatted DSL text.
-#[derive(Template)]
-#[template(path = "admin/fragments/dsl_preview.html")]
+#[derive(serde::Serialize)]
 pub struct DslPreviewFragment {
     pub dsl_text: String,
     pub errors: Vec<String>,
@@ -129,15 +114,13 @@ pub struct DslPreviewFragment {
 }
 
 /// Migration preview fragment.
-#[derive(Template)]
-#[template(path = "admin/fragments/migration_preview.html")]
+#[derive(serde::Serialize)]
 pub struct MigrationPreviewFragment {
     pub migration: MigrationPreviewView,
 }
 
 /// User management list page.
-#[derive(Template)]
-#[template(path = "admin/user_list.html")]
+#[derive(serde::Serialize)]
 pub struct UserListTemplate {
     pub users: Vec<ForgeUser>,
     pub schema_names: Vec<String>,
@@ -145,8 +128,7 @@ pub struct UserListTemplate {
 }
 
 /// User create/edit form page.
-#[derive(Template)]
-#[template(path = "admin/user_form.html")]
+#[derive(serde::Serialize)]
 pub struct UserFormTemplate {
     pub is_edit: bool,
     pub username: String,

@@ -5,16 +5,16 @@
     {% if field.input_type == "text" %}
     <input type="text" id="field-{{ field.name }}" name="{{ field.name }}" class="sf-form-input"
         {% if field.current_value %}value="{{ field.current_value }}"{% elif field.default_value %}value="{{ field.default_value }}"{% endif %}
-        {% for kv in field.attrs %}{{ kv.0 }}="{{ kv.1 }}" {% endfor %}
+        {% for attr_name, attr_val in field.attrs %}{{ attr_name }}="{{ attr_val }}" {% endfor %}
         {% if field.required %}required{% endif %}>
     {% elif field.input_type == "textarea" %}
     <textarea id="field-{{ field.name }}" name="{{ field.name }}" class="sf-form-input sf-form-textarea"
-        {% for kv in field.attrs %}{{ kv.0 }}="{{ kv.1 }}" {% endfor %}
+        {% for attr_name, attr_val in field.attrs %}{{ attr_name }}="{{ attr_val }}" {% endfor %}
         {% if field.required %}required{% endif %}>{% if field.current_value %}{{ field.current_value }}{% elif field.default_value %}{{ field.default_value }}{% endif %}</textarea>
     {% elif field.input_type == "number" %}
     <input type="number" id="field-{{ field.name }}" name="{{ field.name }}" class="sf-form-input"
         {% if field.current_value %}value="{{ field.current_value }}"{% elif field.default_value %}value="{{ field.default_value }}"{% endif %}
-        {% for kv in field.attrs %}{{ kv.0 }}="{{ kv.1 }}" {% endfor %}
+        {% for attr_name, attr_val in field.attrs %}{{ attr_name }}="{{ attr_val }}" {% endfor %}
         {% if field.required %}required{% endif %}>
     {% elif field.input_type == "checkbox" %}
     <input type="hidden" name="{{ field.name }}" value="false">
@@ -39,14 +39,14 @@
         {% if field.multiple %}multiple{% endif %}
         {% if field.required %}required{% endif %}>
         <option value="">-- Select --</option>
-        {% for opt in field.options %}
-        <option value="{{ opt.0 }}"{% if field.current_value %}{% if field.current_value == opt.0 %} selected{% endif %}{% endif %}>{{ opt.1 }}</option>
+        {% for opt_value, opt_label in field.options %}
+        <option value="{{ opt_value }}"{% if field.current_value %}{% if field.current_value == opt_value %} selected{% endif %}{% endif %}>{{ opt_label }}</option>
         {% endfor %}
     </select>
     {% endif %}
     {% elif field.input_type == "json" %}
     <textarea id="field-{{ field.name }}" name="{{ field.name }}" class="sf-form-input sf-form-textarea" style="font-family: monospace;"
-        {% for kv in field.attrs %}{{ kv.0 }}="{{ kv.1 }}" {% endfor %}
+        {% for attr_name, attr_val in field.attrs %}{{ attr_name }}="{{ attr_val }}" {% endfor %}
         {% if field.required %}required{% endif %}>{% if field.current_value %}{{ field.current_value }}{% endif %}</textarea>
     {% elif field.input_type == "composite" %}
     {% include "cloud/atoms/composite.html" %}

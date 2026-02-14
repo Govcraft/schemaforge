@@ -300,9 +300,9 @@ pub struct ForgeState {
             schema_forge_surrealdb::surrealdb::engine::any::Any,
         >,
     >,
-    /// MiniJinja template engine for cloud UI rendering.
-    #[cfg(feature = "cloud-ui")]
-    pub template_engine: std::sync::Arc<crate::cloud::overrides::TemplateEngine>,
+    /// MiniJinja template engine for UI rendering (admin, widget, cloud).
+    #[cfg(any(feature = "admin-ui", feature = "widget-ui", feature = "cloud-ui"))]
+    pub template_engine: std::sync::Arc<crate::template_engine::TemplateEngine>,
 }
 
 #[cfg(test)]

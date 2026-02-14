@@ -18,7 +18,7 @@
     <h2>{% if editor.is_edit %}Edit {{ editor.schema_name }}{% else %}Create Schema{% endif %}</h2>
 </div>
 
-{% if !errors.is_empty() %}
+{% if errors %}
 <div class="alert alert-error mb-5">
     <strong>Please fix the following errors:</strong>
     <ul class="mt-2 ml-5 list-disc">
@@ -125,7 +125,7 @@
 </div>
 
 <script>
-let fieldCounter = {{ editor.fields.len() }};
+let fieldCounter = {{ editor.fields|length }};
 
 function addFieldRow() {
     const index = fieldCounter++;

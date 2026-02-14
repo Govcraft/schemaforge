@@ -1,20 +1,20 @@
 {% if field.input_type == "text" %}
 {% include "atoms/text_input.html" %}
-{% else if field.input_type == "textarea" %}
+{% elif field.input_type == "textarea" %}
 {% include "atoms/textarea.html" %}
-{% else if field.input_type == "number" %}
+{% elif field.input_type == "number" %}
 {% include "atoms/number_input.html" %}
-{% else if field.input_type == "checkbox" %}
+{% elif field.input_type == "checkbox" %}
 {% include "atoms/checkbox.html" %}
-{% else if field.input_type == "datetime-local" %}
+{% elif field.input_type == "datetime-local" %}
 {% include "atoms/datetime_input.html" %}
-{% else if field.input_type == "select" %}
+{% elif field.input_type == "select" %}
 {% include "atoms/select.html" %}
-{% else if field.input_type == "json" %}
+{% elif field.input_type == "json" %}
 {% include "atoms/json_editor.html" %}
-{% else if field.input_type == "composite" %}
+{% elif field.input_type == "composite" %}
 {% include "atoms/composite.html" %}
-{% else if field.input_type == "array" %}
+{% elif field.input_type == "array" %}
 {% include "atoms/array_input.html" %}
 {% else %}
 {% include "atoms/fallback_input.html" %}

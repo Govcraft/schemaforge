@@ -1,6 +1,6 @@
 <div class="field-editor-row" id="field-row-{{ field.index }}">
-    {% if let Some(old) = field.old_name %}
-    <input type="hidden" name="field_{{ field.index }}_old_name" value="{{ old }}">
+    {% if field.old_name %}
+    <input type="hidden" name="field_{{ field.index }}_old_name" value="{{ field.old_name }}">
     {% endif %}
     <div class="field-row-header">
         <div class="field-row-main">
@@ -35,37 +35,37 @@
             <div class="constraint-row">
                 <label>Max length</label>
                 <input type="number" name="field_{{ field.index }}_text_max_length"
-                       value="{% if let Some(v) = field.text_max_length %}{{ v }}{% endif %}"
+                       value="{% if field.text_max_length %}{{ field.text_max_length }}{% endif %}"
                        placeholder="No limit" min="1" class="input input-sm">
             </div>
-            {% else if field.field_type == "integer" %}
+            {% elif field.field_type == "integer" %}
             <div class="constraint-row">
                 <label>Min</label>
                 <input type="number" name="field_{{ field.index }}_integer_min"
-                       value="{% if let Some(v) = field.integer_min %}{{ v }}{% endif %}"
+                       value="{% if field.integer_min %}{{ field.integer_min }}{% endif %}"
                        placeholder="No min" class="input input-sm">
             </div>
             <div class="constraint-row">
                 <label>Max</label>
                 <input type="number" name="field_{{ field.index }}_integer_max"
-                       value="{% if let Some(v) = field.integer_max %}{{ v }}{% endif %}"
+                       value="{% if field.integer_max %}{{ field.integer_max }}{% endif %}"
                        placeholder="No max" class="input input-sm">
             </div>
-            {% else if field.field_type == "float" %}
+            {% elif field.field_type == "float" %}
             <div class="constraint-row">
                 <label>Precision</label>
                 <input type="number" name="field_{{ field.index }}_float_precision"
-                       value="{% if let Some(v) = field.float_precision %}{{ v }}{% endif %}"
+                       value="{% if field.float_precision %}{{ field.float_precision }}{% endif %}"
                        placeholder="Any" min="0" class="input input-sm">
             </div>
-            {% else if field.field_type == "enum" %}
+            {% elif field.field_type == "enum" %}
             <div class="constraint-row" style="flex: 1;">
                 <label>Variants (one per line)</label>
                 <textarea name="field_{{ field.index }}_enum_variants"
                           rows="3" placeholder="Active&#10;Inactive&#10;Pending"
                           style="min-height: 60px;" class="textarea textarea-sm">{{ field.enum_variants }}</textarea>
             </div>
-            {% else if field.field_type == "relation" %}
+            {% elif field.field_type == "relation" %}
             <div class="constraint-row">
                 <label>Target Schema</label>
                 <input type="text" name="field_{{ field.index }}_relation_target"

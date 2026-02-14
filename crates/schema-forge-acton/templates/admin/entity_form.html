@@ -1,7 +1,7 @@
 {% extends "admin/base.html" %}
 
 {% block title %}
-{% if let Some(id) = entity_id %}Edit Entity{% else %}Create {{ schema.name }}{% endif %} - SchemaForge Admin
+{% if entity_id %}Edit Entity{% else %}Create {{ schema.name }}{% endif %} - SchemaForge Admin
 {% endblock %}
 
 {% block content %}
@@ -10,14 +10,14 @@
         <li><a href="/admin/">Dashboard</a></li>
         <li><a href="{{ url_prefix }}/{{ schema.url_name }}">{{ schema.name }}</a></li>
         <li><a href="{{ url_prefix }}/{{ schema.url_name }}/entities">Entities</a></li>
-        <li>{% if let Some(id) = entity_id %}Edit{% else %}Create{% endif %}</li>
+        <li>{% if entity_id %}Edit{% else %}Create{% endif %}</li>
     </ul>
 </div>
 <div class="flex justify-between items-center mb-6">
-    <h2>{% if let Some(id) = entity_id %}Edit Entity{% else %}Create {{ schema.name }}{% endif %}</h2>
+    <h2>{% if entity_id %}Edit Entity{% else %}Create {{ schema.name }}{% endif %}</h2>
 </div>
 
-{% if !errors.is_empty() %}
+{% if errors %}
 <div class="alert alert-error">
     <strong>Please fix the following errors:</strong>
     <ul class="mt-2 ml-5 list-disc">
@@ -31,8 +31,8 @@
 <div class="card card-border bg-base-200">
     <div class="card-body">
     <form
-        {% if let Some(id) = entity_id %}
-        hx-put="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ id }}"
+        {% if entity_id %}
+        hx-put="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity_id }}"
         {% else %}
         hx-post="{{ url_prefix }}/{{ schema.url_name }}/entities"
         {% endif %}
@@ -45,7 +45,7 @@
 
         <div class="flex gap-3 mt-6">
             <button type="submit" class="btn btn-primary">
-                {% if entity_id.is_some() %}Update{% else %}Create{% endif %}
+                {% if entity_id %}Update{% else %}Create{% endif %}
             </button>
             <a href="{{ url_prefix }}/{{ schema.url_name }}/entities" class="btn btn-ghost">Cancel</a>
         </div>

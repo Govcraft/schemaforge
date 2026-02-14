@@ -12,7 +12,6 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["sync"] }
 acton-service = { version = "0.16.0", default-features = false, features = ["http"] }
-askama = { version = "0.15.4", optional = true }
 schema-forge-dsl = { path = "../schema-forge-dsl" }
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb", optional = true }
 async-graphql = { version = "7.2", features = ["dynamic-schema"], optional = true }
@@ -24,9 +23,9 @@ minijinja = { version = "2", features = ["loader"], optional = true }
 dirs = { version = "6", optional = true }
 
 [features]
-admin-ui = ["acton-service/htmx-full", "dep:askama", "dep:schema-forge-surrealdb", "dep:arc-swap"]
-widget-ui = ["acton-service/htmx-full", "dep:askama", "dep:arc-swap"]
-cloud-ui = ["widget-ui", "dep:schema-forge-surrealdb", "dep:tower-http", "dep:minijinja", "dep:dirs"]
+admin-ui = ["acton-service/htmx-full", "dep:minijinja", "dep:schema-forge-surrealdb", "dep:arc-swap"]
+widget-ui = ["acton-service/htmx-full", "dep:minijinja", "dep:arc-swap"]
+cloud-ui = ["widget-ui", "dep:schema-forge-surrealdb", "dep:tower-http", "dep:dirs"]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum", "dep:arc-swap", "dep:tracing"]
 
 [dev-dependencies]

@@ -6,14 +6,14 @@
 <div class="flex justify-between items-center mb-8">
     <div>
         <h2>Dashboard</h2>
-        {% if !entries.is_empty() %}
-        <p class="text-sm text-base-content/40 mt-1">{{ entries.len() }} schema{% if entries.len() != 1 %}s{% endif %} registered</p>
+        {% if entries %}
+        <p class="text-sm text-base-content/40 mt-1">{{ entries|length }} schema{% if entries|length != 1 %}s{% endif %} registered</p>
         {% endif %}
     </div>
     <a href="/admin/schemas/new" class="btn btn-primary">+ Create Schema</a>
 </div>
 
-{% if entries.is_empty() %}
+{% if not entries %}
 <div class="text-center py-16 px-5">
     <div class="empty-state-icon">&#x2692;</div>
     <p class="text-base-content/60 text-lg font-medium mb-2">No schemas yet</p>
@@ -450,8 +450,8 @@
         <div class="card-body">
             <h3>{{ entry.schema.name }}</h3>
             <div class="meta">
-                {{ entry.schema.fields.len() }} fields
-                {% if let Some(v) = entry.schema.version %} &middot; v{{ v }}{% endif %}
+                {{ entry.schema.fields|length }} fields
+                {% if entry.schema.version %} &middot; v{{ entry.schema.version }}{% endif %}
             </div>
             <div class="count">{{ entry.entity_count }}</div>
             <div class="count-label">entities</div>

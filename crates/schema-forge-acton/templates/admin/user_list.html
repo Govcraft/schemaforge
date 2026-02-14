@@ -23,7 +23,7 @@
                 {% for user in users %}
                 <tr>
                     <td class="font-mono">{{ user.username }}</td>
-                    <td>{{ user.display_name.as_deref().unwrap_or("-") }}</td>
+                    <td>{{ user.display_name | default("-") }}</td>
                     <td>
                         {% for role in user.roles %}
                         <span class="badge badge-sm{% if role == "admin" %} badge-primary{% endif %}">{{ role }}</span>
