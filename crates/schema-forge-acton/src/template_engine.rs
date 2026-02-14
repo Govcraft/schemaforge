@@ -272,6 +272,22 @@ pub fn embedded_template(name: &str) -> Option<&'static str> {
         "cloud/base.css" => Some(include_str!("../templates/cloud/base.css")),
 
         // -----------------------------------------------------------------
+        // Cloud shell variants (included by cloud/base.html)
+        // -----------------------------------------------------------------
+        "cloud/shells/stacked.html" => {
+            Some(include_str!("../templates/cloud/shells/stacked.html"))
+        }
+        "cloud/shells/stacked_overlap.html" => {
+            Some(include_str!("../templates/cloud/shells/stacked_overlap.html"))
+        }
+        "cloud/shells/stacked_compact.html" => {
+            Some(include_str!("../templates/cloud/shells/stacked_compact.html"))
+        }
+        "cloud/shells/sidebar.html" => {
+            Some(include_str!("../templates/cloud/shells/sidebar.html"))
+        }
+
+        // -----------------------------------------------------------------
         // Backward-compatible aliases (old paths -> shared)
         // -----------------------------------------------------------------
         "atoms/field_display.html" => embedded_template("shared/atoms/field_display.html"),
@@ -368,6 +384,10 @@ mod tests {
             "cloud/atoms/field_input.html",
             "cloud/atoms/composite.html",
             "cloud/base.css",
+            "cloud/shells/stacked.html",
+            "cloud/shells/stacked_overlap.html",
+            "cloud/shells/stacked_compact.html",
+            "cloud/shells/sidebar.html",
         ];
         for name in &names {
             assert!(

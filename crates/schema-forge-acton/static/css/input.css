@@ -1,666 +1,175 @@
 @import "tailwindcss";
-@plugin "daisyui" {
-  themes: dark --default;
-}
 
 /* ================================================================
-   SchemaForge Admin UI — Polished with daisyUI 5
-   Typography: Outfit (UI) + JetBrains Mono (code)
+   SchemaForge Admin UI — Tailwind v4
+   Typography: Outfit (sans) + JetBrains Mono (mono)
    ================================================================ */
 
-/* Fonts loaded via <link> in base.html */
+@theme {
+    --font-sans: 'Outfit', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
 
-/* ── Global polish ─────────────────────────────────────────────── */
-html {
-    scroll-behavior: smooth;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-}
+    --animate-alert-slide-in: alert-slide-in 0.3s ease-out;
+    --animate-fade-in: fade-in 0.2s ease-out;
 
-body {
-    font-family: 'Outfit', system-ui, sans-serif;
-}
-
-::selection {
-    background: color-mix(in oklch, var(--color-primary) 30%, transparent);
-    color: var(--color-base-content);
-}
-
-/* Focus ring — consistent primary glow */
-:focus-visible {
-    outline: 2px solid color-mix(in oklch, var(--color-primary) 50%, transparent);
-    outline-offset: 2px;
-}
-
-h1, h2, h3, h4, h5, h6 {
-    font-family: 'Outfit', system-ui, sans-serif;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-}
-
-h2 {
-    font-size: 1.5rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-}
-
-code {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.875em;
-    background: var(--color-base-100);
-    padding: 0.15em 0.4em;
-    border-radius: 4px;
-    border: 1px solid color-mix(in oklch, var(--color-base-300) 50%, transparent);
-}
-
-/* Custom scrollbar */
-::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-}
-::-webkit-scrollbar-track {
-    background: transparent;
-}
-::-webkit-scrollbar-thumb {
-    background: color-mix(in oklch, var(--color-base-content) 15%, transparent);
-    border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-    background: color-mix(in oklch, var(--color-base-content) 25%, transparent);
-}
-
-/* ── HTMX loading states ───────────────────────────────────────── */
-.htmx-request {
-    opacity: 0.6;
-    transition: opacity 200ms ease;
-    pointer-events: none;
-}
-
-.htmx-settling {
-    opacity: 1;
-    transition: opacity 150ms ease-in;
-}
-
-/* Subtle loading indicator for HTMX targets */
-.htmx-indicator {
-    display: none;
-}
-.htmx-request .htmx-indicator,
-.htmx-request.htmx-indicator {
-    display: inline-block;
-}
-
-/* ── Sidebar ───────────────────────────────────────────────────── */
-.sidebar {
-    width: 240px;
-    background: var(--color-base-200);
-    border-right: 1px solid var(--color-base-300);
-    padding: 0;
-    flex-shrink: 0;
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-}
-
-.sidebar-brand {
-    padding: 20px 20px 16px;
-    border-bottom: 1px solid var(--color-base-300);
-}
-
-.sidebar-brand h1 {
-    font-size: 1.125rem;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    margin: 0;
-    line-height: 1;
-    color: var(--color-primary);
-}
-
-.sidebar-brand span {
-    font-size: 0.6875rem;
-    font-weight: 500;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: color-mix(in oklch, var(--color-base-content) 40%, transparent);
-    display: block;
-    margin-top: 2px;
-}
-
-.sidebar .menu {
-    padding: 8px;
-    flex: 1;
-}
-
-.sidebar .menu li > a {
-    border-radius: 6px;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    padding: 8px 12px;
-    transition: all 0.15s ease;
-    border-left: 2px solid transparent;
-}
-
-.sidebar .menu li > a:hover {
-    background: color-mix(in oklch, var(--color-base-300) 50%, transparent);
-}
-
-.sidebar .menu li > a.active,
-.sidebar .menu li > a[aria-current="page"] {
-    background: color-mix(in oklch, var(--color-primary) 10%, transparent);
-    border-left-color: var(--color-primary);
-    color: var(--color-primary);
-}
-
-.sidebar .menu-title {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: color-mix(in oklch, var(--color-base-content) 35%, transparent);
-    padding: 16px 12px 4px;
-}
-
-/* Main content offset */
-.main {
-    margin-left: 240px;
-    flex: 1;
-    padding: 32px 40px;
-    min-width: 0;
-}
-
-/* ── Card enhancements ─────────────────────────────────────────── */
-.card {
-    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
-}
-
-/* ── Schema card — dashboard grid items ────────────────────────── */
-.schema-card {
-    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
-    position: relative;
-    overflow: hidden;
-}
-
-.schema-card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, var(--color-primary), color-mix(in oklch, var(--color-primary) 30%, transparent));
-    opacity: 0;
-    transition: opacity 0.2s ease;
-}
-
-.schema-card:hover {
-    border-color: color-mix(in oklch, var(--color-primary) 40%, transparent);
-    box-shadow: 0 4px 24px color-mix(in oklch, var(--color-primary) 6%, transparent);
-    transform: translateY(-1px);
-}
-
-.schema-card:hover::before {
-    opacity: 1;
-}
-
-.schema-card h3 {
-    font-size: 1rem;
-    font-weight: 600;
-    margin-bottom: 4px;
-    letter-spacing: -0.01em;
-}
-
-.schema-card .meta {
-    font-size: 0.8125rem;
-    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
-}
-
-.schema-card .count {
-    margin-top: 16px;
-    font-size: 2rem;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    color: var(--color-primary);
-}
-
-.schema-card .count-label {
-    font-size: 0.6875rem;
-    color: color-mix(in oklch, var(--color-base-content) 40%, transparent);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-weight: 500;
-}
-
-/* ── Schema editor 2-column grid + sticky preview ──────────────── */
-.schema-editor-layout {
-    display: grid;
-    grid-template-columns: 1fr 380px;
-    gap: 24px;
-    align-items: start;
-}
-
-.editor-form-panel {
-    min-width: 0;
-}
-
-.editor-preview-panel {
-    position: sticky;
-    top: 32px;
-}
-
-@media (max-width: 1024px) {
-    .schema-editor-layout {
-        grid-template-columns: 1fr;
+    @keyframes alert-slide-in {
+        from { opacity: 0; transform: translateY(-8px); }
+        to { opacity: 1; transform: translateY(0); }
     }
-    .editor-preview-panel {
-        position: static;
+
+    @keyframes fade-in {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: translateY(0); }
     }
 }
 
-/* ── DSL preview monospace block ───────────────────────────────── */
-.dsl-preview-code {
-    background: var(--color-base-100);
-    border: 1px solid var(--color-base-300);
-    border-radius: var(--radius-box);
-    padding: 16px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-    line-height: 1.6;
-    overflow-x: auto;
-    white-space: pre;
-    color: color-mix(in oklch, var(--color-base-content) 85%, transparent);
-    margin: 0;
-    tab-size: 4;
-}
-
-/* ── Field editor rows ─────────────────────────────────────────── */
-.field-editor-row {
-    background: var(--color-base-100);
-    border: 1px solid var(--color-base-300);
-    border-radius: var(--radius-box);
-    padding: 12px 16px;
-    margin-bottom: 10px;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.field-editor-row:hover {
-    border-color: color-mix(in oklch, var(--color-primary) 40%, transparent);
-    box-shadow: 0 0 0 1px color-mix(in oklch, var(--color-primary) 8%, transparent);
-}
-
-.field-row-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 8px;
-}
-
-.field-row-main {
-    display: flex;
-    gap: 12px;
-    flex: 1;
-    min-width: 0;
-}
-
-.field-name-input {
-    flex: 1;
-    min-width: 0;
-}
-
-.field-name-input input {
-    width: 100%;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-}
-
-.field-type-select {
-    width: 140px;
-    flex-shrink: 0;
-}
-
-.field-type-select select {
-    width: 100%;
-}
-
-.field-row-actions {
-    display: flex;
-    gap: 2px;
-    flex-shrink: 0;
-}
-
-.field-row-details {
-    display: flex;
-    gap: 16px;
-    align-items: flex-start;
-}
-
-.field-constraints {
-    display: flex;
-    gap: 12px;
-    flex: 1;
-    flex-wrap: wrap;
-}
-
-.constraint-row {
-    min-width: 100px;
-}
-
-.constraint-row label {
-    display: block;
-    font-size: 0.6875rem;
-    font-weight: 500;
-    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
-    margin-bottom: 4px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-
-.constraint-row input,
-.constraint-row select,
-.constraint-row textarea {
-    width: 100%;
-    padding: 6px 8px;
-    font-size: 13px;
-}
-
-.field-modifiers {
-    display: flex;
-    gap: 12px;
-    flex-shrink: 0;
-    align-items: center;
-    padding-top: 8px;
-}
-
-.modifier-check {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.8125rem;
-    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
-    cursor: pointer;
-    transition: color 0.15s ease;
-    font-weight: 500;
-}
-
-.modifier-check:hover {
-    color: color-mix(in oklch, var(--color-base-content) 80%, transparent);
-}
-
-.modifier-check:has(input:checked) {
-    color: color-mix(in oklch, var(--color-base-content) 90%, transparent);
-}
-
-.modifier-check input {
-    width: 16px;
-    height: 16px;
-}
-
-/* ── Detail view ───────────────────────────────────────────────── */
-.detail-row {
-    display: flex;
-    padding: 14px 0;
-    border-bottom: 1px solid color-mix(in oklch, var(--color-base-300) 60%, transparent);
-    transition: background-color 0.15s ease;
-}
-
-.detail-row:hover {
-    background: color-mix(in oklch, var(--color-base-300) 15%, transparent);
-    margin: 0 -16px;
-    padding-left: 16px;
-    padding-right: 16px;
-}
-
-.detail-row:last-child {
-    border-bottom: none;
-}
-
-.detail-label {
-    width: 200px;
-    flex-shrink: 0;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: color-mix(in oklch, var(--color-base-content) 45%, transparent);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-
-.detail-value {
-    font-size: 0.875rem;
-}
-
-/* ── Migration preview ─────────────────────────────────────────── */
-.migration-steps {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-}
-
-.migration-step {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.8125rem;
-    padding: 4px 0;
-}
-
-.migration-desc {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.75rem;
-}
-
-.migration-overall {
-    margin-top: 12px;
-    padding-top: 10px;
-    border-top: 1px solid var(--color-base-300);
-    font-size: 0.8125rem;
-    color: color-mix(in oklch, var(--color-base-content) 50%, transparent);
-}
-
-/* ── Composite field nesting ───────────────────────────────────── */
-.composite-group {
-    border: 1px solid color-mix(in oklch, var(--color-base-300) 60%, transparent);
-    border-radius: var(--radius-box);
-    padding: 16px;
-    margin-top: 4px;
-    background: color-mix(in oklch, var(--color-base-100) 50%, transparent);
-}
-
-/* ── Table enhancements ────────────────────────────────────────── */
-.table th {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: color-mix(in oklch, var(--color-base-content) 45%, transparent);
-}
-
-.table td {
-    vertical-align: middle;
-}
-
-.table tbody tr {
-    transition: background-color 0.15s ease;
-}
-
-/* ── Badge enhancements ────────────────────────────────────────── */
-.badge {
-    font-weight: 600;
-    letter-spacing: 0.02em;
-}
-
-/* ── Button enhancements ───────────────────────────────────────── */
-.btn {
-    font-family: 'Outfit', system-ui, sans-serif;
-    font-weight: 600;
-    letter-spacing: 0.01em;
-    transition: all 0.15s ease;
-}
-
-.btn:active {
-    transform: scale(0.97);
-}
-
-.btn-primary {
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-
-.btn-primary:hover {
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-
-/* ── Input focus enhancements ──────────────────────────────────── */
-.input:focus,
-.select:focus,
-.textarea:focus {
-    border-color: color-mix(in oklch, var(--color-primary) 50%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-primary) 10%, transparent);
-}
-
-/* ── Alert / flash animation ───────────────────────────────────── */
-.alert {
-    animation: alertSlideIn 0.3s ease-out;
-}
-
-@keyframes alertSlideIn {
-    from {
-        opacity: 0;
-        transform: translateY(-8px);
+@layer base {
+    h1, h2, h3, h4, h5, h6 {
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: #f1f5f9;
     }
-    to {
+
+    h2 {
+        font-size: 1.5rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+
+    code {
+        font-size: 0.875em;
+        background: rgb(255 255 255 / 0.05);
+        padding: 0.15em 0.4em;
+        border-radius: 4px;
+        border: 1px solid rgb(255 255 255 / 0.1);
+    }
+}
+
+@utility scrollbar-thin {
+    &::-webkit-scrollbar { width: 6px; height: 6px; }
+    &::-webkit-scrollbar-track { background: transparent; }
+    &::-webkit-scrollbar-thumb {
+        background: rgba(226, 232, 240, 0.15);
+        border-radius: 3px;
+    }
+    &::-webkit-scrollbar-thumb:hover {
+        background: rgba(226, 232, 240, 0.25);
+    }
+}
+
+@layer components {
+    /* HTMX loading states */
+    .htmx-request {
+        opacity: 0.6;
+        transition: opacity 200ms ease;
+        pointer-events: none;
+    }
+    .htmx-settling {
         opacity: 1;
-        transform: translateY(0);
+        transition: opacity 150ms ease-in;
+    }
+    .htmx-indicator { display: none; }
+    .htmx-request .htmx-indicator,
+    .htmx-request.htmx-indicator { display: inline-block; }
+
+    /* CSS radio-tab pattern (entity detail organism) */
+    .forge-tab-radio { display: none; }
+    .forge-tab-content { display: none; }
+    .forge-tab-radio:checked + .forge-tab-label {
+        font-weight: 600;
+        color: #f1f5f9;
+        border-bottom-color: #6366f1;
+    }
+    .forge-tab-radio:checked + .forge-tab-label + .forge-tab-content {
+        display: block;
     }
 }
 
-/* ── Breadcrumb polish ─────────────────────────────────────────── */
-.breadcrumbs {
-    margin-bottom: 16px;
-}
-
-.breadcrumbs a {
-    transition: color 0.15s ease;
-}
-
-.breadcrumbs a:hover {
-    color: var(--color-primary);
-}
-
-/* ── Empty state ───────────────────────────────────────────────── */
-.empty-state-icon {
-    width: 48px;
-    height: 48px;
-    margin: 0 auto 16px;
-    border-radius: 12px;
-    background: var(--color-base-200);
-    border: 1px solid var(--color-base-300);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: color-mix(in oklch, var(--color-base-content) 30%, transparent);
-    font-size: 1.25rem;
-}
-
-/* ── Schema relationship graph ─────────────────────────────────── */
-#schema-graph svg {
-    width: 100%;
-    height: 100%;
-}
-
-.graph-node {
-    cursor: pointer;
-}
-
+/* D3 force graph — SVG elements created by JavaScript */
+#schema-graph svg { width: 100%; height: 100%; }
+.graph-node { cursor: pointer; }
 .graph-node circle {
-    fill: color-mix(in oklch, var(--color-primary) 10%, transparent);
-    stroke: color-mix(in oklch, var(--color-primary) 60%, transparent);
+    fill: rgba(99, 102, 241, 0.1);
+    stroke: rgba(99, 102, 241, 0.6);
     stroke-width: 1.5;
     transition: all 0.2s ease;
 }
-
 .graph-node:hover circle {
-    fill: color-mix(in oklch, var(--color-primary) 20%, transparent);
-    stroke: var(--color-primary);
+    fill: rgba(99, 102, 241, 0.2);
+    stroke: #6366f1;
     stroke-width: 2;
-    filter: drop-shadow(0 0 8px color-mix(in oklch, var(--color-primary) 25%, transparent));
+    filter: drop-shadow(0 0 8px rgba(99, 102, 241, 0.25));
 }
-
 .graph-node text {
-    fill: var(--color-base-content);
-    font-family: 'Outfit', system-ui, sans-serif;
+    fill: #e2e8f0;
+    font-family: var(--font-sans);
     font-size: 11px;
     font-weight: 600;
     text-anchor: middle;
     dominant-baseline: central;
     pointer-events: none;
 }
-
 .graph-edge {
-    stroke: var(--color-base-300);
+    stroke: rgb(255 255 255 / 0.15);
     stroke-width: 1.5;
     transition: stroke 0.15s ease;
 }
-
-.graph-edge:hover {
-    stroke: color-mix(in oklch, var(--color-base-content) 40%, transparent);
-}
-
-.graph-edge.many {
-    stroke-dasharray: 6, 3;
-}
-
+.graph-edge:hover { stroke: rgba(226, 232, 240, 0.4); }
+.graph-edge.many { stroke-dasharray: 6, 3; }
 .graph-edge-label {
-    fill: color-mix(in oklch, var(--color-base-content) 60%, transparent);
-    font-family: 'JetBrains Mono', monospace;
+    fill: rgba(226, 232, 240, 0.6);
+    font-family: var(--font-mono);
     font-size: 10px;
     text-anchor: middle;
     opacity: 0;
     transition: opacity 0.2s ease;
     pointer-events: none;
 }
-
 .graph-edge:hover + .graph-edge-label,
-.graph-edge-label:hover {
-    opacity: 1;
-}
-
+.graph-edge-label:hover { opacity: 1; }
 .graph-count {
-    fill: color-mix(in oklch, var(--color-base-content) 40%, transparent);
-    font-family: 'Outfit', system-ui, sans-serif;
+    fill: rgba(226, 232, 240, 0.4);
+    font-family: var(--font-sans);
     font-size: 9px;
     font-weight: 500;
     text-anchor: middle;
 }
-
-/* ── Preview card section headers ──────────────────────────────── */
-.preview-header {
-    font-size: 0.6875rem;
+.graph-node.dimmed { opacity: 0.2; }
+.graph-node.highlighted .node-inner { filter: url(#node-glow); transform: scale(1.08); }
+.graph-edge.dimmed { opacity: 0.1; }
+.graph-edge.highlighted { stroke: #818cf8; stroke-width: 2.5; }
+.graph-edge-label-group { opacity: 0; transition: opacity 0.2s ease; }
+.graph-edge-label-group.visible { opacity: 1; }
+.graph-edge-label-bg { fill: rgb(17 24 39 / 0.85); rx: 3; }
+.node-ring { fill: none; stroke: rgba(99, 102, 241, 0.08); stroke-width: 1; }
+.graph-node.highlighted .node-ring { stroke: rgba(99, 102, 241, 0.2); }
+.node-circle { transition: all 0.2s ease; }
+.node-count {
+    fill: #818cf8;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 700;
+    text-anchor: middle;
+    dominant-baseline: central;
+}
+.node-label {
+    fill: #e2e8f0;
+    font-family: var(--font-sans);
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: color-mix(in oklch, var(--color-base-content) 35%, transparent);
-    margin-bottom: 12px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    text-anchor: middle;
 }
+.arrow-head { fill: rgb(255 255 255 / 0.15); stroke: none; }
+.arrow-head-hl { fill: #818cf8; stroke: none; }
+.arrow-many-stroke { fill: none; stroke: rgb(255 255 255 / 0.15); stroke-width: 1.5; }
+.arrow-many-stroke-hl { fill: none; stroke: #818cf8; stroke-width: 1.5; }
 
-.preview-header::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: color-mix(in oklch, var(--color-base-300) 60%, transparent);
-}
-
-/* ── Page transition for HTMX ──────────────────────────────────── */
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
+/* Auto-applied animations */
+[class*="bg-red-500\\/10"],
+[class*="bg-green-500\\/10"] {
+    animation: alert-slide-in 0.3s ease-out;
 }
 
 main > *:first-child {
-    animation: fadeIn 0.2s ease-out;
+    animation: fade-in 0.2s ease-out;
 }

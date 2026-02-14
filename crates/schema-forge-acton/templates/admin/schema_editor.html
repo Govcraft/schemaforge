@@ -3,23 +3,25 @@
 {% block title %}{% if editor.is_edit %}Edit {{ editor.schema_name }}{% else %}Create Schema{% endif %} - SchemaForge Admin{% endblock %}
 
 {% block content %}
-<div class="breadcrumbs text-sm">
-    <ul>
-        <li><a href="/admin/">Dashboard</a></li>
+<nav class="flex text-sm text-gray-400 mb-4" aria-label="Breadcrumb">
+    <ol class="flex items-center gap-x-2">
+        <li><a href="/admin/" class="hover:text-white">Dashboard</a></li>
+        <li class="text-gray-600">/</li>
         {% if editor.is_edit %}
-        <li><a href="/admin/schemas/{{ editor.schema_name }}">{{ editor.schema_name }}</a></li>
-        <li>Edit</li>
+        <li><a href="/admin/schemas/{{ editor.schema_name }}" class="hover:text-white">{{ editor.schema_name }}</a></li>
+        <li class="text-gray-600">/</li>
+        <li class="text-white">Edit</li>
         {% else %}
-        <li>Create Schema</li>
+        <li class="text-white">Create Schema</li>
         {% endif %}
-    </ul>
-</div>
+    </ol>
+</nav>
 <div class="mb-6">
     <h2>{% if editor.is_edit %}Edit {{ editor.schema_name }}{% else %}Create Schema{% endif %}</h2>
 </div>
 
 {% if errors %}
-<div class="alert alert-error mb-5">
+<div class="rounded-md bg-red-500/10 p-4 text-sm text-red-400 ring-1 ring-inset ring-red-500/20 mb-5">
     <strong>Please fix the following errors:</strong>
     <ul class="mt-2 ml-5 list-disc">
         {% for error in errors %}
@@ -29,7 +31,7 @@
 </div>
 {% endif %}
 
-<div class="schema-editor-layout">
+<div class="grid grid-cols-1 gap-6 items-start lg:grid-cols-[1fr_380px]">
     <form id="schema-editor-form"
           method="post"
           action="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/schemas{% endif %}"
@@ -42,39 +44,39 @@
         <input type="hidden" name="_existing_schema_name" value="{{ editor.schema_name }}">
         {% endif %}
 
-        <div class="editor-form-panel">
-            <div class="card card-border bg-base-200 mb-5">
-                <div class="card-body">
+        <div class="min-w-0">
+            <div class="rounded-lg bg-white/5 ring-1 ring-white/10 mb-5">
+                <div class="p-6">
                     <fieldset>
-                        <legend class="fieldset-legend">Schema Name <span class="text-error">*</span></legend>
+                        <legend class="text-sm font-medium text-white mb-1">Schema Name <span class="text-red-400">*</span></legend>
                         <input type="text" id="schema_name" name="schema_name" value="{{ editor.schema_name }}"
-                               class="input"
+                               class="block w-full rounded-md bg-white/5 px-3 py-1.5 text-sm text-white ring-1 ring-inset ring-white/10 placeholder:text-gray-500 focus:ring-2 focus:ring-inset focus:ring-indigo-500"
                                placeholder="PascalCase (e.g. Contact, BlogPost)"
                                {% if editor.is_edit %}readonly style="opacity: 0.7;"{% endif %}
                                required>
                     </fieldset>
                     <div class="grid grid-cols-2 gap-4">
                         <fieldset>
-                            <legend class="fieldset-legend">Version</legend>
+                            <legend class="text-sm font-medium text-white mb-1">Version</legend>
                             <input type="number" id="version" name="version" value="{{ editor.version }}"
-                                   class="input"
+                                   class="block w-full rounded-md bg-white/5 px-3 py-1.5 text-sm text-white ring-1 ring-inset ring-white/10 placeholder:text-gray-500 focus:ring-2 focus:ring-inset focus:ring-indigo-500"
                                    min="1" step="1" placeholder="Optional">
                         </fieldset>
                         <fieldset>
-                            <legend class="fieldset-legend">Display Field</legend>
+                            <legend class="text-sm font-medium text-white mb-1">Display Field</legend>
                             <input type="text" id="display_field" name="display_field" value="{{ editor.display_field }}"
-                                   class="input"
+                                   class="block w-full rounded-md bg-white/5 px-3 py-1.5 text-sm text-white ring-1 ring-inset ring-white/10 placeholder:text-gray-500 focus:ring-2 focus:ring-inset focus:ring-indigo-500"
                                    placeholder="snake_case field name">
                         </fieldset>
                     </div>
                 </div>
             </div>
 
-            <div class="card card-border bg-base-200">
-                <div class="card-body">
+            <div class="rounded-lg bg-white/5 ring-1 ring-white/10">
+                <div class="p-6">
                     <div class="flex justify-between items-center mb-4">
                         <h3 class="text-base font-semibold">Fields</h3>
-                        <button type="button" class="btn btn-ghost btn-sm" onclick="addFieldRow()">+ Add Field</button>
+                        <button type="button" class="rounded-md bg-white/10 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-white/20" onclick="addFieldRow()">+ Add Field</button>
                     </div>
 
                     <div id="field-list">
@@ -86,7 +88,7 @@
             </div>
 
             <div class="flex gap-3 mt-5">
-                <button type="submit" class="btn btn-primary"
+                <button type="submit" class="rounded-md bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500"
                         hx-post="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/schemas{% endif %}"
                         hx-target="body"
                         hx-push-url="true"
@@ -96,27 +98,27 @@
                         {% if editor.is_edit %}hx-vals='{"_method": "PUT"}'{% endif %}>
                     {% if editor.is_edit %}Update Schema{% else %}Create Schema{% endif %}
                 </button>
-                <a href="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/{% endif %}" class="btn btn-ghost">Cancel</a>
+                <a href="{% if editor.is_edit %}/admin/schemas/{{ editor.schema_name }}{% else %}/admin/{% endif %}" class="rounded-md bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/20">Cancel</a>
             </div>
         </div>
     </form>
 
-    <div class="editor-preview-panel">
-        <div class="card card-border bg-base-200 preview-card">
-            <div class="card-body">
-                <h3 class="preview-header">DSL Preview</h3>
+    <div class="lg:sticky lg:top-8">
+        <div class="rounded-lg bg-white/5 ring-1 ring-white/10">
+            <div class="p-6">
+                <h3 class="flex items-center gap-2 text-[0.6875rem] font-semibold uppercase tracking-widest text-gray-500 mb-3 after:flex-1 after:h-px after:bg-white/[0.06]">DSL Preview</h3>
                 <div id="dsl-preview-content">
-                    <pre class="dsl-preview-code">// Start typing to see preview...</pre>
+                    <pre class="m-0 overflow-x-auto whitespace-pre rounded-lg border border-white/10 bg-gray-950 p-4 font-mono text-[13px] leading-relaxed text-slate-300/85 [tab-size:4]">// Start typing to see preview...</pre>
                 </div>
             </div>
         </div>
 
         {% if editor.is_edit %}
-        <div class="card card-border bg-base-200 preview-card mt-4">
-            <div class="card-body">
-                <h3 class="preview-header">Migration Preview</h3>
+        <div class="rounded-lg bg-white/5 ring-1 ring-white/10 mt-4">
+            <div class="p-6">
+                <h3 class="flex items-center gap-2 text-[0.6875rem] font-semibold uppercase tracking-widest text-gray-500 mb-3 after:flex-1 after:h-px after:bg-white/[0.06]">Migration Preview</h3>
                 <div id="migration-preview-content">
-                    <p class="text-sm text-base-content/60">Make changes to see migration steps...</p>
+                    <p class="text-sm text-gray-400">Make changes to see migration steps...</p>
                 </div>
             </div>
         </div>

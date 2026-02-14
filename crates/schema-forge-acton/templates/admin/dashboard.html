@@ -7,29 +7,29 @@
     <div>
         <h2>Dashboard</h2>
         {% if entries %}
-        <p class="text-sm text-base-content/40 mt-1">{{ entries|length }} schema{% if entries|length != 1 %}s{% endif %} registered</p>
+        <p class="text-sm text-gray-500 mt-1">{{ entries|length }} schema{% if entries|length != 1 %}s{% endif %} registered</p>
         {% endif %}
     </div>
-    <a href="/admin/schemas/new" class="btn btn-primary">+ Create Schema</a>
+    <a href="/admin/schemas/new" class="rounded-md bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500">+ Create Schema</a>
 </div>
 
 {% if not entries %}
 <div class="text-center py-16 px-5">
-    <div class="empty-state-icon">&#x2692;</div>
-    <p class="text-base-content/60 text-lg font-medium mb-2">No schemas yet</p>
-    <p class="text-base-content/40 text-sm mb-6">Define schemas in <code>.forge</code> files or create one above.</p>
-    <a href="/admin/schemas/new" class="btn btn-primary btn-sm">Create Your First Schema</a>
+    <div class="mx-auto mb-4 flex size-12 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-xl text-gray-500">&#x2692;</div>
+    <p class="text-gray-400 text-lg font-medium mb-2">No schemas yet</p>
+    <p class="text-gray-500 text-sm mb-6">Define schemas in <code>.forge</code> files or create one above.</p>
+    <a href="/admin/schemas/new" class="rounded-md bg-indigo-500 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-400">Create Your First Schema</a>
 </div>
 {% else %}
 
 {% if graph.has_edges %}
-<div class="card card-border bg-base-200 mb-8">
-    <div class="card-body">
+<div class="rounded-lg bg-white/5 ring-1 ring-white/10 mb-8">
+    <div class="p-6">
         <div class="flex justify-between items-center mb-4">
-            <h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 m-0">Schema Relationships</h3>
-            <span class="text-xs text-base-content/30">Drag nodes &middot; Scroll to zoom &middot; Click to view</span>
+            <h3 class="text-sm font-semibold uppercase tracking-wider text-gray-500 m-0">Schema Relationships</h3>
+            <span class="text-xs text-gray-600">Drag nodes &middot; Scroll to zoom &middot; Click to view</span>
         </div>
-        <div id="schema-graph" class="w-full bg-base-100 rounded-box overflow-hidden" style="height: 420px; position: relative;"></div>
+        <div id="schema-graph" class="w-full bg-gray-900 rounded-lg overflow-hidden" style="height: 420px; position: relative;"></div>
     </div>
 </div>
 <script>
@@ -446,15 +446,15 @@
 
 <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-5">
     {% for entry in entries %}
-    <a href="/admin/schemas/{{ entry.schema.url_name }}/entities" class="card card-border bg-base-200 schema-card no-underline text-inherit">
-        <div class="card-body">
-            <h3>{{ entry.schema.name }}</h3>
-            <div class="meta">
+    <a href="/admin/schemas/{{ entry.schema.url_name }}/entities" class="rounded-lg bg-white/5 ring-1 ring-white/10 no-underline text-inherit relative overflow-hidden transition-all duration-200 hover:-translate-y-px hover:shadow-[0_4px_24px_rgba(99,102,241,0.06)] before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:bg-gradient-to-r before:from-indigo-500 before:to-indigo-500/30 before:opacity-0 before:transition-opacity hover:before:opacity-100">
+        <div class="p-6">
+            <h3 class="mb-1">{{ entry.schema.name }}</h3>
+            <div class="text-[0.8125rem] text-gray-400">
                 {{ entry.schema.fields|length }} fields
                 {% if entry.schema.version %} &middot; v{{ entry.schema.version }}{% endif %}
             </div>
-            <div class="count">{{ entry.entity_count }}</div>
-            <div class="count-label">entities</div>
+            <div class="mt-4 text-[2rem] font-extrabold -tracking-wider text-indigo-400">{{ entry.entity_count }}</div>
+            <div class="text-[0.6875rem] font-medium uppercase tracking-wider text-gray-500">entities</div>
         </div>
     </a>
     {% endfor %}

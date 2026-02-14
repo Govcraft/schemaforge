@@ -5,20 +5,23 @@
 {% endblock %}
 
 {% block content %}
-<div class="breadcrumbs text-sm">
-    <ul>
-        <li><a href="/admin/">Dashboard</a></li>
-        <li><a href="{{ url_prefix }}/{{ schema.url_name }}">{{ schema.name }}</a></li>
-        <li><a href="{{ url_prefix }}/{{ schema.url_name }}/entities">Entities</a></li>
-        <li>{% if entity_id %}Edit{% else %}Create{% endif %}</li>
-    </ul>
-</div>
+<nav class="flex text-sm text-gray-400 mb-4" aria-label="Breadcrumb">
+    <ol class="flex items-center gap-x-2">
+        <li><a href="/admin/" class="hover:text-white">Dashboard</a></li>
+        <li class="text-gray-600">/</li>
+        <li><a href="{{ url_prefix }}/{{ schema.url_name }}" class="hover:text-white">{{ schema.name }}</a></li>
+        <li class="text-gray-600">/</li>
+        <li><a href="{{ url_prefix }}/{{ schema.url_name }}/entities" class="hover:text-white">Entities</a></li>
+        <li class="text-gray-600">/</li>
+        <li class="text-white">{% if entity_id %}Edit{% else %}Create{% endif %}</li>
+    </ol>
+</nav>
 <div class="flex justify-between items-center mb-6">
     <h2>{% if entity_id %}Edit Entity{% else %}Create {{ schema.name }}{% endif %}</h2>
 </div>
 
 {% if errors %}
-<div class="alert alert-error">
+<div class="rounded-md bg-red-500/10 p-4 text-sm text-red-400 ring-1 ring-inset ring-red-500/20">
     <strong>Please fix the following errors:</strong>
     <ul class="mt-2 ml-5 list-disc">
         {% for error in errors %}
@@ -28,8 +31,8 @@
 </div>
 {% endif %}
 
-<div class="card card-border bg-base-200">
-    <div class="card-body">
+<div class="rounded-lg bg-white/5 ring-1 ring-white/10">
+    <div class="p-6">
     <form
         {% if entity_id %}
         hx-put="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity_id }}"
@@ -44,10 +47,10 @@
         {% endfor %}
 
         <div class="flex gap-3 mt-6">
-            <button type="submit" class="btn btn-primary">
+            <button type="submit" class="rounded-md bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500">
                 {% if entity_id %}Update{% else %}Create{% endif %}
             </button>
-            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities" class="btn btn-ghost">Cancel</a>
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities" class="rounded-md bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/20">Cancel</a>
         </div>
     </form>
     </div>

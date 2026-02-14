@@ -1,0 +1,153 @@
+<!-- Mobile sidebar dialog -->
+<el-dialog>
+  <dialog id="cloud-sidebar" class="backdrop:bg-transparent lg:hidden">
+    <el-dialog-backdrop class="fixed inset-0 bg-gray-900/80 transition-opacity duration-300 ease-linear data-closed:opacity-0"></el-dialog-backdrop>
+    <div tabindex="0" class="fixed inset-0 flex focus:outline-none">
+      <el-dialog-panel class="group/dialog-panel relative mr-16 flex w-full max-w-xs flex-1 transform transition duration-300 ease-in-out data-closed:-translate-x-full">
+        <div class="absolute top-0 left-full flex w-16 justify-center pt-5 duration-300 ease-in-out group-data-closed/dialog-panel:opacity-0">
+          <button type="button" command="close" commandfor="cloud-sidebar" class="-m-2.5 p-2.5">
+            <span class="sr-only">Close sidebar</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" class="size-6 text-white">
+              <path d="M6 18 18 6M6 6l12 12" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+        <!-- Mobile sidebar content -->
+        <div class="relative flex grow flex-col gap-y-5 overflow-y-auto bg-gray-900 px-6 pb-4 ring-1 ring-white/10 before:pointer-events-none before:absolute before:inset-0 before:bg-black/10">
+          <div class="relative flex h-16 shrink-0 items-center">
+            {% if logo_url %}<img src="{{ logo_url }}" alt="{{ app_title }}" class="h-8 w-auto" />{% else %}<span class="text-xl font-bold text-white">{{ app_title }}</span>{% endif %}
+          </div>
+          <nav class="relative flex flex-1 flex-col">
+            <ul role="list" class="flex flex-1 flex-col gap-y-7">
+              <li>
+                <ul role="list" class="-mx-2 space-y-1">
+                  <li>
+                    <a href="/app/" class="group flex gap-x-3 rounded-md p-2 text-sm/6 font-semibold {% if active_nav == 'dashboard' %}bg-white/5 text-white{% else %}text-gray-400 hover:bg-white/5 hover:text-white{% endif %}">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" class="size-6 shrink-0"><path d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                      Dashboard
+                    </a>
+                  </li>
+                  {% for schema in nav_schemas %}
+                  <li>
+                    <a href="/app/{{ schema.url_name }}/entities" class="group flex gap-x-3 rounded-md p-2 text-sm/6 font-semibold {% if active_nav == schema.url_name %}bg-white/5 text-white{% else %}text-gray-400 hover:bg-white/5 hover:text-white{% endif %}">
+                      <span class="flex size-6 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-[0.625rem] font-medium text-gray-400 group-hover:border-white/20 group-hover:text-white">{{ schema.label[:1] | upper }}</span>
+                      <span class="truncate">{{ schema.label }}</span>
+                    </a>
+                  </li>
+                  {% endfor %}
+                </ul>
+              </li>
+              {% if nav_extra_html %}
+              <li>{{ nav_extra_html }}</li>
+              {% endif %}
+              {% if current_user %}
+              <li class="mt-auto">
+                <div class="flex items-center gap-x-3 rounded-md p-2">
+                  <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-sm font-medium text-white">{{ current_user.display_name[:1] | upper }}</span>
+                  <div class="min-w-0 flex-1">
+                    <div class="text-sm/5 font-semibold text-white truncate">{{ current_user.display_name }}</div>
+                    <div class="text-xs text-gray-400 truncate">{{ current_user.username }}</div>
+                  </div>
+                </div>
+                <form method="post" action="/app/logout" class="mt-1">
+                  <button type="submit" class="group -mx-2 flex w-full gap-x-3 rounded-md p-2 text-sm/6 font-semibold text-gray-400 hover:bg-white/5 hover:text-white">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" class="size-6 shrink-0"><path d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                    Logout
+                  </button>
+                </form>
+              </li>
+              {% endif %}
+            </ul>
+          </nav>
+        </div>
+      </el-dialog-panel>
+    </div>
+  </dialog>
+</el-dialog>
+
+<!-- Desktop sidebar -->
+<div class="hidden bg-gray-900 ring-1 ring-white/10 lg:fixed lg:inset-y-0 lg:z-50 lg:flex lg:w-72 lg:flex-col">
+  <div class="relative flex grow flex-col gap-y-5 overflow-y-auto px-6 pb-4 before:pointer-events-none before:absolute before:inset-0 before:bg-black/10">
+    <div class="relative flex h-16 shrink-0 items-center">
+      {% if logo_url %}<img src="{{ logo_url }}" alt="{{ app_title }}" class="h-8 w-auto" />{% else %}<span class="text-xl font-bold text-white">{{ app_title }}</span>{% endif %}
+    </div>
+    <nav class="relative flex flex-1 flex-col">
+      <ul role="list" class="flex flex-1 flex-col gap-y-7">
+        <li>
+          <ul role="list" class="-mx-2 space-y-1">
+            <li>
+              <a href="/app/" class="group flex gap-x-3 rounded-md p-2 text-sm/6 font-semibold {% if active_nav == 'dashboard' %}bg-white/5 text-white{% else %}text-gray-400 hover:bg-white/5 hover:text-white{% endif %}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" class="size-6 shrink-0"><path d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                Dashboard
+              </a>
+            </li>
+            {% for schema in nav_schemas %}
+            <li>
+              <a href="/app/{{ schema.url_name }}/entities" class="group flex gap-x-3 rounded-md p-2 text-sm/6 font-semibold {% if active_nav == schema.url_name %}bg-white/5 text-white{% else %}text-gray-400 hover:bg-white/5 hover:text-white{% endif %}">
+                <span class="flex size-6 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-[0.625rem] font-medium text-gray-400 group-hover:border-white/20 group-hover:text-white">{{ schema.label[:1] | upper }}</span>
+                <span class="truncate">{{ schema.label }}</span>
+              </a>
+            </li>
+            {% endfor %}
+          </ul>
+        </li>
+        {% if nav_extra_html %}
+        <li>{{ nav_extra_html }}</li>
+        {% endif %}
+        {% if current_user %}
+        <li class="mt-auto">
+          <div class="flex items-center gap-x-3 rounded-md p-2">
+            <span class="flex size-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-sm font-medium text-white">{{ current_user.display_name[:1] | upper }}</span>
+            <div class="min-w-0 flex-1">
+              <div class="text-sm/5 font-semibold text-white truncate">{{ current_user.display_name }}</div>
+              <div class="text-xs text-gray-400 truncate">{{ current_user.username }}</div>
+            </div>
+          </div>
+          <form method="post" action="/app/logout" class="mt-1">
+            <button type="submit" class="group -mx-2 flex w-full gap-x-3 rounded-md p-2 text-sm/6 font-semibold text-gray-400 hover:bg-white/5 hover:text-white">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" class="size-6 shrink-0"><path d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              Logout
+            </button>
+          </form>
+        </li>
+        {% endif %}
+      </ul>
+    </nav>
+  </div>
+</div>
+
+<!-- Main content with header -->
+<div class="lg:pl-72">
+  <div class="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-x-4 border-b border-white/10 bg-gray-900 px-4 shadow-xs sm:gap-x-6 sm:px-6 lg:px-8">
+    <button type="button" command="show-modal" commandfor="cloud-sidebar" class="-m-2.5 p-2.5 text-gray-400 hover:text-white lg:hidden">
+      <span class="sr-only">Open sidebar</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true" class="size-6"><path d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+    </button>
+    <div aria-hidden="true" class="h-6 w-px bg-white/10 lg:hidden"></div>
+    <div class="flex flex-1 gap-x-4 self-stretch lg:gap-x-6">
+      <div class="flex-1"></div>
+      <div class="flex items-center gap-x-4 lg:gap-x-6">
+        {% if current_user %}
+        <!-- Profile dropdown -->
+        <el-dropdown class="relative">
+          <button class="relative flex items-center">
+            <span class="absolute -inset-1.5"></span>
+            <span class="sr-only">Open user menu</span>
+            <span class="flex size-8 items-center justify-center rounded-full bg-white/10 text-sm font-medium text-white">{{ current_user.display_name[:1] | upper }}</span>
+            <span class="hidden lg:flex lg:items-center">
+              <span aria-hidden="true" class="ml-4 text-sm/6 font-semibold text-white">{{ current_user.display_name }}</span>
+              <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" class="ml-2 size-5 text-gray-500"><path d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd" fill-rule="evenodd" /></svg>
+            </span>
+          </button>
+          <el-menu anchor="bottom end" popover class="w-32 origin-top-right rounded-md bg-gray-800 py-2 outline -outline-offset-1 outline-white/10 transition transition-discrete [--anchor-gap:--spacing(2.5)] data-closed:scale-95 data-closed:transform data-closed:opacity-0 data-enter:duration-100 data-enter:ease-out data-leave:duration-75 data-leave:ease-in">
+            <form method="post" action="/app/logout">
+              <button type="submit" class="block w-full text-left px-3 py-1 text-sm/6 text-white hover:bg-white/5 focus:bg-white/5 focus:outline-hidden">Sign out</button>
+            </form>
+          </el-menu>
+        </el-dropdown>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <main class="py-10">
+    <div class="px-4 sm:px-6 lg:px-8">

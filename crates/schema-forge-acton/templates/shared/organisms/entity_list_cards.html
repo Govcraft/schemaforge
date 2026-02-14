@@ -1,26 +1,26 @@
 {% if not entities %}
-<div class="forge-empty-state">
+<div class="text-center py-12 text-gray-400">
     <p>No entities yet.</p>
-    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="forge-btn">Create First Entity</a>
+    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="rounded-md bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/20">Create First Entity</a>
 </div>
 {% else %}
-<div class="forge-card-grid">
+<div class="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
     {% for entity in entities %}
-    <div class="forge-card" id="entity-{{ entity.id }}">
-        <div class="forge-card-header">
-            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}" class="forge-card-title">{{ entity.display_value }}</a>
+    <div class="rounded-lg bg-white/5 ring-1 ring-white/10 p-4" id="entity-{{ entity.id }}">
+        <div class="flex items-center justify-between mb-3">
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}" class="font-semibold text-white">{{ entity.display_value }}</a>
         </div>
-        <div class="forge-card-body">
+        <div class="space-y-1">
             {% for field in entity.summary_fields %}
-            <div class="forge-card-field">
-                <span class="forge-card-label">{{ field.label }}</span>
-                <span class="forge-card-value">{% include "shared/atoms/field_display.html" %}</span>
+            <div class="flex gap-2 text-sm">
+                <span class="min-w-24 text-gray-400">{{ field.label }}</span>
+                <span class="text-gray-300">{% include "shared/atoms/field_display.html" %}</span>
             </div>
             {% endfor %}
         </div>
-        <div class="forge-card-actions">
-            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="forge-btn forge-btn-sm">Edit</a>
-            <button class="forge-btn forge-btn-sm forge-btn-danger"
+        <div class="flex gap-1.5 mt-3 pt-3 border-t border-white/10">
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="rounded-md bg-white/10 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-white/20">Edit</a>
+            <button class="rounded-md bg-red-500 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-red-400"
                 hx-delete="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}"
                 hx-confirm="Delete this entity?"
                 hx-target="#entity-{{ entity.id }}"

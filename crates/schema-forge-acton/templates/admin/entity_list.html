@@ -3,24 +3,26 @@
 {% block title %}{{ schema.name }} Entities - SchemaForge Admin{% endblock %}
 
 {% block content %}
-<div class="breadcrumbs text-sm">
-    <ul>
-        <li><a href="/admin/">Dashboard</a></li>
-        <li><a href="{{ url_prefix }}/{{ schema.url_name }}">{{ schema.name }}</a></li>
-        <li>Entities</li>
-    </ul>
-</div>
+<nav class="flex text-sm text-gray-400 mb-4" aria-label="Breadcrumb">
+    <ol class="flex items-center gap-x-2">
+        <li><a href="/admin/" class="hover:text-white">Dashboard</a></li>
+        <li class="text-gray-600">/</li>
+        <li><a href="{{ url_prefix }}/{{ schema.url_name }}" class="hover:text-white">{{ schema.name }}</a></li>
+        <li class="text-gray-600">/</li>
+        <li class="text-white">Entities</li>
+    </ol>
+</nav>
 <div class="flex justify-between items-center mb-6">
     <div>
         <h2>{{ schema.name }} Entities</h2>
-        <div class="text-sm text-base-content/40 mt-1">
+        <div class="text-sm text-gray-500 mt-1">
             {{ pagination.total_count }} total
         </div>
     </div>
-    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="btn btn-primary">Create New</a>
+    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="rounded-md bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500">Create New</a>
 </div>
 
-<div class="card card-border bg-base-200 p-0 overflow-hidden">
+<div class="rounded-lg bg-white/5 ring-1 ring-white/10 p-0 overflow-hidden">
     <div id="entity-table">
         {% include "admin/fragments/entity_table_body.html" %}
     </div>

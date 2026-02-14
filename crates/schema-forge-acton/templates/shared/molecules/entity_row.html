@@ -1,13 +1,13 @@
 <tr id="entity-{{ entity.id }}">
     {% for field in entity.field_values %}
-    <td>{% if field.is_empty %}<span class="text-base-content/60">-</span>{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</td>
+    <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300">{% if field.is_empty %}<span class="text-gray-500">-</span>{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</td>
     {% endfor %}
-    <td>
+    <td class="whitespace-nowrap px-3 py-4 text-sm text-gray-300">
         <div class="flex gap-1.5">
-            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}" class="btn btn-ghost btn-sm">View</a>
-            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="btn btn-ghost btn-sm">Edit</a>
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}" class="rounded-md bg-white/10 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-white/20">View</a>
+            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="rounded-md bg-white/10 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-white/20">Edit</a>
             <button
-                class="btn btn-error btn-sm"
+                class="rounded-md bg-red-500 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-red-400"
                 hx-delete="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}"
                 hx-confirm="Delete this entity?"
                 hx-target="#entity-{{ entity.id }}"

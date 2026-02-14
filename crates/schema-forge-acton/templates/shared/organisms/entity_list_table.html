@@ -1,19 +1,19 @@
 {% if not entities %}
-<div class="text-center py-12 text-base-content/60">
+<div class="text-center py-12 text-gray-400">
     <p>No entities yet.</p>
-    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="btn btn-primary">Create First Entity</a>
+    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new" class="rounded-md bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400">Create First Entity</a>
 </div>
 {% else %}
-<table class="table">
+<table class="min-w-full divide-y divide-white/10">
     <thead>
         <tr>
             {% for field in schema.fields %}
-            <th>{{ field.label }}</th>
+            <th class="px-3 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-400">{{ field.label }}</th>
             {% endfor %}
-            <th class="w-[120px]">Actions</th>
+            <th class="px-3 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 w-[120px]">Actions</th>
         </tr>
     </thead>
-    <tbody>
+    <tbody class="divide-y divide-white/5">
         {% for entity in entities %}
         {% include "shared/molecules/entity_row.html" %}
         {% endfor %}

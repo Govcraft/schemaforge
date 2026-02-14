@@ -1,10 +1,10 @@
-<div class="page-header">
+<div class="flex items-center justify-between mb-6">
     <div>
-        <h1 class="page-title">{{ title }}</h1>
-        {% if subtitle %}<p class="page-subtitle">{{ subtitle }}</p>{% endif %}
+        <h1 class="text-2xl font-bold text-white">{{ title }}</h1>
+        {% if subtitle %}<p class="text-sm text-gray-400 mt-1">{{ subtitle }}</p>{% endif %}
     </div>
     {% if actions %}
-    <div class="page-actions">
+    <div class="flex gap-2">
         {% for action in actions %}
         <a href="{{ action.url }}" class="{{ action.class }}">{{ action.label }}</a>
         {% endfor %}

@@ -18,6 +18,7 @@ pub struct DashboardTemplate {
     pub schema_names: Vec<String>,
     pub graph: SchemaGraphView,
     pub current_user: Option<CurrentUserView>,
+    pub active_nav: String,
 }
 
 /// Schema detail page — shows field definitions.
@@ -26,6 +27,7 @@ pub struct SchemaDetailTemplate {
     pub schema: SchemaView,
     pub schema_names: Vec<String>,
     pub current_user: Option<CurrentUserView>,
+    pub active_nav: String,
 }
 
 /// Entity list page — paginated table of entities.
@@ -37,6 +39,7 @@ pub struct EntityListTemplate {
     pub schema_names: Vec<String>,
     pub current_user: Option<CurrentUserView>,
     pub url_prefix: String,
+    pub active_nav: String,
 }
 
 /// Entity create form.
@@ -49,6 +52,7 @@ pub struct EntityFormTemplate {
     pub errors: Vec<String>,
     pub current_user: Option<CurrentUserView>,
     pub url_prefix: String,
+    pub active_nav: String,
 }
 
 /// Entity detail page.
@@ -59,6 +63,7 @@ pub struct EntityDetailTemplate {
     pub schema_names: Vec<String>,
     pub current_user: Option<CurrentUserView>,
     pub url_prefix: String,
+    pub active_nav: String,
 }
 
 /// Entity table body fragment (for HTMX pagination).
@@ -90,6 +95,7 @@ pub struct SchemaEditorTemplate {
     pub schema_names: Vec<String>,
     pub errors: Vec<String>,
     pub current_user: Option<CurrentUserView>,
+    pub active_nav: String,
 }
 
 /// Field editor row fragment — a single field row for HTMX append.
@@ -125,6 +131,7 @@ pub struct UserListTemplate {
     pub users: Vec<ForgeUser>,
     pub schema_names: Vec<String>,
     pub current_user: Option<CurrentUserView>,
+    pub active_nav: String,
 }
 
 /// User create/edit form page.
@@ -138,4 +145,5 @@ pub struct UserFormTemplate {
     pub schema_names: Vec<String>,
     pub errors: Vec<String>,
     pub current_user: Option<CurrentUserView>,
+    pub active_nav: String,
 }

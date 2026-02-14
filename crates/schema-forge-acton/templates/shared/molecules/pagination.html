@@ -1,12 +1,12 @@
-<div class="flex justify-between items-center p-3">
+<div class="flex justify-between items-center p-3 text-sm text-gray-400">
     <span>
         Showing {{ pagination.offset + 1 }}-{{ pagination.end_showing }}
         of {{ pagination.total_count }}
     </span>
-    <div class="join">
+    <div class="flex gap-1">
         {% if pagination.has_previous %}
         <a href="#"
-           class="btn btn-sm join-item"
+           class="rounded-md bg-white/10 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed"
            hx-get="{{ url_prefix }}/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.previous_offset }}"
            hx-target="#entity-table"
            hx-swap="innerHTML"
@@ -14,7 +14,7 @@
         {% endif %}
         {% if pagination.has_next %}
         <a href="#"
-           class="btn btn-sm join-item"
+           class="rounded-md bg-white/10 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed"
            hx-get="{{ url_prefix }}/{{ schema.url_name }}/entities/_table?limit={{ pagination.limit }}&offset={{ pagination.next_offset }}"
            hx-target="#entity-table"
            hx-swap="innerHTML"

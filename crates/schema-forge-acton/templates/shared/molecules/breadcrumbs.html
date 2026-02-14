@@ -1,7 +1,11 @@
-<nav aria-label="Breadcrumbs">
-    <ol class="breadcrumbs">
+<nav class="flex text-sm text-gray-400 mb-4" aria-label="Breadcrumb">
+    <ol class="flex items-center gap-x-2">
         {% for crumb in breadcrumbs %}
-        <li>{% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}{{ crumb.label }}{% endif %}</li>
+        {% if not loop.first %}<li class="text-gray-600">/</li>{% endif %}
+        <li>
+            {% if crumb.url %}<a href="{{ crumb.url }}" class="hover:text-white">{{ crumb.label }}</a>
+            {% else %}<span class="text-white">{{ crumb.label }}</span>{% endif %}
+        </li>
         {% endfor %}
     </ol>
 </nav>

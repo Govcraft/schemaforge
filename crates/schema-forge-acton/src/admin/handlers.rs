@@ -94,6 +94,7 @@ pub async fn dashboard(
             schema_names: names,
             graph,
             current_user,
+            active_nav: "dashboard".to_string(),
         },
     ))
 }
@@ -121,6 +122,7 @@ pub async fn schema_detail(
             schema,
             schema_names: names,
             current_user,
+            active_nav: name,
         },
     ))
 }
@@ -172,6 +174,7 @@ pub async fn entity_list(
             schema_names: names,
             current_user,
             url_prefix: ADMIN_URL_PREFIX.to_string(),
+            active_nav: name,
         },
     ))
 }
@@ -254,6 +257,7 @@ pub async fn entity_create_form(
             errors: vec![],
             current_user,
             url_prefix: ADMIN_URL_PREFIX.to_string(),
+            active_nav: name,
         },
     ))
 }
@@ -317,6 +321,7 @@ pub async fn entity_create(
                     errors,
                     current_user,
                     url_prefix: ADMIN_URL_PREFIX.to_string(),
+                    active_nav: name,
                 },
                 StatusCode::UNPROCESSABLE_ENTITY,
             ))
@@ -364,6 +369,7 @@ pub async fn entity_detail(
             schema_names: names,
             current_user,
             url_prefix: ADMIN_URL_PREFIX.to_string(),
+            active_nav: name,
         },
     ))
 }
@@ -416,6 +422,7 @@ pub async fn entity_edit_form(
             errors: vec![],
             current_user,
             url_prefix: ADMIN_URL_PREFIX.to_string(),
+            active_nav: name,
         },
     ))
 }
@@ -478,6 +485,7 @@ pub async fn entity_update(
                     errors,
                     current_user,
                     url_prefix: ADMIN_URL_PREFIX.to_string(),
+                    active_nav: name,
                 },
                 StatusCode::UNPROCESSABLE_ENTITY,
             ))
@@ -599,6 +607,7 @@ pub async fn schema_create_form(
             schema_names: names,
             errors: vec![],
             current_user,
+            active_nav: "schemas".to_string(),
         },
     ))
 }
@@ -646,6 +655,7 @@ pub async fn schema_create(
                     schema_names: names,
                     errors,
                     current_user,
+                    active_nav: "schemas".to_string(),
                 },
                 StatusCode::UNPROCESSABLE_ENTITY,
             ))
@@ -677,6 +687,7 @@ pub async fn schema_edit_form(
             schema_names: names,
             errors: vec![],
             current_user,
+            active_nav: name,
         },
     ))
 }
@@ -732,6 +743,7 @@ pub async fn schema_update(
                     schema_names: names,
                     errors,
                     current_user,
+                    active_nav: name,
                 },
                 StatusCode::UNPROCESSABLE_ENTITY,
             ))
@@ -908,6 +920,7 @@ pub async fn user_list(
             users,
             schema_names: names,
             current_user,
+            active_nav: "users".to_string(),
         },
     ))
 }
@@ -932,6 +945,7 @@ pub async fn user_create_form(
             schema_names: names,
             errors: vec![],
             current_user,
+            active_nav: "users".to_string(),
         },
     ))
 }
@@ -997,6 +1011,7 @@ pub async fn user_create(
                 schema_names: names,
                 errors,
                 current_user,
+                active_nav: "users".to_string(),
             },
             StatusCode::UNPROCESSABLE_ENTITY,
         ));
@@ -1076,6 +1091,7 @@ pub async fn user_edit_form(
             schema_names: names,
             errors: vec![],
             current_user,
+            active_nav: "users".to_string(),
         },
     ))
 }
@@ -1121,6 +1137,7 @@ pub async fn user_update(
                 schema_names: names,
                 errors: vec!["At least one role is required".to_string()],
                 current_user,
+                active_nav: "users".to_string(),
             },
             StatusCode::UNPROCESSABLE_ENTITY,
         ));
