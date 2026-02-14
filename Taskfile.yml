@@ -17,6 +17,11 @@ tasks:
     cmds:
       - cargo build -p schema-forge-cli --features {{.FEATURES}}
 
+  install:
+    desc: Build release binary and install to ~/.cargo/bin/schema-forge
+    cmds:
+      - cargo install --path crates/schema-forge-cli
+
   serve:
     desc: Start the SchemaForge server (Ctrl+C to stop)
     cmds:
