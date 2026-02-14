@@ -1,13 +1,11 @@
-<fieldset>
-    <legend class="text-sm font-medium text-white mb-1">{{ field.label }}{% if field.required %} <span class="text-red-400">*</span>{% endif %}</legend>
-    <div class="mt-1 rounded-lg border border-white/[0.06] bg-gray-950/50 p-4">
-        {% for child in field.children %}
-        <fieldset>
-            <legend class="text-sm font-medium text-white mb-1">{{ child.label }}</legend>
-            <input type="text" id="{{ field.name }}.{{ child.name }}" name="{{ field.name }}.{{ child.name }}" class="block w-full rounded-md bg-white/5 px-3 py-1.5 text-sm text-white ring-1 ring-inset ring-white/10 placeholder:text-gray-500 focus:ring-2 focus:ring-inset focus:ring-indigo-500"
-                {% if child.current_value %}value="{{ child.current_value }}"{% endif %}
-            >
-        </fieldset>
-        {% endfor %}
+<fieldset style="border: 1px solid var(--sf-secondary); border-radius: var(--sf-border-radius); padding: 0.75rem;">
+    <legend class="sf-form-label">{{ field.label }}{% if field.required %} *{% endif %}</legend>
+    {% for child in field.children %}
+    <div class="sf-form-group">
+        <label class="sf-form-label" for="{{ field.name }}.{{ child.name }}">{{ child.label }}</label>
+        <input type="text" id="{{ field.name }}.{{ child.name }}" name="{{ field.name }}.{{ child.name }}" class="sf-form-input"
+            {% if child.current_value %}value="{{ child.current_value }}"{% endif %}
+        >
     </div>
+    {% endfor %}
 </fieldset>

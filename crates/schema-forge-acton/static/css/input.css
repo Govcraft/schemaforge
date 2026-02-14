@@ -58,6 +58,166 @@
 }
 
 @layer components {
+    /* ---- sf-* shared atom classes (dark admin theme) ---- */
+    .sf-form-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+    }
+    .sf-form-label {
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: #f1f5f9;
+    }
+    .sf-form-input {
+        display: block;
+        width: 100%;
+        border-radius: 0.375rem;
+        background: rgb(255 255 255 / 0.05);
+        padding: 0.375rem 0.75rem;
+        font-size: 0.875rem;
+        color: #f1f5f9;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+    }
+    .sf-form-input:focus {
+        outline: 2px solid #6366f1;
+        outline-offset: -1px;
+    }
+    .sf-form-input::placeholder {
+        color: #6b7280;
+    }
+    .sf-form-textarea {
+        resize: vertical;
+        min-height: 6rem;
+    }
+    .sf-form-select {
+        appearance: auto;
+    }
+    .sf-form-checkbox {
+        width: 1rem;
+        height: 1rem;
+        border-radius: 0.25rem;
+        border: 1px solid rgb(255 255 255 / 0.1);
+        background: rgb(255 255 255 / 0.05);
+        accent-color: #6366f1;
+    }
+
+    /* ---- sf-* widget display classes (dark admin theme) ---- */
+    .sf-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 0.375rem;
+        padding: 0.125rem 0.5rem;
+        font-size: 0.75rem;
+        font-weight: 500;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+    }
+    .sf-badge-neutral {
+        background: rgb(255 255 255 / 0.05);
+        color: #d1d5db;
+    }
+    .sf-badge-success {
+        background: rgb(16 185 129 / 0.15);
+        color: #34d399;
+    }
+    .sf-badge-error {
+        background: rgb(239 68 68 / 0.15);
+        color: #f87171;
+    }
+    .sf-badge-warning {
+        background: rgb(245 158 11 / 0.15);
+        color: #fbbf24;
+    }
+    .sf-badge-info {
+        background: rgb(99 102 241 / 0.15);
+        color: #a5b4fc;
+    }
+    .sf-progress {
+        width: 100%;
+        overflow: hidden;
+        border-radius: 0.25rem;
+        background: #374151;
+        height: 1.25rem;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+    }
+    .sf-progress-bar {
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 600;
+        background: #6366f1;
+        color: #fff;
+        font-size: 0.6875rem;
+        min-width: 2rem;
+        transition: width 0.3s ease;
+    }
+    .sf-relative-time {
+        font-size: 0.875rem;
+        color: #9ca3af;
+    }
+    .sf-count-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        min-width: 1.5rem;
+        height: 1.5rem;
+        padding: 0 0.375rem;
+        background: #6366f1;
+        color: #fff;
+    }
+    .sf-link, .sf-email, .sf-phone {
+        color: #818cf8;
+        text-decoration: none;
+    }
+    .sf-link:hover, .sf-email:hover, .sf-phone:hover {
+        color: #a5b4fc;
+        text-decoration: underline;
+    }
+    .sf-color-swatch {
+        display: inline-block;
+        vertical-align: middle;
+        width: 1rem;
+        height: 1rem;
+        border-radius: 0.125rem;
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+    }
+    .sf-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+    }
+    .sf-tag {
+        display: inline-block;
+        font-size: 0.75rem;
+        padding: 0.0625rem 0.375rem;
+        border-radius: 0.25rem;
+        background: rgb(255 255 255 / 0.05);
+        box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1);
+        color: #d1d5db;
+    }
+    .sf-image-thumb {
+        object-fit: cover;
+        max-width: 4rem;
+        max-height: 4rem;
+        border-radius: 0.25rem;
+    }
+    .sf-code {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        background: rgb(255 255 255 / 0.05);
+        padding: 0.125rem 0.375rem;
+        border-radius: 0.25rem;
+        color: #d1d5db;
+    }
+    .sf-markdown {
+        line-height: 1.5;
+        color: #d1d5db;
+    }
+
     /* HTMX loading states */
     .htmx-request {
         opacity: 0.6;

@@ -1,9 +1,9 @@
-<fieldset>
+<div class="sf-form-group">
     <input type="hidden" name="{{ field.name }}" value="false">
-    <label class="flex items-center gap-2 cursor-pointer text-sm text-white">
-        <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}" value="true" class="size-4 rounded border-white/10 bg-white/5 text-indigo-600 focus:ring-indigo-600 focus:ring-offset-gray-900"
+    <label class="sf-form-label" for="field-{{ field.name }}" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+        <input type="checkbox" id="field-{{ field.name }}" name="{{ field.name }}" value="true" class="sf-form-checkbox"
             {% if field.current_value %}{% if field.current_value == "true" %}checked{% endif %}{% endif %}
         >
-        {{ field.label }}{% if field.required %} <span class="text-red-400">*</span>{% endif %}
+        {{ field.label }}{% if field.required %} *{% endif %}
     </label>
-</fieldset>
+</div>
