@@ -2,10 +2,11 @@
 .*
 !.gitignore
 
-# Text and markdown files (except README.md)
+# Text and markdown files (except README.md and docs/)
 *.txt
 *.md
 !README.md
+!docs/**
 
 # Rust
 target/
