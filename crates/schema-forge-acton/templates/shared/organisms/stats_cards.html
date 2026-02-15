@@ -1,6 +1,0 @@
-{% if stats_heading %}<h3 class="text-base font-semibold text-white">{{ stats_heading }}</h3>{% endif %}
-<dl class="{% if stats_heading %}mt-5 {% endif %}grid grid-cols-1 gap-5 sm:grid-cols-3">
-    {% for stat in stats %}
-    {% include "shared/molecules/stat_item_card.html" %}
-    {% endfor %}
-</dl>

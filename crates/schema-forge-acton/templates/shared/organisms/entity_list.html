@@ -1,0 +1,23 @@
+{% if not entities %}
+<div data-sf="empty-state">
+    <p>No entities yet.</p>
+    <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/new">Create First Entity</a>
+</div>
+{% else %}
+<table data-sf="entity-list">
+    <thead>
+        <tr>
+            {% for field in schema.fields %}
+            <th>{{ field.label }}</th>
+            {% endfor %}
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for entity in entities %}
+        {% include "shared/molecules/entity_row.html" %}
+        {% endfor %}
+    </tbody>
+</table>
+{% include "shared/molecules/pagination.html" %}
+{% endif %}

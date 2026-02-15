@@ -1,6 +1,6 @@
-<div class="sf-form-group">
-    <label class="sf-form-label" for="field-{{ field.name }}">{{ field.label }}{% if field.required %} *{% endif %}</label>
-    <select id="field-{{ field.name }}" name="{{ field.name }}" class="sf-form-input sf-form-select"
+<div data-sf="field" data-field-name="{{ field.name }}" data-input-type="select">
+    <label for="field-{{ field.name }}">{{ field.label }}{% if field.required %} *{% endif %}</label>
+    <select id="field-{{ field.name }}" name="{{ field.name }}"
         {% if field.multiple %}multiple size="5"{% endif %}
         {% if field.required %}required{% endif %}
         {% if field.relation_target %}

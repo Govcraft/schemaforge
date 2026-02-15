@@ -137,7 +137,7 @@ pub async fn run(
     #[cfg(feature = "admin-ui")]
     output.status("    GET  /admin/");
     #[cfg(feature = "widget-ui")]
-    output.status("    GET  /app/");
+    output.status("    GET  /forge/{schema}/entities");
     output.status("  Press Ctrl+C to stop.");
 
     let service = ServiceBuilder::new()
@@ -166,14 +166,8 @@ fn build_versioned_routes(
             extension.register_versioned_routes(router)
         });
 
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-    let builder = builder.with_frontend_routes(|router| {
-        #[cfg(feature = "admin-ui")]
-        let router = extension.register_admin_routes(router);
-        #[cfg(feature = "widget-ui")]
-        let router = extension.register_site_routes(router);
-        router
-    });
+    #[cfg(feature = "admin-ui")]
+    let builder = builder.with_frontend_routes(|router| extension.register_admin_routes(router));
 
     builder.build_routes()
 }

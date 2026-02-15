@@ -1,7 +1,7 @@
-<div class="forge-entity-form" id="forge-form-{{ schema.url_name }}">
+<div data-sf="entity-form" id="forge-form-{{ schema.url_name }}">
 {% if errors %}
-<div class="rounded-md bg-red-500/10 p-4 text-sm text-red-400 ring-1 ring-inset ring-red-500/20 mb-4">
-    <ul class="list-disc list-inside space-y-1">
+<div data-sf="errors">
+    <ul>
         {% for error in errors %}
         <li>{{ error }}</li>
         {% endfor %}
@@ -15,15 +15,15 @@
     {% else %}
     hx-post="{{ url_prefix }}/{{ schema.url_name }}/entities"
     {% endif %}
-    hx-target="closest .forge-entity-form"
+    hx-target="closest [data-sf='entity-form']"
     hx-swap="outerHTML"
 >
     {% for field in fields %}
     {% include "admin/fragments/field_input.html" %}
     {% endfor %}
 
-    <div class="flex gap-2 mt-6 pt-4 border-t border-white/10">
-        <button type="submit" class="rounded-md bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500">
+    <div data-sf="form-actions">
+        <button type="submit">
             {% if entity_id %}Update{% else %}Create{% endif %}
         </button>
     </div>

@@ -1,5 +1,0 @@
-{% if heading_avatar_url %}
-<img src="{{ heading_avatar_url }}" alt="" class="sf-avatar sf-avatar-{{ avatar_size | default('md') }}" />
-{% elif avatar_initials %}
-<span class="sf-avatar sf-avatar-{{ avatar_size | default('md') }} sf-avatar-initials">{{ avatar_initials }}</span>
-{% endif %}

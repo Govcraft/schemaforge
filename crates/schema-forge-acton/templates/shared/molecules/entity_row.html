@@ -1,18 +1,15 @@
-<tr id="entity-{{ entity.id }}">
+<tr data-entity-id="{{ entity.id }}">
     {% for field in entity.field_values %}
-    <td class="sf-list-cell">{% if field.is_empty %}<span style="color: var(--sf-secondary)">-</span>{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</td>
+    <td data-field-name="{{ field.name }}">{% if field.is_empty %}&mdash;{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</td>
     {% endfor %}
-    <td class="sf-list-cell">
-        <div class="flex gap-1.5">
-            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}" class="sf-btn sf-btn-secondary sf-btn-xs">View</a>
-            <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit" class="sf-btn sf-btn-secondary sf-btn-xs">Edit</a>
-            <button
-                class="sf-btn sf-btn-danger sf-btn-xs"
-                hx-delete="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}"
-                hx-confirm="Delete this entity?"
-                hx-target="#entity-{{ entity.id }}"
-                hx-swap="delete"
-            >Del</button>
-        </div>
+    <td>
+        <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}">View</a>
+        <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}/edit">Edit</a>
+        <button
+            hx-delete="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}"
+            hx-confirm="Delete this entity?"
+            hx-target="closest tr"
+            hx-swap="delete"
+        >Delete</button>
     </td>
 </tr>

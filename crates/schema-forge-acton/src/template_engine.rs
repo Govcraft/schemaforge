@@ -5,19 +5,135 @@ use axum::response::{Html, IntoResponse, Response};
 use minijinja::Environment;
 use serde::Serialize;
 
-/// MiniJinja-based template engine with filesystem-only loading.
+/// MiniJinja-based template engine.
 ///
-/// Templates are loaded from a required directory path. No embedded templates
-/// are compiled into the binary — all templates live on the filesystem.
+/// Widget/forge/shared templates are embedded in the binary via `include_str!()`.
+/// Admin templates (when the admin-ui feature is enabled) are loaded from the
+/// filesystem via a fallback loader.
 pub struct TemplateEngine {
     env: Environment<'static>,
 }
 
 impl TemplateEngine {
-    /// Create a new engine loading templates from the given directory.
+    /// Create a new engine with embedded widget templates and a filesystem
+    /// fallback for admin templates.
     pub fn new(template_dir: PathBuf) -> Self {
         let mut env = Environment::new();
 
+        // --- Embedded templates (widget/forge/shared) ---
+
+        // Forge entry-point templates
+        env.add_template(
+            "forge/entity_list.html",
+            include_str!("../templates/forge/entity_list.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "forge/entity_detail.html",
+            include_str!("../templates/forge/entity_detail.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "forge/entity_form.html",
+            include_str!("../templates/forge/entity_form.html"),
+        )
+        .unwrap();
+
+        // Shared organisms
+        env.add_template(
+            "shared/organisms/entity_list.html",
+            include_str!("../templates/shared/organisms/entity_list.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/organisms/entity_detail.html",
+            include_str!("../templates/shared/organisms/entity_detail.html"),
+        )
+        .unwrap();
+        // Alias for handlers that reference "organisms/entity_detail.html" directly
+        env.add_template(
+            "organisms/entity_detail.html",
+            include_str!("../templates/shared/organisms/entity_detail.html"),
+        )
+        .unwrap();
+
+        // Shared molecules
+        env.add_template(
+            "shared/molecules/entity_row.html",
+            include_str!("../templates/shared/molecules/entity_row.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/molecules/pagination.html",
+            include_str!("../templates/shared/molecules/pagination.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/molecules/empty_state.html",
+            include_str!("../templates/shared/molecules/empty_state.html"),
+        )
+        .unwrap();
+
+        // Shared atoms — field display
+        env.add_template(
+            "shared/atoms/field_display.html",
+            include_str!("../templates/shared/atoms/field_display.html"),
+        )
+        .unwrap();
+
+        // Shared atoms — input types
+        env.add_template(
+            "shared/atoms/text_input.html",
+            include_str!("../templates/shared/atoms/text_input.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/atoms/textarea.html",
+            include_str!("../templates/shared/atoms/textarea.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/atoms/number_input.html",
+            include_str!("../templates/shared/atoms/number_input.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/atoms/checkbox.html",
+            include_str!("../templates/shared/atoms/checkbox.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/atoms/datetime_input.html",
+            include_str!("../templates/shared/atoms/datetime_input.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/atoms/select.html",
+            include_str!("../templates/shared/atoms/select.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/atoms/json_editor.html",
+            include_str!("../templates/shared/atoms/json_editor.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/atoms/composite.html",
+            include_str!("../templates/shared/atoms/composite.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/atoms/array_input.html",
+            include_str!("../templates/shared/atoms/array_input.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "shared/atoms/fallback_input.html",
+            include_str!("../templates/shared/atoms/fallback_input.html"),
+        )
+        .unwrap();
+
+        // --- Filesystem fallback loader (for admin templates) ---
         env.set_loader(move |name| {
             let path = template_dir.join(name);
             if path.is_file() {
@@ -30,12 +146,14 @@ impl TemplateEngine {
             }
         });
 
-        // Register custom `split` filter for `field.value | split(", ")`
+        // --- Custom filters ---
+
+        // `split` filter: `field.value | split(sep=", ")`
         env.add_filter("split", |value: &str, sep: &str| -> Vec<String> {
             value.split(sep).map(|s| s.to_string()).collect()
         });
 
-        // Register custom `truncate` filter: `value | truncate(length=N, end="...")`
+        // `truncate` filter: `value | truncate(length=N, end="...")`
         env.add_filter(
             "truncate",
             |value: &str, kwargs: minijinja::value::Kwargs| -> Result<String, minijinja::Error> {
@@ -105,26 +223,18 @@ mod tests {
     }
 
     #[test]
-    fn all_filesystem_templates_loadable() {
+    fn embedded_templates_loadable() {
         let engine = TemplateEngine::new(test_template_dir());
-        // Spot-check that a selection of templates can be loaded from disk
         let names = [
-            "admin/base.html",
-            "admin/login.html",
-            "admin/dashboard.html",
-            "admin/entity_list.html",
-            "admin/entity_form.html",
-            "admin/entity_detail.html",
-            "shared/atoms/field_display.html",
-            "shared/molecules/dashboard_card.html",
-            "shared/organisms/entity_list_table.html",
-            "forge/entity_list_table.html",
+            "forge/entity_list.html",
             "forge/entity_form.html",
             "forge/entity_detail.html",
-            "cloud/base.html",
-            "cloud/login.html",
-            "cloud/dashboard.html",
-            "cloud/entity_list.html",
+            "shared/atoms/field_display.html",
+            "shared/molecules/entity_row.html",
+            "shared/molecules/pagination.html",
+            "shared/organisms/entity_list.html",
+            "shared/organisms/entity_detail.html",
+            "organisms/entity_detail.html",
         ];
         for name in &names {
             let result = engine.env.get_template(name);
@@ -137,38 +247,38 @@ mod tests {
     }
 
     #[test]
-    fn render_filesystem_template() {
+    fn admin_filesystem_templates_loadable() {
         let engine = TemplateEngine::new(test_template_dir());
-        #[derive(Serialize)]
-        struct Card {
-            url_name: String,
-            label: String,
-            display_value: String,
-            widget_label: String,
+        let names = [
+            "admin/base.html",
+            "admin/login.html",
+            "admin/dashboard.html",
+            "admin/entity_list.html",
+            "admin/entity_form.html",
+            "admin/entity_detail.html",
+        ];
+        for name in &names {
+            let result = engine.env.get_template(name);
+            assert!(
+                result.is_ok(),
+                "engine failed to load template {name}: {:?}",
+                result.err()
+            );
         }
-        #[derive(Serialize)]
-        struct Ctx {
-            card: Card,
-        }
-        let ctx = Ctx {
-            card: Card {
-                url_name: "Contact".into(),
-                label: "Contacts".into(),
-                display_value: "42".into(),
-                widget_label: "Count".into(),
-            },
-        };
-        let result = engine.render("shared/molecules/dashboard_card.html", &ctx);
-        assert!(result.is_ok(), "render failed: {:?}", result.err());
-        let html = result.unwrap();
-        assert!(html.contains("Contacts"));
-        assert!(html.contains("42"));
-        assert!(html.contains("Count"));
     }
 
     #[test]
     fn split_filter_works() {
         let dir = tempfile::tempdir().unwrap();
+        let engine = TemplateEngine::new(dir.path().to_path_buf());
+        // Use an embedded template that exercises the split filter
+        // The field_display template uses `split` — test it directly
+        #[derive(Serialize)]
+        struct Ctx {
+            value: String,
+        }
+
+        // Create a temp template to test the filter directly
         let tmpl_dir = dir.path().join("test");
         std::fs::create_dir_all(&tmpl_dir).unwrap();
         std::fs::write(
@@ -177,11 +287,6 @@ mod tests {
         )
         .unwrap();
 
-        let engine = TemplateEngine::new(dir.path().to_path_buf());
-        #[derive(Serialize)]
-        struct Ctx {
-            value: String,
-        }
         let result = engine
             .render(
                 "test/split_test.html",

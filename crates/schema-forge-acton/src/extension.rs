@@ -354,38 +354,6 @@ impl SchemaForgeExtension {
         router.nest("/forge", widget_router)
     }
 
-    /// Register site UI routes onto an existing Router.
-    ///
-    /// Only available when the `widget-ui` feature is enabled.
-    /// Nests site routes under `/app/`, providing a complete application
-    /// UI with `sf-` prefixed semantic HTML.
-    ///
-    /// Applies an in-memory session layer for session-based authentication.
-    /// Protected routes require authentication; unauthenticated requests are
-    /// redirected to `/app/login`.
-    #[cfg(feature = "widget-ui")]
-    pub fn register_site_routes<S>(&self, router: Router<S>) -> Router<S>
-    where
-        S: Clone + Send + Sync + 'static,
-    {
-        use axum::response::Redirect;
-        use axum::routing::get;
-
-        let session_config = acton_service::session::SessionConfig {
-            secure: false,
-            cookie_name: "forge_site".to_string(),
-            ..Default::default()
-        };
-        let session_layer = acton_service::session::create_memory_session_layer(&session_config);
-
-        let site_router = crate::widget::routes::site_routes()
-            .layer(session_layer)
-            .with_state(self.state.clone());
-        router
-            .nest("/app/", site_router)
-            .route("/app", get(|| async { Redirect::permanent("/app/") }))
-    }
-
     /// Get a reference to the schema registry.
     pub fn registry(&self) -> &SchemaRegistry {
         &self.state.registry

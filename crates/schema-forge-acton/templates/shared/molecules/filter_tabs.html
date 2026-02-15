@@ -1,7 +1,0 @@
-{% if heading_filter_tabs %}
-<div class="sf-heading-filter-tabs">
-    {% for tab in heading_filter_tabs %}
-    <a href="{{ tab.url }}" class="sf-heading-filter-tab{% if tab.active %} sf-heading-filter-tab-active{% endif %}">{{ tab.label }}</a>
-    {% endfor %}
-</div>
-{% endif %}

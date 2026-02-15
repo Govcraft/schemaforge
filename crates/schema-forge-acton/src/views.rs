@@ -140,29 +140,29 @@ pub fn badge_color_class(variant: &str) -> &'static str {
     match lower {
         // Success
         "active" | "done" | "completed" | "closed_won" | "approved" | "published" | "resolved"
-        | "won" | "hired" | "accepted" => "sf-badge-success",
+        | "won" | "hired" | "accepted" => "success",
         // Error
         "inactive" | "terminated" | "cancelled" | "closed_lost" | "rejected" | "lost" | "fired"
-        | "declined" | "failed" => "sf-badge-error",
+        | "declined" | "failed" => "error",
         // Warning
         "pending" | "on_hold" | "in_review" | "draft" | "on_leave" | "paused" | "waiting"
-        | "suspended" => "sf-badge-warning",
+        | "suspended" => "warning",
         // Info
         "in_progress" | "proposal" | "negotiation" | "qualification" | "todo" | "prospecting"
-        | "open" | "new" | "interview" | "review" => "sf-badge-info",
+        | "open" | "new" | "interview" | "review" => "info",
         // Neutral
-        "backlog" | "archived" | "other" | "closed" | "unknown" => "sf-badge-neutral",
-        // Fallback: hash to one of the 5 classes
+        "backlog" | "archived" | "other" | "closed" | "unknown" => "neutral",
+        // Fallback: hash to one of the 5 semantic statuses
         _ => {
             let hash: u32 = lower
                 .bytes()
                 .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
             match hash % 5 {
-                0 => "sf-badge-success",
-                1 => "sf-badge-info",
-                2 => "sf-badge-warning",
-                3 => "sf-badge-error",
-                _ => "sf-badge-neutral",
+                0 => "success",
+                1 => "info",
+                2 => "warning",
+                3 => "error",
+                _ => "neutral",
             }
         }
     }
@@ -219,153 +219,6 @@ pub fn relative_time_display(dt_str: &str, now: chrono::DateTime<chrono::Utc>) -
     } else {
         dt.format("%b %d, %Y").to_string()
     }
-}
-
-/// A kanban column with its variant, label, and grouped entities.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct KanbanColumn {
-    pub variant: String,
-    pub label: String,
-    pub entities: Vec<EntityView>,
-    pub count: usize,
-}
-
-/// Detect the kanban field for a schema.
-///
-/// Precedence:
-/// 1. First field with `@kanban_column` annotation (explicit)
-/// 2. If no `@kanban_column`, check `@dashboard(group_by: "X")` — find that field, verify it's an enum
-/// 3. Neither found → `None`
-///
-/// Returns `(field_name, enum_variants)`.
-pub fn find_kanban_field(schema: &SchemaDefinition) -> Option<(String, Vec<String>)> {
-    // 1. Explicit @kanban_column
-    for f in &schema.fields {
-        if f.has_kanban_column() {
-            if let FieldType::Enum(variants) = &f.field_type {
-                return Some((f.name.as_str().to_string(), variants.as_slice().to_vec()));
-            }
-        }
-    }
-
-    // 2. @dashboard(group_by: "X") fallback
-    for ann in &schema.annotations {
-        if let Annotation::Dashboard {
-            group_by: Some(field_name),
-            ..
-        } = ann
-        {
-            for f in &schema.fields {
-                if f.name.as_str() == field_name.as_str() {
-                    if let FieldType::Enum(variants) = &f.field_type {
-                        return Some((f.name.as_str().to_string(), variants.as_slice().to_vec()));
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Group entities into kanban columns by a field value.
-///
-/// `variants` defines the column order. Entities without a matching value go into the first column.
-pub fn group_entities_by_field(
-    entities: Vec<EntityView>,
-    field_name: &str,
-    variants: &[String],
-) -> Vec<KanbanColumn> {
-    let mut columns: Vec<KanbanColumn> = variants
-        .iter()
-        .map(|v| KanbanColumn {
-            variant: v.clone(),
-            label: snake_to_label(v),
-            entities: Vec::new(),
-            count: 0,
-        })
-        .collect();
-
-    for entity in entities {
-        let field_value = entity
-            .field_values
-            .iter()
-            .find(|f| f.name == field_name)
-            .map(|f| f.raw_value.as_str())
-            .unwrap_or("");
-
-        let col_idx = columns
-            .iter()
-            .position(|c| c.variant == field_value)
-            .unwrap_or(0);
-
-        if let Some(col) = columns.get_mut(col_idx) {
-            col.entities.push(entity);
-        }
-    }
-
-    for col in &mut columns {
-        col.count = col.entities.len();
-    }
-
-    columns
-}
-
-/// A single filter variant pill with pre-computed active state.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct FilterPill {
-    pub value: String,
-    pub is_active: bool,
-}
-
-/// Filter field descriptor for UI filter pills.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct FilterField {
-    pub name: String,
-    pub label: String,
-    pub pills: Vec<FilterPill>,
-    /// True when no variant is selected (the "All" pill is active).
-    pub all_active: bool,
-    /// The currently active filter value (empty = no filter).
-    pub active_value: String,
-}
-
-/// Extract enum fields from a schema for use as filter pills.
-///
-/// `active_filters` provides the currently selected value per field (if any).
-pub fn extract_filter_fields(
-    schema: &SchemaDefinition,
-    active_filters: &std::collections::HashMap<String, String>,
-) -> Vec<FilterField> {
-    schema
-        .fields
-        .iter()
-        .filter_map(|f| {
-            if let FieldType::Enum(variants) = &f.field_type {
-                let active = active_filters
-                    .get(f.name.as_str())
-                    .cloned()
-                    .unwrap_or_default();
-                let pills = variants
-                    .as_slice()
-                    .iter()
-                    .map(|v| FilterPill {
-                        value: v.clone(),
-                        is_active: active == *v,
-                    })
-                    .collect();
-                Some(FilterField {
-                    name: f.name.as_str().to_string(),
-                    label: snake_to_label(f.name.as_str()),
-                    pills,
-                    all_active: active.is_empty(),
-                    active_value: active,
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 /// Convert a snake_case field name to a human-readable label.
@@ -1468,37 +1321,37 @@ mod tests {
 
     #[test]
     fn badge_color_class_known_success() {
-        assert_eq!(badge_color_class("active"), "sf-badge-success");
-        assert_eq!(badge_color_class("Active"), "sf-badge-success");
-        assert_eq!(badge_color_class("completed"), "sf-badge-success");
-        assert_eq!(badge_color_class("published"), "sf-badge-success");
+        assert_eq!(badge_color_class("active"), "success");
+        assert_eq!(badge_color_class("Active"), "success");
+        assert_eq!(badge_color_class("completed"), "success");
+        assert_eq!(badge_color_class("published"), "success");
     }
 
     #[test]
     fn badge_color_class_known_error() {
-        assert_eq!(badge_color_class("inactive"), "sf-badge-error");
-        assert_eq!(badge_color_class("cancelled"), "sf-badge-error");
-        assert_eq!(badge_color_class("rejected"), "sf-badge-error");
+        assert_eq!(badge_color_class("inactive"), "error");
+        assert_eq!(badge_color_class("cancelled"), "error");
+        assert_eq!(badge_color_class("rejected"), "error");
     }
 
     #[test]
     fn badge_color_class_known_warning() {
-        assert_eq!(badge_color_class("pending"), "sf-badge-warning");
-        assert_eq!(badge_color_class("draft"), "sf-badge-warning");
-        assert_eq!(badge_color_class("on_hold"), "sf-badge-warning");
+        assert_eq!(badge_color_class("pending"), "warning");
+        assert_eq!(badge_color_class("draft"), "warning");
+        assert_eq!(badge_color_class("on_hold"), "warning");
     }
 
     #[test]
     fn badge_color_class_known_info() {
-        assert_eq!(badge_color_class("in_progress"), "sf-badge-info");
-        assert_eq!(badge_color_class("todo"), "sf-badge-info");
-        assert_eq!(badge_color_class("prospecting"), "sf-badge-info");
+        assert_eq!(badge_color_class("in_progress"), "info");
+        assert_eq!(badge_color_class("todo"), "info");
+        assert_eq!(badge_color_class("prospecting"), "info");
     }
 
     #[test]
     fn badge_color_class_known_neutral() {
-        assert_eq!(badge_color_class("backlog"), "sf-badge-neutral");
-        assert_eq!(badge_color_class("archived"), "sf-badge-neutral");
+        assert_eq!(badge_color_class("backlog"), "neutral");
+        assert_eq!(badge_color_class("archived"), "neutral");
     }
 
     #[test]
@@ -1509,11 +1362,11 @@ mod tests {
         assert_eq!(first, second);
         // Should be one of the 5 classes
         assert!([
-            "sf-badge-success",
-            "sf-badge-info",
-            "sf-badge-warning",
-            "sf-badge-error",
-            "sf-badge-neutral"
+            "success",
+            "info",
+            "warning",
+            "error",
+            "neutral"
         ]
         .contains(&first));
     }
@@ -1628,7 +1481,7 @@ mod tests {
         );
         assert_eq!(
             view.field_values[0].badge_class,
-            Some("sf-badge-success".to_string())
+            Some("success".to_string())
         );
         assert_eq!(view.field_values[0].field_type, "enum");
         assert_eq!(view.field_values[0].raw_value, "active");
@@ -1751,170 +1604,4 @@ mod tests {
         assert_eq!(summary[2].name, "d");
     }
 
-    // --- find_kanban_field tests ---
-
-    #[test]
-    fn find_kanban_field_explicit() {
-        let schema = SchemaDefinition::new(
-            SchemaId::new(),
-            SchemaName::new("Task").unwrap(),
-            vec![FieldDefinition::with_annotations(
-                FieldName::new("status").unwrap(),
-                FieldType::Enum(EnumVariants::new(vec!["todo".into(), "done".into()]).unwrap()),
-                vec![],
-                vec![schema_forge_core::types::FieldAnnotation::KanbanColumn],
-            )],
-            vec![],
-        )
-        .unwrap();
-
-        let result = find_kanban_field(&schema);
-        assert!(result.is_some());
-        let (name, variants) = result.unwrap();
-        assert_eq!(name, "status");
-        assert_eq!(variants, vec!["todo", "done"]);
-    }
-
-    #[test]
-    fn find_kanban_field_dashboard_fallback() {
-        let schema = SchemaDefinition::new(
-            SchemaId::new(),
-            SchemaName::new("Deal").unwrap(),
-            vec![make_field(
-                "stage",
-                FieldType::Enum(EnumVariants::new(vec!["new".into(), "won".into()]).unwrap()),
-            )],
-            vec![Annotation::Dashboard {
-                widgets: vec![],
-                layout: Some("kanban".into()),
-                group_by: Some("stage".into()),
-                sort_default: None,
-            }],
-        )
-        .unwrap();
-
-        let result = find_kanban_field(&schema);
-        assert!(result.is_some());
-        let (name, _) = result.unwrap();
-        assert_eq!(name, "stage");
-    }
-
-    #[test]
-    fn find_kanban_field_none() {
-        let schema = SchemaDefinition::new(
-            SchemaId::new(),
-            SchemaName::new("Contact").unwrap(),
-            vec![make_field(
-                "name",
-                FieldType::Text(TextConstraints::unconstrained()),
-            )],
-            vec![],
-        )
-        .unwrap();
-
-        assert!(find_kanban_field(&schema).is_none());
-    }
-
-    // --- group_entities_by_field tests ---
-
-    #[test]
-    fn group_entities_correct_grouping() {
-        let variants = vec!["todo".to_string(), "done".to_string()];
-
-        let schema = SchemaDefinition::new(
-            SchemaId::new(),
-            SchemaName::new("Task").unwrap(),
-            vec![
-                make_field("title", FieldType::Text(TextConstraints::unconstrained())),
-                make_field(
-                    "status",
-                    FieldType::Enum(EnumVariants::new(variants.clone()).unwrap()),
-                ),
-            ],
-            vec![],
-        )
-        .unwrap();
-
-        let mut e1_fields = std::collections::BTreeMap::new();
-        e1_fields.insert("title".to_string(), DynamicValue::Text("Task1".into()));
-        e1_fields.insert("status".to_string(), DynamicValue::Enum("todo".into()));
-        let e1 = EntityView::from_entity(
-            &Entity::new(SchemaName::new("Task").unwrap(), e1_fields),
-            &schema,
-        );
-
-        let mut e2_fields = std::collections::BTreeMap::new();
-        e2_fields.insert("title".to_string(), DynamicValue::Text("Task2".into()));
-        e2_fields.insert("status".to_string(), DynamicValue::Enum("done".into()));
-        let e2 = EntityView::from_entity(
-            &Entity::new(SchemaName::new("Task").unwrap(), e2_fields),
-            &schema,
-        );
-
-        let columns = group_entities_by_field(vec![e1, e2], "status", &variants);
-        assert_eq!(columns.len(), 2);
-        assert_eq!(columns[0].variant, "todo");
-        assert_eq!(columns[0].count, 1);
-        assert_eq!(columns[1].variant, "done");
-        assert_eq!(columns[1].count, 1);
-    }
-
-    #[test]
-    fn group_entities_empty_columns() {
-        let variants = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let columns = group_entities_by_field(vec![], "status", &variants);
-        assert_eq!(columns.len(), 3);
-        assert_eq!(columns[0].count, 0);
-        assert_eq!(columns[1].count, 0);
-        assert_eq!(columns[2].count, 0);
-    }
-
-    // --- extract_filter_fields tests ---
-
-    #[test]
-    fn extract_filter_fields_enum_only() {
-        let schema = SchemaDefinition::new(
-            SchemaId::new(),
-            SchemaName::new("Task").unwrap(),
-            vec![
-                make_field("title", FieldType::Text(TextConstraints::unconstrained())),
-                make_field(
-                    "status",
-                    FieldType::Enum(
-                        EnumVariants::new(vec!["active".into(), "done".into()]).unwrap(),
-                    ),
-                ),
-                make_field("active", FieldType::Boolean),
-            ],
-            vec![],
-        )
-        .unwrap();
-
-        let filters = extract_filter_fields(&schema, &std::collections::HashMap::new());
-        assert_eq!(filters.len(), 1);
-        assert_eq!(filters[0].name, "status");
-        assert_eq!(filters[0].pills.len(), 2);
-        assert!(filters[0].all_active);
-    }
-
-    #[test]
-    fn extract_filter_fields_with_active() {
-        let schema = SchemaDefinition::new(
-            SchemaId::new(),
-            SchemaName::new("Task").unwrap(),
-            vec![make_field(
-                "status",
-                FieldType::Enum(EnumVariants::new(vec!["active".into(), "done".into()]).unwrap()),
-            )],
-            vec![],
-        )
-        .unwrap();
-
-        let mut active = std::collections::HashMap::new();
-        active.insert("status".to_string(), "active".to_string());
-        let filters = extract_filter_fields(&schema, &active);
-        assert!(!filters[0].all_active);
-        assert!(filters[0].pills[0].is_active); // "active" is active
-        assert!(!filters[0].pills[1].is_active); // "done" is not
-    }
 }
