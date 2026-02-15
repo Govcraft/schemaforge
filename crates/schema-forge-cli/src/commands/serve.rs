@@ -169,6 +169,9 @@ fn build_versioned_routes(
     #[cfg(feature = "admin-ui")]
     let builder = builder.with_frontend_routes(|router| extension.register_admin_routes(router));
 
+    #[cfg(feature = "widget-ui")]
+    let builder = builder.with_frontend_routes(|router| extension.register_widget_routes(router));
+
     builder.build_routes()
 }
 
