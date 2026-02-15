@@ -40,7 +40,7 @@ pub struct SchemaForgeExtensionBuilder {
     >,
     #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     admin_credentials: Option<(String, String)>,
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+    #[cfg(feature = "admin-ui")]
     template_dir: Option<std::path::PathBuf>,
 }
 
@@ -55,7 +55,7 @@ impl SchemaForgeExtensionBuilder {
             surreal_client: None,
             #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             admin_credentials: None,
-            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+            #[cfg(feature = "admin-ui")]
             template_dir: None,
         }
     }
@@ -126,11 +126,11 @@ impl SchemaForgeExtensionBuilder {
         self
     }
 
-    /// Set the directory for MiniJinja templates.
+    /// Set the directory for admin MiniJinja templates.
     ///
-    /// Required when `admin-ui` or `widget-ui` features are enabled.
-    /// Templates are loaded exclusively from this directory (no embedded fallback).
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+    /// Required when `admin-ui` is enabled. Admin templates are loaded from
+    /// this directory. Widget/forge templates are always embedded in the binary.
+    #[cfg(feature = "admin-ui")]
     pub fn with_template_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.template_dir = Some(dir);
         self
@@ -193,14 +193,15 @@ impl SchemaForgeExtensionBuilder {
             Arc::new(arc_swap::ArcSwap::new(Arc::new(gql_schema)))
         };
 
-        // Construct MiniJinja template engine — filesystem-only, directory required
+        // Construct MiniJinja template engine.
+        // Widget/forge/shared templates are always embedded in the binary.
+        // Admin templates are loaded from the filesystem when a template dir is provided.
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         let template_engine = {
-            let template_dir = self.template_dir.ok_or_else(|| ForgeError::Internal {
-                message: "Template directory required when admin-ui or widget-ui is enabled \
-                              (call .with_template_dir())"
-                    .to_string(),
-            })?;
+            #[cfg(feature = "admin-ui")]
+            let template_dir = self.template_dir;
+            #[cfg(not(feature = "admin-ui"))]
+            let template_dir: Option<std::path::PathBuf> = None;
             Arc::new(crate::template_engine::TemplateEngine::new(template_dir))
         };
 

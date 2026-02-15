@@ -245,8 +245,8 @@ pub struct ServeArgs {
     #[arg(long = "admin-password", env = "FORGE_ADMIN_PASSWORD")]
     pub admin_password: Option<String>,
 
-    /// Directory for MiniJinja site templates
-    #[cfg(feature = "widget-ui")]
+    /// Directory for admin UI MiniJinja templates
+    #[cfg(feature = "admin-ui")]
     #[arg(long = "template-dir", env = "FORGE_TEMPLATE_DIR")]
     pub template_dir: Option<PathBuf>,
 }

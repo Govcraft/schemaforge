@@ -43,7 +43,7 @@ async fn admin_test_state() -> ForgeState {
         surreal_client: None,
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     }

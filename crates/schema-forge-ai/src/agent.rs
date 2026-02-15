@@ -87,9 +87,7 @@ impl SchemaForgeAgent {
             surreal_client: None,
             #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             template_engine: std::sync::Arc::new(
-                schema_forge_acton::template_engine::TemplateEngine::new(std::path::PathBuf::from(
-                    "templates",
-                )),
+                schema_forge_acton::template_engine::TemplateEngine::new(None),
             ),
         }
     }

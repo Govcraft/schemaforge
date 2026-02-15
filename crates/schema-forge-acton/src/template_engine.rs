@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use minijinja::Environment;
@@ -9,15 +7,18 @@ use serde::Serialize;
 ///
 /// Widget/forge/shared templates are embedded in the binary via `include_str!()`.
 /// Admin templates (when the admin-ui feature is enabled) are loaded from the
-/// filesystem via a fallback loader.
+/// filesystem via an optional fallback loader.
 pub struct TemplateEngine {
     env: Environment<'static>,
 }
 
 impl TemplateEngine {
-    /// Create a new engine with embedded widget templates and a filesystem
-    /// fallback for admin templates.
-    pub fn new(template_dir: PathBuf) -> Self {
+    /// Create a new engine with embedded widget templates.
+    ///
+    /// When `template_dir` is `Some`, a filesystem fallback loader is added
+    /// for templates not found in the embedded set (e.g. admin templates).
+    /// When `None`, only embedded templates are available.
+    pub fn new(template_dir: Option<std::path::PathBuf>) -> Self {
         let mut env = Environment::new();
 
         // --- Embedded templates (widget/forge/shared) ---
@@ -134,17 +135,19 @@ impl TemplateEngine {
         .unwrap();
 
         // --- Filesystem fallback loader (for admin templates) ---
-        env.set_loader(move |name| {
-            let path = template_dir.join(name);
-            if path.is_file() {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => Ok(Some(content)),
-                    Err(_) => Ok(None),
+        if let Some(template_dir) = template_dir {
+            env.set_loader(move |name| {
+                let path = template_dir.join(name);
+                if path.is_file() {
+                    match std::fs::read_to_string(&path) {
+                        Ok(content) => Ok(Some(content)),
+                        Err(_) => Ok(None),
+                    }
+                } else {
+                    Ok(None)
                 }
-            } else {
-                Ok(None)
-            }
-        });
+            });
+        }
 
         // --- Custom filters ---
 
@@ -218,13 +221,13 @@ pub fn render_template_with_status<T: Serialize>(
 mod tests {
     use super::*;
 
-    fn test_template_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
+    fn test_template_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
     }
 
     #[test]
     fn embedded_templates_loadable() {
-        let engine = TemplateEngine::new(test_template_dir());
+        let engine = TemplateEngine::new(None);
         let names = [
             "forge/entity_list.html",
             "forge/entity_form.html",
@@ -248,7 +251,7 @@ mod tests {
 
     #[test]
     fn admin_filesystem_templates_loadable() {
-        let engine = TemplateEngine::new(test_template_dir());
+        let engine = TemplateEngine::new(Some(test_template_dir()));
         let names = [
             "admin/base.html",
             "admin/login.html",
@@ -270,7 +273,7 @@ mod tests {
     #[test]
     fn split_filter_works() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = TemplateEngine::new(dir.path().to_path_buf());
+        let engine = TemplateEngine::new(Some(dir.path().to_path_buf()));
         // Use an embedded template that exercises the split filter
         // The field_display template uses `split` — test it directly
         #[derive(Serialize)]
@@ -300,8 +303,7 @@ mod tests {
 
     #[test]
     fn missing_template_returns_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = TemplateEngine::new(dir.path().to_path_buf());
+        let engine = TemplateEngine::new(None);
         let result = engine.render("nonexistent.html", &());
         assert!(result.is_err());
     }

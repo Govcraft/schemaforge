@@ -52,7 +52,7 @@ pub async fn run(
         }
     }
 
-    #[cfg(feature = "widget-ui")]
+    #[cfg(feature = "admin-ui")]
     {
         if let Some(ref dir) = args.template_dir {
             builder = builder.with_template_dir(dir.clone());
@@ -194,10 +194,17 @@ mod tests {
         let backend = SurrealBackend::connect_memory("test", "serve_test")
             .await
             .expect("in-memory backend");
-        let extension = SchemaForgeExtension::builder()
-            .with_backend(backend)
-            .with_template_dir(std::env::temp_dir().join("forge_cli_test_templates"))
-            .build()
+        let mut builder = SchemaForgeExtension::builder()
+            .with_backend(backend);
+        #[cfg(feature = "admin-ui")]
+        {
+            builder = builder.with_template_dir(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent().unwrap()
+                    .join("schema-forge-acton/templates"),
+            );
+        }
+        let extension = builder.build()
             .await
             .expect("extension");
         build_test_router(&extension)

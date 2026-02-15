@@ -32,7 +32,7 @@ async fn test_state() -> ForgeState {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     }
@@ -500,7 +500,7 @@ async fn extension_builder_with_backend_loads_schemas() {
 
     let mut builder = SchemaForgeExtension::builder();
     builder = builder.with_backend(backend);
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+    #[cfg(feature = "admin-ui")]
     {
         builder = builder.with_template_dir(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
@@ -531,7 +531,7 @@ async fn extension_register_routes_nests_under_forge() {
 
     let mut builder = SchemaForgeExtension::builder();
     builder = builder.with_backend(backend);
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+    #[cfg(feature = "admin-ui")]
     {
         builder = builder.with_template_dir(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
@@ -579,7 +579,7 @@ async fn request_with_noop_auth_succeeds() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -632,7 +632,7 @@ async fn request_with_failing_auth_returns_401() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -716,7 +716,7 @@ async fn access_test_state(
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -841,7 +841,7 @@ async fn open_access_request_always_succeeds() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -933,7 +933,7 @@ async fn field_filtering_hides_restricted_fields() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };

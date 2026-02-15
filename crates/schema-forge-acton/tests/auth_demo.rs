@@ -129,7 +129,7 @@ async fn demo_system_schemas_seeded_at_startup() {
         .unwrap();
     let mut builder = schema_forge_acton::SchemaForgeExtension::builder();
     builder = builder.with_backend(backend);
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+    #[cfg(feature = "admin-ui")]
     {
         builder = builder.with_template_dir(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
@@ -233,7 +233,7 @@ async fn demo_schema_access_control() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -268,7 +268,7 @@ async fn demo_schema_access_control() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -366,7 +366,7 @@ async fn demo_field_access_filtering() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -402,7 +402,7 @@ async fn demo_field_access_filtering() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -486,7 +486,7 @@ async fn demo_record_ownership() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -528,7 +528,7 @@ async fn demo_record_ownership() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -571,7 +571,7 @@ async fn demo_record_ownership() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -691,7 +691,7 @@ async fn demo_multi_tenancy_isolation() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -740,7 +740,7 @@ async fn demo_multi_tenancy_isolation() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -1021,7 +1021,7 @@ async fn demo_all_auth_layers_combined() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -1076,7 +1076,7 @@ async fn demo_all_auth_layers_combined() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -1112,7 +1112,7 @@ async fn demo_all_auth_layers_combined() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -1147,7 +1147,7 @@ async fn demo_all_auth_layers_combined() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
@@ -1179,7 +1179,7 @@ async fn demo_all_auth_layers_combined() {
         #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
     };
