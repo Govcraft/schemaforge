@@ -9,9 +9,6 @@ vars:
   CSS_INPUT: crates/schema-forge-acton/static/css/input.css
   CSS_OUTPUT: crates/schema-forge-acton/static/css/admin.css
   CSS_CONTENT: "crates/schema-forge-acton/templates/**/*.html"
-  SITE_CSS_INPUT: crates/schema-forge-acton/static/css/cloud-input.css
-  SITE_CSS_OUTPUT: crates/schema-forge-acton/templates/cloud/base.css
-  SITE_CSS_CONTENT: "crates/schema-forge-acton/templates/**/*.html"
 
 tasks:
   build:
@@ -47,7 +44,6 @@ tasks:
 
         # Compile CSS
         npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}'
-        npx @tailwindcss/cli -i {{.SITE_CSS_INPUT}} -o {{.SITE_CSS_OUTPUT}} --content '{{.SITE_CSS_CONTENT}}'
 
         # Build
         cargo build -p schema-forge-cli --features {{.FEATURES}}
@@ -77,7 +73,6 @@ tasks:
         echo ""
         echo "Demo server running at {{.BASE_URL}}"
         echo "Admin UI: {{.BASE_URL}}/admin/"
-        echo "Site UI: {{.BASE_URL}}/app/"
         echo "Press Ctrl+C to stop."
         wait $SERVER_PID
 
@@ -90,16 +85,6 @@ tasks:
     desc: Watch and rebuild Tailwind CSS
     cmds:
       - npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}' --watch
-
-  css:site:
-    desc: Build site UI Tailwind CSS
-    cmds:
-      - npx @tailwindcss/cli -i {{.SITE_CSS_INPUT}} -o {{.SITE_CSS_OUTPUT}} --content '{{.SITE_CSS_CONTENT}}'
-
-  css:site:watch:
-    desc: Watch and rebuild site UI Tailwind CSS
-    cmds:
-      - npx @tailwindcss/cli -i {{.SITE_CSS_INPUT}} -o {{.SITE_CSS_OUTPUT}} --content '{{.SITE_CSS_CONTENT}}' --watch
 
   test:
     desc: Run all workspace tests

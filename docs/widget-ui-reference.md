@@ -8,23 +8,125 @@ You own layout, navigation, auth UI, and styling. SchemaForge provides the data.
 
 ## Table of Contents
 
-1. [Endpoints](#1-endpoints)
-2. [Content Negotiation](#2-content-negotiation)
-3. [HTMX Interaction Patterns](#3-htmx-interaction-patterns)
-4. [Data Shapes](#4-data-shapes)
-5. [Field Input Types](#5-field-input-types)
-6. [Widget Types (Display)](#6-widget-types-display)
-7. [Badge Status Classification](#7-badge-status-classification)
-8. [Annotations That Affect Rendering](#8-annotations-that-affect-rendering)
-9. [Styling with `data-sf` Attributes](#9-styling-with-data-sf-attributes)
-10. [Authentication](#10-authentication)
-11. [Building Navigation](#11-building-navigation)
-12. [Template File Inventory](#12-template-file-inventory)
-13. [Error Responses](#13-error-responses)
+1. [Quick Start](#1-quick-start)
+2. [Endpoints](#2-endpoints)
+3. [Content Negotiation](#3-content-negotiation)
+4. [HTMX Interaction Patterns](#4-htmx-interaction-patterns)
+5. [Data Shapes](#5-data-shapes)
+6. [Field Input Types](#6-field-input-types)
+7. [Widget Types (Display)](#7-widget-types-display)
+8. [Badge Status Classification](#8-badge-status-classification)
+9. [Annotations That Affect Rendering](#9-annotations-that-affect-rendering)
+10. [Styling with `data-sf` Attributes](#10-styling-with-data-sf-attributes)
+11. [Authentication](#11-authentication)
+12. [Building Navigation](#12-building-navigation)
+13. [Template File Inventory](#13-template-file-inventory)
+14. [Error Responses](#14-error-responses)
 
 ---
 
-## 1. Endpoints
+## 1. Quick Start
+
+### Build with the `widget-ui` feature
+
+```bash
+cargo build -p schema-forge-cli --features widget-ui
+```
+
+### Define a schema
+
+Create a `schemas/` directory with a `.schema` file:
+
+```
+# schemas/Contact.schema
+schema Contact {
+    @display
+    full_name: Text
+
+    email: Text
+    status: Enum(active, inactive, pending) @widget("status_badge")
+    company: Relation(Company, One)
+}
+
+schema Company {
+    @display
+    name: Text
+
+    industry: Text
+}
+```
+
+### Start the server
+
+```bash
+# In-memory database (development)
+schema-forge serve --db-url "mem://"
+
+# Remote SurrealDB
+schema-forge serve --db-url "ws://localhost:8000"
+```
+
+The server starts on `http://127.0.0.1:3000` by default. CLI options:
+
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `--host` / `-H` | -- | `127.0.0.1` | Bind address |
+| `--port` / `-p` | -- | `3000` | Listen port |
+| `--schemas` | -- | `schemas/` | Schema file directory |
+| `--db-url` | `SCHEMA_FORGE_DB_URL` | -- | SurrealDB connection URL |
+| `--template-dir` | `FORGE_TEMPLATE_DIR` | -- | Override template directory |
+
+### Embed fragments in your HTML page
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>My App</title>
+  <script src="https://unpkg.com/htmx.org@2"></script>
+  <style>
+    /* Style SchemaForge fragments with data-sf selectors */
+    [data-sf="entity-list"] { width: 100%; border-collapse: collapse; }
+    [data-sf="entity-list"] td { padding: 0.5rem; border-top: 1px solid #e5e7eb; }
+    [data-sf="badge"] { padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; }
+    [data-sf="badge"][data-status="success"] { background: #dcfce7; color: #166534; }
+  </style>
+</head>
+<body>
+  <h1>Contacts</h1>
+
+  <!-- Load the entity list fragment -->
+  <div hx-get="/forge/Contact/entities" hx-trigger="load" hx-target="this">
+    Loading...
+  </div>
+
+  <h2>Add Contact</h2>
+
+  <!-- Load the create form fragment -->
+  <div hx-get="/forge/Contact/entities/new" hx-trigger="load" hx-target="this">
+    Loading form...
+  </div>
+</body>
+</html>
+```
+
+### Or use the JSON API
+
+```bash
+# List entities
+curl -H "Accept: application/json" http://localhost:3000/forge/Contact/entities
+
+# Create an entity
+curl -X POST http://localhost:3000/forge/Contact/entities \
+  -d "full_name=Jane+Doe&email=jane@example.com&status=active"
+
+# Get JSON detail
+curl -H "Accept: application/json" http://localhost:3000/forge/Contact/entities/Contact:abc123
+```
+
+---
+
+## 2. Endpoints
 
 All routes live under `/forge` and return **bare HTML fragments** by default (no `<html>`, no layout). Send `Accept: application/json` to get JSON instead.
 
@@ -316,7 +418,7 @@ Fetches up to 100 entities. Uses `@display` annotation field for labels, falls b
 
 ---
 
-## 2. Content Negotiation
+## 3. Content Negotiation
 
 All endpoints support content negotiation via the `Accept` header:
 
@@ -334,11 +436,11 @@ curl http://localhost:3000/forge/Contact/entities
 curl -H "Accept: application/json" http://localhost:3000/forge/Contact/entities
 ```
 
-The JSON responses use the same view structs as the HTML templates, so field names and structure are identical. See [Data Shapes](#4-data-shapes) for details.
+The JSON responses use the same view structs as the HTML templates, so field names and structure are identical. See [Data Shapes](#5-data-shapes) for details.
 
 ---
 
-## 3. HTMX Interaction Patterns
+## 4. HTMX Interaction Patterns
 
 ### Fragment Lifecycle
 
@@ -402,7 +504,7 @@ Relation select fields use `hx-trigger="load"` to fetch options when the form re
 
 ---
 
-## 4. Data Shapes
+## 5. Data Shapes
 
 These are the Rust structs serialized as both template context and JSON responses. Field names become template variables and JSON keys.
 
@@ -484,7 +586,7 @@ These are the Rust structs serialized as both template context and JSON response
 
 ---
 
-## 5. Field Input Types
+## 6. Field Input Types
 
 The `input_type` field on `FieldView` determines which form input is rendered.
 
@@ -505,7 +607,7 @@ The `input_type` field on `FieldView` determines which form input is rendered.
 
 ---
 
-## 6. Widget Types (Display)
+## 7. Widget Types (Display)
 
 The `@widget` annotation on a field controls how its value is rendered in read-only views.
 
@@ -523,7 +625,7 @@ The `@widget` annotation on a field controls how its value is rendered in read-o
 
 ---
 
-## 7. Badge Status Classification
+## 8. Badge Status Classification
 
 When `widget_type` is `status_badge`, the `badge_class` is auto-assigned based on the field value:
 
@@ -541,12 +643,12 @@ In HTML, the status is exposed as `data-status="{status}"` on the badge element.
 
 ---
 
-## 8. Annotations That Affect Rendering
+## 9. Annotations That Affect Rendering
 
 | Annotation | Effect |
 |---|---|
 | `@display` | Sets which field value is used as the entity label |
-| `@widget("type")` | Controls field display rendering (see section 6) |
+| `@widget("type")` | Controls field display rendering (see section 7) |
 | `@format("hint")` | Formats numeric values: `"currency:$"`, `"currency:EUR"`, `"percent"` |
 | `@system` | Excludes schema from navigation listings |
 | `@access(read: [...])` | Controls which roles can see the schema and access its data |
@@ -554,7 +656,7 @@ In HTML, the status is exposed as `data-status="{status}"` on the badge element.
 
 ---
 
-## 9. Styling with `data-sf` Attributes
+## 10. Styling with `data-sf` Attributes
 
 HTML fragments use semantic `data-sf` attributes instead of CSS classes, giving you full control over styling. Here is the complete attribute vocabulary:
 
@@ -623,7 +725,7 @@ HTML fragments use semantic `data-sf` attributes instead of CSS classes, giving 
 
 ---
 
-## 10. Authentication
+## 11. Authentication
 
 Widget routes are wrapped with API auth middleware via `register_widget_routes()`. The auth middleware checks for an `AuthContext` in request extensions.
 
@@ -644,7 +746,7 @@ Field-level access is controlled by `@field_access` annotations. Restricted fiel
 
 ---
 
-## 11. Building Navigation
+## 12. Building Navigation
 
 SchemaForge does not provide navigation UI. Use the schema list API to build your own:
 
@@ -695,7 +797,7 @@ Or with HTMX, embed fragments directly:
 
 ---
 
-## 12. Template File Inventory
+## 13. Template File Inventory
 
 Templates are embedded in the binary at compile time. All templates use MiniJinja syntax and `data-sf` attributes for styling hooks.
 
@@ -741,7 +843,7 @@ Templates are embedded in the binary at compile time. All templates use MiniJinj
 
 ---
 
-## 13. Error Responses
+## 14. Error Responses
 
 ### HTML Errors
 
