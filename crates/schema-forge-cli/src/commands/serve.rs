@@ -1,13 +1,22 @@
+use std::time::Duration;
+
 use acton_service::service_builder::ServiceBuilder;
 use acton_service::versioning::{ApiVersion, VersionedApiBuilder};
 use schema_forge_acton::SchemaForgeExtension;
 use schema_forge_core::migration::DiffEngine;
+use schema_forge_surrealdb::SurrealBackend;
 
 use crate::cli::{GlobalOpts, ServeArgs};
 use crate::commands::parse::parse_all_schemas;
 use crate::config::{load_config, resolve_db_params};
 use crate::error::CliError;
 use crate::output::OutputContext;
+
+/// Maximum number of SurrealDB connection retries before failing.
+const MAX_CONNECT_RETRIES: u32 = 3;
+
+/// Base delay in seconds between connection retries (doubles each attempt).
+const CONNECT_BASE_DELAY_SECS: u64 = 2;
 
 /// Run the `serve` command: start the SchemaForge HTTP server.
 ///
@@ -161,15 +170,12 @@ pub async fn run(
 /// database or fail explicitly.
 async fn connect_with_retries(
     db_params: &crate::config::DbParams,
-    output: &crate::output::OutputContext,
-) -> Result<schema_forge_surrealdb::SurrealBackend, CliError> {
-    use std::time::Duration;
-    use schema_forge_surrealdb::SurrealBackend;
+    output: &OutputContext,
+) -> Result<SurrealBackend, CliError> {
+    let base_delay = Duration::from_secs(CONNECT_BASE_DELAY_SECS);
+    let mut last_err = None;
 
-    let max_retries: u32 = 3;
-    let base_delay = Duration::from_secs(2);
-
-    for attempt in 0..=max_retries {
+    for attempt in 0..=MAX_CONNECT_RETRIES {
         match SurrealBackend::connect_with_auth(
             &db_params.url,
             &db_params.namespace,
@@ -192,33 +198,34 @@ async fn connect_with_retries(
                 return Ok(backend);
             }
             Err(e) => {
-                if attempt == max_retries {
-                    return Err(CliError::Server {
-                        message: format!(
-                            "failed to connect to {} after {} attempts: {e}",
-                            db_params.url,
-                            max_retries + 1
-                        ),
-                    });
+                last_err = Some(e);
+                if attempt < MAX_CONNECT_RETRIES {
+                    let delay = base_delay * 2_u32.pow(attempt);
+                    output.warn(&format!(
+                        "Connection attempt {} failed: {}. Retrying in {delay:?}...",
+                        attempt + 1,
+                        last_err.as_ref().unwrap(),
+                    ));
+                    tokio::time::sleep(delay).await;
                 }
-
-                let delay = base_delay * 2_u32.pow(attempt);
-                output.warn(&format!(
-                    "Connection attempt {} failed: {e}. Retrying in {delay:?}...",
-                    attempt + 1
-                ));
-                tokio::time::sleep(delay).await;
             }
         }
     }
 
-    unreachable!()
+    Err(CliError::Server {
+        message: format!(
+            "failed to connect to {} after {} attempts: {}",
+            db_params.url,
+            MAX_CONNECT_RETRIES + 1,
+            last_err.unwrap(),
+        ),
+    })
 }
 
 /// Build an acton-service `SurrealDbConfig` from resolved CLI database parameters.
 ///
 /// This enables acton-service's health endpoint to report SurrealDB connection
-/// status. The actual connection is established by `connect_backend()` before
+/// status. The actual connection is established by `connect_with_retries()` before
 /// `ServiceBuilder::build()` because the extension needs a live client to
 /// load schemas and seed system tables.
 fn build_surrealdb_config(
@@ -230,8 +237,8 @@ fn build_surrealdb_config(
         database: db_params.database.clone(),
         username: db_params.username.clone(),
         password: db_params.password.clone(),
-        max_retries: 3,
-        retry_delay_secs: 2,
+        max_retries: MAX_CONNECT_RETRIES,
+        retry_delay_secs: CONNECT_BASE_DELAY_SECS,
         optional: false,
         lazy_init: false,
     }
