@@ -4,7 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use schema_forge_backend::auth::AuthContext;
+use acton_service::middleware::Claims;
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::query::{validate_filter, FieldPath, Filter, SortOrder};
 use schema_forge_core::types::{
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use super::query_params::{parse_filter_params, parse_sort_param};
 use crate::access::{
     check_schema_access, filter_entity_fields, inject_tenant_on_create, inject_tenant_scope,
-    AccessAction, FieldFilterDirection, OptionalAuth,
+    AccessAction, FieldFilterDirection, OptionalClaims,
 };
 use crate::error::ForgeError;
 use crate::state::ForgeState;
@@ -408,19 +408,19 @@ fn coerce_json_filter_value(
 async fn execute_entity_query(
     state: &ForgeState,
     schema_def: &SchemaDefinition,
-    auth: Option<&AuthContext>,
+    claims: Option<&Claims>,
     query: &mut schema_forge_core::query::Query,
 ) -> Result<ListEntitiesResponse, ForgeError> {
     // Inject tenant scope filter
-    inject_tenant_scope(query, auth, &state.tenant_config);
+    inject_tenant_scope(query, claims, &state.tenant_config);
 
     let result = state.backend.query(query).await.map_err(ForgeError::from)?;
 
     // Record-level access filtering (e.g. @owner)
     let visible_entities =
-        if let (Some(ref policy), Some(auth_ctx)) = (&state.record_access_policy, auth) {
+        if let (Some(ref policy), Some(c)) = (&state.record_access_policy, claims) {
             policy
-                .filter_visible(schema_def, auth_ctx, result.entities)
+                .filter_visible(schema_def, c, result.entities)
                 .await
         } else {
             result.entities
@@ -430,7 +430,7 @@ async fn execute_entity_query(
     let entities: Vec<EntityResponse> = visible_entities
         .into_iter()
         .map(|mut e| {
-            filter_entity_fields(&mut e, schema_def, auth, FieldFilterDirection::Read);
+            filter_entity_fields(&mut e, schema_def, claims, FieldFilterDirection::Read);
             entity_to_response(&e)
         })
         .collect();
@@ -451,7 +451,7 @@ async fn execute_entity_query(
 pub async fn create_entity(
     State(state): State<ForgeState>,
     Path(schema): Path<String>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     Json(body): Json<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -467,21 +467,21 @@ pub async fn create_entity(
             })?;
 
     // Access check
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)?;
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)?;
 
     // Convert JSON fields to DynamicValue fields
     let mut fields = json_to_entity_fields(&schema_def, &body.fields)
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
-    // Inject _tenant field from auth context
-    inject_tenant_on_create(&mut fields, auth.as_ref(), &state.tenant_config);
+    // Inject _tenant field from claims
+    inject_tenant_on_create(&mut fields, claims.as_ref(), &state.tenant_config);
 
     // Create the entity, filtering write-restricted fields
     let mut entity = Entity::new(schema_name, fields);
     filter_entity_fields(
         &mut entity,
         &schema_def,
-        auth.as_ref(),
+        claims.as_ref(),
         FieldFilterDirection::Write,
     );
 
@@ -495,7 +495,7 @@ pub async fn create_entity(
     filter_entity_fields(
         &mut created,
         &schema_def,
-        auth.as_ref(),
+        claims.as_ref(),
         FieldFilterDirection::Read,
     );
 
@@ -510,7 +510,7 @@ pub async fn create_entity(
 pub async fn list_entities(
     State(state): State<ForgeState>,
     Path(schema): Path<String>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -526,7 +526,7 @@ pub async fn list_entities(
             })?;
 
     // Access check
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)?;
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
 
     // Build a query
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
@@ -576,7 +576,7 @@ pub async fn list_entities(
         query = query.with_filter(f);
     }
 
-    let response = execute_entity_query(&state, &schema_def, auth.as_ref(), &mut query).await?;
+    let response = execute_entity_query(&state, &schema_def, claims.as_ref(), &mut query).await?;
     Ok(Json(response))
 }
 
@@ -586,7 +586,7 @@ pub async fn list_entities(
 pub async fn query_entities(
     State(state): State<ForgeState>,
     Path(schema): Path<String>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     Json(body): Json<EntityQueryBody>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -602,7 +602,7 @@ pub async fn query_entities(
             })?;
 
     // Access check
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)?;
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
 
     // Build a query
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
@@ -650,7 +650,7 @@ pub async fn query_entities(
         query = query.with_filter(filter);
     }
 
-    let response = execute_entity_query(&state, &schema_def, auth.as_ref(), &mut query).await?;
+    let response = execute_entity_query(&state, &schema_def, claims.as_ref(), &mut query).await?;
     Ok(Json(response))
 }
 
@@ -658,7 +658,7 @@ pub async fn query_entities(
 pub async fn get_entity(
     State(state): State<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
 
@@ -673,7 +673,7 @@ pub async fn get_entity(
             })?;
 
     // Access check
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)?;
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
 
     // Parse the entity ID
     let entity_id =
@@ -686,9 +686,9 @@ pub async fn get_entity(
         .map_err(ForgeError::from)?;
 
     // Record-level visibility check
-    if let (Some(ref policy), Some(ref auth_ctx)) = (&state.record_access_policy, &auth) {
+    if let (Some(ref policy), Some(ref c)) = (&state.record_access_policy, &claims) {
         let visible = policy
-            .filter_visible(&schema_def, auth_ctx, vec![entity.clone()])
+            .filter_visible(&schema_def, c, vec![entity.clone()])
             .await;
         if visible.is_empty() {
             return Err(ForgeError::Forbidden {
@@ -701,7 +701,7 @@ pub async fn get_entity(
     filter_entity_fields(
         &mut entity,
         &schema_def,
-        auth.as_ref(),
+        claims.as_ref(),
         FieldFilterDirection::Read,
     );
 
@@ -712,7 +712,7 @@ pub async fn get_entity(
 pub async fn update_entity(
     State(state): State<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     Json(body): Json<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -732,16 +732,16 @@ pub async fn update_entity(
             })?;
 
     // Access check
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)?;
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)?;
 
     // Record-level ownership check: fetch existing entity and verify ownership
-    if let (Some(ref policy), Some(ref auth_ctx)) = (&state.record_access_policy, &auth) {
+    if let (Some(ref policy), Some(ref c)) = (&state.record_access_policy, &claims) {
         let existing = state
             .backend
             .get(&schema_name, &entity_id)
             .await
             .map_err(ForgeError::from)?;
-        if !policy.can_modify(&schema_def, auth_ctx, &existing).await {
+        if !policy.can_modify(&schema_def, c, &existing).await {
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to modify entity '{id}'"),
             });
@@ -757,7 +757,7 @@ pub async fn update_entity(
     filter_entity_fields(
         &mut entity,
         &schema_def,
-        auth.as_ref(),
+        claims.as_ref(),
         FieldFilterDirection::Write,
     );
 
@@ -771,7 +771,7 @@ pub async fn update_entity(
     filter_entity_fields(
         &mut updated,
         &schema_def,
-        auth.as_ref(),
+        claims.as_ref(),
         FieldFilterDirection::Read,
     );
 
@@ -782,7 +782,7 @@ pub async fn update_entity(
 pub async fn delete_entity(
     State(state): State<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
 
@@ -797,19 +797,19 @@ pub async fn delete_entity(
             })?;
 
     // Access check
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Delete)?;
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Delete)?;
 
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
     // Record-level ownership check: fetch entity first and verify ownership
-    if let (Some(ref policy), Some(ref auth_ctx)) = (&state.record_access_policy, &auth) {
+    if let (Some(ref policy), Some(ref c)) = (&state.record_access_policy, &claims) {
         let entity = state
             .backend
             .get(&schema_name, &entity_id)
             .await
             .map_err(ForgeError::from)?;
-        if !policy.can_delete(&schema_def, auth_ctx, &entity).await {
+        if !policy.can_delete(&schema_def, c, &entity).await {
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to delete entity '{id}'"),
             });

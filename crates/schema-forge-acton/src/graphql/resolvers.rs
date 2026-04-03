@@ -46,9 +46,9 @@ pub async fn resolve_get_entity<'a>(
     type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let auth = gql_ctx.auth.as_ref();
+    let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(schema_def, auth, AccessAction::Read).map_err(forge_error_to_gql)?;
+    check_schema_access(schema_def, claims, AccessAction::Read).map_err(forge_error_to_gql)?;
 
     let id_arg = ctx.args.try_get("id")?.string()?.to_string();
 
@@ -67,9 +67,9 @@ pub async fn resolve_get_entity<'a>(
     };
 
     // Record-level visibility check
-    if let (Some(ref policy), Some(auth_ctx)) = (&gql_ctx.state.record_access_policy, auth) {
+    if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
         let visible = policy
-            .filter_visible(schema_def, auth_ctx, vec![entity.clone()])
+            .filter_visible(schema_def, c, vec![entity.clone()])
             .await;
         if visible.is_empty() {
             return Err(forge_error_to_gql(ForgeError::Forbidden {
@@ -78,7 +78,7 @@ pub async fn resolve_get_entity<'a>(
         }
     }
 
-    filter_entity_fields(&mut entity, schema_def, auth, FieldFilterDirection::Read);
+    filter_entity_fields(&mut entity, schema_def, claims, FieldFilterDirection::Read);
 
     Ok(Some(entity_to_field_value(entity, type_name)))
 }
@@ -91,9 +91,9 @@ pub async fn resolve_list_entities<'a>(
     type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let auth = gql_ctx.auth.as_ref();
+    let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(schema_def, auth, AccessAction::Read).map_err(forge_error_to_gql)?;
+    check_schema_access(schema_def, claims, AccessAction::Read).map_err(forge_error_to_gql)?;
 
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
 
@@ -153,7 +153,7 @@ pub async fn resolve_list_entities<'a>(
     }
 
     // Inject tenant scope
-    inject_tenant_scope(&mut query, auth, &gql_ctx.state.tenant_config);
+    inject_tenant_scope(&mut query, claims, &gql_ctx.state.tenant_config);
 
     let result = gql_ctx
         .state
@@ -164,9 +164,9 @@ pub async fn resolve_list_entities<'a>(
 
     // Record-level access filtering
     let visible_entities =
-        if let (Some(ref policy), Some(auth_ctx)) = (&gql_ctx.state.record_access_policy, auth) {
+        if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
             policy
-                .filter_visible(schema_def, auth_ctx, result.entities)
+                .filter_visible(schema_def, c, result.entities)
                 .await
         } else {
             result.entities
@@ -178,7 +178,7 @@ pub async fn resolve_list_entities<'a>(
     let items: Vec<EntityFields> = visible_entities
         .into_iter()
         .map(|mut entity| {
-            filter_entity_fields(&mut entity, schema_def, auth, FieldFilterDirection::Read);
+            filter_entity_fields(&mut entity, schema_def, claims, FieldFilterDirection::Read);
             EntityFields {
                 id: entity.id.clone(),
                 schema: entity.schema.clone(),
@@ -211,9 +211,9 @@ pub async fn resolve_create_entity<'a>(
     type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let auth = gql_ctx.auth.as_ref();
+    let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(schema_def, auth, AccessAction::Write).map_err(forge_error_to_gql)?;
+    check_schema_access(schema_def, claims, AccessAction::Write).map_err(forge_error_to_gql)?;
 
     let input_accessor = ctx.args.try_get("input")?;
     let input_obj = input_accessor.object()?;
@@ -222,7 +222,7 @@ pub async fn resolve_create_entity<'a>(
         .map_err(|errors| forge_error_to_gql(ForgeError::ValidationFailed { details: errors }))?;
 
     // Inject tenant
-    inject_tenant_on_create(&mut fields, auth, &gql_ctx.state.tenant_config);
+    inject_tenant_on_create(&mut fields, claims, &gql_ctx.state.tenant_config);
 
     let schema = SchemaName::new(schema_name).map_err(|_| {
         forge_error_to_gql(ForgeError::InvalidSchemaName {
@@ -231,7 +231,7 @@ pub async fn resolve_create_entity<'a>(
     })?;
 
     let mut entity = Entity::new(schema, fields);
-    filter_entity_fields(&mut entity, schema_def, auth, FieldFilterDirection::Write);
+    filter_entity_fields(&mut entity, schema_def, claims, FieldFilterDirection::Write);
 
     let mut created = gql_ctx
         .state
@@ -240,7 +240,7 @@ pub async fn resolve_create_entity<'a>(
         .await
         .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
 
-    filter_entity_fields(&mut created, schema_def, auth, FieldFilterDirection::Read);
+    filter_entity_fields(&mut created, schema_def, claims, FieldFilterDirection::Read);
 
     Ok(Some(entity_to_field_value(created, type_name)))
 }
@@ -253,9 +253,9 @@ pub async fn resolve_update_entity<'a>(
     type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let auth = gql_ctx.auth.as_ref();
+    let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(schema_def, auth, AccessAction::Write).map_err(forge_error_to_gql)?;
+    check_schema_access(schema_def, claims, AccessAction::Write).map_err(forge_error_to_gql)?;
 
     let id_arg = ctx.args.try_get("id")?.string()?.to_string();
 
@@ -269,14 +269,14 @@ pub async fn resolve_update_entity<'a>(
         .map_err(|_| forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() }))?;
 
     // Record-level ownership check
-    if let (Some(ref policy), Some(auth_ctx)) = (&gql_ctx.state.record_access_policy, auth) {
+    if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
         let existing = gql_ctx
             .state
             .backend
             .get(&schema, &entity_id)
             .await
             .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
-        if !policy.can_modify(schema_def, auth_ctx, &existing).await {
+        if !policy.can_modify(schema_def, c, &existing).await {
             return Err(forge_error_to_gql(ForgeError::Forbidden {
                 message: format!("not authorized to modify entity '{id_arg}'"),
             }));
@@ -290,7 +290,7 @@ pub async fn resolve_update_entity<'a>(
         .map_err(|errors| forge_error_to_gql(ForgeError::ValidationFailed { details: errors }))?;
 
     let mut entity = Entity::with_id(entity_id, schema, fields);
-    filter_entity_fields(&mut entity, schema_def, auth, FieldFilterDirection::Write);
+    filter_entity_fields(&mut entity, schema_def, claims, FieldFilterDirection::Write);
 
     let mut updated = gql_ctx
         .state
@@ -299,7 +299,7 @@ pub async fn resolve_update_entity<'a>(
         .await
         .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
 
-    filter_entity_fields(&mut updated, schema_def, auth, FieldFilterDirection::Read);
+    filter_entity_fields(&mut updated, schema_def, claims, FieldFilterDirection::Read);
 
     Ok(Some(entity_to_field_value(updated, type_name)))
 }
@@ -311,9 +311,9 @@ pub async fn resolve_delete_entity(
     schema_def: &SchemaDefinition,
 ) -> async_graphql::Result<GqlValue> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let auth = gql_ctx.auth.as_ref();
+    let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(schema_def, auth, AccessAction::Delete).map_err(forge_error_to_gql)?;
+    check_schema_access(schema_def, claims, AccessAction::Delete).map_err(forge_error_to_gql)?;
 
     let id_arg = ctx.args.try_get("id")?.string()?.to_string();
 
@@ -327,14 +327,14 @@ pub async fn resolve_delete_entity(
         .map_err(|_| forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() }))?;
 
     // Record-level ownership check
-    if let (Some(ref policy), Some(auth_ctx)) = (&gql_ctx.state.record_access_policy, auth) {
+    if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
         let entity = gql_ctx
             .state
             .backend
             .get(&schema, &entity_id)
             .await
             .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
-        if !policy.can_delete(schema_def, auth_ctx, &entity).await {
+        if !policy.can_delete(schema_def, c, &entity).await {
             return Err(forge_error_to_gql(ForgeError::Forbidden {
                 message: format!("not authorized to delete entity '{id_arg}'"),
             }));
@@ -367,9 +367,9 @@ pub async fn resolve_relation_one<'a>(
     };
 
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let auth = gql_ctx.auth.as_ref();
+    let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(target_schema_def, auth, AccessAction::Read).map_err(forge_error_to_gql)?;
+    check_schema_access(target_schema_def, claims, AccessAction::Read).map_err(forge_error_to_gql)?;
 
     let target_schema = SchemaName::new(target_schema_name).map_err(|_| {
         forge_error_to_gql(ForgeError::InvalidSchemaName {
@@ -385,7 +385,7 @@ pub async fn resolve_relation_one<'a>(
     filter_entity_fields(
         &mut entity,
         target_schema_def,
-        auth,
+        claims,
         FieldFilterDirection::Read,
     );
 
@@ -410,9 +410,9 @@ pub async fn resolve_relation_many<'a>(
     };
 
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let auth = gql_ctx.auth.as_ref();
+    let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(target_schema_def, auth, AccessAction::Read).map_err(forge_error_to_gql)?;
+    check_schema_access(target_schema_def, claims, AccessAction::Read).map_err(forge_error_to_gql)?;
 
     let target_schema = SchemaName::new(target_schema_name).map_err(|_| {
         forge_error_to_gql(ForgeError::InvalidSchemaName {
@@ -426,7 +426,7 @@ pub async fn resolve_relation_many<'a>(
             filter_entity_fields(
                 &mut entity,
                 target_schema_def,
-                auth,
+                claims,
                 FieldFilterDirection::Read,
             );
             results.push(entity_to_field_value(entity, target_type_name));

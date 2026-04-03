@@ -1,4 +1,4 @@
-use schema_forge_backend::auth::AuthContext;
+use acton_service::middleware::Claims;
 
 use crate::state::ForgeState;
 
@@ -7,5 +7,5 @@ use crate::state::ForgeState;
 /// Resolvers access it with `ctx.data::<ForgeGraphqlContext>()`.
 pub struct ForgeGraphqlContext {
     pub state: ForgeState,
-    pub auth: Option<AuthContext>,
+    pub claims: Option<Claims>,
 }

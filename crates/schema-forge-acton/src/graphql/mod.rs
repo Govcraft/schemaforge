@@ -13,19 +13,19 @@ use axum::response::{Html, IntoResponse};
 
 use self::context::ForgeGraphqlContext;
 use self::schema_builder::build_graphql_schema;
-use crate::access::OptionalAuth;
+use crate::access::OptionalClaims;
 use crate::state::ForgeState;
 
 /// GraphQL POST handler.
 pub async fn graphql_handler(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     req: GraphQLRequest,
 ) -> GraphQLResponse {
     let schema = state.graphql_schema.load();
     let request = req.into_inner().data(ForgeGraphqlContext {
         state: state.clone(),
-        auth,
+        claims,
     });
     schema.execute(request).await.into()
 }
