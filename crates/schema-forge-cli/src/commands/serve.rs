@@ -5,19 +5,18 @@ use acton_service::prelude::ActorHandleInterface;
 use acton_service::service_builder::ServiceBuilder;
 use acton_service::versioning::{ApiVersion, VersionedApiBuilder};
 use schema_forge_acton::{
-    ForgeActor, InitForge, InitForgeData, ReplyChannel, SchemaForgeExtension,
+    DynForgeBackend, ForgeActor, InitForge, InitForgeData, ReplyChannel, SchemaForgeExtension,
 };
 use schema_forge_core::migration::DiffEngine;
-use schema_forge_surrealdb::SurrealBackend;
 use tokio::sync::oneshot;
 
 use crate::cli::{GlobalOpts, ServeArgs};
 use crate::commands::parse::parse_all_schemas;
-use crate::config::{load_config, resolve_db_params};
+use crate::config::{load_config, resolve_db_params, DbParams};
 use crate::error::CliError;
 use crate::output::OutputContext;
 
-/// Maximum number of SurrealDB connection retries before failing.
+/// Maximum number of database connection retries before failing.
 const MAX_CONNECT_RETRIES: u32 = 3;
 
 /// Base delay in seconds between connection retries (doubles each attempt).
@@ -28,7 +27,7 @@ const INIT_FORGE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Run the `serve` command: start the SchemaForge HTTP server.
 ///
-/// Loads configuration, parses schemas, connects to SurrealDB,
+/// Loads configuration, parses schemas, connects to the database backend,
 /// builds versioned routes via acton-service, and serves until Ctrl+C.
 pub async fn run(
     args: ServeArgs,
@@ -53,9 +52,9 @@ pub async fn run(
         Err(e) => return Err(e),
     };
 
-    // 3. Connect to SurrealDB (try remote, fall back to in-memory)
-    let backend = connect_with_retries(&db_params, output).await?;
-    let backend_arc: Arc<dyn schema_forge_acton::DynForgeBackend> = Arc::new(backend);
+    // 3. Connect to database (try remote, fail explicitly for production)
+    let backend_arc: Arc<dyn DynForgeBackend> =
+        connect_with_retries(&db_params, output).await?;
 
     // 4. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
     let init_data = SchemaForgeExtension::build_init(backend_arc.clone(), None)
@@ -85,15 +84,17 @@ pub async fn run(
                     .apply_migration(&schema.name, &plan.steps)
                     .await
                     .map_err(CliError::Backend)?;
-                backend_arc
-                    .store_schema_metadata(schema)
-                    .await
-                    .map_err(CliError::Backend)?;
-
                 output.status(&format!("  Applied {}", schema.name.as_str()));
             }
 
-            // Update registry (whether migrated or not — ensures parsed schemas are present)
+            // Always store metadata so the backend's SchemaId matches the
+            // runtime registry. Each parse generates a new SchemaId, and
+            // entity queries resolve table names via SchemaId lookup.
+            backend_arc
+                .store_schema_metadata(schema)
+                .await
+                .map_err(CliError::Backend)?;
+
             registry.insert(schema.name.as_str().to_string(), schema.clone());
         }
     }
@@ -134,7 +135,11 @@ pub async fn run(
         .unwrap_or_default();
     svc_config.service.port = args.port;
     svc_config.service.name = "schema-forge".to_string();
-    svc_config.surrealdb = Some(build_surrealdb_config(&db_params));
+
+    #[cfg(feature = "surrealdb")]
+    if let DbParams::Surrealdb(_) = &db_params {
+        svc_config.surrealdb = Some(build_surrealdb_config(&db_params));
+    }
 
     let bind_addr = format!("{}:{}", args.host, args.port);
     output.success(&format!(
@@ -201,37 +206,29 @@ pub async fn run(
     Ok(())
 }
 
-/// Connect to SurrealDB with exponential backoff retries.
+/// Connect to database with exponential backoff retries.
 ///
 /// Unlike `connect_backend()` (used by CLI commands), this does NOT fall back
 /// to in-memory on failure. A production server must connect to its configured
 /// database or fail explicitly.
 async fn connect_with_retries(
-    db_params: &crate::config::DbParams,
+    db_params: &DbParams,
     output: &OutputContext,
-) -> Result<SurrealBackend, CliError> {
+) -> Result<Arc<dyn DynForgeBackend>, CliError> {
     let base_delay = Duration::from_secs(CONNECT_BASE_DELAY_SECS);
     let mut last_err = None;
 
     for attempt in 0..=MAX_CONNECT_RETRIES {
-        match SurrealBackend::connect_with_auth(
-            &db_params.url,
-            &db_params.namespace,
-            &db_params.database,
-            db_params.username.as_deref(),
-            db_params.password.as_deref(),
-        )
-        .await
-        {
+        match connect_once(db_params).await {
             Ok(backend) => {
                 if attempt > 0 {
                     output.success(&format!(
                         "Connected to {} after {} attempt(s)",
-                        db_params.url,
+                        db_params.url(),
                         attempt + 1
                     ));
                 } else {
-                    output.success(&format!("Connected to {}", db_params.url));
+                    output.success(&format!("Connected to {}", db_params.url()));
                 }
                 return Ok(backend);
             }
@@ -253,32 +250,69 @@ async fn connect_with_retries(
     Err(CliError::Server {
         message: format!(
             "failed to connect to {} after {} attempts: {}",
-            db_params.url,
+            db_params.url(),
             MAX_CONNECT_RETRIES + 1,
             last_err.unwrap(),
         ),
     })
 }
 
+/// Attempt a single connection to the configured backend.
+async fn connect_once(db_params: &DbParams) -> Result<Arc<dyn DynForgeBackend>, CliError> {
+    match db_params {
+        #[cfg(feature = "surrealdb")]
+        DbParams::Surrealdb(p) => {
+            let backend = schema_forge_surrealdb::SurrealBackend::connect_with_auth(
+                &p.url,
+                &p.namespace,
+                &p.database,
+                p.username.as_deref(),
+                p.password.as_deref(),
+            )
+            .await
+            .map_err(|e| CliError::Server {
+                message: format!("SurrealDB connection failed: {e}"),
+            })?;
+            Ok(Arc::new(backend))
+        }
+        #[cfg(feature = "postgres")]
+        DbParams::Postgres(p) => {
+            let backend = schema_forge_postgres::PgBackend::connect(&p.url)
+                .await
+                .map_err(|e| CliError::Server {
+                    message: format!("PostgreSQL connection failed: {e}"),
+                })?;
+            Ok(Arc::new(backend))
+        }
+        #[allow(unreachable_patterns)]
+        other => Err(CliError::Config {
+            message: format!(
+                "backend '{}' is not enabled in this build",
+                other.url()
+            ),
+        }),
+    }
+}
+
 /// Build an acton-service `SurrealDbConfig` from resolved CLI database parameters.
 ///
 /// This enables acton-service's health endpoint to report SurrealDB connection
-/// status. The actual connection is established by `connect_with_retries()` before
-/// `ServiceBuilder::build()` because the extension needs a live client to
-/// load schemas and seed system tables.
-fn build_surrealdb_config(
-    db_params: &crate::config::DbParams,
-) -> acton_service::config::SurrealDbConfig {
-    acton_service::config::SurrealDbConfig {
-        url: db_params.url.clone(),
-        namespace: db_params.namespace.clone(),
-        database: db_params.database.clone(),
-        username: db_params.username.clone(),
-        password: db_params.password.clone(),
-        max_retries: MAX_CONNECT_RETRIES,
-        retry_delay_secs: CONNECT_BASE_DELAY_SECS,
-        optional: false,
-        lazy_init: false,
+/// status. Only available when the `surrealdb` feature is enabled.
+#[cfg(feature = "surrealdb")]
+fn build_surrealdb_config(db_params: &DbParams) -> acton_service::config::SurrealDbConfig {
+    match db_params {
+        DbParams::Surrealdb(p) => acton_service::config::SurrealDbConfig {
+            url: p.url.clone(),
+            namespace: p.namespace.clone(),
+            database: p.database.clone(),
+            username: p.username.clone(),
+            password: p.password.clone(),
+            max_retries: MAX_CONNECT_RETRIES,
+            retry_delay_secs: CONNECT_BASE_DELAY_SECS,
+            optional: false,
+            lazy_init: false,
+        },
+        _ => unreachable!("build_surrealdb_config called with non-SurrealDB params"),
     }
 }
 
@@ -311,15 +345,18 @@ mod tests {
             > = build_versioned_routes;
     }
 
+    #[cfg(feature = "surrealdb")]
     #[test]
     fn build_surrealdb_config_from_db_params() {
-        let db_params = crate::config::DbParams {
+        use crate::config::SurrealDbParams;
+
+        let db_params = DbParams::Surrealdb(SurrealDbParams {
             url: "ws://db.example.com:8000".to_string(),
             namespace: "production".to_string(),
             database: "main".to_string(),
             username: Some("admin".to_string()),
             password: Some("secret".to_string()),
-        };
+        });
 
         let config = build_surrealdb_config(&db_params);
 
@@ -334,15 +371,18 @@ mod tests {
         assert!(!config.lazy_init);
     }
 
+    #[cfg(feature = "surrealdb")]
     #[test]
     fn build_surrealdb_config_without_credentials() {
-        let db_params = crate::config::DbParams {
+        use crate::config::SurrealDbParams;
+
+        let db_params = DbParams::Surrealdb(SurrealDbParams {
             url: "mem://".to_string(),
             namespace: "test".to_string(),
             database: "test".to_string(),
             username: None,
             password: None,
-        };
+        });
 
         let config = build_surrealdb_config(&db_params);
 

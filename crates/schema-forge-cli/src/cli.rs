@@ -56,15 +56,15 @@ pub struct GlobalOpts {
     #[arg(long = "no-color", global = true, env = "NO_COLOR")]
     pub no_color: bool,
 
-    /// SurrealDB connection URL [env: SCHEMA_FORGE_DB_URL]
+    /// Database connection URL (auto-detects backend from scheme) [env: SCHEMA_FORGE_DB_URL]
     #[arg(long = "db-url", global = true, env = "SCHEMA_FORGE_DB_URL")]
     pub db_url: Option<String>,
 
-    /// SurrealDB namespace [env: SCHEMA_FORGE_DB_NS]
+    /// Database namespace (SurrealDB only) [env: SCHEMA_FORGE_DB_NS]
     #[arg(long = "db-ns", global = true, env = "SCHEMA_FORGE_DB_NS")]
     pub db_ns: Option<String>,
 
-    /// SurrealDB database name [env: SCHEMA_FORGE_DB_NAME]
+    /// Database name (SurrealDB only) [env: SCHEMA_FORGE_DB_NAME]
     #[arg(long = "db-name", global = true, env = "SCHEMA_FORGE_DB_NAME")]
     pub db_name: Option<String>,
 }

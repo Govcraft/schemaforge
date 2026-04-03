@@ -73,15 +73,56 @@ fn default_policy_dir() -> String {
     "policies/".to_string()
 }
 
-/// Resolved database connection parameters after merging config + CLI flags.
+/// SurrealDB-specific connection parameters.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct DbParams {
+pub struct SurrealDbParams {
     pub url: String,
     pub namespace: String,
     pub database: String,
     pub username: Option<String>,
     pub password: Option<String>,
+}
+
+/// PostgreSQL-specific connection parameters.
+#[derive(Debug, Clone)]
+pub struct PostgresParams {
+    pub url: String,
+}
+
+/// Resolved database connection parameters after merging config + CLI flags.
+///
+/// Each variant carries only the fields relevant to that backend.
+#[derive(Debug, Clone)]
+pub enum DbParams {
+    Surrealdb(SurrealDbParams),
+    Postgres(PostgresParams),
+}
+
+impl DbParams {
+    /// The connection URL, regardless of backend.
+    pub fn url(&self) -> &str {
+        match self {
+            DbParams::Surrealdb(p) => &p.url,
+            DbParams::Postgres(p) => &p.url,
+        }
+    }
+}
+
+impl std::fmt::Display for DbParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DbParams::Surrealdb(p) => {
+                let user = p.username.as_deref().unwrap_or("(anonymous)");
+                let masked_pass = if p.password.is_some() { "***" } else { "(none)" };
+                write!(
+                    f,
+                    "surrealdb {}/{}@{} (user={user}, pass={masked_pass})",
+                    p.namespace, p.database, p.url
+                )
+            }
+            DbParams::Postgres(p) => write!(f, "postgres {}", p.url),
+        }
+    }
 }
 
 /// Discovery order for config file:
@@ -139,12 +180,21 @@ fn load_config_from_path(path: &Path) -> Result<CliConfig, CliError> {
 /// Resolve database connection parameters from config + CLI overrides.
 ///
 /// CLI flags take precedence over config file values.
+/// The backend is auto-detected from the URL scheme:
+/// - `postgres://` or `postgresql://` → PostgreSQL
+/// - Anything else (ws://, wss://, mem://, http://, https://) → SurrealDB
 pub fn resolve_db_params(config: &CliConfig, global: &GlobalOpts) -> DbParams {
-    DbParams {
-        url: global
-            .db_url
-            .clone()
-            .unwrap_or_else(|| config.database.url.clone()),
+    let url = global
+        .db_url
+        .clone()
+        .unwrap_or_else(|| config.database.url.clone());
+
+    if is_postgres_url(&url) {
+        return DbParams::Postgres(PostgresParams { url });
+    }
+
+    DbParams::Surrealdb(SurrealDbParams {
+        url,
         namespace: global
             .db_ns
             .clone()
@@ -155,7 +205,12 @@ pub fn resolve_db_params(config: &CliConfig, global: &GlobalOpts) -> DbParams {
             .unwrap_or_else(|| config.database.database.clone()),
         username: std::env::var("SCHEMA_FORGE_DB_USER").ok(),
         password: std::env::var("SCHEMA_FORGE_DB_PASS").ok(),
-    }
+    })
+}
+
+/// Detect PostgreSQL URLs by scheme.
+fn is_postgres_url(url: &str) -> bool {
+    url.starts_with("postgres://") || url.starts_with("postgresql://")
 }
 
 #[cfg(test)]
@@ -219,9 +274,12 @@ default_policy_dir = "src/policies/"
             db_name: None,
         };
         let params = resolve_db_params(&config, &global);
-        assert_eq!(params.url, "ws://localhost:8000");
-        assert_eq!(params.namespace, "schemaforge");
-        assert_eq!(params.database, "dev");
+        assert!(matches!(params, DbParams::Surrealdb(_)));
+        assert_eq!(params.url(), "ws://localhost:8000");
+        if let DbParams::Surrealdb(p) = &params {
+            assert_eq!(p.namespace, "schemaforge");
+            assert_eq!(p.database, "dev");
+        }
     }
 
     #[test]
@@ -238,9 +296,47 @@ default_policy_dir = "src/policies/"
             db_name: Some("custom_db".into()),
         };
         let params = resolve_db_params(&config, &global);
-        assert_eq!(params.url, "ws://override:9999");
-        assert_eq!(params.namespace, "custom_ns");
-        assert_eq!(params.database, "custom_db");
+        assert!(matches!(params, DbParams::Surrealdb(_)));
+        assert_eq!(params.url(), "ws://override:9999");
+        if let DbParams::Surrealdb(p) = &params {
+            assert_eq!(p.namespace, "custom_ns");
+            assert_eq!(p.database, "custom_db");
+        }
+    }
+
+    #[test]
+    fn resolve_db_params_detects_postgres_url() {
+        let config = CliConfig::default();
+        let global = GlobalOpts {
+            config: None,
+            format: "human".into(),
+            verbose: 0,
+            quiet: false,
+            no_color: false,
+            db_url: Some("postgres://user:pass@localhost/mydb".into()),
+            db_ns: None,
+            db_name: None,
+        };
+        let params = resolve_db_params(&config, &global);
+        assert!(matches!(params, DbParams::Postgres(_)));
+        assert_eq!(params.url(), "postgres://user:pass@localhost/mydb");
+    }
+
+    #[test]
+    fn resolve_db_params_detects_postgresql_url() {
+        let config = CliConfig::default();
+        let global = GlobalOpts {
+            config: None,
+            format: "human".into(),
+            verbose: 0,
+            quiet: false,
+            no_color: false,
+            db_url: Some("postgresql://localhost/mydb".into()),
+            db_ns: None,
+            db_name: None,
+        };
+        let params = resolve_db_params(&config, &global);
+        assert!(matches!(params, DbParams::Postgres(_)));
     }
 
     #[test]

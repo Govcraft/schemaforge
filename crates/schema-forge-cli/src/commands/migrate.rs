@@ -1,5 +1,4 @@
 use console::Term;
-use schema_forge_backend::SchemaBackend;
 use schema_forge_core::migration::DiffEngine;
 
 use crate::cli::{GlobalOpts, MigrateArgs};

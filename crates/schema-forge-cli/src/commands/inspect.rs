@@ -1,4 +1,3 @@
-use schema_forge_backend::SchemaBackend;
 use schema_forge_core::types::SchemaDefinition;
 
 use crate::cli::{GlobalOpts, InspectArgs};

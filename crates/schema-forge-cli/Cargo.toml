@@ -11,7 +11,8 @@ path = "src/main.rs"
 schema-forge-core = { path = "../schema-forge-core" }
 schema-forge-dsl = { path = "../schema-forge-dsl" }
 schema-forge-backend = { path = "../schema-forge-backend" }
-schema-forge-surrealdb = { path = "../schema-forge-surrealdb" }
+schema-forge-surrealdb = { path = "../schema-forge-surrealdb", optional = true }
+schema-forge-postgres = { path = "../schema-forge-postgres", optional = true }
 schema-forge-acton = { path = "../schema-forge-acton" }
 clap = { version = "4", features = ["derive", "env", "string"] }
 clap_complete = "4"
@@ -26,10 +27,12 @@ console = "0.15"
 dialoguer = "0.11"
 glob = "0.3"
 axum = { version = "0.8" }
-acton-service = { version = "0.22", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "surrealdb", "governor", "resilience", "audit", "openapi", "auth"] }
+acton-service = { version = "0.22", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth"] }
 
 [features]
-default = ["admin-ui", "widget-ui"]
+default = ["surrealdb", "admin-ui", "widget-ui"]
+surrealdb = ["dep:schema-forge-surrealdb", "schema-forge-acton/surrealdb", "acton-service/surrealdb"]
+postgres = ["dep:schema-forge-postgres", "schema-forge-acton/postgres", "acton-service/database"]
 admin-ui = ["schema-forge-acton/admin-ui", "acton-service/htmx-full"]
 widget-ui = ["schema-forge-acton/widget-ui"]
 
