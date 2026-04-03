@@ -4,7 +4,7 @@ pub mod error;
 pub mod tenant;
 pub mod traits;
 
-pub use auth::{AuthContext, AuthError, OwnershipBasedPolicy, RecordAccessPolicy};
+pub use auth::{OwnershipBasedPolicy, RecordAccessPolicy};
 pub use tenant::TenantRef;
 pub use entity::{Entity, QueryResult};
 pub use error::BackendError;
