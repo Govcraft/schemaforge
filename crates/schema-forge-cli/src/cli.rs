@@ -102,8 +102,59 @@ pub enum Commands {
         command: PolicyCommands,
     },
 
+    /// Manage PASETO tokens (generate keys, mint tokens)
+    Token {
+        #[command(subcommand)]
+        command: TokenCommands,
+    },
+
     /// Generate shell completion scripts
     Completions(CompletionsArgs),
+}
+
+/// Token management subcommands.
+#[derive(Subcommand)]
+pub enum TokenCommands {
+    /// Generate a 32-byte PASETO V4 symmetric key file
+    InitKey(InitKeyArgs),
+    /// Generate a PASETO token with the specified claims
+    Generate(GenerateTokenArgs),
+}
+
+/// Arguments for `schema-forge token init-key`.
+#[derive(Args)]
+pub struct InitKeyArgs {
+    /// Output path for the key file
+    #[arg(long, default_value = "./keys/paseto.key")]
+    pub output: std::path::PathBuf,
+}
+
+/// Arguments for `schema-forge token generate`.
+#[derive(Args)]
+pub struct GenerateTokenArgs {
+    /// Path to the PASETO symmetric key file
+    #[arg(long, default_value = "./keys/paseto.key")]
+    pub key: std::path::PathBuf,
+
+    /// Subject (user ID). Use "user:<id>" format.
+    #[arg(long)]
+    pub sub: String,
+
+    /// Roles to include (comma-separated or repeated)
+    #[arg(long, value_delimiter = ',')]
+    pub roles: Vec<String>,
+
+    /// Token lifetime in seconds (default: 3600 = 1 hour)
+    #[arg(long, default_value = "3600")]
+    pub lifetime: i64,
+
+    /// Issuer claim
+    #[arg(long, default_value = "schema-forge")]
+    pub issuer: String,
+
+    /// Tenant chain as JSON (e.g. '[{"schema":"Organization","entity_id":"org-1"}]')
+    #[arg(long)]
+    pub tenant_chain: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ async fn main() {
         cli::Commands::Policies { command } => {
             commands::policies::run(command, &cli.global, &output).await
         }
+        cli::Commands::Token { command } => commands::token::run(command, &output).await,
         cli::Commands::Completions(args) => commands::completions::run(args),
     };
 

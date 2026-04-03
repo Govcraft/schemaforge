@@ -1,0 +1,6 @@
+[token]
+format = "paseto"
+version = "v4"
+purpose = "local"
+key_path = "./keys/paseto.key"
+issuer = "schema-forge"

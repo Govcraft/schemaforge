@@ -122,7 +122,9 @@ pub async fn run(
     let routes = build_versioned_routes(&extension);
 
     // 8. Configure and serve via acton-service
-    let mut svc_config = acton_service::config::Config::<()>::default();
+    // Load from config.toml (picks up [token] section), then override serve-specific fields
+    let mut svc_config = acton_service::config::Config::<()>::load_for_service("schema-forge")
+        .unwrap_or_default();
     svc_config.service.port = args.port;
     svc_config.service.name = "schema-forge".to_string();
     svc_config.surrealdb = Some(build_surrealdb_config(&db_params));
