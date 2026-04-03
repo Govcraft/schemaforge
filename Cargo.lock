@@ -106,6 +106,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "acton-service"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a2444b3d2930a993b3188597cd7416454c608db53e7aa2a611a4d89ab2557a4"
+dependencies = [
+ "acton-reactive",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "dashmap 6.1.0",
+ "figment",
+ "futures",
+ "http",
+ "mti",
+ "once_cell",
+ "prost-build",
+ "regex",
+ "reqwest",
+ "rusty_paseto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tonic-build",
+ "tonic-prost-build",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "xdg 3.0.0",
+]
+
+[[package]]
 name = "addr"
 version = "0.15.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4071,7 +4107,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
@@ -4878,7 +4914,7 @@ dependencies = [
 name = "schema-forge-acton"
 version = "0.7.0"
 dependencies = [
- "acton-service",
+ "acton-service 0.20.0",
  "arc-swap",
  "async-graphql",
  "async-graphql-axum",
@@ -4903,6 +4939,7 @@ dependencies = [
 name = "schema-forge-backend"
 version = "0.4.0"
 dependencies = [
+ "acton-service 0.21.0",
  "schema-forge-core",
  "serde",
  "serde_json",
@@ -4913,7 +4950,7 @@ dependencies = [
 name = "schema-forge-cli"
 version = "0.2.0"
 dependencies = [
- "acton-service",
+ "acton-service 0.20.0",
  "assert_cmd",
  "axum",
  "clap",

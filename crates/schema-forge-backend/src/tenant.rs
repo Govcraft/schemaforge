@@ -228,6 +228,18 @@ fn find_parent_field(schema: &SchemaDefinition, parent: &SchemaName) -> Option<F
         .map(|f| f.name.clone())
 }
 
+/// A reference to a tenant entity, serializable for PASETO custom claims.
+///
+/// Used in the `tenant_chain` custom claim to identify which tenant(s)
+/// scope the authenticated user's access.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TenantRef {
+    /// The schema name of the tenant type (e.g., "Organization").
+    pub schema: String,
+    /// The entity ID of the specific tenant.
+    pub entity_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
