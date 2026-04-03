@@ -21,7 +21,6 @@ jobs:
 
     env:
       TAG_NAME: ${{ github.ref_name }}
-      OPENSSL_STATIC: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +46,6 @@ jobs:
           cargo build --release
           --target ${{ matrix.target }}
           --package schema-forge-cli
-          --features vendored-openssl
 
       - name: Package
         run: |

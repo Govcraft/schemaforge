@@ -58,17 +58,19 @@ dependencies = [
 
 [[package]]
 name = "acton-service"
-version = "0.21.0"
+version = "0.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a2444b3d2930a993b3188597cd7416454c608db53e7aa2a611a4d89ab2557a4"
+checksum = "12b79ddef46dc74a637fc10f8229013fe1e62313463ebcb39bd99b2a303d2d2e"
 dependencies = [
  "acton-reactive",
  "anyhow",
+ "argon2",
  "askama",
  "askama_web",
  "async-trait",
  "axum",
  "axum-htmx",
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "dashmap 6.1.0",
@@ -3571,15 +3573,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
-name = "openssl-src"
-version = "300.5.5+3.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f1787d533e03597a7934fd0a765f0d28e94ecc5fb7789f8053b1e699a56f709"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "openssl-sys"
 version = "0.9.112"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3587,7 +3580,6 @@ checksum = "57d55af3b3e226502be1526dfdba67ab0e9c96fc293004e79576b2b9edb0dbdb"
 dependencies = [
  "cc",
  "libc",
- "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -5056,7 +5048,6 @@ dependencies = [
  "glob",
  "indicatif",
  "miette 7.6.0",
- "openssl",
  "predicates",
  "schema-forge-acton",
  "schema-forge-backend",

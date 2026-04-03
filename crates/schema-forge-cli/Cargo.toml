@@ -27,13 +27,11 @@ dialoguer = "0.11"
 glob = "0.3"
 axum = { version = "0.8" }
 acton-service = { version = "0.21.3", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "surrealdb", "governor", "resilience", "audit", "openapi", "auth"] }
-openssl = { version = "0.10.76", features = ["vendored"], optional = true }
 
 [features]
 default = ["admin-ui", "widget-ui"]
 admin-ui = ["schema-forge-acton/admin-ui", "acton-service/htmx-full"]
 widget-ui = ["schema-forge-acton/widget-ui"]
-vendored-openssl = ["dep:openssl"]
 
 [dev-dependencies]
 assert_cmd = "2"
