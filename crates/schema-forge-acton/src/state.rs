@@ -276,11 +276,6 @@ pub struct ForgeState {
     pub registry: SchemaRegistry,
     /// Dynamic dispatch backend for schema and entity operations.
     pub backend: Arc<dyn DynForgeBackend>,
-    /// Optional auth provider for API request authentication.
-    /// When `Some`, the auth middleware authenticates requests and injects
-    /// [`AuthContext`](schema_forge_backend::auth::AuthContext) into extensions.
-    /// When `None`, requests pass through without authentication (open access).
-    pub auth_provider: Option<Arc<dyn crate::auth::AuthProvider>>,
     /// Tenant configuration derived from `@tenant` annotations.
     /// `None` when multi-tenancy is not configured.
     pub tenant_config: Option<schema_forge_backend::tenant::TenantConfig>,

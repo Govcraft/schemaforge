@@ -2,7 +2,6 @@ use std::fmt;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use schema_forge_backend::auth::AuthError;
 use schema_forge_backend::BackendError;
 
 /// Errors returned by SchemaForge HTTP endpoints.
@@ -161,26 +160,6 @@ impl From<BackendError> for ForgeError {
             BackendError::ConnectionError { message } => Self::BackendUnavailable { message },
             BackendError::QueryError { message } => Self::BackendUnavailable { message },
             BackendError::Internal { message } => Self::Internal { message },
-            _ => Self::Internal {
-                message: err.to_string(),
-            },
-        }
-    }
-}
-
-impl From<AuthError> for ForgeError {
-    fn from(err: AuthError) -> Self {
-        match err {
-            AuthError::MissingCredentials => Self::Unauthorized {
-                message: err.to_string(),
-            },
-            AuthError::InvalidCredentials { .. } => Self::Unauthorized {
-                message: err.to_string(),
-            },
-            AuthError::UserInactive { .. } => Self::Forbidden {
-                message: err.to_string(),
-            },
-            AuthError::Internal { message } => Self::Internal { message },
             _ => Self::Internal {
                 message: err.to_string(),
             },
@@ -475,40 +454,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn from_auth_error_missing_credentials() {
-        let auth_err = AuthError::MissingCredentials;
-        let forge_err: ForgeError = auth_err.into();
-        assert!(matches!(forge_err, ForgeError::Unauthorized { .. }));
-    }
-
-    #[test]
-    fn from_auth_error_invalid_credentials() {
-        let auth_err = AuthError::InvalidCredentials {
-            reason: "bad token".into(),
-        };
-        let forge_err: ForgeError = auth_err.into();
-        assert!(matches!(forge_err, ForgeError::Unauthorized { .. }));
-    }
-
-    #[test]
-    fn from_auth_error_user_inactive() {
-        let auth_err = AuthError::UserInactive {
-            user_id: "user_123".into(),
-        };
-        let forge_err: ForgeError = auth_err.into();
-        assert!(matches!(forge_err, ForgeError::Forbidden { .. }));
-    }
-
-    #[test]
-    fn from_auth_error_internal() {
-        let auth_err = AuthError::Internal {
-            message: "db down".into(),
-        };
-        let forge_err: ForgeError = auth_err.into();
-        assert!(matches!(
-            forge_err,
-            ForgeError::Internal { message } if message == "db down"
-        ));
-    }
 }

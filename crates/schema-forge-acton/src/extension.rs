@@ -30,7 +30,6 @@ pub struct SchemaForgeExtension {
 /// Builder for `SchemaForgeExtension`.
 pub struct SchemaForgeExtensionBuilder {
     backend: Option<Arc<dyn DynForgeBackend>>,
-    auth_provider: Option<Arc<dyn crate::auth::AuthProvider>>,
     record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
     #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     surreal_client: Option<
@@ -49,7 +48,6 @@ impl SchemaForgeExtensionBuilder {
     fn new() -> Self {
         Self {
             backend: None,
-            auth_provider: None,
             record_access_policy: None,
             #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
             surreal_client: None,
@@ -68,21 +66,6 @@ impl SchemaForgeExtensionBuilder {
         B: DynSchemaBackend + DynEntityStore + 'static,
     {
         self.backend = Some(Arc::new(backend));
-        self
-    }
-
-    /// Set the auth provider for API request authentication.
-    ///
-    /// When configured, the auth middleware will call the provider to
-    /// authenticate each request and inject an [`AuthContext`] into
-    /// request extensions.
-    ///
-    /// [`AuthContext`]: schema_forge_backend::auth::AuthContext
-    pub fn with_auth_provider<P: crate::auth::AuthProvider + 'static>(
-        mut self,
-        provider: P,
-    ) -> Self {
-        self.auth_provider = Some(Arc::new(provider));
         self
     }
 
@@ -208,7 +191,6 @@ impl SchemaForgeExtensionBuilder {
         let state = ForgeState {
             registry,
             backend,
-            auth_provider: self.auth_provider,
             tenant_config,
             record_access_policy: self.record_access_policy,
             #[cfg(feature = "graphql")]
@@ -232,18 +214,13 @@ impl SchemaForgeExtension {
     /// Register SchemaForge routes onto an existing Router.
     ///
     /// Merges the forge routes (nested under `/forge`) and applies
-    /// `ForgeState` as a layer. Auth middleware is applied to all forge routes
-    /// when `ForgeState::auth_provider` is configured.
+    /// `ForgeState` as a layer. Authentication is handled by the upstream
+    /// acton-service token middleware which injects `Claims` into extensions.
     pub fn register_routes<S>(&self, router: Router<S>) -> Router<S>
     where
         S: Clone + Send + Sync + 'static,
     {
-        let forge_router = forge_routes()
-            .route_layer(axum::middleware::from_fn_with_state(
-                self.state.clone(),
-                crate::middleware::auth_middleware,
-            ))
-            .with_state(self.state.clone());
+        let forge_router = forge_routes().with_state(self.state.clone());
         router.nest("/forge", forge_router)
     }
 
@@ -268,12 +245,7 @@ impl SchemaForgeExtension {
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Clone + Default + Send + Sync + 'static,
     {
-        let forge_router: Router<()> = forge_routes()
-            .route_layer(axum::middleware::from_fn_with_state(
-                self.state.clone(),
-                crate::middleware::auth_middleware,
-            ))
-            .with_state(self.state.clone());
+        let forge_router: Router<()> = forge_routes().with_state(self.state.clone());
         router.nest_service("/forge", forge_router)
     }
 
@@ -313,7 +285,7 @@ impl SchemaForgeExtension {
     ///
     /// Only available when the `graphql` feature is enabled.
     /// Adds `POST /forge/graphql` (handler) and `GET /forge/graphql` (GraphiQL playground).
-    /// Auth middleware is applied so the GraphQL context gets the authenticated user.
+    /// Claims are extracted from request extensions (injected by upstream token middleware).
     #[cfg(feature = "graphql")]
     pub fn register_graphql_routes<S>(&self, router: Router<S>) -> Router<S>
     where
@@ -325,10 +297,6 @@ impl SchemaForgeExtension {
                 axum::routing::get(crate::graphql::graphql_playground)
                     .post(crate::graphql::graphql_handler),
             )
-            .route_layer(axum::middleware::from_fn_with_state(
-                self.state.clone(),
-                crate::middleware::auth_middleware,
-            ))
             .with_state(self.state.clone());
         router.nest("/forge", gql_router)
     }
@@ -339,18 +307,14 @@ impl SchemaForgeExtension {
     /// Nests widget routes under `/forge/`, serving bare HTMX fragments
     /// for entity CRUD operations that can be embedded in any HTMX application.
     ///
-    /// Auth middleware is applied so widget requests respect schema `@access`
-    /// annotations and field-level filtering.
+    /// Claims are extracted from request extensions so widget requests respect
+    /// schema `@access` annotations and field-level filtering.
     #[cfg(feature = "widget-ui")]
     pub fn register_widget_routes<S>(&self, router: Router<S>) -> Router<S>
     where
         S: Clone + Send + Sync + 'static,
     {
         let widget_router = crate::widget::routes::widget_routes()
-            .route_layer(axum::middleware::from_fn_with_state(
-                self.state.clone(),
-                crate::middleware::auth_middleware,
-            ))
             .with_state(self.state.clone());
         router.nest("/forge", widget_router)
     }

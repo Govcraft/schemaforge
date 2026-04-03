@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
-use schema_forge_backend::auth::AuthContext;
+use acton_service::middleware::Claims;
 use schema_forge_backend::entity::Entity;
 use schema_forge_backend::tenant::TenantConfig;
+use schema_forge_backend::TenantRef;
 use schema_forge_core::query::{FieldPath, Filter, Query};
 use schema_forge_core::types::{
     Annotation, DynamicValue, FieldAnnotation, FieldDefinition, SchemaDefinition,
@@ -30,14 +31,15 @@ pub enum FieldFilterDirection {
     Write,
 }
 
-/// Extractor that optionally extracts `AuthContext` from request extensions.
+/// Extractor that optionally extracts `Claims` from request extensions.
 ///
 /// Required because axum's `Extension<T>` rejects the request if `T`
-/// is not present. Since auth is optional (open access mode), we need
-/// a custom extractor that returns `None` when no `AuthContext` exists.
-pub struct OptionalAuth(pub Option<AuthContext>);
+/// is not present. Since claims may not be present (e.g., unauthenticated
+/// requests), we need a custom extractor that returns `None` when no
+/// `Claims` exists.
+pub struct OptionalClaims(pub Option<Claims>);
 
-impl<S> axum::extract::FromRequestParts<S> for OptionalAuth
+impl<S> axum::extract::FromRequestParts<S> for OptionalClaims
 where
     S: Send + Sync,
 {
@@ -47,42 +49,42 @@ where
         parts: &mut axum::http::request::Parts,
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
-        Ok(OptionalAuth(parts.extensions.get::<AuthContext>().cloned()))
+        Ok(OptionalClaims(parts.extensions.get::<Claims>().cloned()))
     }
 }
 
 /// The reserved role name that grants unauthenticated (public) access.
 ///
 /// When a schema's `@access` annotation includes `"public"` in a role list,
-/// that action is accessible without any `AuthContext`.
+/// that action is accessible without any `Claims`.
 pub const PUBLIC_ROLE: &str = "public";
 
 /// Check if the authenticated user has access to perform the given action.
 ///
-/// Access rules (secure by default when auth is configured):
-/// 1. No `AuthContext` (open access / dev mode) => permit
+/// Access rules (secure by default):
+/// 1. No `Claims` => **DENY** (authentication required)
 /// 2. User has "admin" role => permit (bypass)
 /// 3. Schema has no `@access` annotation => **DENY** (secure by default)
 /// 4. Role list for the action contains "public" => permit (even without auth)
 /// 5. Empty role list for the action => permit all authenticated users
 /// 6. User must have at least one role from the action's role list
-///
-/// **Secure by default**: When auth IS configured (AuthContext is present),
-/// schemas without an `@access` annotation are denied. Developers must
-/// explicitly annotate with `@access(read = ["public"])` for open access.
 pub fn check_schema_access(
     schema: &SchemaDefinition,
-    auth: Option<&AuthContext>,
+    claims: Option<&Claims>,
     action: AccessAction,
 ) -> Result<(), ForgeError> {
-    // Rule 1: no auth context means open access / dev mode — no restrictions
-    let auth = match auth {
-        Some(ctx) => ctx,
-        None => return Ok(()),
+    // Rule 1: no claims means authentication is required
+    let claims = match claims {
+        Some(c) => c,
+        None => {
+            return Err(ForgeError::Unauthorized {
+                message: "authentication required".to_string(),
+            })
+        }
     };
 
     // Rule 2: admin bypass
-    if auth.is_admin() {
+    if claims.has_role("admin") {
         return Ok(());
     }
 
@@ -118,7 +120,7 @@ pub fn check_schema_access(
     }
 
     // Rule 6: user must have at least one matching role
-    if auth.has_any_role(required_roles) {
+    if required_roles.iter().any(|r| claims.has_role(r)) {
         Ok(())
     } else {
         Err(ForgeError::Forbidden {
@@ -151,7 +153,8 @@ fn find_access_annotation(
 /// Silently removes fields the user cannot access (no error).
 ///
 /// Rules:
-/// 1. No `AuthContext` => no filtering (open access)
+/// 1. No `Claims` => no filtering (unauthenticated requests are rejected at
+///    the schema level; if they reach here, permit all fields)
 /// 2. Admin role => no filtering (bypass)
 /// 3. No `@field_access` on field => field is accessible
 /// 4. Empty role list for direction => field is accessible
@@ -159,17 +162,17 @@ fn find_access_annotation(
 pub fn filter_entity_fields(
     entity: &mut Entity,
     schema: &SchemaDefinition,
-    auth: Option<&AuthContext>,
+    claims: Option<&Claims>,
     direction: FieldFilterDirection,
 ) {
-    // Rule 1: no auth context means open access mode -- no filtering
-    let auth = match auth {
-        Some(ctx) => ctx,
+    // Rule 1: no claims means open access mode -- no filtering
+    let claims = match claims {
+        Some(c) => c,
         None => return,
     };
 
     // Rule 2: admin bypass
-    if auth.is_admin() {
+    if claims.has_role("admin") {
         return;
     }
 
@@ -179,7 +182,7 @@ pub fn filter_entity_fields(
         .keys()
         .filter(|field_name| {
             if let Some(field_def) = schema.field(field_name) {
-                !is_field_accessible(field_def, &auth.roles, direction)
+                !is_field_accessible(field_def, &claims.roles, direction)
             } else {
                 // Unknown field (not in schema) -- keep it accessible
                 false
@@ -196,30 +199,33 @@ pub fn filter_entity_fields(
 /// Inject tenant scoping filter into a query.
 ///
 /// Adds `_tenant = <tenant_id>` filter based on the deepest tenant in the
-/// auth context's tenant chain. No-ops when:
+/// claims' `tenant_chain` custom claim. No-ops when:
 /// - `tenant_config` is `None` or disabled
-/// - `auth` is `None` (open access)
+/// - `claims` is `None`
 /// - user is admin (bypass)
 pub fn inject_tenant_scope(
     query: &mut Query,
-    auth: Option<&AuthContext>,
+    claims: Option<&Claims>,
     tenant_config: &Option<TenantConfig>,
 ) {
     let _config = match tenant_config {
         Some(c) if c.is_enabled() => c,
         _ => return,
     };
-    let auth = match auth {
-        Some(a) => a,
+    let claims = match claims {
+        Some(c) => c,
         None => return,
     };
-    if auth.is_admin() {
+    if claims.has_role("admin") {
         return;
     }
-    if let Some(tenant_ref) = auth.tenant_chain.last() {
+    let tenant_chain: Vec<TenantRef> = claims
+        .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
+        .unwrap_or_default();
+    if let Some(tenant_ref) = tenant_chain.last() {
         let tenant_filter = Filter::eq(
             FieldPath::single("_tenant"),
-            DynamicValue::Text(tenant_ref.entity_id.as_str().to_string()),
+            DynamicValue::Text(tenant_ref.entity_id.clone()),
         );
         query.filter = Some(match query.filter.take() {
             Some(existing) => Filter::and(vec![existing, tenant_filter]),
@@ -230,26 +236,29 @@ pub fn inject_tenant_scope(
 
 /// Inject `_tenant` field into entity fields on creation.
 ///
-/// Sets `_tenant` to the deepest tenant entity ID in the auth context's
-/// tenant chain. No-ops when tenancy is disabled, auth is `None`, or
-/// the tenant chain is empty.
+/// Sets `_tenant` to the deepest tenant entity ID in the claims'
+/// `tenant_chain` custom claim. No-ops when tenancy is disabled,
+/// claims is `None`, or the tenant chain is empty.
 pub fn inject_tenant_on_create(
     fields: &mut BTreeMap<String, DynamicValue>,
-    auth: Option<&AuthContext>,
+    claims: Option<&Claims>,
     tenant_config: &Option<TenantConfig>,
 ) {
     let _config = match tenant_config {
         Some(c) if c.is_enabled() => c,
         _ => return,
     };
-    let auth = match auth {
-        Some(a) => a,
+    let claims = match claims {
+        Some(c) => c,
         None => return,
     };
-    if let Some(tenant_ref) = auth.tenant_chain.last() {
+    let tenant_chain: Vec<TenantRef> = claims
+        .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
+        .unwrap_or_default();
+    if let Some(tenant_ref) = tenant_chain.last() {
         fields.insert(
             "_tenant".to_string(),
-            DynamicValue::Text(tenant_ref.entity_id.as_str().to_string()),
+            DynamicValue::Text(tenant_ref.entity_id.clone()),
         );
     }
 }
@@ -288,34 +297,37 @@ fn is_field_accessible(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schema_forge_backend::auth::TenantRef;
     use schema_forge_core::types::{
         Annotation, EntityId, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaId,
         SchemaName, TenantKind, TextConstraints,
     };
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
 
     use schema_forge_core::types::DynamicValue;
 
-    fn make_auth(roles: &[&str]) -> AuthContext {
-        AuthContext {
-            user_id: EntityId::new(),
+    fn make_claims(roles: &[&str]) -> Claims {
+        Claims {
+            sub: format!("user:{}", EntityId::new().as_str()),
             roles: roles.iter().map(|r| r.to_string()).collect(),
-            tenant_chain: Vec::new(),
-            attributes: BTreeMap::new(),
+            perms: vec![],
+            exp: 9_999_999_999,
+            iat: None,
+            jti: None,
+            iss: None,
+            aud: None,
+            email: None,
+            username: None,
+            custom: HashMap::new(),
         }
     }
 
-    fn make_auth_with_tenant(roles: &[&str], tenant_entity_id: EntityId) -> AuthContext {
-        AuthContext {
-            user_id: EntityId::new(),
-            roles: roles.iter().map(|r| r.to_string()).collect(),
-            tenant_chain: vec![TenantRef {
-                schema: SchemaName::new("Organization").unwrap(),
-                entity_id: tenant_entity_id,
-            }],
-            attributes: BTreeMap::new(),
-        }
+    fn make_claims_with_tenant(roles: &[&str], tenant_entity_id: &str) -> Claims {
+        let mut claims = make_claims(roles);
+        claims.custom.insert(
+            "tenant_chain".to_string(),
+            serde_json::json!([{"schema": "Organization", "entity_id": tenant_entity_id}]),
+        );
+        claims
     }
 
     fn make_enabled_tenant_config() -> Option<TenantConfig> {
@@ -386,27 +398,29 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn check_schema_access_permits_when_no_auth_open_access() {
-        // No AuthContext = open access / dev mode — always permits
+    fn check_schema_access_denies_when_no_claims() {
+        // No Claims = authentication required — always denies
         let schema = make_access_schema(&["viewer"], &["editor"], &["admin"]);
         let result = check_schema_access(&schema, None, AccessAction::Write);
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ForgeError::Unauthorized { .. })));
     }
 
     #[test]
-    fn check_schema_access_permits_when_no_auth_no_annotation() {
-        // No AuthContext = open access even without @access annotation
+    fn check_schema_access_denies_when_no_claims_no_annotation() {
+        // No Claims = authentication required even without @access annotation
         let schema = make_open_schema();
         let result = check_schema_access(&schema, None, AccessAction::Read);
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        assert!(matches!(result, Err(ForgeError::Unauthorized { .. })));
     }
 
     #[test]
     fn check_schema_access_denies_when_auth_but_no_access_annotation() {
-        // Auth configured + no @access = secure by default → deny
+        // Auth configured + no @access = secure by default -> deny
         let schema = make_open_schema();
-        let auth = make_auth(&["member"]);
-        let result = check_schema_access(&schema, Some(&auth), AccessAction::Read);
+        let claims = make_claims(&["member"]);
+        let result = check_schema_access(&schema, Some(&claims), AccessAction::Read);
         assert!(result.is_err());
         assert!(matches!(result, Err(ForgeError::Forbidden { .. })));
     }
@@ -415,32 +429,32 @@ mod tests {
     fn check_schema_access_permits_public_role() {
         // "public" in role list = permit for any authenticated user
         let schema = make_access_schema(&["public"], &["editor"], &["admin"]);
-        let auth = make_auth(&["anyone"]);
-        let result = check_schema_access(&schema, Some(&auth), AccessAction::Read);
+        let claims = make_claims(&["anyone"]);
+        let result = check_schema_access(&schema, Some(&claims), AccessAction::Read);
         assert!(result.is_ok());
     }
 
     #[test]
     fn check_schema_access_permits_admin_always() {
         let schema = make_access_schema(&["viewer"], &["editor"], &["superadmin"]);
-        let auth = make_auth(&["admin"]);
-        let result = check_schema_access(&schema, Some(&auth), AccessAction::Delete);
+        let claims = make_claims(&["admin"]);
+        let result = check_schema_access(&schema, Some(&claims), AccessAction::Delete);
         assert!(result.is_ok());
     }
 
     #[test]
     fn check_schema_access_permits_matching_role() {
         let schema = make_access_schema(&["viewer", "editor"], &["editor"], &["admin"]);
-        let auth = make_auth(&["editor"]);
-        let result = check_schema_access(&schema, Some(&auth), AccessAction::Read);
+        let claims = make_claims(&["editor"]);
+        let result = check_schema_access(&schema, Some(&claims), AccessAction::Read);
         assert!(result.is_ok());
     }
 
     #[test]
     fn check_schema_access_rejects_non_matching_role() {
         let schema = make_access_schema(&["viewer"], &["editor"], &["admin"]);
-        let auth = make_auth(&["guest"]);
-        let result = check_schema_access(&schema, Some(&auth), AccessAction::Write);
+        let claims = make_claims(&["guest"]);
+        let result = check_schema_access(&schema, Some(&claims), AccessAction::Write);
         assert!(result.is_err());
         assert!(matches!(result, Err(ForgeError::Forbidden { .. })));
     }
@@ -448,9 +462,9 @@ mod tests {
     #[test]
     fn check_schema_access_permits_when_role_list_empty() {
         let schema = make_access_schema(&[], &["editor"], &["admin"]);
-        let auth = make_auth(&["guest"]);
+        let claims = make_claims(&["guest"]);
         // Empty read list means all authenticated users are permitted
-        let result = check_schema_access(&schema, Some(&auth), AccessAction::Read);
+        let result = check_schema_access(&schema, Some(&claims), AccessAction::Read);
         assert!(result.is_ok());
     }
 
@@ -458,17 +472,17 @@ mod tests {
     fn check_schema_access_read_write_delete_independent() {
         let schema = make_access_schema(&["reader"], &["writer"], &["deleter"]);
 
-        let reader = make_auth(&["reader"]);
+        let reader = make_claims(&["reader"]);
         assert!(check_schema_access(&schema, Some(&reader), AccessAction::Read).is_ok());
         assert!(check_schema_access(&schema, Some(&reader), AccessAction::Write).is_err());
         assert!(check_schema_access(&schema, Some(&reader), AccessAction::Delete).is_err());
 
-        let writer = make_auth(&["writer"]);
+        let writer = make_claims(&["writer"]);
         assert!(check_schema_access(&schema, Some(&writer), AccessAction::Read).is_err());
         assert!(check_schema_access(&schema, Some(&writer), AccessAction::Write).is_ok());
         assert!(check_schema_access(&schema, Some(&writer), AccessAction::Delete).is_err());
 
-        let deleter = make_auth(&["deleter"]);
+        let deleter = make_claims(&["deleter"]);
         assert!(check_schema_access(&schema, Some(&deleter), AccessAction::Read).is_err());
         assert!(check_schema_access(&schema, Some(&deleter), AccessAction::Write).is_err());
         assert!(check_schema_access(&schema, Some(&deleter), AccessAction::Delete).is_ok());
@@ -491,13 +505,13 @@ mod tests {
         )
         .unwrap();
 
-        let auth = make_auth(&["member"]);
+        let claims = make_claims(&["member"]);
         let mut entity = make_entity_with_fields(&[("name", "Alice"), ("salary", "100000")]);
 
         filter_entity_fields(
             &mut entity,
             &schema,
-            Some(&auth),
+            Some(&claims),
             FieldFilterDirection::Read,
         );
 
@@ -518,13 +532,13 @@ mod tests {
         )
         .unwrap();
 
-        let auth = make_auth(&["member"]);
+        let claims = make_claims(&["member"]);
         let mut entity = make_entity_with_fields(&[("name", "Alice"), ("salary", "100000")]);
 
         filter_entity_fields(
             &mut entity,
             &schema,
-            Some(&auth),
+            Some(&claims),
             FieldFilterDirection::Write,
         );
 
@@ -542,13 +556,13 @@ mod tests {
         )
         .unwrap();
 
-        let auth = make_auth(&["member"]);
+        let claims = make_claims(&["member"]);
         let mut entity = make_entity_with_fields(&[("name", "Alice"), ("email", "a@b.com")]);
 
         filter_entity_fields(
             &mut entity,
             &schema,
-            Some(&auth),
+            Some(&claims),
             FieldFilterDirection::Read,
         );
 
@@ -569,13 +583,13 @@ mod tests {
         )
         .unwrap();
 
-        let auth = make_auth(&["admin"]);
+        let claims = make_claims(&["admin"]);
         let mut entity = make_entity_with_fields(&[("name", "Alice"), ("salary", "100000")]);
 
         filter_entity_fields(
             &mut entity,
             &schema,
-            Some(&auth),
+            Some(&claims),
             FieldFilterDirection::Read,
         );
 
@@ -584,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_entity_fields_no_auth_no_filtering() {
+    fn filter_entity_fields_no_claims_no_filtering() {
         let schema = SchemaDefinition::new(
             SchemaId::new(),
             SchemaName::new("Employee").unwrap(),
@@ -649,30 +663,30 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // OptionalAuth extractor tests
+    // OptionalClaims extractor tests
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn optional_auth_extracts_when_present() {
+    async fn optional_claims_extracts_when_present() {
         use axum::extract::FromRequestParts;
 
-        let auth = make_auth(&["member"]);
+        let claims = make_claims(&["member"]);
         let (mut parts, _body) = axum::http::Request::builder()
             .uri("/test")
             .body(())
             .unwrap()
             .into_parts();
-        parts.extensions.insert(auth.clone());
+        parts.extensions.insert(claims.clone());
 
-        let result = OptionalAuth::from_request_parts(&mut parts, &()).await;
+        let result = OptionalClaims::from_request_parts(&mut parts, &()).await;
         assert!(result.is_ok());
-        let OptionalAuth(extracted) = result.unwrap();
+        let OptionalClaims(extracted) = result.unwrap();
         assert!(extracted.is_some());
-        assert_eq!(extracted.unwrap().roles, auth.roles);
+        assert_eq!(extracted.unwrap().roles, claims.roles);
     }
 
     #[tokio::test]
-    async fn optional_auth_returns_none_when_missing() {
+    async fn optional_claims_returns_none_when_missing() {
         use axum::extract::FromRequestParts;
 
         let (mut parts, _body) = axum::http::Request::builder()
@@ -681,9 +695,9 @@ mod tests {
             .unwrap()
             .into_parts();
 
-        let result = OptionalAuth::from_request_parts(&mut parts, &()).await;
+        let result = OptionalClaims::from_request_parts(&mut parts, &()).await;
         assert!(result.is_ok());
-        let OptionalAuth(extracted) = result.unwrap();
+        let OptionalClaims(extracted) = result.unwrap();
         assert!(extracted.is_none());
     }
 
@@ -695,10 +709,11 @@ mod tests {
     fn inject_tenant_scope_adds_filter_when_enabled() {
         let tenant_config = make_enabled_tenant_config();
         let tenant_id = EntityId::new();
-        let auth = make_auth_with_tenant(&["member"], tenant_id.clone());
+        let claims =
+            make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
-        inject_tenant_scope(&mut query, Some(&auth), &tenant_config);
+        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
 
         assert!(query.filter.is_some());
         let filter = query.filter.unwrap();
@@ -718,10 +733,11 @@ mod tests {
     fn inject_tenant_scope_noop_when_disabled() {
         let tenant_config: Option<TenantConfig> = None;
         let tenant_id = EntityId::new();
-        let auth = make_auth_with_tenant(&["member"], tenant_id);
+        let claims =
+            make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
-        inject_tenant_scope(&mut query, Some(&auth), &tenant_config);
+        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
 
         assert!(query.filter.is_none());
     }
@@ -730,16 +746,17 @@ mod tests {
     fn inject_tenant_scope_noop_for_admin() {
         let tenant_config = make_enabled_tenant_config();
         let tenant_id = EntityId::new();
-        let auth = make_auth_with_tenant(&["admin"], tenant_id);
+        let claims =
+            make_claims_with_tenant(&["admin"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
-        inject_tenant_scope(&mut query, Some(&auth), &tenant_config);
+        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
 
         assert!(query.filter.is_none());
     }
 
     #[test]
-    fn inject_tenant_scope_noop_when_no_auth() {
+    fn inject_tenant_scope_noop_when_no_claims() {
         let tenant_config = make_enabled_tenant_config();
         let mut query = Query::new(SchemaId::new());
 
@@ -752,7 +769,8 @@ mod tests {
     fn inject_tenant_scope_combines_with_existing_filter() {
         let tenant_config = make_enabled_tenant_config();
         let tenant_id = EntityId::new();
-        let auth = make_auth_with_tenant(&["member"], tenant_id.clone());
+        let claims =
+            make_claims_with_tenant(&["member"], tenant_id.as_str());
 
         let existing_filter = Filter::eq(
             FieldPath::single("status"),
@@ -760,7 +778,7 @@ mod tests {
         );
         let mut query = Query::new(SchemaId::new()).with_filter(existing_filter);
 
-        inject_tenant_scope(&mut query, Some(&auth), &tenant_config);
+        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
 
         assert!(query.filter.is_some());
         let filter = query.filter.unwrap();
@@ -793,11 +811,12 @@ mod tests {
     fn inject_tenant_on_create_inserts_tenant_field() {
         let tenant_config = make_enabled_tenant_config();
         let tenant_id = EntityId::new();
-        let auth = make_auth_with_tenant(&["member"], tenant_id.clone());
+        let claims =
+            make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
 
-        inject_tenant_on_create(&mut fields, Some(&auth), &tenant_config);
+        inject_tenant_on_create(&mut fields, Some(&claims), &tenant_config);
 
         assert!(fields.contains_key("_tenant"));
         assert_eq!(
@@ -810,17 +829,18 @@ mod tests {
     fn inject_tenant_on_create_noop_when_disabled() {
         let tenant_config: Option<TenantConfig> = None;
         let tenant_id = EntityId::new();
-        let auth = make_auth_with_tenant(&["member"], tenant_id);
+        let claims =
+            make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
 
-        inject_tenant_on_create(&mut fields, Some(&auth), &tenant_config);
+        inject_tenant_on_create(&mut fields, Some(&claims), &tenant_config);
 
         assert!(!fields.contains_key("_tenant"));
     }
 
     #[test]
-    fn inject_tenant_on_create_noop_when_no_auth() {
+    fn inject_tenant_on_create_noop_when_no_claims() {
         let tenant_config = make_enabled_tenant_config();
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
@@ -833,11 +853,11 @@ mod tests {
     #[test]
     fn inject_tenant_on_create_noop_when_empty_tenant_chain() {
         let tenant_config = make_enabled_tenant_config();
-        let auth = make_auth(&["member"]); // no tenant chain
+        let claims = make_claims(&["member"]); // no tenant chain
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
 
-        inject_tenant_on_create(&mut fields, Some(&auth), &tenant_config);
+        inject_tenant_on_create(&mut fields, Some(&claims), &tenant_config);
 
         assert!(!fields.contains_key("_tenant"));
     }
