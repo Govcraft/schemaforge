@@ -1,14 +1,26 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
+use acton_service::config::Config;
 use acton_service::middleware::Claims;
+use acton_service::prelude::ActorHandleInterface;
+use acton_service::state::AppState;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
+use schema_forge_acton::config::SchemaForgeConfig;
+use schema_forge_acton::messages::{InitForge, ReplyChannel};
 use schema_forge_acton::routes::forge_routes;
-use schema_forge_acton::state::{DynSchemaBackend, ForgeState, SchemaRegistry};
+use schema_forge_acton::state::DynForgeBackend;
+use schema_forge_acton::DynSchemaBackend;
+use schema_forge_acton::ForgeActor;
+use schema_forge_backend::auth::RecordAccessPolicy;
+use schema_forge_backend::tenant::TenantConfig;
+use schema_forge_core::types::SchemaDefinition;
 use schema_forge_surrealdb::SurrealBackend;
+use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
@@ -31,43 +43,77 @@ fn make_test_claims(roles: &[&str]) -> Claims {
     }
 }
 
-/// Create a test ForgeState with in-memory SurrealDB.
-async fn test_state() -> ForgeState {
+/// Parameters for building a test app with a ForgeActor.
+struct TestForgeInit {
+    backend: Arc<dyn DynForgeBackend>,
+    registry: HashMap<String, SchemaDefinition>,
+    tenant_config: Option<TenantConfig>,
+    record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+}
+
+/// Build a test `AppState<SchemaForgeConfig>` with a ForgeActor initialized from the given params.
+///
+/// Must be called from a multi-threaded tokio runtime (ServiceBuilder::build uses block_in_place).
+async fn build_test_app_state(init: TestForgeInit) -> AppState<SchemaForgeConfig> {
+    use acton_service::service_builder::ServiceBuilder;
+
+    let config = Config::<SchemaForgeConfig>::default();
+    let service = ServiceBuilder::new()
+        .with_config(config)
+        .with_actor::<ForgeActor>()
+        .build();
+
+    let forge_handle = service
+        .state()
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
+    let (tx, rx) = oneshot::channel();
+    forge_handle
+        .send(InitForge {
+            registry: init.registry,
+            backend: init.backend,
+            tenant_config: init.tenant_config,
+            record_access_policy: init.record_access_policy,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+
+    tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .expect("InitForge timeout")
+        .expect("InitForge channel dropped");
+
+    service.state().clone()
+}
+
+/// Create a simple test `AppState` with an empty in-memory SurrealDB backend.
+async fn test_app_state() -> AppState<SchemaForgeConfig> {
     let backend = SurrealBackend::connect_memory("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
-    let registry = SchemaRegistry::new();
-    ForgeState {
-        registry,
+    build_test_app_state(TestForgeInit {
         backend: Arc::new(backend),
+        registry: HashMap::new(),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    }
+    })
+    .await
 }
 
-/// Create a test router with ForgeState (no auth middleware).
+/// Create a test router with an empty registry and admin Claims injected.
 async fn test_app() -> Router {
-    let state = test_state().await;
-    test_app_with_claims(state, make_test_claims(&["admin"]))
+    let state = test_app_state().await;
+    test_app_with_claims_state(state, make_test_claims(&["admin"]))
 }
 
-/// Create a test router with a specific ForgeState (no auth middleware).
-fn test_app_with_state(state: ForgeState) -> Router {
+/// Create a test router from an AppState without injecting Claims.
+fn test_app_with_state(state: AppState<SchemaForgeConfig>) -> Router {
     forge_routes().with_state(state)
 }
 
 /// Create a test router that injects Claims into every request.
-fn test_app_with_claims(state: ForgeState, claims: Claims) -> Router {
+fn test_app_with_claims_state(state: AppState<SchemaForgeConfig>, claims: Claims) -> Router {
     forge_routes()
         .layer(axum::middleware::from_fn(
             move |mut req: axum::extract::Request, next: axum::middleware::Next| {
@@ -117,7 +163,7 @@ async fn json_request(
 // Schema lifecycle tests
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_schema_returns_201() {
     let app = test_app().await;
     let body = serde_json::json!({
@@ -136,7 +182,7 @@ async fn create_schema_returns_201() {
     assert!(json["id"].as_str().unwrap().starts_with("schema_"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_duplicate_schema_returns_409() {
     let app = test_app().await;
     let body = serde_json::json!({
@@ -154,7 +200,7 @@ async fn create_duplicate_schema_returns_409() {
     assert_eq!(json["error"], "schema_already_exists");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_existing_schema_returns_200() {
     let app = test_app().await;
     let body = serde_json::json!({
@@ -171,7 +217,7 @@ async fn get_existing_schema_returns_200() {
     assert_eq!(json["name"], "Contact");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_missing_schema_returns_404() {
     let app = test_app().await;
 
@@ -180,7 +226,7 @@ async fn get_missing_schema_returns_404() {
     assert_eq!(json["error"], "schema_not_found");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_schemas_returns_all() {
     let app = test_app().await;
 
@@ -203,7 +249,7 @@ async fn list_schemas_returns_all() {
     assert_eq!(json["schemas"].as_array().unwrap().len(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_schema_triggers_migration() {
     let app = test_app().await;
 
@@ -228,7 +274,7 @@ async fn update_schema_triggers_migration() {
     assert_eq!(json["fields"].as_array().unwrap().len(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_schema_removes_from_registry() {
     let app = test_app().await;
 
@@ -252,7 +298,7 @@ async fn delete_schema_removes_from_registry() {
 // Validation tests
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn invalid_schema_name_returns_400() {
     let app = test_app().await;
     let body = serde_json::json!({
@@ -265,7 +311,7 @@ async fn invalid_schema_name_returns_400() {
     assert_eq!(json["error"], "invalid_schema_name");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn empty_fields_returns_422() {
     let app = test_app().await;
     let body = serde_json::json!({
@@ -282,7 +328,7 @@ async fn empty_fields_returns_422() {
 // Entity lifecycle tests
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_entity_returns_201() {
     let app = test_app().await;
 
@@ -321,7 +367,7 @@ async fn create_entity_returns_201() {
     assert_eq!(json["fields"]["age"], 30);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_entity_for_missing_schema_returns_404() {
     let app = test_app().await;
 
@@ -341,7 +387,7 @@ async fn create_entity_for_missing_schema_returns_404() {
     assert_eq!(json["error"], "schema_not_found");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_entity_returns_200() {
     let app = test_app().await;
 
@@ -375,7 +421,7 @@ async fn get_entity_returns_200() {
     assert_eq!(json["fields"]["name"], "Alice");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_missing_entity_returns_404() {
     let app = test_app().await;
 
@@ -393,7 +439,7 @@ async fn get_missing_entity_returns_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_entity_returns_200() {
     let app = test_app().await;
 
@@ -431,7 +477,7 @@ async fn update_entity_returns_200() {
     assert_eq!(json["fields"]["age"], 31);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_entity_returns_204() {
     let app = test_app().await;
 
@@ -465,7 +511,7 @@ async fn delete_entity_returns_204() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_missing_entity_returns_404() {
     let app = test_app().await;
 
@@ -517,7 +563,7 @@ fn cedar_policies_generated_for_schema() {
 // Extension builder tests
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn extension_builder_with_backend_loads_schemas() {
     use schema_forge_acton::SchemaForgeExtension;
 
@@ -548,26 +594,13 @@ async fn extension_builder_with_backend_loads_schemas() {
     assert!(names.contains(&"TenantMembership".to_string()));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn extension_register_routes_nests_under_forge() {
-    use schema_forge_acton::SchemaForgeExtension;
-
-    let backend = SurrealBackend::connect_memory("test", "test")
-        .await
-        .expect("failed to connect to in-memory SurrealDB");
-
-    let mut builder = SchemaForgeExtension::builder();
-    builder = builder.with_backend(backend);
-    #[cfg(feature = "admin-ui")]
-    {
-        builder = builder.with_template_dir(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
-        );
-    }
-    let extension = builder.build().await.expect("failed to build extension");
-
+    // Build actor-backed AppState and nest forge routes under /forge
+    let state = test_app_state().await;
     let router: Router = Router::new();
-    let router = extension.register_routes(router);
+    let forge_router: Router<()> = forge_routes().with_state(state);
+    let router = router.nest("/forge", forge_router);
 
     // Test that we can hit /forge/schemas (requires auth)
     let mut request = Request::builder()
@@ -586,29 +619,19 @@ async fn extension_register_routes_nests_under_forge() {
 // Auth integration tests
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_with_admin_claims_succeeds() {
     let backend = SurrealBackend::connect_memory("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
-    let registry = SchemaRegistry::new();
-    let state = ForgeState {
-        registry,
+    let state = build_test_app_state(TestForgeInit {
         backend: Arc::new(backend),
+        registry: HashMap::new(),
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
-    let app = test_app_with_claims(state, make_test_claims(&["admin"]));
+    })
+    .await;
+    let app = test_app_with_claims_state(state, make_test_claims(&["admin"]));
 
     // Create a schema to verify the request goes through
     let body = serde_json::json!({
@@ -620,18 +643,18 @@ async fn request_with_admin_claims_succeeds() {
     assert_eq!(json["name"], "Contact");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_without_claims_returns_401() {
-    let backend = SurrealBackend::connect_memory("test", "test")
-        .await
-        .expect("failed to connect to in-memory SurrealDB");
-    let registry = SchemaRegistry::new();
-
-    // Register a schema so the route doesn't 404 before reaching auth check
     use schema_forge_core::types::{
         Annotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName,
         TextConstraints,
     };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // Register a schema so the route doesn't 404 before reaching auth check
     let schema = SchemaDefinition::new(
         SchemaId::new(),
         SchemaName::new("Contact").unwrap(),
@@ -658,26 +681,17 @@ async fn request_without_claims_returns_401() {
         .store_schema_metadata(&schema)
         .await
         .expect("store metadata");
-    registry
-        .insert("Contact".to_string(), schema.clone())
-        .await;
 
-    let state = ForgeState {
-        registry,
+    let mut registry = HashMap::new();
+    registry.insert("Contact".to_string(), schema.clone());
+
+    let state = build_test_app_state(TestForgeInit {
         backend,
+        registry,
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    })
+    .await;
     // No Claims injected — requests should get 401
     let app = test_app_with_state(state);
 
@@ -691,14 +705,14 @@ async fn request_without_claims_returns_401() {
 // Access control integration tests
 // ---------------------------------------------------------------------------
 
-/// Helper to create a ForgeState with a pre-registered schema with @access annotations,
+/// Helper to create an AppState with a pre-registered schema with @access annotations,
 /// and build a test app with the given Claims.
 async fn access_test_state(
     user_roles: Vec<String>,
     schema_read_roles: Vec<String>,
     schema_write_roles: Vec<String>,
     schema_delete_roles: Vec<String>,
-) -> (ForgeState, Router) {
+) -> (AppState<SchemaForgeConfig>, Router) {
     use schema_forge_core::types::{
         Annotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName,
         TextConstraints,
@@ -731,8 +745,8 @@ async fn access_test_state(
     )
     .unwrap();
 
-    let registry = SchemaRegistry::new();
-    registry.insert("Article".to_string(), schema.clone()).await;
+    let mut registry = HashMap::new();
+    registry.insert("Article".to_string(), schema.clone());
 
     // Apply migration so the backend table exists
     let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
@@ -746,31 +760,22 @@ async fn access_test_state(
         .await
         .expect("failed to store metadata");
 
-    let state = ForgeState {
-        registry,
+    let state = build_test_app_state(TestForgeInit {
         backend,
+        registry,
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    })
+    .await;
 
     let claims = make_test_claims(
         &user_roles.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
     );
-    let app = test_app_with_claims(state.clone(), claims);
+    let app = test_app_with_claims_state(state.clone(), claims);
     (state, app)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authenticated_request_with_matching_role_succeeds() {
     let (_state, app) = access_test_state(
         vec!["editor".to_string()],
@@ -803,7 +808,7 @@ async fn authenticated_request_with_matching_role_succeeds() {
     assert_eq!(json["fields"]["title"], "Hello World");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authenticated_request_with_wrong_role_gets_403() {
     let (_state, app) = access_test_state(
         vec!["viewer".to_string()],
@@ -831,7 +836,7 @@ async fn authenticated_request_with_wrong_role_gets_403() {
     assert_eq!(json["error"], "forbidden");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_without_claims_on_access_controlled_schema_returns_401() {
     use schema_forge_core::types::{
         Annotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName,
@@ -859,8 +864,8 @@ async fn request_without_claims_on_access_controlled_schema_returns_401() {
     )
     .unwrap();
 
-    let registry = SchemaRegistry::new();
-    registry.insert("Secret".to_string(), schema.clone()).await;
+    let mut registry = HashMap::new();
+    registry.insert("Secret".to_string(), schema.clone());
 
     let backend = Arc::new(backend);
     let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
@@ -874,22 +879,13 @@ async fn request_without_claims_on_access_controlled_schema_returns_401() {
         .expect("failed to store metadata");
 
     // No Claims injected — should get 401
-    let state = ForgeState {
-        registry,
+    let state = build_test_app_state(TestForgeInit {
         backend,
+        registry,
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    })
+    .await;
     let app = test_app_with_state(state);
 
     let entity_body = serde_json::json!({
@@ -905,7 +901,7 @@ async fn request_without_claims_on_access_controlled_schema_returns_401() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn field_filtering_hides_restricted_fields() {
     use schema_forge_core::types::{
         FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId,
@@ -946,10 +942,8 @@ async fn field_filtering_hides_restricted_fields() {
     )
     .unwrap();
 
-    let registry = SchemaRegistry::new();
-    registry
-        .insert("Employee".to_string(), schema.clone())
-        .await;
+    let mut registry = HashMap::new();
+    registry.insert("Employee".to_string(), schema.clone());
 
     let backend = Arc::new(backend);
     let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
@@ -963,23 +957,14 @@ async fn field_filtering_hides_restricted_fields() {
         .expect("failed to store metadata");
 
     // User with "member" role (not "hr")
-    let state = ForgeState {
-        registry,
+    let state = build_test_app_state(TestForgeInit {
         backend,
+        registry,
         tenant_config: None,
         record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
-    let app = test_app_with_claims(state, make_test_claims(&["member"]));
+    })
+    .await;
+    let app = test_app_with_claims_state(state, make_test_claims(&["member"]));
 
     // Create entity with both fields
     let entity_body = serde_json::json!({

@@ -7,6 +7,7 @@
 //! uses to send the response back to the caller via a `tokio::sync::oneshot` channel.
 //! Fire-and-forget messages (mutations with no response) omit the reply channel.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use schema_forge_backend::auth::RecordAccessPolicy;
@@ -190,4 +191,37 @@ pub struct StoreSchemaMetadata {
 pub struct LoadSchemaMetadata {
     pub name: SchemaName,
     pub reply: ReplyChannel<Result<Option<SchemaDefinition>, BackendError>>,
+}
+
+// ---------------------------------------------------------------------------
+// Actor initialization (sent once after spawning, before serving requests)
+// ---------------------------------------------------------------------------
+
+/// Initialize the ForgeActor with runtime state.
+///
+/// Sent once after actor spawning via `ServiceBuilder::with_actor::<ForgeActor>()`,
+/// before the service begins serving HTTP requests. Populates the actor's backend,
+/// schema registry, tenant configuration, and access policy.
+#[derive(Clone)]
+pub struct InitForge {
+    pub registry: HashMap<String, SchemaDefinition>,
+    pub backend: Arc<dyn crate::state::DynForgeBackend>,
+    pub tenant_config: Option<TenantConfig>,
+    pub record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+    pub reply: ReplyChannel<()>,
+}
+
+impl std::fmt::Debug for InitForge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InitForge")
+            .field("registry_len", &self.registry.len())
+            .field("backend", &"..")
+            .field("tenant_config", &self.tenant_config)
+            .field(
+                "record_access_policy",
+                &self.record_access_policy.as_ref().map(|_| ".."),
+            )
+            .field("reply", &self.reply)
+            .finish()
+    }
 }

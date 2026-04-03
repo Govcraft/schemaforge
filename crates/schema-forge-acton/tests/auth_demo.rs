@@ -10,14 +10,22 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
+use acton_service::config::Config;
 use acton_service::middleware::Claims;
+use acton_service::prelude::ActorHandleInterface;
+use acton_service::state::AppState;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
+use schema_forge_acton::config::SchemaForgeConfig;
+use schema_forge_acton::messages::{InitForge, ReplyChannel};
 use schema_forge_acton::routes::forge_routes;
-use schema_forge_acton::state::{DynForgeBackend, ForgeState, SchemaRegistry};
+use schema_forge_acton::state::DynForgeBackend;
+use schema_forge_acton::ForgeActor;
+use schema_forge_backend::auth::RecordAccessPolicy;
 use schema_forge_backend::tenant::TenantConfig;
 use schema_forge_backend::OwnershipBasedPolicy;
 use schema_forge_core::migration::DiffEngine;
@@ -26,6 +34,7 @@ use schema_forge_core::types::{
     SchemaId, SchemaName, TenantKind, TextConstraints,
 };
 use schema_forge_surrealdb::SurrealBackend;
+use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
@@ -73,8 +82,47 @@ fn make_test_claims_with_tenant(sub: &str, roles: &[&str], tenant_entity_id: &st
     claims
 }
 
+/// Build a test `AppState<SchemaForgeConfig>` with a ForgeActor initialized from the given params.
+async fn build_test_app_state(
+    backend: Arc<dyn DynForgeBackend>,
+    registry: HashMap<String, SchemaDefinition>,
+    tenant_config: Option<TenantConfig>,
+    record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+) -> AppState<SchemaForgeConfig> {
+    use acton_service::service_builder::ServiceBuilder;
+
+    let config = Config::<SchemaForgeConfig>::default();
+    let service = ServiceBuilder::new()
+        .with_config(config)
+        .with_actor::<ForgeActor>()
+        .build();
+
+    let forge_handle = service
+        .state()
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
+    let (tx, rx) = oneshot::channel();
+    forge_handle
+        .send(InitForge {
+            registry,
+            backend,
+            tenant_config,
+            record_access_policy,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+
+    tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .expect("InitForge timeout")
+        .expect("InitForge channel dropped");
+
+    service.state().clone()
+}
+
 /// Create a test router that injects Claims into every request.
-fn test_app_with_claims(state: ForgeState, claims: Claims) -> Router {
+fn test_app_with_claims(state: AppState<SchemaForgeConfig>, claims: Claims) -> Router {
     forge_routes()
         .layer(axum::middleware::from_fn(
             move |mut req: axum::extract::Request, next: axum::middleware::Next| {
@@ -119,11 +167,11 @@ async fn json_request(
     (status, json)
 }
 
-/// Register a schema directly into the backend + registry.
+/// Register a schema directly into the backend + registry map.
 async fn register_schema(
     schema: &SchemaDefinition,
     backend: &Arc<dyn DynForgeBackend>,
-    registry: &SchemaRegistry,
+    registry: &mut HashMap<String, SchemaDefinition>,
 ) {
     let plan = DiffEngine::create_new(schema);
     backend
@@ -134,16 +182,14 @@ async fn register_schema(
         .store_schema_metadata(schema)
         .await
         .expect("store metadata");
-    registry
-        .insert(schema.name.as_str().to_string(), schema.clone())
-        .await;
+    registry.insert(schema.name.as_str().to_string(), schema.clone());
 }
 
 // ===========================================================================
 // TEST 1: System schemas seeded at startup (Phase 2)
 // ===========================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn demo_system_schemas_seeded_at_startup() {
     println!("\n=== DEMO: System Schemas Seeded at Startup ===");
 
@@ -207,7 +253,7 @@ async fn demo_system_schemas_seeded_at_startup() {
 // TEST 2: Schema-level @access enforcement (Phase 4)
 // ===========================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn demo_schema_access_control() {
     println!("\n=== DEMO: Schema-Level @access Enforcement ===");
 
@@ -215,7 +261,7 @@ async fn demo_schema_access_control() {
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
-    let registry = SchemaRegistry::new();
+    let mut registry = HashMap::new();
 
     // Create schema: @access(read: ["viewer", "editor"], write: ["editor"], delete: ["admin"])
     let schema = SchemaDefinition::new(
@@ -239,26 +285,17 @@ async fn demo_schema_access_control() {
         }],
     )
     .unwrap();
-    register_schema(&schema, &backend, &registry).await;
+    register_schema(&schema, &backend, &mut registry).await;
 
     // --- Scenario A: "editor" can read and write ---
     println!("  Scenario A: editor role can read and write");
-    let state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        None,
+    )
+    .await;
     let app = test_app_with_claims(state, make_test_claims(&["editor"]));
 
     let (status, json) = json_request(
@@ -277,22 +314,13 @@ async fn demo_schema_access_control() {
 
     // --- Scenario B: "viewer" can read but NOT write ---
     println!("  Scenario B: viewer role can read but NOT write");
-    let state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        None,
+    )
+    .await;
     let app = test_app_with_claims(state, make_test_claims(&["viewer"]));
 
     let (status, _) = json_request(&app, Method::GET, "/schemas/Article/entities", None).await;
@@ -328,7 +356,7 @@ async fn demo_schema_access_control() {
 // TEST 3: Field-level @field_access filtering (Phase 4)
 // ===========================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn demo_field_access_filtering() {
     println!("\n=== DEMO: Field-Level @field_access Filtering ===");
 
@@ -336,7 +364,7 @@ async fn demo_field_access_filtering() {
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
-    let registry = SchemaRegistry::new();
+    let mut registry = HashMap::new();
 
     // Schema: salary field only visible/writable by "hr" role
     // @access with empty lists = all authenticated users permitted (testing field-level, not schema-level)
@@ -370,26 +398,17 @@ async fn demo_field_access_filtering() {
         }],
     )
     .unwrap();
-    register_schema(&schema, &backend, &registry).await;
+    register_schema(&schema, &backend, &mut registry).await;
 
     // --- HR user creates employee with salary ---
     println!("  HR user creates employee with salary field");
-    let state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        None,
+    )
+    .await;
     let app = test_app_with_claims(state, make_test_claims(&["hr"]));
 
     let (status, json) = json_request(
@@ -409,22 +428,13 @@ async fn demo_field_access_filtering() {
 
     // --- Regular member reads same employee ---
     println!("  Regular member reads same employee");
-    let state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        None,
+    )
+    .await;
     let app = test_app_with_claims(state, make_test_claims(&["member"]));
 
     let path = format!("/schemas/Employee/entities/{entity_id}");
@@ -445,7 +455,7 @@ async fn demo_field_access_filtering() {
 // TEST 4: Record-level @owner enforcement (Phase 6)
 // ===========================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn demo_record_ownership() {
     println!("\n=== DEMO: Record-Level @owner Enforcement ===");
 
@@ -453,7 +463,7 @@ async fn demo_record_ownership() {
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
-    let registry = SchemaRegistry::new();
+    let mut registry = HashMap::new();
 
     // Schema with @owner on owner_id field
     // @access with empty lists = all authenticated users permitted (testing ownership, not schema-level)
@@ -480,7 +490,7 @@ async fn demo_record_ownership() {
         }],
     )
     .unwrap();
-    register_schema(&schema, &backend, &registry).await;
+    register_schema(&schema, &backend, &mut registry).await;
 
     let alice_id = EntityId::new();
     let bob_id = EntityId::new();
@@ -489,22 +499,13 @@ async fn demo_record_ownership() {
     println!("  Alice creates a note");
     let alice_claims =
         make_test_claims_with_sub(&format!("user:{}", alice_id.as_str()), &["member"]);
-    let state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        Some(Arc::new(OwnershipBasedPolicy)),
+    )
+    .await;
     let app = test_app_with_claims(state, alice_claims);
 
     let (status, json) = json_request(
@@ -527,22 +528,13 @@ async fn demo_record_ownership() {
     println!("  Bob tries to update Alice's note");
     let bob_claims =
         make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["member"]);
-    let state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        Some(Arc::new(OwnershipBasedPolicy)),
+    )
+    .await;
     let app = test_app_with_claims(state, bob_claims);
 
     let path = format!("/schemas/Note/entities/{note_id}");
@@ -566,22 +558,13 @@ async fn demo_record_ownership() {
     println!("  Admin overrides ownership check");
     let admin_claims =
         make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["admin"]);
-    let state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        Some(Arc::new(OwnershipBasedPolicy)),
+    )
+    .await;
     let app = test_app_with_claims(state, admin_claims);
 
     let (status, json) = json_request(
@@ -604,7 +587,7 @@ async fn demo_record_ownership() {
 // TEST 5: Multi-tenancy isolation (Phase 5)
 // ===========================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn demo_multi_tenancy_isolation() {
     println!("\n=== DEMO: Multi-Tenancy Isolation ===");
 
@@ -613,7 +596,7 @@ async fn demo_multi_tenancy_isolation() {
         .unwrap();
     let db_client = surreal.client().clone();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(surreal);
-    let registry = SchemaRegistry::new();
+    let mut registry = HashMap::new();
 
     // Create Organization schema with @tenant(root)
     // @access with empty lists = all authenticated users permitted (testing tenancy, not schema-level)
@@ -635,7 +618,7 @@ async fn demo_multi_tenancy_isolation() {
         ],
     )
     .unwrap();
-    register_schema(&org_schema, &backend, &registry).await;
+    register_schema(&org_schema, &backend, &mut registry).await;
 
     // Create Project schema (regular, will be tenant-scoped)
     // @access with empty lists = all authenticated users permitted (testing tenancy, not schema-level)
@@ -654,7 +637,7 @@ async fn demo_multi_tenancy_isolation() {
         }],
     )
     .unwrap();
-    register_schema(&project_schema, &backend, &registry).await;
+    register_schema(&project_schema, &backend, &mut registry).await;
 
     // Define _tenant field on tenant-scoped tables (SCHEMAFULL requires explicit field definition)
     db_client
@@ -663,7 +646,7 @@ async fn demo_multi_tenancy_isolation() {
         .expect("define _tenant field");
 
     // Build tenant config from schemas
-    let all_schemas = registry.list().await;
+    let all_schemas: Vec<SchemaDefinition> = registry.values().cloned().collect();
     let tenant_config = TenantConfig::from_schemas(&all_schemas).expect("valid tenant config");
     assert!(tenant_config.is_enabled());
     println!(
@@ -682,22 +665,13 @@ async fn demo_multi_tenancy_isolation() {
         &["member"],
         org_a_id.as_str(),
     );
-    let state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: Some(tenant_config.clone()),
-        record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        Some(tenant_config.clone()),
+        None,
+    )
+    .await;
     let app = test_app_with_claims(state, tenant_a_claims);
 
     let (status, json) = json_request(
@@ -727,22 +701,13 @@ async fn demo_multi_tenancy_isolation() {
         &["member"],
         org_b_id.as_str(),
     );
-    let state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: Some(tenant_config.clone()),
-        record_access_policy: None,
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        Some(tenant_config.clone()),
+        None,
+    )
+    .await;
     let app = test_app_with_claims(state, tenant_b_claims);
 
     let (status, json) = json_request(
@@ -780,7 +745,7 @@ async fn demo_multi_tenancy_isolation() {
 // TEST 6: DSL round-trip with all annotations (Phase 1)
 // ===========================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn demo_dsl_roundtrip_all_annotations() {
     println!("\n=== DEMO: DSL Round-Trip with All Annotations ===");
 
@@ -892,7 +857,7 @@ schema Department {
 // TEST 7: Cedar policies from @access annotations (Phase 4)
 // ===========================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn demo_cedar_policies_from_annotations() {
     println!("\n=== DEMO: Cedar Policy Generation from @access ===");
 
@@ -952,7 +917,7 @@ async fn demo_cedar_policies_from_annotations() {
 // TEST 8: Combined auth + field_access + owner (all layers)
 // ===========================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn demo_all_auth_layers_combined() {
     println!("\n=== DEMO: All Auth Layers Combined ===");
 
@@ -960,7 +925,7 @@ async fn demo_all_auth_layers_combined() {
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
-    let registry = SchemaRegistry::new();
+    let mut registry = HashMap::new();
 
     // Schema with EVERYTHING: @access, @field_access, @owner
     let schema = SchemaDefinition::new(
@@ -995,7 +960,7 @@ async fn demo_all_auth_layers_combined() {
         }],
     )
     .unwrap();
-    register_schema(&schema, &backend, &registry).await;
+    register_schema(&schema, &backend, &mut registry).await;
 
     let author_id = EntityId::new();
 
@@ -1005,22 +970,13 @@ async fn demo_all_auth_layers_combined() {
     println!("  Step 1: employee creates document");
     let employee_claims =
         make_test_claims_with_sub(&format!("user:{}", author_id.as_str()), &["employee"]);
-    let employee_state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let employee_state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        Some(Arc::new(OwnershipBasedPolicy)),
+    )
+    .await;
     let app = test_app_with_claims(employee_state, employee_claims);
 
     let (status, json) = json_request(
@@ -1059,22 +1015,13 @@ async fn demo_all_auth_layers_combined() {
         &format!("user:{}", EntityId::new().as_str()),
         &["manager"],
     );
-    let manager_state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let manager_state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        Some(Arc::new(OwnershipBasedPolicy)),
+    )
+    .await;
     let app = test_app_with_claims(manager_state, manager_claims);
 
     let path = format!("/schemas/Document/entities/{doc_id}");
@@ -1094,22 +1041,13 @@ async fn demo_all_auth_layers_combined() {
         &format!("user:{}", EntityId::new().as_str()),
         &["admin"],
     );
-    let admin_state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let admin_state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        Some(Arc::new(OwnershipBasedPolicy)),
+    )
+    .await;
     let app = test_app_with_claims(admin_state, admin_claims);
 
     let (status, json) = json_request(&app, Method::GET, &path, None).await;
@@ -1128,22 +1066,13 @@ async fn demo_all_auth_layers_combined() {
         &format!("user:{}", EntityId::new().as_str()),
         &["guest"],
     );
-    let guest_state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let guest_state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        Some(Arc::new(OwnershipBasedPolicy)),
+    )
+    .await;
     let app = test_app_with_claims(guest_state, guest_claims);
 
     let (status, _json) = json_request(&app, Method::GET, &path, None).await;
@@ -1157,22 +1086,13 @@ async fn demo_all_auth_layers_combined() {
     println!("  Step 5: author reads own doc, but confidential_notes filtered");
     let author_claims =
         make_test_claims_with_sub(&format!("user:{}", author_id.as_str()), &["employee"]);
-    let author_state = ForgeState {
-        registry: registry.clone(),
-        backend: backend.clone(),
-        tenant_config: None,
-        record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
-        #[cfg(feature = "graphql")]
-        graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        surreal_client: None,
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        template_engine: std::sync::Arc::new(
-            schema_forge_acton::template_engine::TemplateEngine::new(
-                Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
-            ),
-        ),
-    };
+    let author_state = build_test_app_state(
+        backend.clone(),
+        registry.clone(),
+        None,
+        Some(Arc::new(OwnershipBasedPolicy)),
+    )
+    .await;
     let app = test_app_with_claims(author_state, author_claims);
 
     let (status, json) = json_request(&app, Method::GET, &path, None).await;

@@ -1,10 +1,15 @@
+use std::sync::Arc;
 use std::time::Duration;
 
+use acton_service::prelude::ActorHandleInterface;
 use acton_service::service_builder::ServiceBuilder;
 use acton_service::versioning::{ApiVersion, VersionedApiBuilder};
-use schema_forge_acton::SchemaForgeExtension;
+use schema_forge_acton::{
+    ForgeActor, InitForge, InitForgeData, ReplyChannel, SchemaForgeExtension,
+};
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_surrealdb::SurrealBackend;
+use tokio::sync::oneshot;
 
 use crate::cli::{GlobalOpts, ServeArgs};
 use crate::commands::parse::parse_all_schemas;
@@ -17,6 +22,9 @@ const MAX_CONNECT_RETRIES: u32 = 3;
 
 /// Base delay in seconds between connection retries (doubles each attempt).
 const CONNECT_BASE_DELAY_SECS: u64 = 2;
+
+/// Timeout for the InitForge actor message round-trip.
+const INIT_FORGE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Run the `serve` command: start the SchemaForge HTTP server.
 ///
@@ -47,41 +55,21 @@ pub async fn run(
 
     // 3. Connect to SurrealDB (try remote, fall back to in-memory)
     let backend = connect_with_retries(&db_params, output).await?;
+    let backend_arc: Arc<dyn schema_forge_acton::DynForgeBackend> = Arc::new(backend);
 
-    // 4. Build the SchemaForge extension
-    #[allow(unused_mut)]
-    let mut builder = SchemaForgeExtension::builder();
-
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-    {
-        let client = backend.client().clone();
-        builder = builder.with_surreal_client(client);
-        if let Some(ref password) = args.admin_password {
-            builder = builder.with_admin_credentials(args.admin_user.clone(), password.clone());
-        }
-    }
-
-    #[cfg(feature = "admin-ui")]
-    {
-        if let Some(ref dir) = args.template_dir {
-            builder = builder.with_template_dir(dir.clone());
-        }
-    }
-
-    let extension = builder
-        .with_backend(backend)
-        .build()
+    // 4. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
+    let init_data = SchemaForgeExtension::build_init(backend_arc.clone(), None)
         .await
         .map_err(|e| CliError::Server {
-            message: format!("failed to build SchemaForge extension: {e}"),
+            message: format!("failed to build ForgeActor init data: {e}"),
         })?;
 
-    // 5. Apply parsed schemas
+    // 5. Apply parsed schemas (using the backend directly, before actor spawning)
+    let mut registry = init_data.registry;
     if !schemas.is_empty() {
         output.status("Applying schemas...");
-        let backend_ref = extension.state().backend.clone();
         for schema in &schemas {
-            let existing = backend_ref
+            let existing = backend_arc
                 .load_schema_metadata(&schema.name)
                 .await
                 .map_err(CliError::Backend)?;
@@ -93,25 +81,41 @@ pub async fn run(
             };
 
             if !plan.is_empty() {
-                backend_ref
+                backend_arc
                     .apply_migration(&schema.name, &plan.steps)
                     .await
                     .map_err(CliError::Backend)?;
-                backend_ref
+                backend_arc
                     .store_schema_metadata(schema)
                     .await
                     .map_err(CliError::Backend)?;
 
-                // Update registry
-                extension
-                    .registry()
-                    .insert(schema.name.as_str().to_string(), schema.clone())
-                    .await;
-
                 output.status(&format!("  Applied {}", schema.name.as_str()));
             }
+
+            // Update registry (whether migrated or not — ensures parsed schemas are present)
+            registry.insert(schema.name.as_str().to_string(), schema.clone());
         }
     }
+
+    // Rebuild tenant config after applying parsed schemas
+    let all_schemas: Vec<_> = registry.values().cloned().collect();
+    let tenant_config = schema_forge_backend::tenant::TenantConfig::from_schemas(&all_schemas)
+        .map_err(|e| CliError::Server {
+            message: format!("Invalid tenant configuration: {e}"),
+        })?;
+    let tenant_config = if tenant_config.is_enabled() {
+        Some(tenant_config)
+    } else {
+        None
+    };
+
+    let init_data = InitForgeData {
+        registry,
+        backend: backend_arc,
+        tenant_config,
+        record_access_policy: None,
+    };
 
     // 6. Warn about --watch
     if args.watch {
@@ -119,11 +123,14 @@ pub async fn run(
     }
 
     // 7. Build versioned routes via acton-service
-    let routes = build_versioned_routes(&extension);
+    let routes = build_versioned_routes();
 
     // 8. Configure and serve via acton-service
     // Load from config.toml (picks up [token] section), then override serve-specific fields
-    let mut svc_config = acton_service::config::Config::<()>::load_for_service("schema-forge")
+    let mut svc_config =
+        acton_service::config::Config::<schema_forge_acton::SchemaForgeConfig>::load_for_service(
+            "schema-forge",
+        )
         .unwrap_or_default();
     svc_config.service.port = args.port;
     svc_config.service.name = "schema-forge".to_string();
@@ -152,10 +159,39 @@ pub async fn run(
     output.status("    GET  /forge/{schema}/entities");
     output.status("  Press Ctrl+C to stop.");
 
+    // Build service with ForgeActor registered as an actor extension
     let service = ServiceBuilder::new()
         .with_config(svc_config)
+        .with_actor::<ForgeActor>()
         .with_routes(routes)
         .build();
+
+    // Initialize the ForgeActor with runtime state (must happen before serving)
+    let forge_handle = service
+        .state()
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered after ServiceBuilder::build()");
+
+    let (tx, rx) = oneshot::channel();
+    forge_handle
+        .send(InitForge {
+            registry: init_data.registry,
+            backend: init_data.backend,
+            tenant_config: init_data.tenant_config,
+            record_access_policy: init_data.record_access_policy,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+
+    // Wait for init to complete before serving requests
+    tokio::time::timeout(INIT_FORGE_TIMEOUT, rx)
+        .await
+        .map_err(|_| CliError::Server {
+            message: "ForgeActor initialization timed out".to_string(),
+        })?
+        .map_err(|_| CliError::Server {
+            message: "ForgeActor initialization failed (channel dropped)".to_string(),
+        })?;
 
     service.serve().await.map_err(|e| CliError::Server {
         message: format!("server error: {e}"),
@@ -248,105 +284,31 @@ fn build_surrealdb_config(
 
 /// Build versioned routes using acton-service's VersionedApiBuilder.
 ///
-/// Nests SchemaForge's routes under `/api/v1/forge/`. When UI features
-/// are enabled, frontend routes are registered alongside the API.
+/// Nests SchemaForge's routes under `/api/v1/forge/`. Route handlers access the
+/// `ForgeActor` via `state.actor::<ForgeActor>()` from `AppState`.
 fn build_versioned_routes(
-    extension: &SchemaForgeExtension,
-) -> acton_service::service_builder::VersionedRoutes {
-    let builder = VersionedApiBuilder::new()
-        .with_base_path("/api")
-        .add_version(ApiVersion::V1, |router| {
-            extension.register_versioned_routes(router)
-        });
-
-    #[cfg(feature = "admin-ui")]
-    let builder = builder.with_frontend_routes(|router| extension.register_admin_routes(router));
-
-    #[cfg(feature = "widget-ui")]
-    let builder = builder.with_frontend_routes(|router| extension.register_widget_routes(router));
+) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
+    let builder =
+        VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
+            .with_base_path("/api")
+            .add_version(ApiVersion::V1, |router| {
+                SchemaForgeExtension::versioned_forge_routes(router)
+            });
 
     builder.build_routes()
-}
-
-/// Build a test router using `register_routes()` directly (no acton-service layer).
-#[cfg(test)]
-fn build_test_router(extension: &SchemaForgeExtension) -> axum::Router {
-    extension.register_routes(axum::Router::new())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use schema_forge_surrealdb::SurrealBackend;
-    use tower::ServiceExt;
-
-    /// Build a test router backed by an in-memory SurrealDB.
-    async fn test_router() -> axum::Router {
-        let backend = SurrealBackend::connect_memory("test", "serve_test")
-            .await
-            .expect("in-memory backend");
-        let mut builder = SchemaForgeExtension::builder()
-            .with_backend(backend);
-        #[cfg(feature = "admin-ui")]
-        {
-            builder = builder.with_template_dir(
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .parent().unwrap()
-                    .join("schema-forge-acton/templates"),
-            );
-        }
-        let extension = builder.build()
-            .await
-            .expect("extension");
-        build_test_router(&extension)
-    }
-
-    #[tokio::test]
-    async fn forge_schemas_endpoint_returns_system_schemas() {
-        let router = test_router().await;
-        let mut request = Request::builder()
-            .uri("/forge/schemas")
-            .body(Body::empty())
-            .unwrap();
-        // Schema routes require authentication
-        request.extensions_mut().insert(acton_service::middleware::Claims {
-            sub: "user:test-admin".to_string(),
-            roles: vec!["admin".to_string()],
-            perms: vec![],
-            exp: 9999999999,
-            iat: None,
-            jti: None,
-            iss: None,
-            aud: None,
-            email: None,
-            username: None,
-            custom: std::collections::HashMap::new(),
-        });
-        let response = router
-            .oneshot(request)
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        // list_schemas returns { "schemas": [...], "count": N }
-        // After seeding, 4 system schemas should be present
-        assert_eq!(json["count"], 4);
-        assert!(json["schemas"].is_array());
-        assert_eq!(json["schemas"].as_array().unwrap().len(), 4);
-    }
 
     #[test]
     fn build_versioned_routes_is_callable() {
         // Compile-time verification that build_versioned_routes has the right signature
-        let _: fn(&SchemaForgeExtension) -> acton_service::service_builder::VersionedRoutes =
-            build_versioned_routes;
+        let _: fn()
+            -> acton_service::service_builder::VersionedRoutes<
+                schema_forge_acton::SchemaForgeConfig,
+            > = build_versioned_routes;
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Router;
@@ -8,6 +9,32 @@ use crate::state::{DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState
 
 use acton_service::state::AppState;
 use crate::config::SchemaForgeConfig;
+use schema_forge_backend::auth::RecordAccessPolicy;
+use schema_forge_backend::tenant::TenantConfig;
+use schema_forge_core::types::SchemaDefinition;
+
+// ---------------------------------------------------------------------------
+// InitForgeData — bundle of data needed to initialize a ForgeActor
+// ---------------------------------------------------------------------------
+
+/// Bundle of initialization data for the `ForgeActor`.
+///
+/// Produced by [`SchemaForgeExtension::build_init`] and consumed by sending
+/// an [`InitForge`](crate::messages::InitForge) message after actor spawning.
+pub struct InitForgeData {
+    /// Pre-loaded schema registry (HashMap, not the async SchemaRegistry).
+    pub registry: HashMap<String, SchemaDefinition>,
+    /// The backend for schema and entity operations.
+    pub backend: Arc<dyn DynForgeBackend>,
+    /// Tenant configuration derived from schema annotations.
+    pub tenant_config: Option<TenantConfig>,
+    /// Optional record-level access policy.
+    pub record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+}
+
+// ---------------------------------------------------------------------------
+// SchemaForgeExtension
+// ---------------------------------------------------------------------------
 
 /// Builder for SchemaForge's acton-service integration.
 ///
@@ -214,6 +241,58 @@ impl SchemaForgeExtension {
         SchemaForgeExtensionBuilder::new()
     }
 
+    /// Build initialization data for a `ForgeActor`.
+    ///
+    /// This is the actor-model alternative to `builder().build()`. Instead of
+    /// constructing a `ForgeState`, it returns an [`InitForgeData`] bundle that
+    /// should be sent to the actor as an [`InitForge`](crate::messages::InitForge)
+    /// message after it has been spawned by `ServiceBuilder::with_actor::<ForgeActor>()`.
+    ///
+    /// # Flow
+    ///
+    /// 1. Call `build_init(backend, ...)` to load schemas, seed system schemas,
+    ///    and build tenant config.
+    /// 2. Register the actor: `ServiceBuilder::new().with_actor::<ForgeActor>().build()`
+    /// 3. Send `InitForge { registry, backend, ... }` to the actor.
+    /// 4. Serve.
+    pub async fn build_init(
+        backend: Arc<dyn DynForgeBackend>,
+        record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+    ) -> Result<InitForgeData, ForgeError> {
+        // Load existing schemas from the backend into a HashMap
+        let stored_schemas = backend
+            .list_schema_metadata()
+            .await
+            .map_err(ForgeError::from)?;
+        let mut registry: HashMap<String, SchemaDefinition> = stored_schemas
+            .into_iter()
+            .map(|s| (s.name.as_str().to_string(), s))
+            .collect();
+
+        // Seed system schemas (idempotent)
+        crate::system::seed_system_schemas_into_map(&mut registry, backend.as_ref()).await?;
+
+        // Build tenant config from all registered schemas
+        let all_schemas: Vec<SchemaDefinition> = registry.values().cloned().collect();
+        let tenant_config = TenantConfig::from_schemas(&all_schemas).map_err(|e| {
+            ForgeError::Internal {
+                message: format!("Invalid tenant configuration: {e}"),
+            }
+        })?;
+        let tenant_config = if tenant_config.is_enabled() {
+            Some(tenant_config)
+        } else {
+            None
+        };
+
+        Ok(InitForgeData {
+            registry,
+            backend,
+            tenant_config,
+            record_access_policy,
+        })
+    }
+
     /// Register SchemaForge routes onto an existing Router.
     ///
     /// Merges the forge routes (nested under `/forge`). Route handlers access
@@ -245,6 +324,22 @@ impl SchemaForgeExtension {
     /// ```
     pub fn register_versioned_routes<T>(
         &self,
+        router: Router<acton_service::state::AppState<T>>,
+    ) -> Router<acton_service::state::AppState<T>>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned + Clone + Default + Send + Sync + 'static,
+    {
+        let forge_router: Router<()> = forge_routes()
+            .with_state(AppState::<SchemaForgeConfig>::default());
+        router.nest_service("/forge", forge_router)
+    }
+
+    /// Register versioned forge routes without requiring a `SchemaForgeExtension` instance.
+    ///
+    /// This is a standalone function for use with the actor-based flow where no
+    /// `SchemaForgeExtension` instance is needed — the `ForgeActor` provides state
+    /// and the routes are stateless with respect to `ForgeState`.
+    pub fn versioned_forge_routes<T>(
         router: Router<acton_service::state::AppState<T>>,
     ) -> Router<acton_service::state::AppState<T>>
     where

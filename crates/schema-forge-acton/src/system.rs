@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::system_schemas;
-use schema_forge_core::types::DynamicValue;
+use schema_forge_core::types::{DynamicValue, SchemaDefinition};
 
 use crate::error::ForgeError;
 use crate::state::{DynForgeBackend, SchemaRegistry};
@@ -82,6 +84,112 @@ async fn seed_default_roles(
         .ok_or_else(|| ForgeError::Internal {
             message: "Role schema not found in registry after seeding".to_string(),
         })?;
+
+    let query = schema_forge_core::query::Query::new(role_def.id.clone());
+    let existing = backend.query(&query).await.map_err(ForgeError::from)?;
+
+    if !existing.entities.is_empty() {
+        return Ok(()); // Roles already seeded
+    }
+
+    let default_roles = [
+        ("admin", "Full access to all operations"),
+        ("member", "Standard user with read/write access"),
+        ("readonly", "Read-only access to all schemas"),
+    ];
+
+    for (name, description) in &default_roles {
+        let mut fields = BTreeMap::new();
+        fields.insert("name".to_string(), DynamicValue::Text((*name).to_string()));
+        fields.insert(
+            "description".to_string(),
+            DynamicValue::Text((*description).to_string()),
+        );
+
+        let entity = Entity::new(role_schema_name.clone(), fields);
+        backend.create(&entity).await.map_err(ForgeError::from)?;
+    }
+
+    Ok(())
+}
+
+/// Seed system schemas directly into a `HashMap<String, SchemaDefinition>`.
+///
+/// This is the actor-compatible variant of [`seed_system_schemas`]. It works with
+/// a plain `HashMap` instead of `SchemaRegistry` so that the caller can pass the
+/// populated map to `InitForge` without needing an async `RwLock`-backed registry.
+pub async fn seed_system_schemas_into_map(
+    registry: &mut HashMap<String, SchemaDefinition>,
+    backend: &dyn DynForgeBackend,
+) -> Result<(), ForgeError> {
+    let dsl_texts = system_schemas::all_system_schemas();
+
+    for dsl_text in dsl_texts {
+        let definitions =
+            schema_forge_dsl::parse(dsl_text).map_err(|errors| ForgeError::Internal {
+                message: format!("Failed to parse system schema: {:?}", errors),
+            })?;
+
+        for definition in definitions {
+            let name = definition.name.clone();
+            let name_str = name.as_str().to_string();
+
+            // Check if schema already exists in backend
+            let existing = backend
+                .load_schema_metadata(&name)
+                .await
+                .map_err(ForgeError::from)?;
+
+            if let Some(existing_def) = existing {
+                // Schema already exists -- insert into map and skip
+                registry.insert(name_str, existing_def);
+                continue;
+            }
+
+            // Generate migration plan for new schema
+            let plan = DiffEngine::create_new(&definition);
+
+            // Apply migration
+            backend
+                .apply_migration(&name, &plan.steps)
+                .await
+                .map_err(ForgeError::from)?;
+
+            // Store schema metadata
+            backend
+                .store_schema_metadata(&definition)
+                .await
+                .map_err(ForgeError::from)?;
+
+            // Insert into map
+            registry.insert(name_str, definition);
+        }
+    }
+
+    // Seed default roles
+    seed_default_roles_from_map(registry, backend).await?;
+
+    Ok(())
+}
+
+/// Seed default roles (admin, member, readonly) as Role entities.
+/// Variant that reads from a `HashMap` instead of `SchemaRegistry`.
+async fn seed_default_roles_from_map(
+    registry: &HashMap<String, SchemaDefinition>,
+    backend: &dyn DynForgeBackend,
+) -> Result<(), ForgeError> {
+    use schema_forge_backend::entity::Entity;
+    use schema_forge_core::types::SchemaName;
+    use std::collections::BTreeMap;
+
+    let role_schema_name = SchemaName::new("Role").map_err(|_| ForgeError::Internal {
+        message: "Invalid Role schema name".to_string(),
+    })?;
+
+    // Get the Role schema definition from the map
+    let role_def = registry.get("Role").ok_or_else(|| ForgeError::Internal {
+        message: "Role schema not found in registry after seeding".to_string(),
+    })?;
 
     let query = schema_forge_core::query::Query::new(role_def.id.clone());
     let existing = backend.query(&query).await.map_err(ForgeError::from)?;

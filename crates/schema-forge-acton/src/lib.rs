@@ -31,5 +31,6 @@ pub use acton_service;
 pub use actor::ForgeActor;
 pub use config::SchemaForgeConfig;
 pub use error::ForgeError;
-pub use extension::SchemaForgeExtension;
+pub use extension::{InitForgeData, SchemaForgeExtension};
+pub use messages::{InitForge, ReplyChannel};
 pub use state::{DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry};

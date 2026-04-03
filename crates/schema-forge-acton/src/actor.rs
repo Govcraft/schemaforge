@@ -19,7 +19,7 @@ use schema_forge_core::types::SchemaDefinition;
 
 use crate::messages::{
     AggregateEntities, ApplyMigration, CountEntities, CreateEntity, DeleteEntity, GetEntity,
-    GetRecordAccessPolicy, GetSchema, GetTenantConfig, InsertSchema, ListSchemas,
+    GetRecordAccessPolicy, GetSchema, GetTenantConfig, InitForge, InsertSchema, ListSchemas,
     LoadSchemaMetadata, QueryEntities, RemoveSchema, StoreSchemaMetadata, UpdateEntity,
     UpdateTenantConfig,
 };
@@ -72,10 +72,30 @@ impl ForgeActor {
 
 impl ActorExtension for ForgeActor {
     fn configure(actor: &mut ManagedActor<Idle, Self>) {
+        configure_init(actor);
         configure_registry_reads(actor);
         configure_registry_mutations(actor);
         configure_backend_operations(actor);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Initialization (sent once after spawning, before serving)
+// ---------------------------------------------------------------------------
+
+fn configure_init(actor: &mut ManagedActor<Idle, ForgeActor>) {
+    actor.mutate_on::<InitForge>(|actor, ctx| {
+        let msg = ctx.message();
+        debug!("initializing ForgeActor with {} schemas", msg.registry.len());
+        actor.model.registry = msg.registry.clone();
+        actor.model.backend = Some(msg.backend.clone());
+        actor.model.tenant_config = msg.tenant_config.clone();
+        actor.model.record_access_policy = msg.record_access_policy.clone();
+        let reply = msg.reply.clone();
+        Reply::pending(async move {
+            reply.send(()).await;
+        })
+    });
 }
 
 // ---------------------------------------------------------------------------
