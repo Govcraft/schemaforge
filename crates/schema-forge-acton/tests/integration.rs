@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use acton_service::middleware::Claims;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
@@ -13,6 +15,22 @@ use tower::ServiceExt;
 // Test helpers
 // ---------------------------------------------------------------------------
 
+fn make_test_claims(roles: &[&str]) -> Claims {
+    Claims {
+        sub: "user:test-user".to_string(),
+        roles: roles.iter().map(|r| r.to_string()).collect(),
+        perms: vec![],
+        exp: 9_999_999_999,
+        iat: None,
+        jti: None,
+        iss: None,
+        aud: None,
+        email: None,
+        username: None,
+        custom: HashMap::new(),
+    }
+}
+
 /// Create a test ForgeState with in-memory SurrealDB.
 async fn test_state() -> ForgeState {
     let backend = SurrealBackend::connect_memory("test", "test")
@@ -22,7 +40,6 @@ async fn test_state() -> ForgeState {
     ForgeState {
         registry,
         backend: Arc::new(backend),
-        auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -38,18 +55,28 @@ async fn test_state() -> ForgeState {
     }
 }
 
-/// Create a test router with ForgeState and auth middleware applied.
+/// Create a test router with ForgeState (no auth middleware).
 async fn test_app() -> Router {
     let state = test_state().await;
-    test_app_with_state(state)
+    test_app_with_claims(state, make_test_claims(&["admin"]))
 }
 
-/// Create a test router with a specific ForgeState and auth middleware applied.
+/// Create a test router with a specific ForgeState (no auth middleware).
 fn test_app_with_state(state: ForgeState) -> Router {
+    forge_routes().with_state(state)
+}
+
+/// Create a test router that injects Claims into every request.
+fn test_app_with_claims(state: ForgeState, claims: Claims) -> Router {
     forge_routes()
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            schema_forge_acton::middleware::auth_middleware,
+        .layer(axum::middleware::from_fn(
+            move |mut req: axum::extract::Request, next: axum::middleware::Next| {
+                let claims = claims.clone();
+                async move {
+                    req.extensions_mut().insert(claims);
+                    next.run(req).await
+                }
+            },
         ))
         .with_state(state)
 }
@@ -555,13 +582,11 @@ async fn extension_register_routes_nests_under_forge() {
 }
 
 // ---------------------------------------------------------------------------
-// Auth middleware integration tests
+// Auth integration tests
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn request_with_noop_auth_succeeds() {
-    use schema_forge_acton::auth::NoopAuthProvider;
-
+async fn request_with_admin_claims_succeeds() {
     let backend = SurrealBackend::connect_memory("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
@@ -569,7 +594,6 @@ async fn request_with_noop_auth_succeeds() {
     let state = ForgeState {
         registry,
         backend: Arc::new(backend),
-        auth_provider: Some(Arc::new(NoopAuthProvider::admin())),
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -583,7 +607,7 @@ async fn request_with_noop_auth_succeeds() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, make_test_claims(&["admin"]));
 
     // Create a schema to verify the request goes through
     let body = serde_json::json!({
@@ -596,33 +620,50 @@ async fn request_with_noop_auth_succeeds() {
 }
 
 #[tokio::test]
-async fn request_with_failing_auth_returns_401() {
-    use std::future::Future;
-    use std::pin::Pin;
-
-    use schema_forge_acton::auth::AuthProvider;
-    use schema_forge_backend::auth::{AuthContext, AuthError};
-
-    /// An auth provider that always fails with MissingCredentials.
-    struct FailingAuthProvider;
-
-    impl AuthProvider for FailingAuthProvider {
-        fn authenticate<'a>(
-            &'a self,
-            _parts: &'a axum::http::request::Parts,
-        ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
-            Box::pin(async { Err(AuthError::MissingCredentials) })
-        }
-    }
-
+async fn request_without_claims_returns_401() {
     let backend = SurrealBackend::connect_memory("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
     let registry = SchemaRegistry::new();
+
+    // Register a schema so the route doesn't 404 before reaching auth check
+    use schema_forge_core::types::{
+        Annotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName,
+        TextConstraints,
+    };
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Contact").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("name").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![Annotation::Access {
+            read: vec!["viewer".to_string()],
+            write: vec!["editor".to_string()],
+            delete: vec!["admin".to_string()],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("store metadata");
+    registry
+        .insert("Contact".to_string(), schema.clone())
+        .await;
+
     let state = ForgeState {
         registry,
-        backend: Arc::new(backend),
-        auth_provider: Some(Arc::new(FailingAuthProvider)),
+        backend,
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -636,9 +677,11 @@ async fn request_with_failing_auth_returns_401() {
             ),
         ),
     };
+    // No Claims injected — requests should get 401
     let app = test_app_with_state(state);
 
-    let (status, json) = json_request(&app, Method::GET, "/schemas", None).await;
+    let (status, json) =
+        json_request(&app, Method::GET, "/schemas/Contact/entities", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(json["error"], "unauthorized");
 }
@@ -647,15 +690,14 @@ async fn request_with_failing_auth_returns_401() {
 // Access control integration tests
 // ---------------------------------------------------------------------------
 
-/// Helper to create a ForgeState with a NoopAuthProvider configured with specific roles,
-/// and a pre-registered schema with @access annotations.
+/// Helper to create a ForgeState with a pre-registered schema with @access annotations,
+/// and build a test app with the given Claims.
 async fn access_test_state(
     user_roles: Vec<String>,
     schema_read_roles: Vec<String>,
     schema_write_roles: Vec<String>,
     schema_delete_roles: Vec<String>,
 ) -> (ForgeState, Router) {
-    use schema_forge_acton::auth::NoopAuthProvider;
     use schema_forge_core::types::{
         Annotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName,
         TextConstraints,
@@ -706,7 +748,6 @@ async fn access_test_state(
     let state = ForgeState {
         registry,
         backend,
-        auth_provider: Some(Arc::new(NoopAuthProvider::new(user_roles))),
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -720,7 +761,11 @@ async fn access_test_state(
             ),
         ),
     };
-    let app = test_app_with_state(state.clone());
+
+    let claims = make_test_claims(
+        &user_roles.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    );
+    let app = test_app_with_claims(state.clone(), claims);
     (state, app)
 }
 
@@ -786,7 +831,7 @@ async fn authenticated_request_with_wrong_role_gets_403() {
 }
 
 #[tokio::test]
-async fn open_access_request_always_succeeds() {
+async fn request_without_claims_on_access_controlled_schema_returns_401() {
     use schema_forge_core::types::{
         Annotation, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName,
         TextConstraints,
@@ -827,11 +872,10 @@ async fn open_access_request_always_succeeds() {
         .await
         .expect("failed to store metadata");
 
-    // No auth_provider => open access mode
+    // No Claims injected — should get 401
     let state = ForgeState {
         registry,
         backend,
-        auth_provider: None,
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -847,7 +891,6 @@ async fn open_access_request_always_succeeds() {
     };
     let app = test_app_with_state(state);
 
-    // Even with restrictive @access, open access should succeed
     let entity_body = serde_json::json!({
         "fields": { "data": "top secret" }
     });
@@ -858,7 +901,7 @@ async fn open_access_request_always_succeeds() {
         Some(entity_body),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -919,11 +962,9 @@ async fn field_filtering_hides_restricted_fields() {
         .expect("failed to store metadata");
 
     // User with "member" role (not "hr")
-    use schema_forge_acton::auth::NoopAuthProvider;
     let state = ForgeState {
         registry,
         backend,
-        auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".to_string()]))),
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -937,7 +978,7 @@ async fn field_filtering_hides_restricted_fields() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, make_test_claims(&["member"]));
 
     // Create entity with both fields
     let entity_body = serde_json::json!({

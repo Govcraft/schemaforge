@@ -2,26 +2,24 @@
 //!
 //! This test exercises every feature from Phases 1-6:
 //! - System schemas seeded at startup (Phase 2)
-//! - AuthContext & AuthProvider (Phase 3)
+//! - Claims-based authentication (Phase 3)
 //! - Schema-level @access enforcement (Phase 4)
 //! - Field-level @field_access filtering (Phase 4)
 //! - Multi-tenancy with @tenant annotations (Phase 5)
 //! - Record-level @owner enforcement (Phase 6)
 
-use std::collections::BTreeMap;
-use std::future::Future;
-use std::pin::Pin;
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use acton_service::middleware::Claims;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
-use schema_forge_acton::auth::{AuthProvider, NoopAuthProvider};
 use schema_forge_acton::routes::forge_routes;
 use schema_forge_acton::state::{DynForgeBackend, ForgeState, SchemaRegistry};
-use schema_forge_backend::auth::{AuthContext, AuthError, OwnershipBasedPolicy, TenantRef};
 use schema_forge_backend::tenant::TenantConfig;
+use schema_forge_backend::OwnershipBasedPolicy;
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::types::{
     Annotation, EntityId, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaDefinition,
@@ -34,11 +32,58 @@ use tower::ServiceExt;
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn test_app_with_state(state: ForgeState) -> Router {
+fn make_test_claims(roles: &[&str]) -> Claims {
+    Claims {
+        sub: "user:test-user".to_string(),
+        roles: roles.iter().map(|r| r.to_string()).collect(),
+        perms: vec![],
+        exp: 9_999_999_999,
+        iat: None,
+        jti: None,
+        iss: None,
+        aud: None,
+        email: None,
+        username: None,
+        custom: HashMap::new(),
+    }
+}
+
+fn make_test_claims_with_sub(sub: &str, roles: &[&str]) -> Claims {
+    Claims {
+        sub: sub.to_string(),
+        roles: roles.iter().map(|r| r.to_string()).collect(),
+        perms: vec![],
+        exp: 9_999_999_999,
+        iat: None,
+        jti: None,
+        iss: None,
+        aud: None,
+        email: None,
+        username: None,
+        custom: HashMap::new(),
+    }
+}
+
+fn make_test_claims_with_tenant(sub: &str, roles: &[&str], tenant_entity_id: &str) -> Claims {
+    let mut claims = make_test_claims_with_sub(sub, roles);
+    claims.custom.insert(
+        "tenant_chain".to_string(),
+        serde_json::json!([{"schema": "Organization", "entity_id": tenant_entity_id}]),
+    );
+    claims
+}
+
+/// Create a test router that injects Claims into every request.
+fn test_app_with_claims(state: ForgeState, claims: Claims) -> Router {
     forge_routes()
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            schema_forge_acton::middleware::auth_middleware,
+        .layer(axum::middleware::from_fn(
+            move |mut req: axum::extract::Request, next: axum::middleware::Next| {
+                let claims = claims.clone();
+                async move {
+                    req.extensions_mut().insert(claims);
+                    next.run(req).await
+                }
+            },
         ))
         .with_state(state)
 }
@@ -72,28 +117,6 @@ async fn json_request(
     };
 
     (status, json)
-}
-
-/// Auth provider that returns a configurable AuthContext.
-struct ConfigurableAuthProvider {
-    user_id: EntityId,
-    roles: Vec<String>,
-    tenant_chain: Vec<TenantRef>,
-}
-
-impl AuthProvider for ConfigurableAuthProvider {
-    fn authenticate<'a>(
-        &'a self,
-        _parts: &'a axum::http::request::Parts,
-    ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
-        let ctx = AuthContext {
-            user_id: self.user_id.clone(),
-            roles: self.roles.clone(),
-            tenant_chain: self.tenant_chain.clone(),
-            attributes: BTreeMap::new(),
-        };
-        Box::pin(async move { Ok(ctx) })
-    }
 }
 
 /// Register a schema directly into the backend + registry.
@@ -223,7 +246,6 @@ async fn demo_schema_access_control() {
     let state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["editor".into()]))),
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -237,7 +259,7 @@ async fn demo_schema_access_control() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, make_test_claims(&["editor"]));
 
     let (status, json) = json_request(
         &app,
@@ -258,7 +280,6 @@ async fn demo_schema_access_control() {
     let state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["viewer".into()]))),
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -272,7 +293,7 @@ async fn demo_schema_access_control() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, make_test_claims(&["viewer"]));
 
     let (status, _) = json_request(&app, Method::GET, "/schemas/Article/entities", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -356,7 +377,6 @@ async fn demo_field_access_filtering() {
     let state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["hr".into()]))),
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -370,7 +390,7 @@ async fn demo_field_access_filtering() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, make_test_claims(&["hr"]));
 
     let (status, json) = json_request(
         &app,
@@ -392,7 +412,6 @@ async fn demo_field_access_filtering() {
     let state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(Arc::new(NoopAuthProvider::new(vec!["member".into()]))),
         tenant_config: None,
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -406,7 +425,7 @@ async fn demo_field_access_filtering() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, make_test_claims(&["member"]));
 
     let path = format!("/schemas/Employee/entities/{entity_id}");
     let (status, json) = json_request(&app, Method::GET, &path, None).await;
@@ -468,15 +487,11 @@ async fn demo_record_ownership() {
 
     // --- Alice creates a note ---
     println!("  Alice creates a note");
-    let alice_provider = Arc::new(ConfigurableAuthProvider {
-        user_id: alice_id.clone(),
-        roles: vec!["member".into()],
-        tenant_chain: vec![],
-    });
+    let alice_claims =
+        make_test_claims_with_sub(&format!("user:{}", alice_id.as_str()), &["member"]);
     let state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(alice_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
         #[cfg(feature = "graphql")]
@@ -490,7 +505,7 @@ async fn demo_record_ownership() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, alice_claims);
 
     let (status, json) = json_request(
         &app,
@@ -510,15 +525,11 @@ async fn demo_record_ownership() {
 
     // --- Bob tries to update Alice's note ---
     println!("  Bob tries to update Alice's note");
-    let bob_provider = Arc::new(ConfigurableAuthProvider {
-        user_id: bob_id.clone(),
-        roles: vec!["member".into()],
-        tenant_chain: vec![],
-    });
+    let bob_claims =
+        make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["member"]);
     let state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(bob_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
         #[cfg(feature = "graphql")]
@@ -532,7 +543,7 @@ async fn demo_record_ownership() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, bob_claims);
 
     let path = format!("/schemas/Note/entities/{note_id}");
     let (status, json) = json_request(
@@ -553,15 +564,11 @@ async fn demo_record_ownership() {
 
     // --- Admin can modify anyone's note ---
     println!("  Admin overrides ownership check");
-    let admin_provider = Arc::new(ConfigurableAuthProvider {
-        user_id: bob_id.clone(),
-        roles: vec!["admin".into()],
-        tenant_chain: vec![],
-    });
+    let admin_claims =
+        make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["admin"]);
     let state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(admin_provider),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
         #[cfg(feature = "graphql")]
@@ -575,7 +582,7 @@ async fn demo_record_ownership() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, admin_claims);
 
     let (status, json) = json_request(
         &app,
@@ -670,18 +677,14 @@ async fn demo_multi_tenancy_isolation() {
 
     // --- Tenant A creates a project ---
     println!("  Tenant A creates a project");
-    let tenant_a_provider = Arc::new(ConfigurableAuthProvider {
-        user_id: EntityId::new(),
-        roles: vec!["member".into()],
-        tenant_chain: vec![TenantRef {
-            schema: SchemaName::new("Organization").unwrap(),
-            entity_id: org_a_id.clone(),
-        }],
-    });
+    let tenant_a_claims = make_test_claims_with_tenant(
+        "user:tenant-a-user",
+        &["member"],
+        org_a_id.as_str(),
+    );
     let state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(tenant_a_provider),
         tenant_config: Some(tenant_config.clone()),
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -695,7 +698,7 @@ async fn demo_multi_tenancy_isolation() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, tenant_a_claims);
 
     let (status, json) = json_request(
         &app,
@@ -719,18 +722,14 @@ async fn demo_multi_tenancy_isolation() {
 
     // --- Tenant B creates a project ---
     println!("  Tenant B creates a project");
-    let tenant_b_provider = Arc::new(ConfigurableAuthProvider {
-        user_id: EntityId::new(),
-        roles: vec!["member".into()],
-        tenant_chain: vec![TenantRef {
-            schema: SchemaName::new("Organization").unwrap(),
-            entity_id: org_b_id.clone(),
-        }],
-    });
+    let tenant_b_claims = make_test_claims_with_tenant(
+        "user:tenant-b-user",
+        &["member"],
+        org_b_id.as_str(),
+    );
     let state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(tenant_b_provider),
         tenant_config: Some(tenant_config.clone()),
         record_access_policy: None,
         #[cfg(feature = "graphql")]
@@ -744,7 +743,7 @@ async fn demo_multi_tenancy_isolation() {
             ),
         ),
     };
-    let app = test_app_with_state(state);
+    let app = test_app_with_claims(state, tenant_b_claims);
 
     let (status, json) = json_request(
         &app,
@@ -1001,17 +1000,14 @@ async fn demo_all_auth_layers_combined() {
     let author_id = EntityId::new();
 
     // --- Step 1: Author (employee) creates document ---
-    // @access: employee in write list → allowed
-    // @field_access: employee not in manager → confidential_notes stripped from response
+    // @access: employee in write list -> allowed
+    // @field_access: employee not in manager -> confidential_notes stripped from response
     println!("  Step 1: employee creates document");
+    let employee_claims =
+        make_test_claims_with_sub(&format!("user:{}", author_id.as_str()), &["employee"]);
     let employee_state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(Arc::new(ConfigurableAuthProvider {
-            user_id: author_id.clone(),
-            roles: vec!["employee".into()],
-            tenant_chain: vec![],
-        })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
         #[cfg(feature = "graphql")]
@@ -1025,7 +1021,7 @@ async fn demo_all_auth_layers_combined() {
             ),
         ),
     };
-    let app = test_app_with_state(employee_state);
+    let app = test_app_with_claims(employee_state, employee_claims);
 
     let (status, json) = json_request(
         &app,
@@ -1056,17 +1052,16 @@ async fn demo_all_auth_layers_combined() {
     );
 
     // --- Step 2: Non-owner manager is blocked by @owner ---
-    // @access: manager in read list → allowed
-    // @owner: manager is NOT the author → 403
+    // @access: manager in read list -> allowed
+    // @owner: manager is NOT the author -> 403
     println!("  Step 2: non-owner manager blocked by @owner");
+    let manager_claims = make_test_claims_with_sub(
+        &format!("user:{}", EntityId::new().as_str()),
+        &["manager"],
+    );
     let manager_state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(Arc::new(ConfigurableAuthProvider {
-            user_id: EntityId::new(), // different user
-            roles: vec!["manager".into()],
-            tenant_chain: vec![],
-        })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
         #[cfg(feature = "graphql")]
@@ -1080,13 +1075,13 @@ async fn demo_all_auth_layers_combined() {
             ),
         ),
     };
-    let app = test_app_with_state(manager_state);
+    let app = test_app_with_claims(manager_state, manager_claims);
 
     let path = format!("/schemas/Document/entities/{doc_id}");
     let (status, _json) = json_request(&app, Method::GET, &path, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     println!(
-        "    Manager GET: {} — Layer 2 (@owner) blocks non-owner",
+        "    Manager GET: {} -- Layer 2 (@owner) blocks non-owner",
         status
     );
 
@@ -1095,14 +1090,13 @@ async fn demo_all_auth_layers_combined() {
     // @owner: admin bypasses
     // @field_access: admin bypasses
     println!("  Step 3: admin bypasses all layers");
+    let admin_claims = make_test_claims_with_sub(
+        &format!("user:{}", EntityId::new().as_str()),
+        &["admin"],
+    );
     let admin_state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(Arc::new(ConfigurableAuthProvider {
-            user_id: EntityId::new(), // not the author
-            roles: vec!["admin".into()],
-            tenant_chain: vec![],
-        })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
         #[cfg(feature = "graphql")]
@@ -1116,28 +1110,27 @@ async fn demo_all_auth_layers_combined() {
             ),
         ),
     };
-    let app = test_app_with_state(admin_state);
+    let app = test_app_with_claims(admin_state, admin_claims);
 
     let (status, json) = json_request(&app, Method::GET, &path, None).await;
     assert_eq!(status, StatusCode::OK);
     let admin_sees_notes = json["fields"].get("confidential_notes").is_some()
         && json["fields"]["confidential_notes"] != serde_json::Value::Null;
     println!(
-        "    Admin GET: {} — sees confidential_notes: {}",
+        "    Admin GET: {} -- sees confidential_notes: {}",
         status, admin_sees_notes
     );
 
     // --- Step 4: Guest blocked at schema level (@access) ---
-    // @access: guest NOT in read list → 403 (never reaches @owner check)
+    // @access: guest NOT in read list -> 403 (never reaches @owner check)
     println!("  Step 4: guest blocked by @access (schema level)");
+    let guest_claims = make_test_claims_with_sub(
+        &format!("user:{}", EntityId::new().as_str()),
+        &["guest"],
+    );
     let guest_state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(Arc::new(ConfigurableAuthProvider {
-            user_id: EntityId::new(),
-            roles: vec!["guest".into()],
-            tenant_chain: vec![],
-        })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
         #[cfg(feature = "graphql")]
@@ -1151,25 +1144,22 @@ async fn demo_all_auth_layers_combined() {
             ),
         ),
     };
-    let app = test_app_with_state(guest_state);
+    let app = test_app_with_claims(guest_state, guest_claims);
 
     let (status, _json) = json_request(&app, Method::GET, &path, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     println!(
-        "    Guest GET: {} — Layer 1 (@access) blocks non-listed role",
+        "    Guest GET: {} -- Layer 1 (@access) blocks non-listed role",
         status
     );
 
     // --- Step 5: Author (owner) can read but field_access filters notes ---
     println!("  Step 5: author reads own doc, but confidential_notes filtered");
+    let author_claims =
+        make_test_claims_with_sub(&format!("user:{}", author_id.as_str()), &["employee"]);
     let author_state = ForgeState {
         registry: registry.clone(),
         backend: backend.clone(),
-        auth_provider: Some(Arc::new(ConfigurableAuthProvider {
-            user_id: author_id.clone(),
-            roles: vec!["employee".into()],
-            tenant_chain: vec![],
-        })),
         tenant_config: None,
         record_access_policy: Some(Arc::new(OwnershipBasedPolicy)),
         #[cfg(feature = "graphql")]
@@ -1183,7 +1173,7 @@ async fn demo_all_auth_layers_combined() {
             ),
         ),
     };
-    let app = test_app_with_state(author_state);
+    let app = test_app_with_claims(author_state, author_claims);
 
     let (status, json) = json_request(&app, Method::GET, &path, None).await;
     assert_eq!(status, StatusCode::OK);
@@ -1191,7 +1181,7 @@ async fn demo_all_auth_layers_combined() {
     let author_sees_notes = json["fields"].get("confidential_notes").is_some()
         && json["fields"]["confidential_notes"] != serde_json::Value::Null;
     println!(
-        "    Author GET: {} — title={}, confidential_notes={}",
+        "    Author GET: {} -- title={}, confidential_notes={}",
         status, author_sees_title, author_sees_notes
     );
     assert!(author_sees_title, "owner should see title");
