@@ -304,13 +304,26 @@ mod tests {
     #[tokio::test]
     async fn forge_schemas_endpoint_returns_system_schemas() {
         let router = test_router().await;
+        let mut request = Request::builder()
+            .uri("/forge/schemas")
+            .body(Body::empty())
+            .unwrap();
+        // Schema routes require authentication
+        request.extensions_mut().insert(acton_service::middleware::Claims {
+            sub: "user:test-admin".to_string(),
+            roles: vec!["admin".to_string()],
+            perms: vec![],
+            exp: 9999999999,
+            iat: None,
+            jti: None,
+            iss: None,
+            aud: None,
+            email: None,
+            username: None,
+            custom: std::collections::HashMap::new(),
+        });
         let response = router
-            .oneshot(
-                Request::builder()
-                    .uri("/forge/schemas")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(request)
             .await
             .unwrap();
 

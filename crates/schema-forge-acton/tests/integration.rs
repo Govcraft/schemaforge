@@ -569,13 +569,14 @@ async fn extension_register_routes_nests_under_forge() {
     let router: Router = Router::new();
     let router = extension.register_routes(router);
 
-    // Test that we can hit /forge/schemas
-    let request = Request::builder()
+    // Test that we can hit /forge/schemas (requires auth)
+    let mut request = Request::builder()
         .method(Method::GET)
         .uri("/forge/schemas")
         .header("content-type", "application/json")
         .body(Body::empty())
         .unwrap();
+    request.extensions_mut().insert(make_test_claims(&["admin"]));
 
     let response = router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);

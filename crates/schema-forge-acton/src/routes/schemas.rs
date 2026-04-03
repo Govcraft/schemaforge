@@ -1,3 +1,4 @@
+use acton_service::middleware::Claims;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -9,8 +10,27 @@ use schema_forge_core::types::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::access::OptionalClaims;
 use crate::error::ForgeError;
 use crate::state::ForgeState;
+
+/// Require authentication. Returns 401 if no Claims present.
+fn require_auth(claims: &Option<Claims>) -> Result<&Claims, ForgeError> {
+    claims.as_ref().ok_or(ForgeError::Unauthorized {
+        message: "authentication required".to_string(),
+    })
+}
+
+/// Require the admin role. Returns 403 if the user lacks it.
+fn require_admin(claims: &Claims) -> Result<(), ForgeError> {
+    if claims.has_role("admin") {
+        Ok(())
+    } else {
+        Err(ForgeError::Forbidden {
+            message: "schema management requires admin role".to_string(),
+        })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Request/Response types
@@ -195,11 +215,14 @@ fn schema_to_response(schema: &SchemaDefinition) -> SchemaResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// POST /schemas -- Register a new schema.
+/// POST /schemas -- Register a new schema. Requires admin role.
 pub async fn create_schema(
     State(state): State<ForgeState>,
+    OptionalClaims(claims): OptionalClaims,
     Json(body): Json<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
+    let claims = require_auth(&claims)?;
+    require_admin(claims)?;
     // 1. Validate schema name
     let schema_name = SchemaName::new(&body.name).map_err(|_| ForgeError::InvalidSchemaName {
         name: body.name.clone(),
@@ -269,10 +292,12 @@ pub async fn create_schema(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
-/// GET /schemas -- List all registered schemas.
+/// GET /schemas -- List all registered schemas. Requires authentication.
 pub async fn list_schemas(
     State(state): State<ForgeState>,
+    OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
+    require_auth(&claims)?;
     let schemas = state.registry.list().await;
     let responses: Vec<SchemaResponse> = schemas.iter().map(schema_to_response).collect();
     let count = responses.len();
@@ -282,11 +307,13 @@ pub async fn list_schemas(
     }))
 }
 
-/// GET /schemas/{name} -- Get a schema by name.
+/// GET /schemas/{name} -- Get a schema by name. Requires authentication.
 pub async fn get_schema(
     State(state): State<ForgeState>,
     Path(name): Path<String>,
+    OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
+    require_auth(&claims)?;
     let schema = state
         .registry
         .get(&name)
@@ -296,12 +323,15 @@ pub async fn get_schema(
     Ok(Json(schema_to_response(&schema)))
 }
 
-/// PUT /schemas/{name} -- Update an existing schema (triggers migration).
+/// PUT /schemas/{name} -- Update an existing schema (triggers migration). Requires admin role.
 pub async fn update_schema(
     State(state): State<ForgeState>,
     Path(name): Path<String>,
+    OptionalClaims(claims): OptionalClaims,
     Json(body): Json<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
+    let claims = require_auth(&claims)?;
+    require_admin(claims)?;
     // 1. Find existing schema
     let old_schema = state
         .registry
@@ -379,11 +409,14 @@ pub async fn update_schema(
     Ok(Json(schema_to_response(&new_definition)))
 }
 
-/// DELETE /schemas/{name} -- Remove a schema.
+/// DELETE /schemas/{name} -- Remove a schema. Requires admin role.
 pub async fn delete_schema(
     State(state): State<ForgeState>,
     Path(name): Path<String>,
+    OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
+    let claims = require_auth(&claims)?;
+    require_admin(claims)?;
     // 1. Find existing schema
     let _schema = state
         .registry
