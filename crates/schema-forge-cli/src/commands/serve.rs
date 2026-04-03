@@ -333,4 +333,44 @@ mod tests {
         let _: fn(&SchemaForgeExtension) -> acton_service::service_builder::VersionedRoutes =
             build_versioned_routes;
     }
+
+    #[test]
+    fn build_surrealdb_config_from_db_params() {
+        let db_params = crate::config::DbParams {
+            url: "ws://db.example.com:8000".to_string(),
+            namespace: "production".to_string(),
+            database: "main".to_string(),
+            username: Some("admin".to_string()),
+            password: Some("secret".to_string()),
+        };
+
+        let config = build_surrealdb_config(&db_params);
+
+        assert_eq!(config.url, "ws://db.example.com:8000");
+        assert_eq!(config.namespace, "production");
+        assert_eq!(config.database, "main");
+        assert_eq!(config.username, Some("admin".to_string()));
+        assert_eq!(config.password, Some("secret".to_string()));
+        assert_eq!(config.max_retries, MAX_CONNECT_RETRIES);
+        assert_eq!(config.retry_delay_secs, CONNECT_BASE_DELAY_SECS);
+        assert!(!config.optional);
+        assert!(!config.lazy_init);
+    }
+
+    #[test]
+    fn build_surrealdb_config_without_credentials() {
+        let db_params = crate::config::DbParams {
+            url: "mem://".to_string(),
+            namespace: "test".to_string(),
+            database: "test".to_string(),
+            username: None,
+            password: None,
+        };
+
+        let config = build_surrealdb_config(&db_params);
+
+        assert_eq!(config.url, "mem://");
+        assert!(config.username.is_none());
+        assert!(config.password.is_none());
+    }
 }
