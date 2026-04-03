@@ -1,6 +1,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use tracing::instrument;
+
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -367,6 +369,7 @@ impl DiffEngine {
     /// Compare two schema definitions and produce a migration plan.
     ///
     /// This is a pure function: no I/O, no side effects.
+    #[instrument(skip(old, new), fields(old_schema = %old.name.as_str(), new_schema = %new.name.as_str()))]
     pub fn diff(
         old: &crate::types::SchemaDefinition,
         new: &crate::types::SchemaDefinition,
@@ -394,6 +397,7 @@ impl DiffEngine {
     }
 
     /// Create a migration plan for a brand new schema (no old version).
+    #[instrument(skip(schema), fields(schema = %schema.name.as_str()))]
     pub fn create_new(schema: &crate::types::SchemaDefinition) -> MigrationPlan {
         let steps = vec![MigrationStep::CreateSchema {
             name: schema.name.clone(),

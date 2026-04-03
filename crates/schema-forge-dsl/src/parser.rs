@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use tracing::instrument;
+
 use schema_forge_core::types::{
     Annotation, Cardinality, DefaultValue, EnumVariants, FieldAnnotation, FieldDefinition,
     FieldModifier, FieldName, FieldType, FloatConstraints, IntegerConstraints, SchemaDefinition,
@@ -972,6 +974,7 @@ fn extract_i64_param(
 /// Returns a list of `DslError` values if any parsing or validation errors
 /// occur. The parser attempts to recover from errors and report multiple
 /// issues where possible.
+#[instrument(skip(source), fields(source_len = source.len()))]
 pub fn parse(source: &str) -> Result<Vec<SchemaDefinition>, Vec<DslError>> {
     let tokens = crate::lexer::tokenize(source)?;
     let mut parser = Parser::new(tokens);
