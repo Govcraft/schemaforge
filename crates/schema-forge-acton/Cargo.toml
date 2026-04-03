@@ -11,7 +11,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["sync"] }
-acton-service = { version = "0.21.2", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "surrealdb", "governor", "resilience", "audit", "openapi"] }
+acton-service = { version = "0.21.3", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "surrealdb", "governor", "resilience", "audit", "openapi"] }
 schema-forge-dsl = { path = "../schema-forge-dsl" }
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb", optional = true }
 async-graphql = { version = "7.2", features = ["dynamic-schema"], optional = true }

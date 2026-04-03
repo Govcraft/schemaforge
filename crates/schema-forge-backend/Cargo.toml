@@ -4,7 +4,7 @@ version = "0.4.0"
 edition = "2021"
 
 [dependencies]
-acton-service = { version = "0.21.2", default-features = false }
+acton-service = { version = "0.21.3", default-features = false }
 schema-forge-core = { path = "../schema-forge-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
