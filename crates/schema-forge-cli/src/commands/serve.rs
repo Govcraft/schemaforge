@@ -116,6 +116,7 @@ pub async fn run(
     let mut svc_config = acton_service::config::Config::<()>::default();
     svc_config.service.port = args.port;
     svc_config.service.name = "schema-forge".to_string();
+    svc_config.surrealdb = Some(build_surrealdb_config(&db_params));
 
     let bind_addr = format!("{}:{}", args.host, args.port);
     output.success(&format!(
@@ -151,6 +152,28 @@ pub async fn run(
 
     output.success("Server shut down gracefully.");
     Ok(())
+}
+
+/// Build an acton-service `SurrealDbConfig` from resolved CLI database parameters.
+///
+/// This enables acton-service's health endpoint to report SurrealDB connection
+/// status. The actual connection is established by `connect_backend()` before
+/// `ServiceBuilder::build()` because the extension needs a live client to
+/// load schemas and seed system tables.
+fn build_surrealdb_config(
+    db_params: &crate::config::DbParams,
+) -> acton_service::config::SurrealDbConfig {
+    acton_service::config::SurrealDbConfig {
+        url: db_params.url.clone(),
+        namespace: db_params.namespace.clone(),
+        database: db_params.database.clone(),
+        username: db_params.username.clone(),
+        password: db_params.password.clone(),
+        max_retries: 3,
+        retry_delay_secs: 2,
+        optional: false,
+        lazy_init: false,
+    }
 }
 
 /// Build versioned routes using acton-service's VersionedApiBuilder.
