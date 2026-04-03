@@ -1,4 +1,5 @@
 pub mod access;
+pub mod actor;
 pub mod cedar;
 pub mod config;
 pub mod conversions;
@@ -7,6 +8,7 @@ pub mod extension;
 pub mod form;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+pub mod messages;
 pub mod routes;
 pub mod shared;
 pub mod state;
@@ -26,6 +28,7 @@ pub mod admin;
 pub mod widget;
 
 pub use acton_service;
+pub use actor::ForgeActor;
 pub use config::SchemaForgeConfig;
 pub use error::ForgeError;
 pub use extension::SchemaForgeExtension;
