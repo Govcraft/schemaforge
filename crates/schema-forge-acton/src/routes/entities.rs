@@ -533,7 +533,22 @@ pub async fn create_entity(
     })?;
 
     // Access check
-    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)?;
+    if let Err(e) = check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write) {
+        if let Some(logger) = state.audit_logger() {
+            logger
+                .log_custom(
+                    "forge.access.denied",
+                    acton_service::audit::AuditSeverity::Warning,
+                    Some(serde_json::json!({
+                        "schema": &schema,
+                        "action": "write",
+                        "user": claims.as_ref().map(|c| &c.sub),
+                    })),
+                )
+                .await;
+        }
+        return Err(e);
+    }
 
     // Convert JSON fields to DynamicValue fields
     let mut fields = json_to_entity_fields(&schema_def, &body.fields)
@@ -861,7 +876,22 @@ pub async fn update_entity(
     })?;
 
     // Access check
-    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)?;
+    if let Err(e) = check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write) {
+        if let Some(logger) = state.audit_logger() {
+            logger
+                .log_custom(
+                    "forge.access.denied",
+                    acton_service::audit::AuditSeverity::Warning,
+                    Some(serde_json::json!({
+                        "schema": &schema,
+                        "action": "write",
+                        "user": claims.as_ref().map(|c| &c.sub),
+                    })),
+                )
+                .await;
+        }
+        return Err(e);
+    }
 
     // Record-level ownership check: fetch existing entity and verify ownership
     let (tx, rx) = oneshot::channel();
@@ -963,7 +993,22 @@ pub async fn delete_entity(
     })?;
 
     // Access check
-    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Delete)?;
+    if let Err(e) = check_schema_access(&schema_def, claims.as_ref(), AccessAction::Delete) {
+        if let Some(logger) = state.audit_logger() {
+            logger
+                .log_custom(
+                    "forge.access.denied",
+                    acton_service::audit::AuditSeverity::Warning,
+                    Some(serde_json::json!({
+                        "schema": &schema,
+                        "action": "delete",
+                        "user": claims.as_ref().map(|c| &c.sub),
+                    })),
+                )
+                .await;
+        }
+        return Err(e);
+    }
 
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;

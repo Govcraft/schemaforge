@@ -253,7 +253,22 @@ pub async fn create_schema(
     Json(body): Json<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_admin(claims)?;
+    if let Err(e) = require_admin(claims) {
+        if let Some(logger) = state.audit_logger() {
+            logger
+                .log_custom(
+                    "forge.access.denied",
+                    acton_service::audit::AuditSeverity::Warning,
+                    Some(serde_json::json!({
+                        "schema": &body.name,
+                        "action": "write",
+                        "user": claims.sub,
+                    })),
+                )
+                .await;
+        }
+        return Err(e);
+    }
     let forge = state
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered");
@@ -421,7 +436,22 @@ pub async fn update_schema(
     Json(body): Json<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_admin(claims)?;
+    if let Err(e) = require_admin(claims) {
+        if let Some(logger) = state.audit_logger() {
+            logger
+                .log_custom(
+                    "forge.access.denied",
+                    acton_service::audit::AuditSeverity::Warning,
+                    Some(serde_json::json!({
+                        "schema": &name,
+                        "action": "write",
+                        "user": claims.sub,
+                    })),
+                )
+                .await;
+        }
+        return Err(e);
+    }
     let forge = state
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered");
@@ -541,7 +571,22 @@ pub async fn delete_schema(
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_admin(claims)?;
+    if let Err(e) = require_admin(claims) {
+        if let Some(logger) = state.audit_logger() {
+            logger
+                .log_custom(
+                    "forge.access.denied",
+                    acton_service::audit::AuditSeverity::Warning,
+                    Some(serde_json::json!({
+                        "schema": &name,
+                        "action": "delete",
+                        "user": claims.sub,
+                    })),
+                )
+                .await;
+        }
+        return Err(e);
+    }
     let forge = state
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered");
