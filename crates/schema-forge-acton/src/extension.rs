@@ -6,6 +6,13 @@ use crate::error::ForgeError;
 use crate::routes::forge_routes;
 use crate::state::{DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry};
 
+// NOTE: Temporary adapter for Task 7 — `forge_routes()` now returns
+// `Router<AppState<SchemaForgeConfig>>`. Until extension.rs is fully
+// migrated (Task 7), we wrap `ForgeState` as an `Extension` layer and
+// provide a default `AppState<SchemaForgeConfig>` as the router state.
+use acton_service::state::AppState;
+use crate::config::SchemaForgeConfig;
+
 /// Builder for SchemaForge's acton-service integration.
 ///
 /// Usage:
@@ -214,21 +221,31 @@ impl SchemaForgeExtension {
     /// Register SchemaForge routes onto an existing Router.
     ///
     /// Merges the forge routes (nested under `/forge`) and applies
-    /// `ForgeState` as a layer. Authentication is handled by the upstream
-    /// acton-service token middleware which injects `Claims` into extensions.
+    /// `ForgeState` as an extension layer alongside `AppState<SchemaForgeConfig>`.
+    /// Authentication is handled by the upstream acton-service token middleware
+    /// which injects `Claims` into extensions.
+    ///
+    /// NOTE: This will be refactored in Task 7 to accept `AppState<SchemaForgeConfig>`
+    /// directly instead of wrapping `ForgeState` as an extension.
     pub fn register_routes<S>(&self, router: Router<S>) -> Router<S>
     where
         S: Clone + Send + Sync + 'static,
     {
-        let forge_router = forge_routes().with_state(self.state.clone());
+        let forge_state = self.state.clone();
+        let forge_router = forge_routes()
+            .layer(axum::Extension(forge_state))
+            .with_state(AppState::<SchemaForgeConfig>::default());
         router.nest("/forge", forge_router)
     }
 
     /// Register SchemaForge routes into a VersionedApiBuilder.
     ///
     /// Nests forge routes (schemas + entities CRUD) under `/forge` within the
-    /// specified API version. The `ForgeState` is applied internally, so the
-    /// returned router is compatible with any `AppState<T>`.
+    /// specified API version. The `ForgeState` is applied as an extension layer,
+    /// so the returned router is compatible with any `AppState<T>`.
+    ///
+    /// NOTE: This will be refactored in Task 7 to accept `AppState<SchemaForgeConfig>`
+    /// directly instead of wrapping `ForgeState` as an extension.
     ///
     /// ```rust,ignore
     /// let routes = VersionedApiBuilder::new()
@@ -245,7 +262,10 @@ impl SchemaForgeExtension {
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Clone + Default + Send + Sync + 'static,
     {
-        let forge_router: Router<()> = forge_routes().with_state(self.state.clone());
+        let forge_state = self.state.clone();
+        let forge_router: Router<()> = forge_routes()
+            .layer(axum::Extension(forge_state))
+            .with_state(AppState::<SchemaForgeConfig>::default());
         router.nest_service("/forge", forge_router)
     }
 

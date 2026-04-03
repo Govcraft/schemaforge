@@ -5,14 +5,19 @@ pub mod schemas;
 use axum::routing::{get, post};
 use axum::Router;
 
-use crate::state::ForgeState;
+use acton_service::state::AppState;
+
+use crate::config::SchemaForgeConfig;
 
 /// Build the SchemaForge router with all schema and entity CRUD routes.
 ///
-/// The router is returned without state applied -- the caller (extension.rs)
-/// provides the `ForgeState`. Auth middleware is applied externally when the
-/// state is available (see [`SchemaForgeExtension::register_routes`]).
-pub fn forge_routes() -> Router<ForgeState> {
+/// The router is generic over `AppState<SchemaForgeConfig>`. Handler state
+/// comes from the actor extension (`state.actor::<ForgeActor>()`) and from
+/// a `ForgeState` extension layer set by the caller.
+///
+/// Auth middleware is applied externally when the state is available
+/// (see [`SchemaForgeExtension::register_routes`]).
+pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
     Router::new()
         // Schema management
         .route(

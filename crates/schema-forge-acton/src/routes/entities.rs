@@ -1,22 +1,25 @@
 use std::collections::{BTreeMap, HashMap};
 
+use acton_service::middleware::Claims;
+use acton_service::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use acton_service::middleware::Claims;
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::query::{validate_filter, FieldPath, Filter, SortOrder};
 use schema_forge_core::types::{
     Cardinality, DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName,
 };
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 use super::query_params::{parse_filter_params, parse_sort_param};
 use crate::access::{
     check_schema_access, filter_entity_fields, inject_tenant_on_create, inject_tenant_scope,
     AccessAction, FieldFilterDirection, OptionalClaims,
 };
+use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
 use crate::state::ForgeState;
 
@@ -406,19 +409,19 @@ fn coerce_json_filter_value(
 ///
 /// Shared by `list_entities` and `query_entities`.
 async fn execute_entity_query(
-    state: &ForgeState,
+    forge: &ForgeState,
     schema_def: &SchemaDefinition,
     claims: Option<&Claims>,
     query: &mut schema_forge_core::query::Query,
 ) -> Result<ListEntitiesResponse, ForgeError> {
     // Inject tenant scope filter
-    inject_tenant_scope(query, claims, &state.tenant_config);
+    inject_tenant_scope(query, claims, &forge.tenant_config);
 
-    let result = state.backend.query(query).await.map_err(ForgeError::from)?;
+    let result = forge.backend.query(query).await.map_err(ForgeError::from)?;
 
     // Record-level access filtering (e.g. @owner)
     let visible_entities =
-        if let (Some(ref policy), Some(c)) = (&state.record_access_policy, claims) {
+        if let (Some(ref policy), Some(c)) = (&forge.record_access_policy, claims) {
             policy
                 .filter_visible(schema_def, c, result.entities)
                 .await
@@ -448,8 +451,10 @@ async fn execute_entity_query(
 // ---------------------------------------------------------------------------
 
 /// POST /schemas/{schema}/entities -- Create a new entity.
+#[instrument(skip_all, fields(schema = %schema))]
 pub async fn create_entity(
-    State(state): State<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<EntityRequest>,
@@ -458,7 +463,7 @@ pub async fn create_entity(
 
     // Look up schema in registry
     let schema_def =
-        state
+        forge
             .registry
             .get(schema_name.as_str())
             .await
@@ -474,7 +479,7 @@ pub async fn create_entity(
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
     // Inject _tenant field from claims
-    inject_tenant_on_create(&mut fields, claims.as_ref(), &state.tenant_config);
+    inject_tenant_on_create(&mut fields, claims.as_ref(), &forge.tenant_config);
 
     // Create the entity, filtering write-restricted fields
     let mut entity = Entity::new(schema_name, fields);
@@ -485,7 +490,7 @@ pub async fn create_entity(
         FieldFilterDirection::Write,
     );
 
-    let mut created = state
+    let mut created = forge
         .backend
         .create(&entity)
         .await
@@ -499,6 +504,21 @@ pub async fn create_entity(
         FieldFilterDirection::Read,
     );
 
+    // Audit: entity created
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_custom(
+                "forge.entity.created",
+                acton_service::audit::AuditSeverity::Informational,
+                Some(serde_json::json!({
+                    "schema": schema,
+                    "entity_id": created.id.as_str(),
+                    "user": claims.as_ref().map(|c| &c.sub),
+                })),
+            )
+            .await;
+    }
+
     Ok((StatusCode::CREATED, Json(entity_to_response(&created))))
 }
 
@@ -507,8 +527,10 @@ pub async fn create_entity(
 /// Supports filter, sort, limit, and offset via query parameters.
 /// Filter params use Django-style syntax: `?field__op=value` (e.g. `?age__gt=25`).
 /// Sort uses `?sort=-age,name` (prefix `-` = descending) or `?sort=age:desc,name:asc`.
+#[instrument(skip_all, fields(schema = %schema))]
 pub async fn list_entities(
-    State(state): State<ForgeState>,
+    State(_state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     Query(params): Query<HashMap<String, String>>,
@@ -517,7 +539,7 @@ pub async fn list_entities(
 
     // Verify schema exists
     let schema_def =
-        state
+        forge
             .registry
             .get(schema_name.as_str())
             .await
@@ -576,15 +598,17 @@ pub async fn list_entities(
         query = query.with_filter(f);
     }
 
-    let response = execute_entity_query(&state, &schema_def, claims.as_ref(), &mut query).await?;
+    let response = execute_entity_query(&forge, &schema_def, claims.as_ref(), &mut query).await?;
     Ok(Json(response))
 }
 
 /// POST /schemas/{schema}/entities/query -- Advanced query with JSON body.
 ///
 /// Accepts a full filter IR as JSON with plain values (schema-inferred types).
+#[instrument(skip_all, fields(schema = %schema))]
 pub async fn query_entities(
-    State(state): State<ForgeState>,
+    State(_state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<EntityQueryBody>,
@@ -593,7 +617,7 @@ pub async fn query_entities(
 
     // Verify schema exists
     let schema_def =
-        state
+        forge
             .registry
             .get(schema_name.as_str())
             .await
@@ -650,13 +674,15 @@ pub async fn query_entities(
         query = query.with_filter(filter);
     }
 
-    let response = execute_entity_query(&state, &schema_def, claims.as_ref(), &mut query).await?;
+    let response = execute_entity_query(&forge, &schema_def, claims.as_ref(), &mut query).await?;
     Ok(Json(response))
 }
 
 /// GET /schemas/{schema}/entities/{id} -- Get entity by ID.
+#[instrument(skip_all, fields(schema = %schema))]
 pub async fn get_entity(
-    State(state): State<ForgeState>,
+    State(_state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
@@ -664,7 +690,7 @@ pub async fn get_entity(
 
     // Look up schema for access check
     let schema_def =
-        state
+        forge
             .registry
             .get(schema_name.as_str())
             .await
@@ -679,14 +705,14 @@ pub async fn get_entity(
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
-    let mut entity = state
+    let mut entity = forge
         .backend
         .get(&schema_name, &entity_id)
         .await
         .map_err(ForgeError::from)?;
 
     // Record-level visibility check
-    if let (Some(ref policy), Some(ref c)) = (&state.record_access_policy, &claims) {
+    if let (Some(ref policy), Some(ref c)) = (&forge.record_access_policy, &claims) {
         let visible = policy
             .filter_visible(&schema_def, c, vec![entity.clone()])
             .await;
@@ -709,8 +735,10 @@ pub async fn get_entity(
 }
 
 /// PUT /schemas/{schema}/entities/{id} -- Update entity.
+#[instrument(skip_all, fields(schema = %schema))]
 pub async fn update_entity(
-    State(state): State<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<EntityRequest>,
@@ -723,7 +751,7 @@ pub async fn update_entity(
 
     // Look up schema
     let schema_def =
-        state
+        forge
             .registry
             .get(schema_name.as_str())
             .await
@@ -735,8 +763,8 @@ pub async fn update_entity(
     check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)?;
 
     // Record-level ownership check: fetch existing entity and verify ownership
-    if let (Some(ref policy), Some(ref c)) = (&state.record_access_policy, &claims) {
-        let existing = state
+    if let (Some(ref policy), Some(ref c)) = (&forge.record_access_policy, &claims) {
+        let existing = forge
             .backend
             .get(&schema_name, &entity_id)
             .await
@@ -761,7 +789,7 @@ pub async fn update_entity(
         FieldFilterDirection::Write,
     );
 
-    let mut updated = state
+    let mut updated = forge
         .backend
         .update(&entity)
         .await
@@ -775,12 +803,29 @@ pub async fn update_entity(
         FieldFilterDirection::Read,
     );
 
+    // Audit: entity updated
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_custom(
+                "forge.entity.updated",
+                acton_service::audit::AuditSeverity::Informational,
+                Some(serde_json::json!({
+                    "schema": schema,
+                    "entity_id": updated.id.as_str(),
+                    "user": claims.as_ref().map(|c| &c.sub),
+                })),
+            )
+            .await;
+    }
+
     Ok(Json(entity_to_response(&updated)))
 }
 
 /// DELETE /schemas/{schema}/entities/{id} -- Delete entity.
+#[instrument(skip_all, fields(schema = %schema))]
 pub async fn delete_entity(
-    State(state): State<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
@@ -788,7 +833,7 @@ pub async fn delete_entity(
 
     // Look up schema for access check
     let schema_def =
-        state
+        forge
             .registry
             .get(schema_name.as_str())
             .await
@@ -803,8 +848,8 @@ pub async fn delete_entity(
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
     // Record-level ownership check: fetch entity first and verify ownership
-    if let (Some(ref policy), Some(ref c)) = (&state.record_access_policy, &claims) {
-        let entity = state
+    if let (Some(ref policy), Some(ref c)) = (&forge.record_access_policy, &claims) {
+        let entity = forge
             .backend
             .get(&schema_name, &entity_id)
             .await
@@ -816,11 +861,26 @@ pub async fn delete_entity(
         }
     }
 
-    state
+    forge
         .backend
         .delete(&schema_name, &entity_id)
         .await
         .map_err(ForgeError::from)?;
+
+    // Audit: entity deleted
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_custom(
+                "forge.entity.deleted",
+                acton_service::audit::AuditSeverity::Warning,
+                Some(serde_json::json!({
+                    "schema": schema,
+                    "entity_id": id,
+                    "user": claims.as_ref().map(|c| &c.sub),
+                })),
+            )
+            .await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }

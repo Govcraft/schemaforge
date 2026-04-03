@@ -1,4 +1,5 @@
 use acton_service::middleware::Claims;
+use acton_service::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -9,8 +10,10 @@ use schema_forge_core::types::{
     SchemaName, TextConstraints,
 };
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 use crate::access::OptionalClaims;
+use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
 use crate::state::ForgeState;
 
@@ -216,8 +219,10 @@ fn schema_to_response(schema: &SchemaDefinition) -> SchemaResponse {
 // ---------------------------------------------------------------------------
 
 /// POST /schemas -- Register a new schema. Requires admin role.
+#[instrument(skip_all)]
 pub async fn create_schema(
-    State(state): State<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
@@ -229,7 +234,7 @@ pub async fn create_schema(
     })?;
 
     // 2. Check for conflict in registry
-    if state.registry.get(schema_name.as_str()).await.is_some() {
+    if forge.registry.get(schema_name.as_str()).await.is_some() {
         return Err(ForgeError::SchemaAlreadyExists {
             name: schema_name.as_str().to_string(),
         });
@@ -264,41 +269,59 @@ pub async fn create_schema(
     let plan = DiffEngine::create_new(&definition);
 
     // 6. Apply migration to backend
-    state
+    forge
         .backend
         .apply_migration(&schema_name, &plan.steps)
         .await
         .map_err(ForgeError::from)?;
 
     // 7. Store schema metadata in backend
-    state
+    forge
         .backend
         .store_schema_metadata(&definition)
         .await
         .map_err(ForgeError::from)?;
 
     // 8. Update registry cache
-    state
+    forge
         .registry
         .insert(schema_name.as_str().to_string(), definition.clone())
         .await;
 
     // 9. Rebuild GraphQL schema
     #[cfg(feature = "graphql")]
-    crate::graphql::rebuild_graphql_schema(&state).await;
+    crate::graphql::rebuild_graphql_schema(&forge).await;
 
-    // 10. Return 201 Created
+    // 10. Audit: schema created
+    let field_count = definition.fields.len();
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_custom(
+                "forge.schema.created",
+                acton_service::audit::AuditSeverity::Notice,
+                Some(serde_json::json!({
+                    "schema_name": definition.name.as_str(),
+                    "field_count": field_count,
+                    "user": claims.sub,
+                })),
+            )
+            .await;
+    }
+
+    // 11. Return 201 Created
     let response = schema_to_response(&definition);
     Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// GET /schemas -- List all registered schemas. Requires authentication.
+#[instrument(skip_all)]
 pub async fn list_schemas(
-    State(state): State<ForgeState>,
+    State(_state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     require_auth(&claims)?;
-    let schemas = state.registry.list().await;
+    let schemas = forge.registry.list().await;
     let responses: Vec<SchemaResponse> = schemas.iter().map(schema_to_response).collect();
     let count = responses.len();
     Ok(Json(ListSchemasResponse {
@@ -308,13 +331,15 @@ pub async fn list_schemas(
 }
 
 /// GET /schemas/{name} -- Get a schema by name. Requires authentication.
+#[instrument(skip_all)]
 pub async fn get_schema(
-    State(state): State<ForgeState>,
+    State(_state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     Path(name): Path<String>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     require_auth(&claims)?;
-    let schema = state
+    let schema = forge
         .registry
         .get(&name)
         .await
@@ -324,8 +349,10 @@ pub async fn get_schema(
 }
 
 /// PUT /schemas/{name} -- Update an existing schema (triggers migration). Requires admin role.
+#[instrument(skip_all)]
 pub async fn update_schema(
-    State(state): State<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     Path(name): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<CreateSchemaRequest>,
@@ -333,7 +360,7 @@ pub async fn update_schema(
     let claims = require_auth(&claims)?;
     require_admin(claims)?;
     // 1. Find existing schema
-    let old_schema = state
+    let old_schema = forge
         .registry
         .get(&name)
         .await
@@ -381,8 +408,9 @@ pub async fn update_schema(
     let plan = DiffEngine::diff(&old_schema, &new_definition);
 
     // 6. Apply migration steps
+    let step_count = plan.steps.len();
     if !plan.is_empty() {
-        state
+        forge
             .backend
             .apply_migration(&schema_name, &plan.steps)
             .await
@@ -390,49 +418,80 @@ pub async fn update_schema(
     }
 
     // 7. Store updated metadata
-    state
+    forge
         .backend
         .store_schema_metadata(&new_definition)
         .await
         .map_err(ForgeError::from)?;
 
     // 8. Update registry cache
-    state
+    forge
         .registry
         .insert(schema_name.as_str().to_string(), new_definition.clone())
         .await;
 
     // 9. Rebuild GraphQL schema
     #[cfg(feature = "graphql")]
-    crate::graphql::rebuild_graphql_schema(&state).await;
+    crate::graphql::rebuild_graphql_schema(&forge).await;
+
+    // 10. Audit: schema migrated
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_custom(
+                "forge.schema.migrated",
+                acton_service::audit::AuditSeverity::Notice,
+                Some(serde_json::json!({
+                    "schema_name": new_definition.name.as_str(),
+                    "step_count": step_count,
+                    "user": claims.sub,
+                })),
+            )
+            .await;
+    }
 
     Ok(Json(schema_to_response(&new_definition)))
 }
 
 /// DELETE /schemas/{name} -- Remove a schema. Requires admin role.
+#[instrument(skip_all)]
 pub async fn delete_schema(
-    State(state): State<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
+    axum::Extension(forge): axum::Extension<ForgeState>,
     Path(name): Path<String>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
     require_admin(claims)?;
     // 1. Find existing schema
-    let _schema = state
+    let _schema = forge
         .registry
         .get(&name)
         .await
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
 
     // 2. Remove from registry cache
-    state.registry.remove(&name).await;
+    forge.registry.remove(&name).await;
 
     // 3. Rebuild GraphQL schema
     #[cfg(feature = "graphql")]
-    crate::graphql::rebuild_graphql_schema(&state).await;
+    crate::graphql::rebuild_graphql_schema(&forge).await;
 
     // Note: In a full implementation, we would also drop the backend table.
     // For now, we just remove the metadata and cache entry.
+
+    // 4. Audit: schema deleted
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_custom(
+                "forge.schema.deleted",
+                acton_service::audit::AuditSeverity::Warning,
+                Some(serde_json::json!({
+                    "schema_name": name,
+                    "user": claims.sub,
+                })),
+            )
+            .await;
+    }
 
     Ok(StatusCode::NO_CONTENT)
 }
