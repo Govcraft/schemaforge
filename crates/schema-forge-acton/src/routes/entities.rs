@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
+use std::time::Duration;
 
 use acton_service::middleware::Claims;
+use acton_service::prelude::ActorHandleInterface;
 use acton_service::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -12,6 +14,7 @@ use schema_forge_core::types::{
     Cardinality, DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 use tracing::instrument;
 
 use super::query_params::{parse_filter_params, parse_sort_param};
@@ -19,9 +22,35 @@ use crate::access::{
     check_schema_access, filter_entity_fields, inject_tenant_on_create, inject_tenant_scope,
     AccessAction, FieldFilterDirection, OptionalClaims,
 };
+use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
-use crate::state::ForgeState;
+use crate::messages::{
+    CreateEntity, DeleteEntity, GetEntity, GetRecordAccessPolicy, GetSchema, GetTenantConfig,
+    QueryEntities, ReplyChannel, UpdateEntity,
+};
+
+// ---------------------------------------------------------------------------
+// Actor request helper
+// ---------------------------------------------------------------------------
+
+/// Timeout for actor request-response round-trips.
+const ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Await an actor response with a timeout.
+///
+/// Wraps the common pattern of awaiting a `oneshot::Receiver` with a deadline
+/// and mapping both timeout and channel-dropped errors to `ForgeError::Internal`.
+async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
+    tokio::time::timeout(ACTOR_TIMEOUT, rx)
+        .await
+        .map_err(|_| ForgeError::Internal {
+            message: "forge actor timeout".into(),
+        })?
+        .map_err(|_| ForgeError::Internal {
+            message: "forge actor unavailable".into(),
+        })
+}
 
 // ---------------------------------------------------------------------------
 // Request/Response types
@@ -407,21 +436,49 @@ fn coerce_json_filter_value(
 
 /// Execute a query with the standard access-control pipeline.
 ///
-/// Shared by `list_entities` and `query_entities`.
+/// Shared by `list_entities` and `query_entities`. Sends backend queries
+/// through the actor via oneshot channels.
 async fn execute_entity_query(
-    forge: &ForgeState,
+    state: &AppState<SchemaForgeConfig>,
     schema_def: &SchemaDefinition,
     claims: Option<&Claims>,
     query: &mut schema_forge_core::query::Query,
 ) -> Result<ListEntitiesResponse, ForgeError> {
-    // Inject tenant scope filter
-    inject_tenant_scope(query, claims, &forge.tenant_config);
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
 
-    let result = forge.backend.query(query).await.map_err(ForgeError::from)?;
+    // Inject tenant scope filter
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetTenantConfig {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let tenant_config = ask_forge(rx).await?;
+    inject_tenant_scope(query, claims, &tenant_config);
+
+    // Execute query via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(QueryEntities {
+            query: query.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let result = ask_forge(rx).await?.map_err(ForgeError::from)?;
 
     // Record-level access filtering (e.g. @owner)
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetRecordAccessPolicy {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let record_access_policy = ask_forge(rx).await?;
+
     let visible_entities =
-        if let (Some(ref policy), Some(c)) = (&forge.record_access_policy, claims) {
+        if let (Some(ref policy), Some(c)) = (&record_access_policy, claims) {
             policy
                 .filter_visible(schema_def, c, result.entities)
                 .await
@@ -454,22 +511,26 @@ async fn execute_entity_query(
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn create_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
 
-    // Look up schema in registry
-    let schema_def =
-        forge
-            .registry
-            .get(schema_name.as_str())
-            .await
-            .ok_or(ForgeError::SchemaNotFound {
-                name: schema_name.as_str().to_string(),
-            })?;
+    // Look up schema via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: schema_name.as_str().to_string(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schema_def = ask_forge(rx).await?.ok_or(ForgeError::SchemaNotFound {
+        name: schema_name.as_str().to_string(),
+    })?;
 
     // Access check
     check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)?;
@@ -478,8 +539,15 @@ pub async fn create_entity(
     let mut fields = json_to_entity_fields(&schema_def, &body.fields)
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
-    // Inject _tenant field from claims
-    inject_tenant_on_create(&mut fields, claims.as_ref(), &forge.tenant_config);
+    // Get tenant config via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetTenantConfig {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let tenant_config = ask_forge(rx).await?;
+    inject_tenant_on_create(&mut fields, claims.as_ref(), &tenant_config);
 
     // Create the entity, filtering write-restricted fields
     let mut entity = Entity::new(schema_name, fields);
@@ -490,11 +558,15 @@ pub async fn create_entity(
         FieldFilterDirection::Write,
     );
 
-    let mut created = forge
-        .backend
-        .create(&entity)
-        .await
-        .map_err(ForgeError::from)?;
+    // Create entity via actor (supervised backend call)
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(CreateEntity {
+            entity,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let mut created = ask_forge(rx).await?.map_err(ForgeError::from)?;
 
     // Filter read-restricted fields from response
     filter_entity_fields(
@@ -529,23 +601,27 @@ pub async fn create_entity(
 /// Sort uses `?sort=-age,name` (prefix `-` = descending) or `?sort=age:desc,name:asc`.
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn list_entities(
-    State(_state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
 
-    // Verify schema exists
-    let schema_def =
-        forge
-            .registry
-            .get(schema_name.as_str())
-            .await
-            .ok_or(ForgeError::SchemaNotFound {
-                name: schema_name.as_str().to_string(),
-            })?;
+    // Verify schema exists via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: schema_name.as_str().to_string(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schema_def = ask_forge(rx).await?.ok_or(ForgeError::SchemaNotFound {
+        name: schema_name.as_str().to_string(),
+    })?;
 
     // Access check
     check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
@@ -598,7 +674,7 @@ pub async fn list_entities(
         query = query.with_filter(f);
     }
 
-    let response = execute_entity_query(&forge, &schema_def, claims.as_ref(), &mut query).await?;
+    let response = execute_entity_query(&state, &schema_def, claims.as_ref(), &mut query).await?;
     Ok(Json(response))
 }
 
@@ -607,23 +683,27 @@ pub async fn list_entities(
 /// Accepts a full filter IR as JSON with plain values (schema-inferred types).
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn query_entities(
-    State(_state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<EntityQueryBody>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
 
-    // Verify schema exists
-    let schema_def =
-        forge
-            .registry
-            .get(schema_name.as_str())
-            .await
-            .ok_or(ForgeError::SchemaNotFound {
-                name: schema_name.as_str().to_string(),
-            })?;
+    // Verify schema exists via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: schema_name.as_str().to_string(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schema_def = ask_forge(rx).await?.ok_or(ForgeError::SchemaNotFound {
+        name: schema_name.as_str().to_string(),
+    })?;
 
     // Access check
     check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
@@ -674,29 +754,33 @@ pub async fn query_entities(
         query = query.with_filter(filter);
     }
 
-    let response = execute_entity_query(&forge, &schema_def, claims.as_ref(), &mut query).await?;
+    let response = execute_entity_query(&state, &schema_def, claims.as_ref(), &mut query).await?;
     Ok(Json(response))
 }
 
 /// GET /schemas/{schema}/entities/{id} -- Get entity by ID.
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn get_entity(
-    State(_state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
 
-    // Look up schema for access check
-    let schema_def =
-        forge
-            .registry
-            .get(schema_name.as_str())
-            .await
-            .ok_or(ForgeError::SchemaNotFound {
-                name: schema_name.as_str().to_string(),
-            })?;
+    // Look up schema via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: schema_name.as_str().to_string(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schema_def = ask_forge(rx).await?.ok_or(ForgeError::SchemaNotFound {
+        name: schema_name.as_str().to_string(),
+    })?;
 
     // Access check
     check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
@@ -705,14 +789,27 @@ pub async fn get_entity(
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
-    let mut entity = forge
-        .backend
-        .get(&schema_name, &entity_id)
-        .await
-        .map_err(ForgeError::from)?;
+    // Get entity via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetEntity {
+            schema: schema_name,
+            id: entity_id,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let mut entity = ask_forge(rx).await?.map_err(ForgeError::from)?;
 
     // Record-level visibility check
-    if let (Some(ref policy), Some(ref c)) = (&forge.record_access_policy, &claims) {
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetRecordAccessPolicy {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let record_access_policy = ask_forge(rx).await?;
+
+    if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
         let visible = policy
             .filter_visible(&schema_def, c, vec![entity.clone()])
             .await;
@@ -738,37 +835,53 @@ pub async fn get_entity(
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn update_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
 
     // Parse the entity ID
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
-    // Look up schema
-    let schema_def =
-        forge
-            .registry
-            .get(schema_name.as_str())
-            .await
-            .ok_or(ForgeError::SchemaNotFound {
-                name: schema_name.as_str().to_string(),
-            })?;
+    // Look up schema via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: schema_name.as_str().to_string(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schema_def = ask_forge(rx).await?.ok_or(ForgeError::SchemaNotFound {
+        name: schema_name.as_str().to_string(),
+    })?;
 
     // Access check
     check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)?;
 
     // Record-level ownership check: fetch existing entity and verify ownership
-    if let (Some(ref policy), Some(ref c)) = (&forge.record_access_policy, &claims) {
-        let existing = forge
-            .backend
-            .get(&schema_name, &entity_id)
-            .await
-            .map_err(ForgeError::from)?;
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetRecordAccessPolicy {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let record_access_policy = ask_forge(rx).await?;
+
+    if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetEntity {
+                schema: schema_name.clone(),
+                id: entity_id.clone(),
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let existing = ask_forge(rx).await?.map_err(ForgeError::from)?;
         if !policy.can_modify(&schema_def, c, &existing).await {
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to modify entity '{id}'"),
@@ -789,11 +902,15 @@ pub async fn update_entity(
         FieldFilterDirection::Write,
     );
 
-    let mut updated = forge
-        .backend
-        .update(&entity)
-        .await
-        .map_err(ForgeError::from)?;
+    // Update entity via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(UpdateEntity {
+            entity,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let mut updated = ask_forge(rx).await?.map_err(ForgeError::from)?;
 
     // Filter read-restricted fields from response
     filter_entity_fields(
@@ -825,21 +942,25 @@ pub async fn update_entity(
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn delete_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
 
-    // Look up schema for access check
-    let schema_def =
-        forge
-            .registry
-            .get(schema_name.as_str())
-            .await
-            .ok_or(ForgeError::SchemaNotFound {
-                name: schema_name.as_str().to_string(),
-            })?;
+    // Look up schema via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: schema_name.as_str().to_string(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schema_def = ask_forge(rx).await?.ok_or(ForgeError::SchemaNotFound {
+        name: schema_name.as_str().to_string(),
+    })?;
 
     // Access check
     check_schema_access(&schema_def, claims.as_ref(), AccessAction::Delete)?;
@@ -848,12 +969,24 @@ pub async fn delete_entity(
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
     // Record-level ownership check: fetch entity first and verify ownership
-    if let (Some(ref policy), Some(ref c)) = (&forge.record_access_policy, &claims) {
-        let entity = forge
-            .backend
-            .get(&schema_name, &entity_id)
-            .await
-            .map_err(ForgeError::from)?;
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetRecordAccessPolicy {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let record_access_policy = ask_forge(rx).await?;
+
+    if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetEntity {
+                schema: schema_name.clone(),
+                id: entity_id.clone(),
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let entity = ask_forge(rx).await?.map_err(ForgeError::from)?;
         if !policy.can_delete(&schema_def, c, &entity).await {
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to delete entity '{id}'"),
@@ -861,11 +994,16 @@ pub async fn delete_entity(
         }
     }
 
+    // Delete entity via actor
+    let (tx, rx) = oneshot::channel();
     forge
-        .backend
-        .delete(&schema_name, &entity_id)
-        .await
-        .map_err(ForgeError::from)?;
+        .send(DeleteEntity {
+            schema: schema_name,
+            id: entity_id,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await?.map_err(ForgeError::from)?;
 
     // Audit: entity deleted
     if let Some(logger) = state.audit_logger() {

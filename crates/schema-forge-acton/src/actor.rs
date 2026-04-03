@@ -3,6 +3,8 @@
 //! tenant configuration, and record-access policy.
 //!
 //! Handlers interact with the actor via message passing (see [`crate::messages`]).
+//! Request-response messages embed a [`ReplyChannel`](crate::messages::ReplyChannel)
+//! that the handler uses to send the result back to the caller.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,14 +18,10 @@ use schema_forge_backend::tenant::TenantConfig;
 use schema_forge_core::types::SchemaDefinition;
 
 use crate::messages::{
-    AggregateEntities, AggregateEntitiesResponse, ApplyMigration, ApplyMigrationResponse,
-    CountEntities, CountEntitiesResponse, CreateEntity, CreateEntityResponse, DeleteEntity,
-    DeleteEntityResponse, GetEntity, GetEntityResponse, GetRecordAccessPolicy,
-    GetRecordAccessPolicyResponse, GetSchema, GetSchemaResponse, GetTenantConfig,
-    GetTenantConfigResponse, InsertSchema, ListSchemas, ListSchemasResponse, LoadSchemaMetadata,
-    LoadSchemaMetadataResponse, QueryEntities, QueryEntitiesResponse, RemoveSchema,
-    RemoveSchemaResponse, StoreSchemaMetadata, StoreSchemaMetadataResponse, UpdateEntity,
-    UpdateEntityResponse, UpdateTenantConfig,
+    AggregateEntities, ApplyMigration, CountEntities, CreateEntity, DeleteEntity, GetEntity,
+    GetRecordAccessPolicy, GetSchema, GetTenantConfig, InsertSchema, ListSchemas,
+    LoadSchemaMetadata, QueryEntities, RemoveSchema, StoreSchemaMetadata, UpdateEntity,
+    UpdateTenantConfig,
 };
 use crate::state::DynForgeBackend;
 
@@ -81,46 +79,46 @@ impl ActorExtension for ForgeActor {
 }
 
 // ---------------------------------------------------------------------------
-// Registry reads (read-only, async — reply via envelope)
+// Registry reads (read-only — reply via oneshot channel)
 // ---------------------------------------------------------------------------
 
 fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
     actor.act_on::<GetSchema>(|actor, ctx| {
         let name = &ctx.message().name;
         let result = actor.model.registry.get(name).cloned();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
-            reply.send(GetSchemaResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
     actor.act_on::<ListSchemas>(|actor, ctx| {
         let schemas: Vec<SchemaDefinition> = actor.model.registry.values().cloned().collect();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
-            reply.send(ListSchemasResponse(schemas)).await;
+            reply.send(schemas).await;
         })
     });
 
     actor.act_on::<GetTenantConfig>(|actor, ctx| {
         let config = actor.model.tenant_config.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
-            reply.send(GetTenantConfigResponse(config)).await;
+            reply.send(config).await;
         })
     });
 
     actor.act_on::<GetRecordAccessPolicy>(|actor, ctx| {
         let policy = actor.model.record_access_policy.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
-            reply.send(GetRecordAccessPolicyResponse(policy)).await;
+            reply.send(policy).await;
         })
     });
 }
 
 // ---------------------------------------------------------------------------
-// Registry mutations (mutable, async)
+// Registry mutations (mutable, some with reply channels)
 // ---------------------------------------------------------------------------
 
 fn configure_registry_mutations(actor: &mut ManagedActor<Idle, ForgeActor>) {
@@ -138,9 +136,9 @@ fn configure_registry_mutations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let name = &ctx.message().name;
         debug!(schema = %name, "removing schema from registry");
         let removed = actor.model.registry.remove(name);
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
-            reply.send(RemoveSchemaResponse(removed)).await;
+            reply.send(removed).await;
         })
     });
 
@@ -172,20 +170,18 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
     actor.act_on::<CreateEntity>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let entity = ctx.message().entity.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.create(&entity).await })
-                        .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
-                }
+                Some(b) => tokio::spawn(async move { b.create(&entity).await })
+                    .await
+                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
                 None => {
                     warn!("CreateEntity received but no backend is configured");
                     Err(no_backend_error())
                 }
             };
-            reply.send(CreateEntityResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
@@ -193,40 +189,36 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let backend = actor.model.backend.clone();
         let schema = ctx.message().schema.clone();
         let id = ctx.message().id.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.get(&schema, &id).await })
-                        .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
-                }
+                Some(b) => tokio::spawn(async move { b.get(&schema, &id).await })
+                    .await
+                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
                 None => {
                     warn!("GetEntity received but no backend is configured");
                     Err(no_backend_error())
                 }
             };
-            reply.send(GetEntityResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
     actor.act_on::<UpdateEntity>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let entity = ctx.message().entity.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.update(&entity).await })
-                        .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
-                }
+                Some(b) => tokio::spawn(async move { b.update(&entity).await })
+                    .await
+                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
                 None => {
                     warn!("UpdateEntity received but no backend is configured");
                     Err(no_backend_error())
                 }
             };
-            reply.send(UpdateEntityResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
@@ -234,80 +226,72 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let backend = actor.model.backend.clone();
         let schema = ctx.message().schema.clone();
         let id = ctx.message().id.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.delete(&schema, &id).await })
-                        .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
-                }
+                Some(b) => tokio::spawn(async move { b.delete(&schema, &id).await })
+                    .await
+                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
                 None => {
                     warn!("DeleteEntity received but no backend is configured");
                     Err(no_backend_error())
                 }
             };
-            reply.send(DeleteEntityResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
     actor.act_on::<QueryEntities>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let query = ctx.message().query.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.query(&query).await })
-                        .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
-                }
+                Some(b) => tokio::spawn(async move { b.query(&query).await })
+                    .await
+                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
                 None => {
                     warn!("QueryEntities received but no backend is configured");
                     Err(no_backend_error())
                 }
             };
-            reply.send(QueryEntitiesResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
     actor.act_on::<CountEntities>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let query = ctx.message().query.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.count(&query).await })
-                        .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
-                }
+                Some(b) => tokio::spawn(async move { b.count(&query).await })
+                    .await
+                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
                 None => {
                     warn!("CountEntities received but no backend is configured");
                     Err(no_backend_error())
                 }
             };
-            reply.send(CountEntitiesResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
     actor.act_on::<AggregateEntities>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let query = ctx.message().query.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.aggregate(&query).await })
-                        .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
-                }
+                Some(b) => tokio::spawn(async move { b.aggregate(&query).await })
+                    .await
+                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
                 None => {
                     warn!("AggregateEntities received but no backend is configured");
                     Err(no_backend_error())
                 }
             };
-            reply.send(AggregateEntitiesResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
@@ -315,7 +299,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let backend = actor.model.backend.clone();
         let schema_name = ctx.message().schema_name.clone();
         let steps = ctx.message().steps.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
                 Some(b) => {
@@ -328,14 +312,14 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
                     Err(no_backend_error())
                 }
             };
-            reply.send(ApplyMigrationResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
     actor.act_on::<StoreSchemaMetadata>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let definition = ctx.message().definition.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
                 Some(b) => {
@@ -348,14 +332,14 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
                     Err(no_backend_error())
                 }
             };
-            reply.send(StoreSchemaMetadataResponse(result)).await;
+            reply.send(result).await;
         })
     });
 
     actor.act_on::<LoadSchemaMetadata>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let name = ctx.message().name.clone();
-        let reply = ctx.reply_envelope();
+        let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
                 Some(b) => {
@@ -368,7 +352,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
                     Err(no_backend_error())
                 }
             };
-            reply.send(LoadSchemaMetadataResponse(result)).await;
+            reply.send(result).await;
         })
     });
 }

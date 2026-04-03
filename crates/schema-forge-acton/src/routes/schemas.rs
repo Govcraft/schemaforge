@@ -1,4 +1,7 @@
+use std::time::Duration;
+
 use acton_service::middleware::Claims;
+use acton_service::prelude::ActorHandleInterface;
 use acton_service::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -10,12 +13,36 @@ use schema_forge_core::types::{
     SchemaName, TextConstraints,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 use tracing::instrument;
 
 use crate::access::OptionalClaims;
+use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
-use crate::state::ForgeState;
+use crate::messages::{
+    ApplyMigration, GetSchema, InsertSchema, ListSchemas, RemoveSchema, ReplyChannel,
+    StoreSchemaMetadata,
+};
+
+// ---------------------------------------------------------------------------
+// Actor request helper
+// ---------------------------------------------------------------------------
+
+/// Timeout for actor request-response round-trips.
+const ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Await an actor response with a timeout.
+async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
+    tokio::time::timeout(ACTOR_TIMEOUT, rx)
+        .await
+        .map_err(|_| ForgeError::Internal {
+            message: "forge actor timeout".into(),
+        })?
+        .map_err(|_| ForgeError::Internal {
+            message: "forge actor unavailable".into(),
+        })
+}
 
 /// Require authentication. Returns 401 if no Claims present.
 fn require_auth(claims: &Option<Claims>) -> Result<&Claims, ForgeError> {
@@ -222,19 +249,29 @@ fn schema_to_response(schema: &SchemaDefinition) -> SchemaResponse {
 #[instrument(skip_all)]
 pub async fn create_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
     require_admin(claims)?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
     // 1. Validate schema name
     let schema_name = SchemaName::new(&body.name).map_err(|_| ForgeError::InvalidSchemaName {
         name: body.name.clone(),
     })?;
 
-    // 2. Check for conflict in registry
-    if forge.registry.get(schema_name.as_str()).await.is_some() {
+    // 2. Check for conflict in registry via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: schema_name.as_str().to_string(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    if ask_forge(rx).await?.is_some() {
         return Err(ForgeError::SchemaAlreadyExists {
             name: schema_name.as_str().to_string(),
         });
@@ -268,29 +305,38 @@ pub async fn create_schema(
     // 5. Generate migration plan
     let plan = DiffEngine::create_new(&definition);
 
-    // 6. Apply migration to backend
+    // 6. Apply migration to backend via actor
+    let (tx, rx) = oneshot::channel();
     forge
-        .backend
-        .apply_migration(&schema_name, &plan.steps)
-        .await
-        .map_err(ForgeError::from)?;
+        .send(ApplyMigration {
+            schema_name: schema_name.clone(),
+            steps: plan.steps,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await?.map_err(ForgeError::from)?;
 
-    // 7. Store schema metadata in backend
+    // 7. Store schema metadata in backend via actor
+    let (tx, rx) = oneshot::channel();
     forge
-        .backend
-        .store_schema_metadata(&definition)
-        .await
-        .map_err(ForgeError::from)?;
+        .send(StoreSchemaMetadata {
+            definition: definition.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await?.map_err(ForgeError::from)?;
 
-    // 8. Update registry cache
+    // 8. Update registry cache via actor (fire-and-forget)
     forge
-        .registry
-        .insert(schema_name.as_str().to_string(), definition.clone())
+        .send(InsertSchema {
+            name: schema_name.as_str().to_string(),
+            definition: definition.clone(),
+        })
         .await;
 
     // 9. Rebuild GraphQL schema
-    #[cfg(feature = "graphql")]
-    crate::graphql::rebuild_graphql_schema(&forge).await;
+    // NOTE: GraphQL rebuild will be re-integrated when the graphql module
+    // is migrated to actor-based state access.
 
     // 10. Audit: schema created
     let field_count = definition.fields.len();
@@ -316,12 +362,22 @@ pub async fn create_schema(
 /// GET /schemas -- List all registered schemas. Requires authentication.
 #[instrument(skip_all)]
 pub async fn list_schemas(
-    State(_state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     require_auth(&claims)?;
-    let schemas = forge.registry.list().await;
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(ListSchemas {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schemas = ask_forge(rx).await?;
+
     let responses: Vec<SchemaResponse> = schemas.iter().map(schema_to_response).collect();
     let count = responses.len();
     Ok(Json(ListSchemasResponse {
@@ -333,16 +389,24 @@ pub async fn list_schemas(
 /// GET /schemas/{name} -- Get a schema by name. Requires authentication.
 #[instrument(skip_all)]
 pub async fn get_schema(
-    State(_state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
+    State(state): State<AppState<SchemaForgeConfig>>,
     Path(name): Path<String>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     require_auth(&claims)?;
-    let schema = forge
-        .registry
-        .get(&name)
-        .await
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: name.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schema = ask_forge(rx)
+        .await?
         .ok_or(ForgeError::SchemaNotFound { name })?;
 
     Ok(Json(schema_to_response(&schema)))
@@ -352,18 +416,26 @@ pub async fn get_schema(
 #[instrument(skip_all)]
 pub async fn update_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
     Path(name): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
     require_admin(claims)?;
-    // 1. Find existing schema
-    let old_schema = forge
-        .registry
-        .get(&name)
-        .await
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
+    // 1. Find existing schema via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: name.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let old_schema = ask_forge(rx)
+        .await?
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
 
     // 2. Validate the updated schema name matches the path
@@ -407,32 +479,41 @@ pub async fn update_schema(
     // 5. Compute diff and generate migration plan
     let plan = DiffEngine::diff(&old_schema, &new_definition);
 
-    // 6. Apply migration steps
+    // 6. Apply migration steps via actor
     let step_count = plan.steps.len();
     if !plan.is_empty() {
+        let (tx, rx) = oneshot::channel();
         forge
-            .backend
-            .apply_migration(&schema_name, &plan.steps)
-            .await
-            .map_err(ForgeError::from)?;
+            .send(ApplyMigration {
+                schema_name: schema_name.clone(),
+                steps: plan.steps,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        ask_forge(rx).await?.map_err(ForgeError::from)?;
     }
 
-    // 7. Store updated metadata
+    // 7. Store updated metadata via actor
+    let (tx, rx) = oneshot::channel();
     forge
-        .backend
-        .store_schema_metadata(&new_definition)
-        .await
-        .map_err(ForgeError::from)?;
+        .send(StoreSchemaMetadata {
+            definition: new_definition.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await?.map_err(ForgeError::from)?;
 
-    // 8. Update registry cache
+    // 8. Update registry cache via actor (fire-and-forget)
     forge
-        .registry
-        .insert(schema_name.as_str().to_string(), new_definition.clone())
+        .send(InsertSchema {
+            name: schema_name.as_str().to_string(),
+            definition: new_definition.clone(),
+        })
         .await;
 
     // 9. Rebuild GraphQL schema
-    #[cfg(feature = "graphql")]
-    crate::graphql::rebuild_graphql_schema(&forge).await;
+    // NOTE: GraphQL rebuild will be re-integrated when the graphql module
+    // is migrated to actor-based state access.
 
     // 10. Audit: schema migrated
     if let Some(logger) = state.audit_logger() {
@@ -456,25 +537,40 @@ pub async fn update_schema(
 #[instrument(skip_all)]
 pub async fn delete_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
-    axum::Extension(forge): axum::Extension<ForgeState>,
     Path(name): Path<String>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
     require_admin(claims)?;
-    // 1. Find existing schema
-    let _schema = forge
-        .registry
-        .get(&name)
-        .await
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
+    // 1. Verify schema exists via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: name.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let _schema = ask_forge(rx)
+        .await?
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
 
-    // 2. Remove from registry cache
-    forge.registry.remove(&name).await;
+    // 2. Remove from registry cache via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(RemoveSchema {
+            name: name.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let _ = ask_forge(rx).await?;
 
     // 3. Rebuild GraphQL schema
-    #[cfg(feature = "graphql")]
-    crate::graphql::rebuild_graphql_schema(&forge).await;
+    // NOTE: GraphQL rebuild will be re-integrated when the graphql module
+    // is migrated to actor-based state access.
 
     // Note: In a full implementation, we would also drop the backend table.
     // For now, we just remove the metadata and cache entry.
