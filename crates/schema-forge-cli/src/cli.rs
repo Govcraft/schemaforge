@@ -4,9 +4,8 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 
 /// Adaptive Object Model runtime with a human-readable DSL.
 ///
-/// SchemaForge turns plain English descriptions into fully operational,
-/// enterprise-grade backends. Define schemas in a human-readable DSL,
-/// generate them with AI, and deploy with zero recompilation.
+/// SchemaForge lets you define schemas in a human-readable DSL
+/// and deploy with zero recompilation.
 #[derive(Parser)]
 #[command(
     name = "schema-forge",
@@ -84,9 +83,6 @@ pub enum Commands {
 
     /// Plan and execute schema migrations
     Migrate(MigrateArgs),
-
-    /// Generate schemas from natural language descriptions
-    Generate(GenerateArgs),
 
     /// Start acton-service with SchemaForge extension
     Serve(ServeArgs),
@@ -187,29 +183,6 @@ pub struct MigrateArgs {
     /// Show only a specific schema's migration
     #[arg(short = 's', long = "schema")]
     pub schema: Option<String>,
-}
-
-/// Arguments for `schema-forge generate`.
-#[derive(Args)]
-pub struct GenerateArgs {
-    /// Natural language description (if omitted, enters interactive mode)
-    pub description: Option<String>,
-
-    /// Output file for generated schema (default: stdout)
-    #[arg(short = 'o', long = "output")]
-    pub output: Option<PathBuf>,
-
-    /// AI provider: auto (from config), ollama, anthropic, openai
-    #[arg(long = "provider", default_value = "auto")]
-    pub provider: String,
-
-    /// Model name (provider-specific)
-    #[arg(long = "model")]
-    pub model: Option<String>,
-
-    /// Non-interactive: generate from description, write to output, exit
-    #[arg(long = "batch")]
-    pub batch: bool,
 }
 
 /// Arguments for `schema-forge serve`.
@@ -500,26 +473,6 @@ mod tests {
             assert!(args.watch);
         } else {
             panic!("expected Serve command");
-        }
-    }
-
-    #[test]
-    fn parse_generate_command() {
-        let cli = Cli::try_parse_from([
-            "schema-forge",
-            "generate",
-            "A CRM with contacts",
-            "--batch",
-            "-o",
-            "crm.schema",
-        ])
-        .unwrap();
-        if let Commands::Generate(args) = cli.command {
-            assert_eq!(args.description, Some("A CRM with contacts".to_string()));
-            assert!(args.batch);
-            assert_eq!(args.output, Some(PathBuf::from("crm.schema")));
-        } else {
-            panic!("expected Generate command");
         }
     }
 

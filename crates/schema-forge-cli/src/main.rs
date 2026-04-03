@@ -19,7 +19,6 @@ async fn main() {
         cli::Commands::Parse(args) => commands::parse::run(args, &cli.global, &output).await,
         cli::Commands::Apply(args) => commands::apply::run(args, &cli.global, &output).await,
         cli::Commands::Migrate(args) => commands::migrate::run(args, &cli.global, &output).await,
-        cli::Commands::Generate(args) => commands::generate::run(args, &cli.global, &output).await,
         cli::Commands::Serve(args) => commands::serve::run(args, &cli.global, &output).await,
         cli::Commands::Export { command } => {
             commands::export::run(command, &cli.global, &output).await

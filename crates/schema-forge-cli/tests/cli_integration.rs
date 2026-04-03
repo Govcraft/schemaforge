@@ -79,15 +79,6 @@ fn inspect_help() {
 }
 
 #[test]
-fn generate_help() {
-    schema_forge()
-        .args(["generate", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Generate schemas"));
-}
-
-#[test]
 fn serve_help() {
     schema_forge()
         .args(["serve", "--help"])

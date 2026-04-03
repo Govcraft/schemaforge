@@ -1,7 +1,6 @@
 pub mod apply;
 pub mod completions;
 pub mod export;
-pub mod generate;
 pub mod init;
 pub mod inspect;
 pub mod migrate;
