@@ -5090,7 +5090,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-acton"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "acton-service",
  "arc-swap",
@@ -5116,7 +5116,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-backend"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "acton-service",
  "schema-forge-core",
@@ -5127,7 +5127,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "acton-service",
  "assert_cmd",
@@ -5157,7 +5157,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "mti",
@@ -5169,7 +5169,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-dsl"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "logos",
  "proptest",
