@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 schema-forge-core = { path = "../schema-forge-core" }
 logos = "0.15"
+tracing = "0.1"
 
 [dev-dependencies]
 proptest = "1"

@@ -4947,6 +4947,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -4956,6 +4957,7 @@ dependencies = [
  "logos",
  "proptest",
  "schema-forge-core",
+ "tracing",
 ]
 
 [[package]]
