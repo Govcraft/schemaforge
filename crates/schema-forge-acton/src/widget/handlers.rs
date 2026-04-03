@@ -5,7 +5,7 @@ use axum::Json;
 use schema_forge_core::types::{EntityId, SchemaName};
 
 use crate::access::{
-    check_schema_access, filter_entity_fields, AccessAction, FieldFilterDirection, OptionalAuth,
+    check_schema_access, filter_entity_fields, AccessAction, FieldFilterDirection, OptionalClaims,
 };
 use crate::form::form_to_entity_fields;
 use crate::shared::resolve_ref_display;
@@ -38,7 +38,7 @@ pub struct PaginationParams {
 /// is sent, returns JSON with schema, entities, and pagination.
 pub async fn entity_list(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
     Path(name): Path<String>,
     Query(params): Query<PaginationParams>,
@@ -49,7 +49,7 @@ pub async fn entity_list(
         .await
         .ok_or_else(|| WidgetError::schema_not_found(&name))?;
 
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)
         .map_err(WidgetError::from)?;
 
     let limit = params.limit.unwrap_or(25);
@@ -98,13 +98,13 @@ pub async fn entity_list(
 /// GET /forge/{schema}/entities/_table -- HTMX table pagination fragment.
 pub async fn entity_table_fragment(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
     Path(name): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Response, WidgetError> {
     // Delegate to entity_list -- same response for widgets
-    entity_list(State(state), OptionalAuth(auth), headers, Path(name), Query(params)).await
+    entity_list(State(state), OptionalClaims(claims), headers, Path(name), Query(params)).await
 }
 
 /// GET /forge/{schema}/entities/new -- Create entity form fragment.
@@ -113,7 +113,7 @@ pub async fn entity_table_fragment(
 /// needed to build a create form.
 pub async fn entity_create_form(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<Response, WidgetError> {
@@ -123,7 +123,7 @@ pub async fn entity_create_form(
         .await
         .ok_or_else(|| WidgetError::schema_not_found(&name))?;
 
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)
         .map_err(WidgetError::from)?;
 
     let fields: Vec<FieldView> = schema_def
@@ -160,7 +160,7 @@ pub async fn entity_create_form(
 /// or a 422 with `{ "errors": [...] }`.
 pub async fn entity_create(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
     Path(name): Path<String>,
     Form(form_data): Form<Vec<(String, String)>>,
@@ -171,7 +171,7 @@ pub async fn entity_create(
         .await
         .ok_or_else(|| WidgetError::schema_not_found(&name))?;
 
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)
         .map_err(WidgetError::from)?;
 
     let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
@@ -189,7 +189,7 @@ pub async fn entity_create(
             filter_entity_fields(
                 &mut created,
                 &schema_def,
-                auth.as_ref(),
+                claims.as_ref(),
                 FieldFilterDirection::Read,
             );
 
@@ -254,7 +254,7 @@ pub async fn entity_create(
 /// When `Accept: application/json`, returns `{ "schema": ..., "entity": ... }`.
 pub async fn entity_detail(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<Response, WidgetError> {
@@ -264,7 +264,7 @@ pub async fn entity_detail(
         .await
         .ok_or_else(|| WidgetError::schema_not_found(&name))?;
 
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)
         .map_err(WidgetError::from)?;
 
     let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
@@ -279,7 +279,7 @@ pub async fn entity_detail(
     filter_entity_fields(
         &mut entity,
         &schema_def,
-        auth.as_ref(),
+        claims.as_ref(),
         FieldFilterDirection::Read,
     );
 
@@ -312,7 +312,7 @@ pub async fn entity_detail(
 /// needed to build an edit form.
 pub async fn entity_edit_form(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<Response, WidgetError> {
@@ -322,7 +322,7 @@ pub async fn entity_edit_form(
         .await
         .ok_or_else(|| WidgetError::schema_not_found(&name))?;
 
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)
         .map_err(WidgetError::from)?;
 
     let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
@@ -372,7 +372,7 @@ pub async fn entity_edit_form(
 /// or a 422 with `{ "errors": [...] }`.
 pub async fn entity_update(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
     Path((name, id)): Path<(String, String)>,
     Form(form_data): Form<Vec<(String, String)>>,
@@ -383,7 +383,7 @@ pub async fn entity_update(
         .await
         .ok_or_else(|| WidgetError::schema_not_found(&name))?;
 
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Write)
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write)
         .map_err(WidgetError::from)?;
 
     let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
@@ -458,7 +458,7 @@ pub async fn entity_update(
 /// DELETE /forge/{schema}/entities/{id} -- Delete entity.
 pub async fn entity_delete(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, WidgetError> {
     let schema_def = state
@@ -467,7 +467,7 @@ pub async fn entity_delete(
         .await
         .ok_or_else(|| WidgetError::schema_not_found(&name))?;
 
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Delete)
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Delete)
         .map_err(WidgetError::from)?;
 
     let schema_name = SchemaName::new(&name).map_err(|_| WidgetError::schema_not_found(&name))?;
@@ -488,7 +488,7 @@ pub async fn entity_delete(
 /// When `Accept: application/json`, returns `[{ "value": "...", "label": "..." }, ...]`.
 pub async fn relation_options(
     State(state): State<ForgeState>,
-    OptionalAuth(auth): OptionalAuth,
+    OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
     Path((target, _field)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, WidgetError> {
@@ -498,7 +498,7 @@ pub async fn relation_options(
         .await
         .ok_or_else(|| WidgetError::schema_not_found(&target))?;
 
-    check_schema_access(&schema_def, auth.as_ref(), AccessAction::Read)
+    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)
         .map_err(WidgetError::from)?;
 
     let query = schema_forge_core::query::Query::new(schema_def.id.clone()).with_limit(100);
