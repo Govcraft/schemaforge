@@ -339,15 +339,10 @@ impl SchemaForgeExtension {
     /// This is a standalone function for use with the actor-based flow where no
     /// `SchemaForgeExtension` instance is needed — the `ForgeActor` provides state
     /// and the routes are stateless with respect to `ForgeState`.
-    pub fn versioned_forge_routes<T>(
-        router: Router<acton_service::state::AppState<T>>,
-    ) -> Router<acton_service::state::AppState<T>>
-    where
-        T: serde::Serialize + serde::de::DeserializeOwned + Clone + Default + Send + Sync + 'static,
-    {
-        let forge_router: Router<()> = forge_routes()
-            .with_state(AppState::<SchemaForgeConfig>::default());
-        router.nest_service("/forge", forge_router)
+    pub fn versioned_forge_routes(
+        router: Router<AppState<SchemaForgeConfig>>,
+    ) -> Router<AppState<SchemaForgeConfig>> {
+        router.nest("/forge", forge_routes())
     }
 
     /// Register admin UI routes onto an existing Router.
