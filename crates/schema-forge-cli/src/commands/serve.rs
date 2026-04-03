@@ -37,7 +37,7 @@ pub async fn run(
     };
 
     // 3. Connect to SurrealDB (try remote, fall back to in-memory)
-    let backend = super::connect_backend(&db_params, output).await?;
+    let backend = connect_with_retries(&db_params, output).await?;
 
     // 4. Build the SchemaForge extension
     #[allow(unused_mut)]
@@ -152,6 +152,67 @@ pub async fn run(
 
     output.success("Server shut down gracefully.");
     Ok(())
+}
+
+/// Connect to SurrealDB with exponential backoff retries.
+///
+/// Unlike `connect_backend()` (used by CLI commands), this does NOT fall back
+/// to in-memory on failure. A production server must connect to its configured
+/// database or fail explicitly.
+async fn connect_with_retries(
+    db_params: &crate::config::DbParams,
+    output: &crate::output::OutputContext,
+) -> Result<schema_forge_surrealdb::SurrealBackend, CliError> {
+    use std::time::Duration;
+    use schema_forge_surrealdb::SurrealBackend;
+
+    let max_retries: u32 = 3;
+    let base_delay = Duration::from_secs(2);
+
+    for attempt in 0..=max_retries {
+        match SurrealBackend::connect_with_auth(
+            &db_params.url,
+            &db_params.namespace,
+            &db_params.database,
+            db_params.username.as_deref(),
+            db_params.password.as_deref(),
+        )
+        .await
+        {
+            Ok(backend) => {
+                if attempt > 0 {
+                    output.success(&format!(
+                        "Connected to {} after {} attempt(s)",
+                        db_params.url,
+                        attempt + 1
+                    ));
+                } else {
+                    output.success(&format!("Connected to {}", db_params.url));
+                }
+                return Ok(backend);
+            }
+            Err(e) => {
+                if attempt == max_retries {
+                    return Err(CliError::Server {
+                        message: format!(
+                            "failed to connect to {} after {} attempts: {e}",
+                            db_params.url,
+                            max_retries + 1
+                        ),
+                    });
+                }
+
+                let delay = base_delay * 2_u32.pow(attempt);
+                output.warn(&format!(
+                    "Connection attempt {} failed: {e}. Retrying in {delay:?}...",
+                    attempt + 1
+                ));
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    unreachable!()
 }
 
 /// Build an acton-service `SurrealDbConfig` from resolved CLI database parameters.
