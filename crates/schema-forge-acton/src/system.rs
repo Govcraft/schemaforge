@@ -287,8 +287,8 @@ mod tests {
     }
 
     #[test]
-    fn all_system_schemas_returns_four() {
-        assert_eq!(system_schemas::all_system_schemas().len(), 4);
+    fn all_system_schemas_returns_five() {
+        assert_eq!(system_schemas::all_system_schemas().len(), 5);
     }
 
     #[test]

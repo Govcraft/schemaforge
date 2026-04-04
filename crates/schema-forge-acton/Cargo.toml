@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-acton"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 
 [dependencies]
@@ -21,6 +21,12 @@ arc-swap = { version = "1", optional = true }
 tracing = { version = "0.1" }
 tower-http = { version = "0.6", features = ["fs"] }
 minijinja = { version = "2", features = ["loader"] }
+reqwest = { version = "0.13.2", features = ["json"] }
+hmac = "0.13.0"
+sha2 = "0.11.0"
+hex = "0.4.3"
+uuid = { version = "1.23.0", features = ["v4"] }
+humantime = "2.3.0"
 
 
 [features]

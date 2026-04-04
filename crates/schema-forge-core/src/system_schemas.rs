@@ -43,6 +43,22 @@ schema TenantMembership {
 }
 "#;
 
+/// DSL text for the system WebhookSubscription schema.
+pub const WEBHOOK_SUBSCRIPTION_SCHEMA: &str = r#"
+@system @display("name")
+schema WebhookSubscription {
+    name:            text(max: 255) required indexed
+    target_schema:   text(max: 128) required indexed
+    url:             text(max: 2048) required
+    secret:          text(max: 512)
+    events:          text[]
+    active:          boolean default(true)
+    retry_count:     integer(min: 0, max: 10) default(3)
+    timeout_seconds: integer(min: 1, max: 30) default(10)
+    created_by:      text(max: 255)
+}
+"#;
+
 /// Returns all system schema DSL texts in dependency order.
 ///
 /// Permission is first (no dependencies), then Role (depends on Permission),
@@ -53,5 +69,6 @@ pub fn all_system_schemas() -> Vec<&'static str> {
         ROLE_SCHEMA,
         USER_SCHEMA,
         TENANT_MEMBERSHIP_SCHEMA,
+        WEBHOOK_SUBSCRIPTION_SCHEMA,
     ]
 }

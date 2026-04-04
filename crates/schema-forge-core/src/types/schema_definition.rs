@@ -79,6 +79,33 @@ impl SchemaDefinition {
             .iter()
             .any(|a| matches!(a, Annotation::System))
     }
+
+    /// Returns the `@webhook` annotation if present.
+    pub fn webhook_annotation(&self) -> Option<&Annotation> {
+        self.annotations
+            .iter()
+            .find(|a| matches!(a, Annotation::Webhook { .. }))
+    }
+
+    /// Returns true if this schema has webhook notifications enabled.
+    pub fn has_webhooks(&self) -> bool {
+        self.webhook_annotation().is_some()
+    }
+
+    /// Returns the set of webhook-enabled event types.
+    ///
+    /// If the `@webhook` annotation specifies events, returns those.
+    /// If the annotation is bare (`@webhook`), returns all event types.
+    /// If no `@webhook` annotation, returns an empty list.
+    pub fn webhook_events(&self) -> Vec<&str> {
+        match self.webhook_annotation() {
+            Some(Annotation::Webhook { events, .. }) if !events.is_empty() => {
+                events.iter().map(|s| s.as_str()).collect()
+            }
+            Some(Annotation::Webhook { .. }) => vec!["created", "updated", "deleted"],
+            _ => vec![],
+        }
+    }
 }
 
 impl std::fmt::Display for SchemaDefinition {

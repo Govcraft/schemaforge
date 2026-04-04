@@ -314,7 +314,17 @@ primitive_type = "text" [ "(" text_params ")" ]
                ;
 
 modifier       = "required" | "indexed" | "default" "(" value ")" ;
-annotation     = "@version" "(" INTEGER ")" | "@display" "(" STRING ")" ;
+annotation     = "@version" "(" INTEGER ")"
+               | "@display" "(" STRING ")"
+               | "@system"
+               | "@access" "(" named_string_lists ")"
+               | "@tenant" "(" tenant_kind ")"
+               | "@dashboard" "(" dashboard_params ")"
+               | "@webhook" [ "(" webhook_params ")" ]
+               ;
+
+webhook_params = "events" ":" string_list
+                 [ "," "url" ":" STRING [ "," "secret" ":" STRING ] ] ;
 ```
 
 ## CLI Reference

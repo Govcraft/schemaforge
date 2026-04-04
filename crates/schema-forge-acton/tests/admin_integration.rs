@@ -45,6 +45,7 @@ async fn admin_test_state() -> ForgeState {
                 Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),
             ),
         ),
+        webhook_dispatcher: None,
     }
 }
 

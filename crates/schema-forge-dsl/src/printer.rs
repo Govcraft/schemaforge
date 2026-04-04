@@ -118,6 +118,50 @@ fn print_annotation(annotation: &Annotation, output: &mut String) {
             }
             output.push(')');
         }
+        Annotation::Webhook {
+            events,
+            url,
+            secret,
+        } => {
+            let has_params = !events.is_empty() || url.is_some();
+            if !has_params {
+                output.push_str("@webhook");
+            } else {
+                output.push_str("@webhook(");
+                let mut needs_comma = false;
+                if !events.is_empty() {
+                    output.push_str("events: [");
+                    for (i, ev) in events.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str(", ");
+                        }
+                        output.push('"');
+                        output.push_str(ev);
+                        output.push('"');
+                    }
+                    output.push(']');
+                    needs_comma = true;
+                }
+                if let Some(u) = url {
+                    if needs_comma {
+                        output.push_str(", ");
+                    }
+                    output.push_str("url: \"");
+                    output.push_str(u);
+                    output.push('"');
+                    needs_comma = true;
+                }
+                if let Some(s) = secret {
+                    if needs_comma {
+                        output.push_str(", ");
+                    }
+                    output.push_str("secret: \"");
+                    output.push_str(s);
+                    output.push('"');
+                }
+                output.push(')');
+            }
+        }
         _ => {
             // Future annotation kinds -- print as @unknown for forward compatibility
             output.push_str("@unknown");

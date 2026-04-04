@@ -40,6 +40,15 @@ pub enum Annotation {
         group_by: Option<String>,
         sort_default: Option<String>,
     },
+    /// `@webhook(...)` -- webhook notification configuration for CRUD events.
+    Webhook {
+        /// Which CRUD events trigger webhooks. Empty means all events.
+        events: Vec<String>,
+        /// Optional static webhook URL (inline subscription).
+        url: Option<String>,
+        /// Optional HMAC signing secret for inline subscription.
+        secret: Option<String>,
+    },
 }
 
 impl std::fmt::Display for Annotation {
@@ -92,6 +101,36 @@ impl std::fmt::Display for Annotation {
                 }
                 write!(f, ")")
             }
+            Self::Webhook {
+                events,
+                url,
+                secret,
+            } => {
+                let has_params = !events.is_empty() || url.is_some();
+                if !has_params {
+                    return write!(f, "@webhook");
+                }
+                write!(f, "@webhook(")?;
+                let mut needs_comma = false;
+                if !events.is_empty() {
+                    write!(f, "events: [{}]", format_role_list(events))?;
+                    needs_comma = true;
+                }
+                if let Some(u) = url {
+                    if needs_comma {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "url: \"{u}\"")?;
+                    needs_comma = true;
+                }
+                if let Some(s) = secret {
+                    if needs_comma {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "secret: \"{s}\"")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
@@ -115,6 +154,7 @@ impl Annotation {
             Self::Access { .. } => "access",
             Self::Tenant(_) => "tenant",
             Self::Dashboard { .. } => "dashboard",
+            Self::Webhook { .. } => "webhook",
         }
     }
 }
@@ -293,6 +333,80 @@ mod tests {
             layout: None,
             group_by: None,
             sort_default: None,
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: Annotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn display_webhook_bare() {
+        let a = Annotation::Webhook {
+            events: vec![],
+            url: None,
+            secret: None,
+        };
+        assert_eq!(a.to_string(), "@webhook");
+        assert_eq!(a.kind(), "webhook");
+    }
+
+    #[test]
+    fn display_webhook_events_only() {
+        let a = Annotation::Webhook {
+            events: vec!["created".into(), "updated".into()],
+            url: None,
+            secret: None,
+        };
+        assert_eq!(
+            a.to_string(),
+            "@webhook(events: [\"created\", \"updated\"])"
+        );
+    }
+
+    #[test]
+    fn display_webhook_full() {
+        let a = Annotation::Webhook {
+            events: vec!["created".into()],
+            url: Some("https://example.com/hook".into()),
+            secret: Some("my-secret".into()),
+        };
+        assert_eq!(
+            a.to_string(),
+            "@webhook(events: [\"created\"], url: \"https://example.com/hook\", secret: \"my-secret\")"
+        );
+    }
+
+    #[test]
+    fn display_webhook_url_no_events() {
+        let a = Annotation::Webhook {
+            events: vec![],
+            url: Some("https://example.com/hook".into()),
+            secret: None,
+        };
+        assert_eq!(
+            a.to_string(),
+            "@webhook(url: \"https://example.com/hook\")"
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_webhook_bare() {
+        let a = Annotation::Webhook {
+            events: vec![],
+            url: None,
+            secret: None,
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: Annotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_webhook_full() {
+        let a = Annotation::Webhook {
+            events: vec!["created".into(), "deleted".into()],
+            url: Some("https://example.com/hook".into()),
+            secret: Some("secret-key".into()),
         };
         let json = serde_json::to_string(&a).unwrap();
         let back: Annotation = serde_json::from_str(&json).unwrap();

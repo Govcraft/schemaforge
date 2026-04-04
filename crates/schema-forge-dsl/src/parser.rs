@@ -297,6 +297,37 @@ impl Parser {
                 self.expect(&Token::RParen)?;
                 Annotation::Tenant(kind)
             }
+            "webhook" => {
+                if self.peek_token() == Some(&Token::LParen) {
+                    self.expect(&Token::LParen)?;
+                    let params = self.parse_named_mixed_params()?;
+                    self.expect(&Token::RParen)?;
+                    let events = extract_string_list(&params.lists, "events");
+                    let valid_events = ["created", "updated", "deleted"];
+                    for ev in &events {
+                        if !valid_events.contains(&ev.as_str()) {
+                            return Err(DslError::UnexpectedToken {
+                                expected: "one of: created, updated, deleted".to_string(),
+                                found: format!("'{ev}'"),
+                                span: name_tok.span.clone(),
+                            });
+                        }
+                    }
+                    let url = extract_optional_string(&params.scalars, "url");
+                    let secret = extract_optional_string(&params.scalars, "secret");
+                    Annotation::Webhook {
+                        events,
+                        url,
+                        secret,
+                    }
+                } else {
+                    Annotation::Webhook {
+                        events: vec![],
+                        url: None,
+                        secret: None,
+                    }
+                }
+            }
             other => {
                 return Err(DslError::UnknownAnnotation {
                     name: other.to_string(),
@@ -1825,5 +1856,85 @@ mod tests {
             }
             other => panic!("expected Dashboard, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_webhook_bare() {
+        let schema = parse_one("@webhook schema S { name: text }");
+        match &schema.annotations[0] {
+            Annotation::Webhook {
+                events,
+                url,
+                secret,
+            } => {
+                assert!(events.is_empty());
+                assert!(url.is_none());
+                assert!(secret.is_none());
+            }
+            other => panic!("expected Webhook, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_webhook_events_only() {
+        let schema =
+            parse_one(r#"@webhook(events: ["created", "updated"]) schema S { name: text }"#);
+        match &schema.annotations[0] {
+            Annotation::Webhook {
+                events,
+                url,
+                secret,
+            } => {
+                assert_eq!(events, &["created", "updated"]);
+                assert!(url.is_none());
+                assert!(secret.is_none());
+            }
+            other => panic!("expected Webhook, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_webhook_full() {
+        let schema = parse_one(
+            r#"@webhook(events: ["created"], url: "https://example.com/hook", secret: "my-secret") schema S { name: text }"#,
+        );
+        match &schema.annotations[0] {
+            Annotation::Webhook {
+                events,
+                url,
+                secret,
+            } => {
+                assert_eq!(events, &["created"]);
+                assert_eq!(url.as_deref(), Some("https://example.com/hook"));
+                assert_eq!(secret.as_deref(), Some("my-secret"));
+            }
+            other => panic!("expected Webhook, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_webhook_url_no_events() {
+        let schema =
+            parse_one(r#"@webhook(url: "https://example.com/hook") schema S { name: text }"#);
+        match &schema.annotations[0] {
+            Annotation::Webhook {
+                events,
+                url,
+                secret,
+            } => {
+                assert!(events.is_empty());
+                assert_eq!(url.as_deref(), Some("https://example.com/hook"));
+                assert!(secret.is_none());
+            }
+            other => panic!("expected Webhook, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_webhook_invalid_event() {
+        let result = parse(
+            r#"@webhook(events: ["created", "exploded"]) schema S { name: text }"#,
+        );
+        assert!(result.is_err());
     }
 }

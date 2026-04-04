@@ -66,6 +66,7 @@ pub struct SchemaForgeExtensionBuilder {
     auth_store: Option<Arc<dyn DynAuthStore>>,
     admin_credentials: Option<(String, String)>,
     template_dir: Option<std::path::PathBuf>,
+    webhook_config: crate::webhook::WebhookConfig,
 }
 
 impl SchemaForgeExtensionBuilder {
@@ -77,6 +78,7 @@ impl SchemaForgeExtensionBuilder {
             auth_store: None,
             admin_credentials: None,
             template_dir: None,
+            webhook_config: crate::webhook::WebhookConfig::default(),
         }
     }
 
@@ -133,6 +135,12 @@ impl SchemaForgeExtensionBuilder {
     /// Widget/forge templates are always embedded in the binary.
     pub fn with_template_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.template_dir = Some(dir);
+        self
+    }
+
+    /// Set the webhook configuration.
+    pub fn with_webhook_config(mut self, config: crate::webhook::WebhookConfig) -> Self {
+        self.webhook_config = config;
         self
     }
 
@@ -198,6 +206,16 @@ impl SchemaForgeExtensionBuilder {
         let template_engine =
             Arc::new(crate::template_engine::TemplateEngine::new(self.template_dir));
 
+        // Initialize webhook dispatcher if enabled
+        let webhook_dispatcher = if self.webhook_config.enabled {
+            tracing::info!("webhook system enabled");
+            Some(Arc::new(crate::webhook::WebhookDispatcher::new(
+                self.webhook_config,
+            )))
+        } else {
+            None
+        };
+
         let state = ForgeState {
             registry,
             backend,
@@ -207,6 +225,7 @@ impl SchemaForgeExtensionBuilder {
             graphql_schema,
             auth_store: self.auth_store,
             template_engine,
+            webhook_dispatcher,
         };
 
         Ok(SchemaForgeExtension { state })

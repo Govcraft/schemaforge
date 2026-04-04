@@ -21,6 +21,10 @@ pub struct SchemaForgeSettings {
     /// Whether to auto-generate Cedar policy templates when schemas are registered.
     #[serde(default)]
     pub auto_generate_cedar_policies: bool,
+
+    /// Webhook notification settings.
+    #[serde(default)]
+    pub webhooks: crate::webhook::WebhookConfig,
 }
 
 fn default_route_prefix() -> String {
@@ -32,6 +36,7 @@ impl Default for SchemaForgeSettings {
         Self {
             route_prefix: default_route_prefix(),
             auto_generate_cedar_policies: false,
+            webhooks: crate::webhook::WebhookConfig::default(),
         }
     }
 }
@@ -53,6 +58,7 @@ mod tests {
             schema_forge: SchemaForgeSettings {
                 route_prefix: "/api/forge".to_string(),
                 auto_generate_cedar_policies: true,
+                webhooks: crate::webhook::WebhookConfig::default(),
             },
         };
         let json = serde_json::to_string(&config).unwrap();

@@ -4,3 +4,12 @@ version = "v4"
 purpose = "local"
 key_path = "./keys/paseto.key"
 issuer = "schema-forge"
+
+# Webhook notification settings
+# [schema_forge.webhooks]
+# enabled = true
+# default_retry_count = 3
+# default_timeout_seconds = 10
+# max_concurrent_deliveries = 100
+# signing_secret = "set-via-env-var"
+# allowed_url_schemes = ["https"]

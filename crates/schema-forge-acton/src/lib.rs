@@ -17,6 +17,7 @@ pub mod state;
 pub mod system;
 pub mod template_engine;
 pub mod views;
+pub mod webhook;
 pub mod widget;
 
 pub use acton_service;

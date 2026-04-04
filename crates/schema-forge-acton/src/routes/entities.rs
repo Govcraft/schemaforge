@@ -53,6 +53,150 @@ async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
 }
 
 // ---------------------------------------------------------------------------
+// Webhook dispatch helper
+// ---------------------------------------------------------------------------
+
+/// Fire webhook notifications for a CRUD event, if the schema has webhooks enabled.
+///
+/// This is non-blocking: webhook delivery happens in background tasks.
+async fn dispatch_webhook(
+    state: &AppState<SchemaForgeConfig>,
+    schema_def: &SchemaDefinition,
+    event: crate::webhook::WebhookEvent,
+    event_type: &str,
+) {
+    let webhook_config = &state.config().custom.schema_forge.webhooks;
+    let dispatcher = match crate::webhook::get_dispatcher(webhook_config) {
+        Some(d) => d,
+        None => return,
+    };
+
+    if !schema_def.has_webhooks() {
+        return;
+    }
+    if !schema_def.webhook_events().contains(&event_type) {
+        return;
+    }
+
+    // Resolve subscriptions: DSL inline + runtime (via actor query)
+    let mut subs = Vec::new();
+
+    // 1. Inline DSL subscription
+    if let Some(schema_forge_core::types::Annotation::Webhook {
+        url: Some(url),
+        secret,
+        ..
+    }) = schema_def.webhook_annotation()
+    {
+        subs.push(crate::webhook::ResolvedSubscription {
+            url: url.clone(),
+            secret: secret.clone(),
+            retry_count: None,
+            timeout_seconds: None,
+        });
+    }
+
+    // 2. Runtime subscriptions via actor query
+    let forge = match state.actor::<ForgeActor>() {
+        Some(f) => f,
+        None => {
+            if !subs.is_empty() {
+                dispatcher.dispatch(event, subs);
+            }
+            return;
+        }
+    };
+
+    // Query WebhookSubscription entities for this schema
+    let (tx, rx) = oneshot::channel();
+    let ws_schema = SchemaName::new("WebhookSubscription");
+    if let Ok(ws_name) = ws_schema {
+        // First get the WebhookSubscription schema def to get its ID
+        let (stx, srx) = oneshot::channel();
+        forge
+            .send(crate::messages::GetSchema {
+                name: ws_name.as_str().to_string(),
+                reply: ReplyChannel::new(stx),
+            })
+            .await;
+
+        if let Ok(Some(ws_def)) = ask_forge(srx).await {
+            use schema_forge_core::query::{FieldPath, Filter, Query as CoreQuery};
+            let query = CoreQuery::new(ws_def.id.clone()).with_filter(Filter::and(vec![
+                Filter::eq(
+                    FieldPath::parse("target_schema").unwrap(),
+                    DynamicValue::Text(schema_def.name.as_str().to_string()),
+                ),
+                Filter::eq(
+                    FieldPath::parse("active").unwrap(),
+                    DynamicValue::Boolean(true),
+                ),
+            ]));
+
+            forge
+                .send(QueryEntities {
+                    query,
+                    reply: ReplyChannel::new(tx),
+                })
+                .await;
+
+            if let Ok(Ok(result)) = ask_forge(rx).await {
+                for entity in &result.entities {
+                    if let Some(sub) = resolve_runtime_subscription(entity, event_type) {
+                        subs.push(sub);
+                    }
+                }
+            }
+        }
+    }
+
+    if !subs.is_empty() {
+        dispatcher.dispatch(event, subs);
+    }
+}
+
+/// Convert a WebhookSubscription entity to a ResolvedSubscription.
+fn resolve_runtime_subscription(
+    entity: &Entity,
+    event_type: &str,
+) -> Option<crate::webhook::ResolvedSubscription> {
+    // Check event filter
+    if let Some(DynamicValue::Array(events)) = entity.fields.get("events") {
+        if !events.is_empty()
+            && !events
+                .iter()
+                .any(|e| matches!(e, DynamicValue::Text(t) if t == event_type))
+        {
+            return None;
+        }
+    }
+
+    let url = match entity.fields.get("url") {
+        Some(DynamicValue::Text(u)) => u.clone(),
+        _ => return None,
+    };
+    let secret = match entity.fields.get("secret") {
+        Some(DynamicValue::Text(s)) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    };
+    let retry_count = match entity.fields.get("retry_count") {
+        Some(DynamicValue::Integer(n)) => Some(*n as u32),
+        _ => None,
+    };
+    let timeout_seconds = match entity.fields.get("timeout_seconds") {
+        Some(DynamicValue::Integer(n)) => Some(*n as u32),
+        _ => None,
+    };
+
+    Some(crate::webhook::ResolvedSubscription {
+        url,
+        secret,
+        retry_count,
+        timeout_seconds,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Request/Response types
 // ---------------------------------------------------------------------------
 
@@ -606,6 +750,14 @@ pub async fn create_entity(
             .await;
     }
 
+    // Webhook: fire notifications
+    let webhook_event = crate::webhook::WebhookEvent::from_create(
+        &schema,
+        &created,
+        claims.as_ref().map(|c| c.sub.as_str()),
+    );
+    dispatch_webhook(&state, &schema_def, webhook_event, "created").await;
+
     Ok((StatusCode::CREATED, Json(entity_to_response(&created))))
 }
 
@@ -965,6 +1117,14 @@ pub async fn update_entity(
             .await;
     }
 
+    // Webhook: fire notifications
+    let webhook_event = crate::webhook::WebhookEvent::from_update(
+        &schema,
+        &updated,
+        claims.as_ref().map(|c| c.sub.as_str()),
+    );
+    dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
+
     Ok(Json(entity_to_response(&updated)))
 }
 
@@ -1064,6 +1224,14 @@ pub async fn delete_entity(
             )
             .await;
     }
+
+    // Webhook: fire notifications
+    let webhook_event = crate::webhook::WebhookEvent::from_delete(
+        &schema,
+        &id,
+        claims.as_ref().map(|c| c.sub.as_str()),
+    );
+    dispatch_webhook(&state, &schema_def, webhook_event, "deleted").await;
 
     Ok(StatusCode::NO_CONTENT)
 }

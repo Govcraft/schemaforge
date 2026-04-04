@@ -578,9 +578,9 @@ async fn extension_builder_with_backend_loads_schemas() {
     );
     let extension = builder.build().await.expect("failed to build extension");
 
-    // Registry should contain exactly the 4 system schemas after seeding
+    // Registry should contain exactly the 5 system schemas after seeding
     let schemas = extension.registry().list().await;
-    assert_eq!(schemas.len(), 4);
+    assert_eq!(schemas.len(), 5);
     let names: Vec<String> = schemas
         .iter()
         .map(|s| s.name.as_str().to_string())
@@ -589,6 +589,7 @@ async fn extension_builder_with_backend_loads_schemas() {
     assert!(names.contains(&"Role".to_string()));
     assert!(names.contains(&"User".to_string()));
     assert!(names.contains(&"TenantMembership".to_string()));
+    assert!(names.contains(&"WebhookSubscription".to_string()));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
