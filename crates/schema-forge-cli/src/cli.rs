@@ -260,19 +260,24 @@ pub struct ServeArgs {
     pub log_level: Option<String>,
 
     /// Admin username for the admin/widget UI (bootstraps on first run)
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     #[arg(long = "admin-user", env = "FORGE_ADMIN_USER", default_value = "admin")]
     pub admin_user: String,
 
     /// Admin password for the admin/widget UI (bootstraps on first run)
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     #[arg(long = "admin-password", env = "FORGE_ADMIN_PASSWORD")]
     pub admin_password: Option<String>,
 
     /// Directory for admin UI MiniJinja templates
-    #[cfg(feature = "admin-ui")]
     #[arg(long = "template-dir", env = "FORGE_TEMPLATE_DIR")]
     pub template_dir: Option<PathBuf>,
+
+    /// Disable admin UI routes (overrides config.toml)
+    #[arg(long = "no-admin-ui")]
+    pub no_admin_ui: bool,
+
+    /// Disable widget UI routes (overrides config.toml)
+    #[arg(long = "no-widget-ui")]
+    pub no_widget_ui: bool,
 }
 
 /// Export subcommands.

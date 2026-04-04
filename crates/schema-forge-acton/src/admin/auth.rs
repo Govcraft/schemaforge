@@ -79,16 +79,19 @@ pub async fn login_submit(
     mut auth: TypedSession<AuthSession>,
     Form(form): Form<LoginForm>,
 ) -> Result<Response, AdminError> {
-    let db = state
-        .surreal_client
+    let auth_store = state
+        .auth_store
         .as_ref()
         .ok_or_else(|| AdminError::Internal {
-            message: "SurrealDB client not configured for auth".to_string(),
+            message: "Auth store not configured".to_string(),
         })?;
 
-    match crate::shared_auth::validate_credentials(db, &form.username, &form.password)
+    match auth_store
+        .validate_credentials(&form.username, &form.password)
         .await
-        .map_err(|e| AdminError::Internal { message: e })?
+        .map_err(|e| AdminError::Internal {
+            message: e.to_string(),
+        })?
     {
         Some(user) => {
             let display_name = user.display_name.unwrap_or_else(|| user.username.clone());

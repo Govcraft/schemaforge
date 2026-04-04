@@ -3,7 +3,7 @@
 //! These tests exercise the admin HTML routes with a real in-memory SurrealDB backend.
 //! They verify status codes, HTML content, form submissions, and HTMX fragment responses.
 
-#![cfg(feature = "admin-ui")]
+#![cfg(feature = "surrealdb")]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -39,7 +39,7 @@ async fn admin_test_state() -> ForgeState {
         record_access_policy: None,
         #[cfg(feature = "graphql")]
         graphql_schema: schema_forge_acton::graphql::empty_graphql_schema(),
-        surreal_client: None,
+        auth_store: None,
         template_engine: std::sync::Arc::new(
             schema_forge_acton::template_engine::TemplateEngine::new(
                 Some(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")),

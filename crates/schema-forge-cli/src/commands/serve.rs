@@ -123,6 +123,10 @@ pub async fn run(
         output.warn("--watch is not yet implemented; schemas will not auto-reload.");
     }
 
+    // Resolve runtime UI toggles: config.toml defaults, CLI flags override
+    let enable_admin = config.server.admin_ui && !args.no_admin_ui;
+    let enable_widget = config.server.widget_ui && !args.no_widget_ui;
+
     // 7. Build versioned routes via acton-service
     let routes = build_versioned_routes();
 
@@ -158,10 +162,12 @@ pub async fn run(
     output.status("    GET  /api/v1/forge/schemas/:schema/entities/:id");
     output.status("    PUT  /api/v1/forge/schemas/:schema/entities/:id");
     output.status("    DEL  /api/v1/forge/schemas/:schema/entities/:id");
-    #[cfg(feature = "admin-ui")]
-    output.status("    GET  /admin/");
-    #[cfg(feature = "widget-ui")]
-    output.status("    GET  /forge/{schema}/entities");
+    if enable_admin {
+        output.status("    GET  /admin/");
+    }
+    if enable_widget {
+        output.status("    GET  /forge/{schema}/entities");
+    }
     output.status("  Press Ctrl+C to stop.");
 
     // Build service with ForgeActor registered as an actor extension

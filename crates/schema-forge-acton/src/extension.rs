@@ -5,7 +5,9 @@ use axum::Router;
 
 use crate::error::ForgeError;
 use crate::routes::forge_routes;
-use crate::state::{DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry};
+use crate::state::{
+    DynAuthStore, DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry,
+};
 
 use acton_service::state::AppState;
 use crate::config::SchemaForgeConfig;
@@ -61,15 +63,8 @@ pub struct SchemaForgeExtension {
 pub struct SchemaForgeExtensionBuilder {
     backend: Option<Arc<dyn DynForgeBackend>>,
     record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-    surreal_client: Option<
-        schema_forge_surrealdb::surrealdb::Surreal<
-            schema_forge_surrealdb::surrealdb::engine::any::Any,
-        >,
-    >,
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+    auth_store: Option<Arc<dyn DynAuthStore>>,
     admin_credentials: Option<(String, String)>,
-    #[cfg(feature = "admin-ui")]
     template_dir: Option<std::path::PathBuf>,
 }
 
@@ -79,11 +74,8 @@ impl SchemaForgeExtensionBuilder {
         Self {
             backend: None,
             record_access_policy: None,
-            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-            surreal_client: None,
-            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+            auth_store: None,
             admin_credentials: None,
-            #[cfg(feature = "admin-ui")]
             template_dir: None,
         }
     }
@@ -114,18 +106,15 @@ impl SchemaForgeExtensionBuilder {
         self
     }
 
-    /// Set the SurrealDB client for authentication queries.
+    /// Set the auth store for user authentication and management.
     ///
-    /// The same client used for `SurrealBackend::from_client()` can be cloned
-    /// and passed here for auth queries against the `_forge_users` table.
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-    pub fn with_surreal_client(
+    /// The auth store handles credential validation, user CRUD, and password
+    /// hashing. Both `SurrealBackend` and `PgBackend` implement `AuthStore`.
+    pub fn with_auth_store<A: schema_forge_backend::AuthStore + 'static>(
         mut self,
-        client: schema_forge_surrealdb::surrealdb::Surreal<
-            schema_forge_surrealdb::surrealdb::engine::any::Any,
-        >,
+        store: A,
     ) -> Self {
-        self.surreal_client = Some(client);
+        self.auth_store = Some(Arc::new(store));
         self
     }
 
@@ -133,7 +122,6 @@ impl SchemaForgeExtensionBuilder {
     ///
     /// If the `_forge_users` table is empty during `build()`, an admin user
     /// will be created with these credentials.
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     pub fn with_admin_credentials(mut self, username: String, password: String) -> Self {
         self.admin_credentials = Some((username, password));
         self
@@ -141,9 +129,8 @@ impl SchemaForgeExtensionBuilder {
 
     /// Set the directory for admin MiniJinja templates.
     ///
-    /// Required when `admin-ui` is enabled. Admin templates are loaded from
-    /// this directory. Widget/forge templates are always embedded in the binary.
-    #[cfg(feature = "admin-ui")]
+    /// Admin templates are loaded from this directory.
+    /// Widget/forge templates are always embedded in the binary.
     pub fn with_template_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.template_dir = Some(dir);
         self
@@ -171,16 +158,15 @@ impl SchemaForgeExtensionBuilder {
         crate::system::seed_system_schemas(&registry, backend.as_ref()).await?;
 
         // Bootstrap admin user if configured
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        if let (Some(ref db), Some((ref username, ref password))) =
-            (&self.surreal_client, &self.admin_credentials)
+        if let (Some(ref auth_store), Some((ref username, ref password))) =
+            (&self.auth_store, &self.admin_credentials)
         {
-            crate::shared_auth::bootstrap_admin(db, username, password)
+            crate::shared_auth::bootstrap_admin(auth_store.as_ref(), username, password)
                 .await
                 .map_err(|e| ForgeError::Internal {
                     message: format!("Admin bootstrap failed: {e}"),
                 })?;
-            crate::shared_auth::bootstrap_demo_users(db)
+            crate::shared_auth::bootstrap_demo_users(auth_store.as_ref())
                 .await
                 .map_err(|e| ForgeError::Internal {
                     message: format!("Demo user bootstrap failed: {e}"),
@@ -209,14 +195,8 @@ impl SchemaForgeExtensionBuilder {
         // Construct MiniJinja template engine.
         // Widget/forge/shared templates are always embedded in the binary.
         // Admin templates are loaded from the filesystem when a template dir is provided.
-        #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-        let template_engine = {
-            #[cfg(feature = "admin-ui")]
-            let template_dir = self.template_dir;
-            #[cfg(not(feature = "admin-ui"))]
-            let template_dir: Option<std::path::PathBuf> = None;
-            Arc::new(crate::template_engine::TemplateEngine::new(template_dir))
-        };
+        let template_engine =
+            Arc::new(crate::template_engine::TemplateEngine::new(self.template_dir));
 
         let state = ForgeState {
             registry,
@@ -225,9 +205,7 @@ impl SchemaForgeExtensionBuilder {
             record_access_policy: self.record_access_policy,
             #[cfg(feature = "graphql")]
             graphql_schema,
-            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-            surreal_client: self.surreal_client,
-            #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
+            auth_store: self.auth_store,
             template_engine,
         };
 
@@ -347,14 +325,12 @@ impl SchemaForgeExtension {
 
     /// Register admin UI routes onto an existing Router.
     ///
-    /// Only available when the `admin-ui` feature is enabled.
     /// Nests admin routes under `/admin/`, with a redirect from `/admin` to `/admin/`
     /// so both URL forms work correctly in browsers.
     ///
     /// Applies an in-memory session layer for session-based authentication.
     /// Protected routes require authentication; unauthenticated requests are
     /// redirected to `/admin/login`.
-    #[cfg(feature = "admin-ui")]
     pub fn register_admin_routes<S>(&self, router: Router<S>) -> Router<S>
     where
         S: Clone + Send + Sync + 'static,
@@ -399,13 +375,11 @@ impl SchemaForgeExtension {
 
     /// Register widget routes onto an existing Router.
     ///
-    /// Only available when the `widget-ui` feature is enabled.
     /// Nests widget routes under `/forge/`, serving bare HTMX fragments
     /// for entity CRUD operations that can be embedded in any HTMX application.
     ///
     /// Claims are extracted from request extensions so widget requests respect
     /// schema `@access` annotations and field-level filtering.
-    #[cfg(feature = "widget-ui")]
     pub fn register_widget_routes<S>(&self, router: Router<S>) -> Router<S>
     where
         S: Clone + Send + Sync + 'static,

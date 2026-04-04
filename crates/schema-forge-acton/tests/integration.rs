@@ -573,12 +573,9 @@ async fn extension_builder_with_backend_loads_schemas() {
 
     let mut builder = SchemaForgeExtension::builder();
     builder = builder.with_backend(backend);
-    #[cfg(feature = "admin-ui")]
-    {
-        builder = builder.with_template_dir(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
-        );
-    }
+    builder = builder.with_template_dir(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+    );
     let extension = builder.build().await.expect("failed to build extension");
 
     // Registry should contain exactly the 4 system schemas after seeding

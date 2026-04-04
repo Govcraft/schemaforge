@@ -6,6 +6,7 @@ use std::sync::Arc;
 use schema_forge_backend::entity::{Entity, QueryResult};
 use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
+use schema_forge_backend::user_store::{AuthStore, ForgeUser};
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
 use schema_forge_core::types::{EntityId, SchemaDefinition, SchemaName};
@@ -197,6 +198,123 @@ pub trait DynForgeBackend: DynSchemaBackend + DynEntityStore {}
 impl<T: DynSchemaBackend + DynEntityStore> DynForgeBackend for T {}
 
 // ---------------------------------------------------------------------------
+// DynAuthStore
+// ---------------------------------------------------------------------------
+
+/// Object-safe wrapper for `AuthStore`.
+///
+/// Same pattern as `DynSchemaBackend`/`DynEntityStore`: boxed futures for dynamic dispatch.
+pub trait DynAuthStore: Send + Sync {
+    /// Validate username/password credentials.
+    fn validate_credentials<'a>(
+        &'a self,
+        username: &'a str,
+        password: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ForgeUser>, BackendError>> + Send + 'a>>;
+
+    /// List all users ordered by username.
+    fn list_users(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ForgeUser>, BackendError>> + Send + '_>>;
+
+    /// Get a single user by username.
+    fn get_user<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ForgeUser>, BackendError>> + Send + 'a>>;
+
+    /// Create a new user with a plaintext password (will be hashed by the implementation).
+    fn create_user<'a>(
+        &'a self,
+        username: &'a str,
+        password: &'a str,
+        roles: &'a [String],
+        display_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
+
+    /// Update a user's roles and display name.
+    fn update_user<'a>(
+        &'a self,
+        username: &'a str,
+        roles: &'a [String],
+        display_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
+
+    /// Toggle a user's active status.
+    fn toggle_user_active<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
+
+    /// Count the total number of users.
+    fn count_users(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + '_>>;
+}
+
+/// Blanket impl: any concrete `AuthStore` automatically implements `DynAuthStore`.
+impl<T: AuthStore + 'static> DynAuthStore for T {
+    fn validate_credentials<'a>(
+        &'a self,
+        username: &'a str,
+        password: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ForgeUser>, BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::validate_credentials(self, username, password))
+    }
+
+    fn list_users(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ForgeUser>, BackendError>> + Send + '_>> {
+        Box::pin(AuthStore::list_users(self))
+    }
+
+    fn get_user<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ForgeUser>, BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::get_user(self, username))
+    }
+
+    fn create_user<'a>(
+        &'a self,
+        username: &'a str,
+        password: &'a str,
+        roles: &'a [String],
+        display_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::create_user(
+            self,
+            username,
+            password,
+            roles,
+            display_name,
+        ))
+    }
+
+    fn update_user<'a>(
+        &'a self,
+        username: &'a str,
+        roles: &'a [String],
+        display_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::update_user(self, username, roles, display_name))
+    }
+
+    fn toggle_user_active<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::toggle_user_active(self, username))
+    }
+
+    fn count_users(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + '_>> {
+        Box::pin(AuthStore::count_users(self))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SchemaRegistry
 // ---------------------------------------------------------------------------
 
@@ -285,15 +403,9 @@ pub struct ForgeState {
     /// Dynamic GraphQL schema, atomically swappable on schema changes.
     #[cfg(feature = "graphql")]
     pub graphql_schema: Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>>,
-    /// SurrealDB client for auth queries (admin/widget UI).
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
-    pub surreal_client: Option<
-        schema_forge_surrealdb::surrealdb::Surreal<
-            schema_forge_surrealdb::surrealdb::engine::any::Any,
-        >,
-    >,
+    /// Auth store for user authentication and management (admin/widget UI).
+    pub auth_store: Option<Arc<dyn DynAuthStore>>,
     /// MiniJinja template engine for UI rendering (admin, widget).
-    #[cfg(any(feature = "admin-ui", feature = "widget-ui"))]
     pub template_engine: std::sync::Arc<crate::template_engine::TemplateEngine>,
 }
 

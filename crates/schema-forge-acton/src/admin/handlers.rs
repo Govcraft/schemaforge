@@ -885,24 +885,16 @@ pub async fn user_list(
     let current_user = CurrentUserView::from_session(auth.data());
     let names = schema_names(&state).await;
 
-    let db = state
-        .surreal_client
+    let auth_store = state
+        .auth_store
         .as_ref()
         .ok_or_else(|| AdminError::Internal {
-            message: "SurrealDB client not configured".to_string(),
+            message: "Auth store not configured".to_string(),
         })?;
 
-    let mut response = db
-        .query("SELECT username, roles, display_name, active FROM _forge_users ORDER BY username")
-        .await
-        .map_err(|e| AdminError::Internal {
-            message: format!("User query failed: {e}"),
-        })?;
-
-    let users: Vec<crate::shared_auth::ForgeUser> =
-        response.take(0).map_err(|e| AdminError::Internal {
-            message: format!("User deserialize failed: {e}"),
-        })?;
+    let users = auth_store.list_users().await.map_err(|e| AdminError::Internal {
+        message: format!("User query failed: {e}"),
+    })?;
 
     Ok(render_template(
         &state.template_engine,
@@ -950,11 +942,11 @@ pub async fn user_create(
     let current_user = CurrentUserView::from_session(auth.data());
     let names = schema_names(&state).await;
 
-    let db = state
-        .surreal_client
+    let auth_store = state
+        .auth_store
         .as_ref()
         .ok_or_else(|| AdminError::Internal {
-            message: "SurrealDB client not configured".to_string(),
+            message: "Auth store not configured".to_string(),
         })?;
 
     let username = form_data
@@ -1008,31 +1000,12 @@ pub async fn user_create(
         ));
     }
 
-    // Build roles array as SurrealQL literal
-    let roles_surql = format!(
-        "[{}]",
-        roles
-            .iter()
-            .map(|r| format!("'{}'", r.replace('\'', "\\'")))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
-    db.query(format!(
-        "CREATE _forge_users SET \
-         username = $username, \
-         password_hash = crypto::argon2::generate($password), \
-         roles = {roles_surql}, \
-         display_name = $display_name, \
-         active = true"
-    ))
-    .bind(("username", username.to_string()))
-    .bind(("password", password.to_string()))
-    .bind(("display_name", display_name.to_string()))
-    .await
-    .map_err(|e| AdminError::Internal {
-        message: format!("User create failed: {e}"),
-    })?;
+    auth_store
+        .create_user(&username, &password, &roles, &display_name)
+        .await
+        .map_err(|e| AdminError::Internal {
+            message: format!("User create failed: {e}"),
+        })?;
 
     Ok(Redirect::to("/admin/users").into_response())
 }
@@ -1046,29 +1019,19 @@ pub async fn user_edit_form(
     let current_user = CurrentUserView::from_session(auth.data());
     let names = schema_names(&state).await;
 
-    let db = state
-        .surreal_client
+    let auth_store = state
+        .auth_store
         .as_ref()
         .ok_or_else(|| AdminError::Internal {
-            message: "SurrealDB client not configured".to_string(),
+            message: "Auth store not configured".to_string(),
         })?;
 
-    let mut response = db
-        .query("SELECT username, roles, display_name, active FROM _forge_users WHERE username = $username")
-        .bind(("username", username.to_string()))
+    let user = auth_store
+        .get_user(&username)
         .await
         .map_err(|e| AdminError::Internal {
             message: format!("User query failed: {e}"),
-        })?;
-
-    let users: Vec<crate::shared_auth::ForgeUser> =
-        response.take(0).map_err(|e| AdminError::Internal {
-            message: format!("User deserialize failed: {e}"),
-        })?;
-
-    let user = users
-        .into_iter()
-        .next()
+        })?
         .ok_or_else(|| AdminError::Internal {
             message: format!("User '{}' not found", username),
         })?;
@@ -1100,11 +1063,11 @@ pub async fn user_update(
     let current_user = CurrentUserView::from_session(auth.data());
     let names = schema_names(&state).await;
 
-    let db = state
-        .surreal_client
+    let auth_store = state
+        .auth_store
         .as_ref()
         .ok_or_else(|| AdminError::Internal {
-            message: "SurrealDB client not configured".to_string(),
+            message: "Auth store not configured".to_string(),
         })?;
 
     let display_name = form_data
@@ -1137,27 +1100,12 @@ pub async fn user_update(
         ));
     }
 
-    let roles_surql = format!(
-        "[{}]",
-        roles
-            .iter()
-            .map(|r| format!("'{}'", r.replace('\'', "\\'")))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
-    db.query(format!(
-        "UPDATE _forge_users SET \
-         roles = {roles_surql}, \
-         display_name = $display_name \
-         WHERE username = $username"
-    ))
-    .bind(("username", username.to_string()))
-    .bind(("display_name", display_name.to_string()))
-    .await
-    .map_err(|e| AdminError::Internal {
-        message: format!("User update failed: {e}"),
-    })?;
+    auth_store
+        .update_user(&username, &roles, &display_name)
+        .await
+        .map_err(|e| AdminError::Internal {
+            message: format!("User update failed: {e}"),
+        })?;
 
     Ok(Redirect::to("/admin/users").into_response())
 }
@@ -1167,15 +1115,15 @@ pub async fn user_toggle_active(
     State(state): State<ForgeState>,
     Path(username): Path<String>,
 ) -> Result<impl IntoResponse, AdminError> {
-    let db = state
-        .surreal_client
+    let auth_store = state
+        .auth_store
         .as_ref()
         .ok_or_else(|| AdminError::Internal {
-            message: "SurrealDB client not configured".to_string(),
+            message: "Auth store not configured".to_string(),
         })?;
 
-    db.query("UPDATE _forge_users SET active = !active WHERE username = $username")
-        .bind(("username", username.to_string()))
+    auth_store
+        .toggle_user_active(&username)
         .await
         .map_err(|e| AdminError::Internal {
             message: format!("User toggle failed: {e}"),

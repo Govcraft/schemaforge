@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-cli"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 
 [[bin]]
@@ -30,11 +30,9 @@ axum = { version = "0.8" }
 acton-service = { version = "0.22", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth"] }
 
 [features]
-default = ["surrealdb", "admin-ui", "widget-ui"]
+default = ["surrealdb"]
 surrealdb = ["dep:schema-forge-surrealdb", "schema-forge-acton/surrealdb", "acton-service/surrealdb"]
 postgres = ["dep:schema-forge-postgres", "schema-forge-acton/postgres", "acton-service/database"]
-admin-ui = ["schema-forge-acton/admin-ui", "acton-service/htmx-full"]
-widget-ui = ["schema-forge-acton/widget-ui"]
 
 [dev-dependencies]
 assert_cmd = "2"

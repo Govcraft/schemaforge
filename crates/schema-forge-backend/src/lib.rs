@@ -3,6 +3,7 @@ pub mod entity;
 pub mod error;
 pub mod tenant;
 pub mod traits;
+pub mod user_store;
 
 pub use auth::{OwnershipBasedPolicy, RecordAccessPolicy};
 pub use tenant::TenantRef;
@@ -10,3 +11,4 @@ pub use entity::{Entity, QueryResult};
 pub use error::BackendError;
 pub use tenant::{TenantConfig, TenantConfigError, TenantLevel};
 pub use traits::{EntityStore, SchemaBackend};
+pub use user_store::{AuthStore, ForgeUser};

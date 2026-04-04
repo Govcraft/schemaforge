@@ -198,12 +198,9 @@ async fn demo_system_schemas_seeded_at_startup() {
         .unwrap();
     let mut builder = schema_forge_acton::SchemaForgeExtension::builder();
     builder = builder.with_backend(backend);
-    #[cfg(feature = "admin-ui")]
-    {
-        builder = builder.with_template_dir(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
-        );
-    }
+    builder = builder.with_template_dir(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
+    );
     let extension = builder.build().await.expect("extension build");
 
     let schemas = extension.registry().list().await;

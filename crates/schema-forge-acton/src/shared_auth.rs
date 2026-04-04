@@ -1,18 +1,14 @@
 //! Shared authentication utilities for admin-ui and widget-ui.
 //!
-//! Contains user validation, bootstrap logic, and shared types that both
-//! the admin and site UIs depend on.
+//! Contains bootstrap logic and shared types that both
+//! the admin and widget UIs depend on.
+
+// Re-export ForgeUser from schema-forge-backend for backward compatibility.
+pub use schema_forge_backend::user_store::ForgeUser;
 
 use serde::Deserialize;
 
-/// SurrealDB user record (without password_hash).
-#[derive(Debug, Clone, Deserialize, serde::Serialize)]
-pub struct ForgeUser {
-    pub username: String,
-    pub roles: Vec<String>,
-    pub display_name: Option<String>,
-    pub active: bool,
-}
+use crate::state::DynAuthStore;
 
 /// Login form fields shared by admin and cloud auth.
 #[derive(Debug, Deserialize)]
@@ -21,73 +17,26 @@ pub struct LoginForm {
     pub password: String,
 }
 
-/// Validate credentials against `_forge_users` table.
-///
-/// Uses SurrealDB's `crypto::argon2::compare()` — the password never leaves the DB.
-pub async fn validate_credentials(
-    db: &schema_forge_surrealdb::surrealdb::Surreal<
-        schema_forge_surrealdb::surrealdb::engine::any::Any,
-    >,
-    username: &str,
-    password: &str,
-) -> Result<Option<ForgeUser>, String> {
-    let mut response = db
-        .query(
-            "SELECT username, roles, display_name, active FROM _forge_users \
-             WHERE username = $username \
-             AND crypto::argon2::compare(password_hash, $password) \
-             AND active = true",
-        )
-        .bind(("username", username.to_string()))
-        .bind(("password", password.to_string()))
-        .await
-        .map_err(|e| format!("Auth query failed: {e}"))?;
-
-    let users: Vec<ForgeUser> = response
-        .take(0)
-        .map_err(|e| format!("Auth deserialize failed: {e}"))?;
-
-    Ok(users.into_iter().next())
-}
-
 /// Create initial admin user if `_forge_users` table is empty.
 pub async fn bootstrap_admin(
-    db: &schema_forge_surrealdb::surrealdb::Surreal<
-        schema_forge_surrealdb::surrealdb::engine::any::Any,
-    >,
+    auth_store: &dyn DynAuthStore,
     username: &str,
     password: &str,
 ) -> Result<(), String> {
-    #[derive(Deserialize)]
-    struct CountResult {
-        count: usize,
-    }
-
-    let mut response = db
-        .query("SELECT count() FROM _forge_users GROUP ALL")
+    let count = auth_store
+        .count_users()
         .await
         .map_err(|e| format!("Bootstrap check failed: {e}"))?;
 
-    let count: Option<CountResult> = response
-        .take(0)
-        .map_err(|e| format!("Bootstrap count failed: {e}"))?;
-
-    if count.map(|c| c.count).unwrap_or(0) > 0 {
+    if count > 0 {
         return Ok(());
     }
 
-    db.query(
-        "CREATE _forge_users SET \
-         username = $username, \
-         password_hash = crypto::argon2::generate($password), \
-         roles = ['admin'], \
-         display_name = 'Administrator', \
-         active = true",
-    )
-    .bind(("username", username.to_string()))
-    .bind(("password", password.to_string()))
-    .await
-    .map_err(|e| format!("Bootstrap create failed: {e}"))?;
+    let roles = vec!["admin".to_string()];
+    auth_store
+        .create_user(username, password, &roles, "Administrator")
+        .await
+        .map_err(|e| format!("Bootstrap create failed: {e}"))?;
 
     Ok(())
 }
@@ -100,52 +49,31 @@ pub async fn bootstrap_admin(
 /// - charlie (member) → Organization, Project, Task, Document
 /// - dana (finance, manager) → budget/revenue fields
 /// - eve (member, manager) → manager-level write access
-pub async fn bootstrap_demo_users(
-    db: &schema_forge_surrealdb::surrealdb::Surreal<
-        schema_forge_surrealdb::surrealdb::engine::any::Any,
-    >,
-) -> Result<(), String> {
-    #[derive(Deserialize)]
-    struct CountResult {
-        count: usize,
-    }
-
-    let mut response = db
-        .query("SELECT count() FROM _forge_users GROUP ALL")
+pub async fn bootstrap_demo_users(auth_store: &dyn DynAuthStore) -> Result<(), String> {
+    let count = auth_store
+        .count_users()
         .await
         .map_err(|e| format!("Demo users check failed: {e}"))?;
 
-    let count: Option<CountResult> = response
-        .take(0)
-        .map_err(|e| format!("Demo users count failed: {e}"))?;
-
     // Only seed when there's exactly 1 user (the bootstrapped admin)
-    if count.map(|c| c.count).unwrap_or(0) != 1 {
+    if count != 1 {
         return Ok(());
     }
 
-    let demo_users = [
-        ("alice", "password", "['sales', 'marketing']", "Alice Chen"),
-        ("bob", "password", "['hr']", "Bob Martinez"),
-        ("charlie", "password", "['member']", "Charlie Kim"),
-        ("dana", "password", "['finance', 'manager']", "Dana Patel"),
-        ("eve", "password", "['member', 'manager']", "Eve Johnson"),
+    let demo_users: &[(&str, &str, &[&str], &str)] = &[
+        ("alice", "password", &["sales", "marketing"], "Alice Chen"),
+        ("bob", "password", &["hr"], "Bob Martinez"),
+        ("charlie", "password", &["member"], "Charlie Kim"),
+        ("dana", "password", &["finance", "manager"], "Dana Patel"),
+        ("eve", "password", &["member", "manager"], "Eve Johnson"),
     ];
 
     for (username, password, roles, display_name) in demo_users {
-        db.query(format!(
-            "CREATE _forge_users SET \
-             username = $username, \
-             password_hash = crypto::argon2::generate($password), \
-             roles = {roles}, \
-             display_name = $display_name, \
-             active = true",
-        ))
-        .bind(("username", username.to_string()))
-        .bind(("password", password.to_string()))
-        .bind(("display_name", display_name.to_string()))
-        .await
-        .map_err(|e| format!("Demo user '{username}' create failed: {e}"))?;
+        let roles: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
+        auth_store
+            .create_user(username, password, &roles, display_name)
+            .await
+            .map_err(|e| format!("Demo user '{username}' create failed: {e}"))?;
     }
 
     Ok(())
