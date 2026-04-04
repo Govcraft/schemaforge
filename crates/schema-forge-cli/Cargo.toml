@@ -1,10 +1,10 @@
 [package]
 name = "schema-forge-cli"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 
 [[bin]]
-name = "schema-forge"
+name = "schemaforge"
 path = "src/main.rs"
 
 [dependencies]

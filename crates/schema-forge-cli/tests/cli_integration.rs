@@ -6,7 +6,7 @@ use tempfile::TempDir;
 /// Helper to get the schema-forge binary command.
 #[allow(deprecated)]
 fn schema_forge() -> Command {
-    Command::cargo_bin("schema-forge").unwrap()
+    Command::cargo_bin("schemaforge").unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ fn version_exits_zero() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("schema-forge"));
+        .stdout(predicate::str::contains("schemaforge"));
 }
 
 #[test]

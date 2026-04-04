@@ -134,11 +134,11 @@ pub async fn run(
     // Load from config.toml (picks up [token] section), then override serve-specific fields
     let mut svc_config =
         acton_service::config::Config::<schema_forge_acton::SchemaForgeConfig>::load_for_service(
-            "schema-forge",
+            "schemaforge",
         )
         .unwrap_or_default();
     svc_config.service.port = args.port;
-    svc_config.service.name = "schema-forge".to_string();
+    svc_config.service.name = "schemaforge".to_string();
 
     #[cfg(feature = "surrealdb")]
     if let DbParams::Surrealdb(_) = &db_params {

@@ -19,7 +19,7 @@ pub fn run(args: CompletionsArgs) -> Result<(), CliError> {
     clap_complete::generate(
         shell,
         &mut Cli::command(),
-        "schema-forge",
+        "schemaforge",
         &mut std::io::stdout(),
     );
 

@@ -8,10 +8,10 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 /// and deploy with zero recompilation.
 #[derive(Parser)]
 #[command(
-    name = "schema-forge",
+    name = "schemaforge",
     version,
     about = "Adaptive Object Model runtime with a human-readable DSL",
-    after_help = "Use 'schema-forge <command> --help' for more information about a command.\n\
+    after_help = "Use 'schemaforge <command> --help' for more information about a command.\n\
                   Documentation: https://github.com/GovCraft/schema-forge",
     propagate_version = true
 )]
@@ -149,7 +149,7 @@ pub struct GenerateTokenArgs {
     pub lifetime: i64,
 
     /// Issuer claim
-    #[arg(long, default_value = "schema-forge")]
+    #[arg(long, default_value = "schemaforge")]
     pub issuer: String,
 
     /// Tenant chain as JSON (e.g. '[{"schema":"Organization","entity_id":"org-1"}]')
@@ -375,25 +375,25 @@ mod tests {
 
     #[test]
     fn parse_minimal_args() {
-        let cli = Cli::try_parse_from(["schema-forge", "completions", "bash"]).unwrap();
+        let cli = Cli::try_parse_from(["schemaforge", "completions", "bash"]).unwrap();
         assert!(matches!(cli.command, Commands::Completions(_)));
     }
 
     #[test]
     fn parse_global_verbose() {
-        let cli = Cli::try_parse_from(["schema-forge", "-vvv", "completions", "bash"]).unwrap();
+        let cli = Cli::try_parse_from(["schemaforge", "-vvv", "completions", "bash"]).unwrap();
         assert_eq!(cli.global.verbose, 3);
     }
 
     #[test]
     fn parse_global_quiet() {
-        let cli = Cli::try_parse_from(["schema-forge", "-q", "completions", "bash"]).unwrap();
+        let cli = Cli::try_parse_from(["schemaforge", "-q", "completions", "bash"]).unwrap();
         assert!(cli.global.quiet);
     }
 
     #[test]
     fn parse_global_format_json() {
-        let cli = Cli::try_parse_from(["schema-forge", "--format", "json", "completions", "bash"])
+        let cli = Cli::try_parse_from(["schemaforge", "--format", "json", "completions", "bash"])
             .unwrap();
         assert_eq!(cli.global.format, "json");
     }
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn parse_init_command() {
         let cli =
-            Cli::try_parse_from(["schema-forge", "init", "my-project", "-t", "minimal"]).unwrap();
+            Cli::try_parse_from(["schemaforge", "init", "my-project", "-t", "minimal"]).unwrap();
         if let Commands::Init(args) = cli.command {
             assert_eq!(args.name, "my-project");
             assert_eq!(args.template, "minimal");
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn parse_parse_command_with_print() {
-        let cli = Cli::try_parse_from(["schema-forge", "parse", "--print", "schemas/"]).unwrap();
+        let cli = Cli::try_parse_from(["schemaforge", "parse", "--print", "schemas/"]).unwrap();
         if let Commands::Parse(args) = cli.command {
             assert!(args.print_ast);
             assert_eq!(args.paths, vec![PathBuf::from("schemas/")]);
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn parse_apply_command_dry_run() {
-        let cli = Cli::try_parse_from(["schema-forge", "apply", "--dry-run"]).unwrap();
+        let cli = Cli::try_parse_from(["schemaforge", "apply", "--dry-run"]).unwrap();
         if let Commands::Apply(args) = cli.command {
             assert!(args.dry_run);
             assert!(!args.force);
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn parse_migrate_command() {
         let cli = Cli::try_parse_from([
-            "schema-forge",
+            "schemaforge",
             "migrate",
             "--execute",
             "--schema",
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn parse_inspect_command() {
-        let cli = Cli::try_parse_from(["schema-forge", "inspect", "Contact", "--detail"]).unwrap();
+        let cli = Cli::try_parse_from(["schemaforge", "inspect", "Contact", "--detail"]).unwrap();
         if let Commands::Inspect(args) = cli.command {
             assert_eq!(args.schema, Some("Contact".to_string()));
             assert!(args.detail);
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn parse_export_openapi() {
         let cli =
-            Cli::try_parse_from(["schema-forge", "export", "openapi", "-o", "api.json"]).unwrap();
+            Cli::try_parse_from(["schemaforge", "export", "openapi", "-o", "api.json"]).unwrap();
         if let Commands::Export {
             command: ExportCommands::Openapi(args),
         } = cli.command
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn parse_policies_list() {
-        let cli = Cli::try_parse_from(["schema-forge", "policies", "list", "Contact"]).unwrap();
+        let cli = Cli::try_parse_from(["schemaforge", "policies", "list", "Contact"]).unwrap();
         if let Commands::Policies {
             command: PolicyCommands::List(args),
         } = cli.command
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn parse_policies_regenerate() {
         let cli = Cli::try_parse_from([
-            "schema-forge",
+            "schemaforge",
             "policies",
             "regenerate",
             "--output",
@@ -514,7 +514,7 @@ mod tests {
     #[test]
     fn parse_serve_command() {
         let cli = Cli::try_parse_from([
-            "schema-forge",
+            "schemaforge",
             "serve",
             "-H",
             "0.0.0.0",
@@ -534,20 +534,20 @@ mod tests {
 
     #[test]
     fn verbose_and_quiet_conflict() {
-        let result = Cli::try_parse_from(["schema-forge", "-v", "-q", "completions", "bash"]);
+        let result = Cli::try_parse_from(["schemaforge", "-v", "-q", "completions", "bash"]);
         assert!(result.is_err());
     }
 
     #[test]
     fn invalid_format_rejected() {
         let result =
-            Cli::try_parse_from(["schema-forge", "--format", "xml", "completions", "bash"]);
+            Cli::try_parse_from(["schemaforge", "--format", "xml", "completions", "bash"]);
         assert!(result.is_err());
     }
 
     #[test]
     fn invalid_shell_rejected() {
-        let result = Cli::try_parse_from(["schema-forge", "completions", "tcsh"]);
+        let result = Cli::try_parse_from(["schemaforge", "completions", "tcsh"]);
         assert!(result.is_err());
     }
 }

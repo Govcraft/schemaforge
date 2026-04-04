@@ -35,14 +35,14 @@ jobs:
       - name: Package
         run: |
           cd target/release
-          tar czf "../../schema-forge-${TAG_NAME}-x86_64-unknown-linux-gnu-${{ matrix.suffix }}.tar.gz" schema-forge
+          tar czf "../../schemaforge-${TAG_NAME}-x86_64-unknown-linux-gnu-${{ matrix.suffix }}.tar.gz" schemaforge
           cd ../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: schema-forge-x86_64-unknown-linux-gnu-${{ matrix.suffix }}
-          path: schema-forge-${{ github.ref_name }}-x86_64-unknown-linux-gnu-${{ matrix.suffix }}.tar.gz
+          name: schemaforge-x86_64-unknown-linux-gnu-${{ matrix.suffix }}
+          path: schemaforge-${{ github.ref_name }}-x86_64-unknown-linux-gnu-${{ matrix.suffix }}.tar.gz
 
   release:
     needs: build
@@ -56,4 +56,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: schema-forge-*
+          files: schemaforge-*
