@@ -192,8 +192,8 @@ SchemaForge is a Cargo workspace of seven composable crates. Each layer depends 
 | `schema-forge-dsl` | Lexer (logos) and recursive descent parser for `.schema` files, plus a printer for round-trip fidelity. |
 | `schema-forge-backend` | `SchemaBackend` and `EntityStore` trait definitions. Storage-agnostic interface. |
 | `schema-forge-surrealdb` | SurrealDB implementation: MigrationStep to SurrealQL compilation, entity CRUD, query translation. |
-| `schema-forge-acton` | Axum-based HTTP layer: dynamic CRUD routes, Cedar policy generation, OpenAPI spec, schema registry. |
-| `schema-forge-ai` | LLM agent integration via acton-ai: tool-based schema generation, validation, and application. |
+| `schema-forge-postgres` | PostgreSQL implementation: DDL codegen, entity CRUD, query translation via SQLx. |
+| `schema-forge-acton` | Axum-based HTTP layer: dynamic CRUD routes, admin UI, HTMX widget UI, Cedar policies, OpenAPI spec, schema registry. |
 | `schema-forge-cli` | Command-line interface: `init`, `parse`, `apply`, `migrate`, `generate`, `serve`, `inspect`, `export`, `policies`. |
 
 ### Core Type System
@@ -475,17 +475,17 @@ if plan.has_destructive_steps() {
 
 ## Project Status
 
-SchemaForge is under active development. All seven crates compile and pass 674 tests across the workspace (unit, integration, property-based, and round-trip tests).
+SchemaForge is under active development. All seven crates compile and pass 1123 tests across the workspace (unit, integration, property-based, and round-trip tests).
 
 | Crate | Version | Tests |
 |-------|---------|-------|
-| `schema-forge-core` | 0.2.0 | 209 |
-| `schema-forge-dsl` | 0.1.0 | 108 |
-| `schema-forge-backend` | 0.1.0 | 18 |
-| `schema-forge-surrealdb` | 0.2.0 | 47 |
-| `schema-forge-acton` | 0.1.0 | 81 |
-| `schema-forge-ai` | 0.1.0 | 79 |
-| `schema-forge-cli` | 0.2.0 | 132 |
+| `schema-forge-core` | 0.6.0 | 293 |
+| `schema-forge-dsl` | 0.3.0 | 170 |
+| `schema-forge-backend` | 0.5.0 | 41 |
+| `schema-forge-surrealdb` | 0.4.0 | 60 |
+| `schema-forge-postgres` | 0.2.0 | 48 |
+| `schema-forge-acton` | 0.11.0 | 388 |
+| `schema-forge-cli` | 0.8.0 | 123 |
 
 ### Implemented
 
@@ -494,23 +494,29 @@ SchemaForge is under active development. All seven crates compile and pass 674 t
 - Migration engine: schema diffing, safety classification, value transforms
 - Storage-agnostic query IR with relation traversal
 - SurrealDB backend: DDL codegen, entity CRUD, query translation
+- PostgreSQL backend: DDL codegen, entity CRUD, query translation
 - Axum HTTP layer with dynamic CRUD routes and schema management
+- Admin UI with session-based authentication and user management
+- HTMX widget UI with shared session auth (login once, access both admin and widgets)
 - Cedar authorization policy generation
-- AI agent with tool-based self-correcting schema generation
+- Schema-level and field-level access control via `@access` and `@field_access` annotations
+- Record-level ownership-based access control
+- Multi-tenant support via `@tenant` annotations
+- Webhook notifications for entity CRUD events
+- OpenAPI spec generation from the schema registry
+- OpenTelemetry tracing and metrics integration
 - CLI with 10 commands, global options, environment variable support, and shell completions
 
 ### Planned
 
-- PostgreSQL and SQLite backends
-- OpenAPI spec generation from the schema registry
+- SQLite backend
 - Watch mode for hot-reloading schema changes during development
-- OpenTelemetry tracing and metrics integration
 
 ## Design Decisions
 
 **Why a custom DSL?** The grammar is small, git-trackable, and code-reviewable. Its simplicity gives LLMs a high success rate even with small local models. The parser and printer guarantee lossless round-trip conversion.
 
-**Why SurrealDB first?** SurrealDB's native record links map directly to SchemaForge relations. Its SCHEMAFULL mode mirrors schema validation. Dot-notation query traversal eliminates JOINs. Embedded mode means no external process for development.
+**Why SurrealDB and PostgreSQL?** SurrealDB's native record links map directly to SchemaForge relations, and its embedded mode means no external process for development. PostgreSQL provides production-grade reliability and ecosystem compatibility. Both backends implement the same `SchemaBackend` and `EntityStore` traits — switching is a feature flag change.
 
 **Why acton-ai for the agent?** The tool execution loop is the self-correction loop. No custom retry logic, no bespoke error handling -- the LLM calls tools, reads results, and adapts. Multi-provider support (local and cloud models) comes free from the configuration.
 
