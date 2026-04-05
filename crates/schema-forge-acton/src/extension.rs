@@ -9,6 +9,7 @@ use crate::state::{
     DynAuthStore, DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry,
 };
 
+use acton_service::session::{MemoryStore, SessionManagerLayer};
 use acton_service::state::AppState;
 use crate::config::SchemaForgeConfig;
 use schema_forge_backend::auth::RecordAccessPolicy;
@@ -57,6 +58,7 @@ pub struct InitForgeData {
 /// ```
 pub struct SchemaForgeExtension {
     state: ForgeState,
+    session_layer: SessionManagerLayer<MemoryStore>,
 }
 
 /// Builder for `SchemaForgeExtension`.
@@ -228,7 +230,17 @@ impl SchemaForgeExtensionBuilder {
             webhook_dispatcher,
         };
 
-        Ok(SchemaForgeExtension { state })
+        let session_config = acton_service::session::SessionConfig {
+            secure: false,
+            cookie_name: "forge_session".to_string(),
+            ..Default::default()
+        };
+        let session_layer = acton_service::session::create_memory_session_layer(&session_config);
+
+        Ok(SchemaForgeExtension {
+            state,
+            session_layer,
+        })
     }
 }
 
@@ -357,15 +369,8 @@ impl SchemaForgeExtension {
         use axum::response::Redirect;
         use axum::routing::get;
 
-        let session_config = acton_service::session::SessionConfig {
-            secure: false,
-            cookie_name: "forge_admin".to_string(),
-            ..Default::default()
-        };
-        let session_layer = acton_service::session::create_memory_session_layer(&session_config);
-
         let admin_router = crate::admin::routes::admin_routes()
-            .layer(session_layer)
+            .layer(self.session_layer.clone())
             .with_state(self.state.clone());
         router
             .nest("/admin/", admin_router)
@@ -404,6 +409,7 @@ impl SchemaForgeExtension {
         S: Clone + Send + Sync + 'static,
     {
         let widget_router = crate::widget::routes::widget_routes()
+            .layer(self.session_layer.clone())
             .with_state(self.state.clone());
         router.nest("/forge", widget_router)
     }

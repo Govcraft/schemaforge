@@ -130,7 +130,7 @@ curl -H "Accept: application/json" http://localhost:3000/forge/Contact/entities/
 
 All routes live under `/forge` and return **bare HTML fragments** by default (no `<html>`, no layout). Send `Accept: application/json` to get JSON instead.
 
-Auth is applied via `register_widget_routes()`, which wraps all routes with API auth middleware.
+Auth is applied via `register_widget_routes()`, which wraps all routes with a shared session layer and a `session_to_claims` middleware that bridges browser sessions into `Claims` for access control. PASETO token auth is also supported for API consumers. See [Authentication](#11-authentication) for details.
 
 ### GET `/forge/{schema}/entities` -- Entity List
 
@@ -727,15 +727,38 @@ HTML fragments use semantic `data-sf` attributes instead of CSS classes, giving 
 
 ## 11. Authentication
 
-Widget routes are wrapped with API auth middleware via `register_widget_routes()`. The auth middleware checks for an `AuthContext` in request extensions.
+Widget routes support two authentication methods: **session-based** (for browser users) and **PASETO token-based** (for API consumers). Both share the same access control layer.
 
-To integrate auth:
+### Session-Based Auth (Browser)
 
-1. **Provide an `AuthProvider`** implementation when building the extension. The `AuthProvider` trait extracts auth context from incoming requests (e.g., from Bearer tokens, API keys, or session cookies).
+Widget routes share the same session layer as the admin UI. When a user logs in at `/admin/login`, the `forge_session` cookie authenticates requests to both `/admin/*` and `/forge/*` routes.
 
-2. **Without an AuthProvider:** All requests are allowed (open development mode).
+A `session_to_claims` middleware automatically bridges the session into `Claims` request extensions, so the existing `OptionalClaims` extractor and `check_schema_access()` logic work transparently. No additional configuration is needed — if the admin UI is enabled with an `AuthStore`, widget routes are automatically session-aware.
 
-3. **With an AuthProvider:** Requests without valid credentials receive `401 Unauthorized`. Requests with credentials but insufficient role permissions receive `403 Forbidden`.
+**Flow:**
+1. User logs in at `/admin/login` (username + password)
+2. Server sets a `forge_session` cookie
+3. Subsequent requests to `/forge/*` include the cookie
+4. The `session_to_claims` middleware reads the session, constructs `Claims` (user ID, roles), and injects them into request extensions
+5. Widget handlers extract `OptionalClaims` and enforce `@access` annotations as usual
+
+### Token-Based Auth (API)
+
+API consumers can authenticate by including a PASETO token in request headers. When a token is present, the upstream token middleware injects `Claims` into request extensions before the session middleware runs. The session middleware defers — it never overrides token-provided `Claims`.
+
+```bash
+# Generate a token
+schemaforge token generate \
+  --key ./keys/paseto.key \
+  --sub "user:entity_alice123" \
+  --roles "sales,marketing"
+
+# Use it in requests
+curl -H "Authorization: Bearer <token>" \
+     http://localhost:3000/forge/Contact/entities
+```
+
+### Access Control
 
 Schema-level access is controlled by `@access` annotations:
 - No `@access` annotation + auth enabled = **deny** (secure-by-default)
@@ -743,6 +766,8 @@ Schema-level access is controlled by `@access` annotations:
 - `@access(read: ["admin", "manager"])` = allow only those roles
 
 Field-level access is controlled by `@field_access` annotations. Restricted fields are silently omitted from responses.
+
+Without an `AuthStore` configured, no session layer is applied and widget routes fall back to token-only auth.
 
 ---
 

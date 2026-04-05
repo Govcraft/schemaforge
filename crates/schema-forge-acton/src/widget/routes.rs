@@ -3,11 +3,14 @@ use axum::Router;
 
 use crate::state::ForgeState;
 
-use super::handlers;
+use super::{auth, handlers};
 
 /// Build the widget route tree.
 ///
 /// All routes are nested under `/{schema}` and serve bare HTMX fragments.
+/// A `session_to_claims` middleware layer bridges session-based authentication
+/// into `Claims` request extensions so existing `OptionalClaims` extraction
+/// and `check_schema_access` work transparently for browser sessions.
 ///
 /// Route structure:
 /// ```text
@@ -41,4 +44,5 @@ pub fn widget_routes() -> Router<ForgeState> {
             "/{schema}/relation-options/{field}",
             get(handlers::relation_options),
         )
+        .route_layer(axum::middleware::from_fn(auth::session_to_claims))
 }

@@ -440,12 +440,18 @@ use schema_forge_surrealdb::SurrealBackend;
 let backend = SurrealBackend::connect("ws://localhost:8000").await?;
 
 let extension = SchemaForgeExtension::builder()
-    .with_backend(backend)
+    .with_backend(backend.clone())
+    .with_auth_store(backend)
+    .with_admin_credentials("admin".into(), "changeme".into())
     .build()
     .await?;
 
 // Register forge routes under /forge on any axum Router
+// Admin and widget routes share a session layer — log in once at /admin/login,
+// access both /admin/* and /forge/* widget routes with the same session cookie.
 let app = extension.register_routes(axum::Router::new());
+let app = extension.register_admin_routes(app);
+let app = extension.register_widget_routes(app);
 ```
 
 ### Computing Migrations
