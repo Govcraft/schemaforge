@@ -9,3 +9,6 @@ members = [
     "crates/schema-forge-cli",
     "crates/schema-forge-postgres",
 ]
+
+[patch.crates-io]
+acton-service = { path = "/home/rodzilla/code/active/acton-service/acton-service" }

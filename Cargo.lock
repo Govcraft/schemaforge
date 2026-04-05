@@ -59,8 +59,6 @@ dependencies = [
 [[package]]
 name = "acton-service"
 version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f788d3118d7d19d7c46c1c8d21e54f754e5b94c52716395d935586fa22c4d49"
 dependencies = [
  "acton-reactive",
  "anyhow",

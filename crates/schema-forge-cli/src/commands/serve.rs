@@ -167,6 +167,21 @@ pub async fn run(
         svc_config.surrealdb = Some(build_surrealdb_config(&db_params));
     }
 
+    // Add frontend route prefixes to token auth's public_paths so the PASETO/JWT
+    // middleware passes through without rejecting session-based browser requests.
+    if enable_admin || enable_widget {
+        let mut public_paths = Vec::new();
+        if enable_admin {
+            public_paths.push("/admin".to_string());
+        }
+        if enable_widget {
+            public_paths.push("/forge".to_string());
+        }
+        if let Some(acton_service::config::TokenConfig::Paseto(ref mut pc)) = svc_config.token {
+            pc.public_paths.extend(public_paths);
+        }
+    }
+
     let bind_addr = format!("{}:{}", args.host, args.port);
     output.success(&format!(
         "SchemaForge server listening on http://{bind_addr}"
