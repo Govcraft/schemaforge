@@ -122,6 +122,23 @@ impl SchemaForgeExtensionBuilder {
         self
     }
 
+    /// Set the backend from a pre-existing `Arc<dyn DynForgeBackend>`.
+    ///
+    /// Use this when the backend has already been connected and type-erased
+    /// (e.g. in the CLI serve command where the concrete type is no longer available).
+    pub fn with_backend_arc(mut self, backend: Arc<dyn DynForgeBackend>) -> Self {
+        self.backend = Some(backend);
+        self
+    }
+
+    /// Set the auth store from a pre-existing `Arc<dyn DynAuthStore>`.
+    ///
+    /// Use this when the auth store has already been type-erased at connection time.
+    pub fn with_auth_store_arc(mut self, store: Arc<dyn DynAuthStore>) -> Self {
+        self.auth_store = Some(store);
+        self
+    }
+
     /// Set bootstrap credentials for the initial admin user.
     ///
     /// If the `_forge_users` table is empty during `build()`, an admin user
@@ -412,6 +429,33 @@ impl SchemaForgeExtension {
             .layer(self.session_layer.clone())
             .with_state(self.state.clone());
         router.nest("/forge", widget_router)
+    }
+
+    /// Build admin UI routes as a standalone `Router<()>` (state pre-applied).
+    ///
+    /// Use this to nest admin routes into an `AppState`-based router
+    /// (e.g. via `VersionedApiBuilder::with_frontend_routes`). The session
+    /// layer is **not** included — apply it externally so admin and widget
+    /// routes share the same layer.
+    pub fn admin_frontend_router(&self) -> axum::Router {
+        crate::admin::routes::admin_routes().with_state(self.state.clone())
+    }
+
+    /// Build widget UI routes as a standalone `Router<()>` (state pre-applied).
+    ///
+    /// Includes the `session_to_claims` middleware so browser sessions are
+    /// automatically bridged to `Claims` in request extensions. The session
+    /// layer is **not** included — apply it externally.
+    pub fn widget_frontend_router(&self) -> axum::Router {
+        crate::widget::routes::widget_routes().with_state(self.state.clone())
+    }
+
+    /// Get a clone of the shared session layer.
+    ///
+    /// Apply this to a router that contains both admin and widget routes
+    /// so they share a single in-memory session store.
+    pub fn session_layer(&self) -> SessionManagerLayer<MemoryStore> {
+        self.session_layer.clone()
     }
 
     /// Get a reference to the schema registry.

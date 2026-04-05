@@ -53,8 +53,9 @@ pub async fn run(
     };
 
     // 3. Connect to database (try remote, fail explicitly for production)
-    let backend_arc: Arc<dyn DynForgeBackend> =
-        connect_with_retries(&db_params, output).await?;
+    let connected = connect_with_retries(&db_params, output).await?;
+    let backend_arc = connected.backend;
+    let auth_store = connected.auth_store;
 
     // 4. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
     let init_data = SchemaForgeExtension::build_init(backend_arc.clone(), None)
@@ -127,8 +128,29 @@ pub async fn run(
     let enable_admin = config.server.admin_ui && !args.no_admin_ui;
     let enable_widget = config.server.widget_ui && !args.no_widget_ui;
 
-    // 7. Build versioned routes via acton-service
-    let routes = build_versioned_routes();
+    // 7. Build SchemaForgeExtension for admin/widget UI routes (shared session layer)
+    let extension = if enable_admin || enable_widget {
+        let mut builder = SchemaForgeExtension::builder()
+            .with_backend_arc(init_data.backend.clone())
+            .with_auth_store_arc(auth_store);
+        if let Some(ref password) = args.admin_password {
+            builder =
+                builder.with_admin_credentials(args.admin_user.clone(), password.clone());
+        }
+        if let Some(ref dir) = args.template_dir {
+            builder = builder.with_template_dir(dir.clone());
+        }
+        Some(
+            builder.build().await.map_err(|e| CliError::Server {
+                message: format!("failed to build SchemaForgeExtension: {e}"),
+            })?,
+        )
+    } else {
+        None
+    };
+
+    // 8. Build versioned routes via acton-service, with optional frontend routes
+    let routes = build_versioned_routes(extension.as_ref(), enable_admin, enable_widget);
 
     // 8. Configure and serve via acton-service
     // Load from config.toml (picks up [token] section), then override serve-specific fields
@@ -220,13 +242,13 @@ pub async fn run(
 async fn connect_with_retries(
     db_params: &DbParams,
     output: &OutputContext,
-) -> Result<Arc<dyn DynForgeBackend>, CliError> {
+) -> Result<ConnectedBackend, CliError> {
     let base_delay = Duration::from_secs(CONNECT_BASE_DELAY_SECS);
     let mut last_err = None;
 
     for attempt in 0..=MAX_CONNECT_RETRIES {
         match connect_once(db_params).await {
-            Ok(backend) => {
+            Ok(connected) => {
                 if attempt > 0 {
                     output.success(&format!(
                         "Connected to {} after {} attempt(s)",
@@ -236,7 +258,7 @@ async fn connect_with_retries(
                 } else {
                     output.success(&format!("Connected to {}", db_params.url()));
                 }
-                return Ok(backend);
+                return Ok(connected);
             }
             Err(e) => {
                 last_err = Some(e);
@@ -263,8 +285,18 @@ async fn connect_with_retries(
     })
 }
 
+/// Connected backend: the type-erased backend plus an optional auth store.
+///
+/// Both are produced from the same concrete backend at connection time, before
+/// the concrete type is erased. This avoids needing the concrete type later
+/// when building `SchemaForgeExtension` for admin/widget UI routes.
+struct ConnectedBackend {
+    backend: Arc<dyn DynForgeBackend>,
+    auth_store: Arc<dyn schema_forge_acton::DynAuthStore>,
+}
+
 /// Attempt a single connection to the configured backend.
-async fn connect_once(db_params: &DbParams) -> Result<Arc<dyn DynForgeBackend>, CliError> {
+async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError> {
     match db_params {
         #[cfg(feature = "surrealdb")]
         DbParams::Surrealdb(p) => {
@@ -279,7 +311,11 @@ async fn connect_once(db_params: &DbParams) -> Result<Arc<dyn DynForgeBackend>, 
             .map_err(|e| CliError::Server {
                 message: format!("SurrealDB connection failed: {e}"),
             })?;
-            Ok(Arc::new(backend))
+            let backend = Arc::new(backend);
+            Ok(ConnectedBackend {
+                backend: backend.clone(),
+                auth_store: backend,
+            })
         }
         #[cfg(feature = "postgres")]
         DbParams::Postgres(p) => {
@@ -288,7 +324,11 @@ async fn connect_once(db_params: &DbParams) -> Result<Arc<dyn DynForgeBackend>, 
                 .map_err(|e| CliError::Server {
                     message: format!("PostgreSQL connection failed: {e}"),
                 })?;
-            Ok(Arc::new(backend))
+            let backend = Arc::new(backend);
+            Ok(ConnectedBackend {
+                backend: backend.clone(),
+                auth_store: backend,
+            })
         }
         #[allow(unreachable_patterns)]
         other => Err(CliError::Config {
@@ -324,16 +364,49 @@ fn build_surrealdb_config(db_params: &DbParams) -> acton_service::config::Surrea
 
 /// Build versioned routes using acton-service's VersionedApiBuilder.
 ///
-/// Nests SchemaForge's routes under `/api/v1/forge/`. Route handlers access the
-/// `ForgeActor` via `state.actor::<ForgeActor>()` from `AppState`.
+/// Nests SchemaForge's API routes under `/api/v1/forge/`. When a
+/// `SchemaForgeExtension` is provided, admin and/or widget frontend routes
+/// are mounted alongside the API routes via `with_frontend_routes()`,
+/// sharing a single session layer for browser-based authentication.
 fn build_versioned_routes(
+    extension: Option<&SchemaForgeExtension>,
+    enable_admin: bool,
+    enable_widget: bool,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
-    let builder =
+    let mut builder =
         VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
             .with_base_path("/api")
             .add_version(ApiVersion::V1, |router| {
                 SchemaForgeExtension::versioned_forge_routes(router)
             });
+
+    if let Some(ext) = extension {
+        let ext_admin = if enable_admin {
+            Some(ext.admin_frontend_router())
+        } else {
+            None
+        };
+        let ext_widget = if enable_widget {
+            Some(ext.widget_frontend_router())
+        } else {
+            None
+        };
+        let session_layer = ext.session_layer();
+        builder = builder.with_frontend_routes(move |router| {
+            let mut r = router;
+            if let Some(admin_router) = ext_admin {
+                use axum::response::Redirect;
+                use axum::routing::get;
+                r = r
+                    .nest_service("/admin/", admin_router)
+                    .route("/admin", get(|| async { Redirect::permanent("/admin/") }));
+            }
+            if let Some(widget_router) = ext_widget {
+                r = r.nest_service("/forge", widget_router);
+            }
+            r.layer(session_layer)
+        });
+    }
 
     builder.build_routes()
 }
@@ -344,11 +417,8 @@ mod tests {
 
     #[test]
     fn build_versioned_routes_is_callable() {
-        // Compile-time verification that build_versioned_routes has the right signature
-        let _: fn()
-            -> acton_service::service_builder::VersionedRoutes<
-                schema_forge_acton::SchemaForgeConfig,
-            > = build_versioned_routes;
+        // Compile-time verification: builds routes without an extension
+        let _routes = build_versioned_routes(None, false, false);
     }
 
     #[cfg(feature = "surrealdb")]
