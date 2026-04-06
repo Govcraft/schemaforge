@@ -8,7 +8,7 @@
     <thead>
         <tr>
             {% for field in schema.fields %}
-            <th>{{ field.label }}</th>
+            <th data-sf-field="{{ field.name }}">{{ field.label }}</th>
             {% endfor %}
             <th>Actions</th>
         </tr>

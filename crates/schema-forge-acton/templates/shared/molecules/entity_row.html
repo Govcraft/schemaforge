@@ -1,6 +1,6 @@
 <tr data-entity-id="{{ entity.id }}">
     {% for field in entity.field_values %}
-    <td data-field-name="{{ field.name }}">{% if field.is_empty %}&mdash;{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</td>
+    <td data-sf-field="{{ field.name }}">{% if field.is_empty %}&mdash;{% else %}{% include "shared/atoms/field_display.html" %}{% endif %}</td>
     {% endfor %}
     <td>
         <a href="{{ url_prefix }}/{{ schema.url_name }}/entities/{{ entity.id }}">View</a>
