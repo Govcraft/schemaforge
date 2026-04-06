@@ -130,9 +130,9 @@ pub async fn run(
     let enable_widget = config.server.widget_ui && !args.no_widget_ui;
     let enable_site = args.with_htmx;
 
-    // Scaffold site templates when --with-htmx is active
+    // Scaffold site templates and static assets when --with-htmx is active
     if enable_site {
-        scaffold_site_templates(Path::new("."), output)?;
+        scaffold_site_assets(Path::new("."), output)?;
     }
 
     // 7. Build SchemaForgeExtension for admin/widget/site UI routes (shared session layer)
@@ -148,8 +148,9 @@ pub async fn run(
             builder = builder.with_template_dir(dir.clone());
         }
         if enable_site {
-            let site_dir = std::path::PathBuf::from("site/templates");
-            builder = builder.with_site_template_dir(site_dir);
+            builder = builder
+                .with_site_template_dir(std::path::PathBuf::from("site/templates"))
+                .with_site_static_dir(std::path::PathBuf::from("site/static"));
         }
         Some(
             builder.build().await.map_err(|e| CliError::Server {
@@ -456,35 +457,56 @@ fn build_versioned_routes(
     builder.build_routes()
 }
 
-/// Scaffold starter HTMX site templates into `{project_dir}/site/templates/`.
+/// Scaffold starter HTMX site templates and static assets.
 ///
-/// Writes the embedded default templates only if the directory does not already
-/// exist, so user customizations are never overwritten.
-fn scaffold_site_templates(project_dir: &Path, output: &OutputContext) -> Result<(), CliError> {
-    let site_dir = project_dir.join("site/templates");
-    if site_dir.exists() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(&site_dir).map_err(|e| CliError::Io {
-        path: site_dir.clone(),
-        source: e,
-    })?;
-    let templates: &[(&str, &str)] = &[
-        ("base.html", include_str!("../../../schema-forge-acton/templates/site/base.html")),
-        ("index.html", include_str!("../../../schema-forge-acton/templates/site/index.html")),
-        ("login.html", include_str!("../../../schema-forge-acton/templates/site/login.html")),
-        ("login_card.html", include_str!("../../../schema-forge-acton/templates/site/login_card.html")),
-        ("entities.html", include_str!("../../../schema-forge-acton/templates/site/entities.html")),
-        ("entity_detail.html", include_str!("../../../schema-forge-acton/templates/site/entity_detail.html")),
-        ("entity_form.html", include_str!("../../../schema-forge-acton/templates/site/entity_form.html")),
-    ];
-    for (name, content) in templates {
-        std::fs::write(site_dir.join(name), content).map_err(|e| CliError::Io {
-            path: site_dir.join(name),
+/// Creates `{project_dir}/site/templates/` and `{project_dir}/site/static/`
+/// with embedded defaults. Each directory is only scaffolded if it does not
+/// already exist, so user customizations are never overwritten.
+fn scaffold_site_assets(project_dir: &Path, output: &OutputContext) -> Result<(), CliError> {
+    // Scaffold templates
+    let template_dir = project_dir.join("site/templates");
+    if !template_dir.exists() {
+        std::fs::create_dir_all(&template_dir).map_err(|e| CliError::Io {
+            path: template_dir.clone(),
             source: e,
         })?;
+        let templates: &[(&str, &str)] = &[
+            ("base.html", include_str!("../../../schema-forge-acton/templates/site/base.html")),
+            ("index.html", include_str!("../../../schema-forge-acton/templates/site/index.html")),
+            ("login.html", include_str!("../../../schema-forge-acton/templates/site/login.html")),
+            ("login_card.html", include_str!("../../../schema-forge-acton/templates/site/login_card.html")),
+            ("entities.html", include_str!("../../../schema-forge-acton/templates/site/entities.html")),
+            ("entity_detail.html", include_str!("../../../schema-forge-acton/templates/site/entity_detail.html")),
+            ("entity_form.html", include_str!("../../../schema-forge-acton/templates/site/entity_form.html")),
+        ];
+        for (name, content) in templates {
+            std::fs::write(template_dir.join(name), content).map_err(|e| CliError::Io {
+                path: template_dir.join(name),
+                source: e,
+            })?;
+        }
+        output.status("  Scaffolded site templates into site/templates/");
     }
-    output.status("  Scaffolded site templates into site/templates/");
+
+    // Scaffold static assets
+    let static_dir = project_dir.join("site/static");
+    if !static_dir.exists() {
+        std::fs::create_dir_all(&static_dir).map_err(|e| CliError::Io {
+            path: static_dir.clone(),
+            source: e,
+        })?;
+        let assets: &[(&str, &str)] = &[
+            ("site.css", include_str!("../../../schema-forge-acton/static/css/site.css")),
+        ];
+        for (name, content) in assets {
+            std::fs::write(static_dir.join(name), content).map_err(|e| CliError::Io {
+                path: static_dir.join(name),
+                source: e,
+            })?;
+        }
+        output.status("  Scaffolded site static assets into site/static/");
+    }
+
     Ok(())
 }
 
@@ -534,24 +556,33 @@ mod tests {
     }
 
     #[test]
-    fn scaffold_creates_site_templates() {
+    fn scaffold_creates_site_templates_and_static() {
         let dir = tempfile::tempdir().unwrap();
-        scaffold_site_templates(dir.path(), &test_output()).unwrap();
+        scaffold_site_assets(dir.path(), &test_output()).unwrap();
         assert!(dir.path().join("site/templates/base.html").exists());
         assert!(dir.path().join("site/templates/index.html").exists());
         assert!(dir.path().join("site/templates/login.html").exists());
+        assert!(dir.path().join("site/static/site.css").exists());
     }
 
     #[test]
     fn scaffold_skips_if_exists() {
         let dir = tempfile::tempdir().unwrap();
-        let site_dir = dir.path().join("site/templates");
-        std::fs::create_dir_all(&site_dir).unwrap();
-        std::fs::write(site_dir.join("base.html"), "custom").unwrap();
-        scaffold_site_templates(dir.path(), &test_output()).unwrap();
-        // Should not overwrite
-        let content = std::fs::read_to_string(site_dir.join("base.html")).unwrap();
+        // Pre-create both directories with custom content
+        let template_dir = dir.path().join("site/templates");
+        std::fs::create_dir_all(&template_dir).unwrap();
+        std::fs::write(template_dir.join("base.html"), "custom").unwrap();
+        let static_dir = dir.path().join("site/static");
+        std::fs::create_dir_all(&static_dir).unwrap();
+        std::fs::write(static_dir.join("site.css"), "/* custom */").unwrap();
+
+        scaffold_site_assets(dir.path(), &test_output()).unwrap();
+
+        // Should not overwrite either directory
+        let content = std::fs::read_to_string(template_dir.join("base.html")).unwrap();
         assert_eq!(content, "custom");
+        let css = std::fs::read_to_string(static_dir.join("site.css")).unwrap();
+        assert_eq!(css, "/* custom */");
     }
 
     #[cfg(feature = "surrealdb")]

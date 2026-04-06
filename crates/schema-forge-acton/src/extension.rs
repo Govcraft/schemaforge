@@ -59,6 +59,7 @@ pub struct InitForgeData {
 pub struct SchemaForgeExtension {
     state: ForgeState,
     session_layer: SessionManagerLayer<MemoryStore>,
+    site_static_dir: Option<std::path::PathBuf>,
 }
 
 /// Builder for `SchemaForgeExtension`.
@@ -69,6 +70,7 @@ pub struct SchemaForgeExtensionBuilder {
     admin_credentials: Option<(String, String)>,
     template_dir: Option<std::path::PathBuf>,
     site_template_dir: Option<std::path::PathBuf>,
+    site_static_dir: Option<std::path::PathBuf>,
     webhook_config: crate::webhook::WebhookConfig,
 }
 
@@ -82,6 +84,7 @@ impl SchemaForgeExtensionBuilder {
             admin_credentials: None,
             template_dir: None,
             site_template_dir: None,
+            site_static_dir: None,
             webhook_config: crate::webhook::WebhookConfig::default(),
         }
     }
@@ -165,6 +168,16 @@ impl SchemaForgeExtensionBuilder {
     /// is not found on the filesystem, the embedded default is used.
     pub fn with_site_template_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.site_template_dir = Some(dir);
+        self
+    }
+
+    /// Set the directory for site static assets (CSS, JS, images).
+    ///
+    /// When configured, a `tower_http::services::ServeDir` is mounted at
+    /// `/static` within the site router, serving files from this directory.
+    /// When not set, the embedded default CSS is served instead.
+    pub fn with_site_static_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.site_static_dir = Some(dir);
         self
     }
 
@@ -270,6 +283,7 @@ impl SchemaForgeExtensionBuilder {
         Ok(SchemaForgeExtension {
             state,
             session_layer,
+            site_static_dir: self.site_static_dir,
         })
     }
 }
@@ -457,10 +471,13 @@ impl SchemaForgeExtension {
     /// Build site UI routes as a standalone `Router<()>` (state pre-applied).
     ///
     /// Includes login/logout and a home page listing available schemas.
+    /// When a `site_static_dir` is configured, static assets are served from
+    /// the filesystem via `ServeDir`; otherwise the embedded default CSS is used.
     /// The session layer is **not** included — apply it externally so admin,
     /// widget, and site routes share the same layer.
     pub fn site_frontend_router(&self) -> axum::Router {
-        crate::site::routes::site_routes().with_state(self.state.clone())
+        crate::site::routes::site_routes(self.site_static_dir.clone())
+            .with_state(self.state.clone())
     }
 
     /// Build widget UI routes as a standalone `Router<()>` (state pre-applied).

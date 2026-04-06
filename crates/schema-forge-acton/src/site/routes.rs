@@ -1,5 +1,8 @@
+use std::path::PathBuf;
+
 use axum::routing::{get, post};
 use axum::Router;
+use tower_http::services::ServeDir;
 
 use crate::state::ForgeState;
 
@@ -35,11 +38,22 @@ fn protected_routes() -> Router<ForgeState> {
 }
 
 /// Public routes that don't require authentication.
-fn public_routes() -> Router<ForgeState> {
-    Router::new()
-        .route("/static/site.css", get(handlers::site_css))
+///
+/// When `static_dir` is `Some`, a `ServeDir` serves files from the filesystem
+/// at `/static`. Otherwise, the embedded default CSS is served at
+/// `/static/site.css`.
+fn public_routes(static_dir: Option<PathBuf>) -> Router<ForgeState> {
+    let mut router = Router::new()
         .route("/login", get(auth::login_page).post(auth::login_submit))
-        .route("/logout", post(auth::logout))
+        .route("/logout", post(auth::logout));
+
+    if let Some(dir) = static_dir {
+        router = router.nest_service("/static", ServeDir::new(dir));
+    } else {
+        router = router.route("/static/site.css", get(handlers::site_css));
+    }
+
+    router
 }
 
 /// Build the site UI router with authentication middleware.
@@ -48,11 +62,14 @@ fn public_routes() -> Router<ForgeState> {
 /// unauthenticated requests to `/site/login`. Public routes (login, logout,
 /// static assets) are accessible without auth.
 ///
+/// When `static_dir` is `Some`, static assets are served from the filesystem.
+/// When `None`, the embedded default CSS is served as a fallback.
+///
 /// A session layer must be applied externally.
-pub fn site_routes() -> Router<ForgeState> {
+pub fn site_routes(static_dir: Option<PathBuf>) -> Router<ForgeState> {
     let protected = protected_routes().route_layer(axum::middleware::from_fn(auth::require_auth));
 
-    protected.merge(public_routes())
+    protected.merge(public_routes(static_dir))
 }
 
 #[cfg(test)]
@@ -62,6 +79,6 @@ mod tests {
     #[test]
     fn site_routes_builds() {
         // Compile-time verification that the router construction works
-        let _router = site_routes();
+        let _router = site_routes(None);
     }
 }
