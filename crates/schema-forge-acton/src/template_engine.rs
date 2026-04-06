@@ -17,8 +17,14 @@ impl TemplateEngine {
     ///
     /// When `template_dir` is `Some`, a filesystem fallback loader is added
     /// for templates not found in the embedded set (e.g. admin templates).
+    /// When `site_template_dir` is `Some`, site templates are loaded from the
+    /// filesystem first (allowing user customization), with embedded defaults
+    /// as a fallback.
     /// When `None`, only embedded templates are available.
-    pub fn new(template_dir: Option<std::path::PathBuf>) -> Self {
+    pub fn new(
+        template_dir: Option<std::path::PathBuf>,
+        site_template_dir: Option<std::path::PathBuf>,
+    ) -> Self {
         let mut env = Environment::new();
 
         // --- Embedded templates (widget/forge/shared) ---
@@ -141,54 +147,50 @@ impl TemplateEngine {
         )
         .unwrap();
 
-        // Site templates
-        env.add_template(
-            "site/base.html",
-            include_str!("../templates/site/base.html"),
-        )
-        .unwrap();
-        env.add_template(
-            "site/index.html",
-            include_str!("../templates/site/index.html"),
-        )
-        .unwrap();
-        env.add_template(
-            "site/login.html",
-            include_str!("../templates/site/login.html"),
-        )
-        .unwrap();
-        env.add_template(
-            "site/login_card.html",
-            include_str!("../templates/site/login_card.html"),
-        )
-        .unwrap();
-        env.add_template(
-            "site/entities.html",
-            include_str!("../templates/site/entities.html"),
-        )
-        .unwrap();
-        env.add_template(
-            "site/entity_detail.html",
-            include_str!("../templates/site/entity_detail.html"),
-        )
-        .unwrap();
-        env.add_template(
-            "site/entity_form.html",
-            include_str!("../templates/site/entity_form.html"),
-        )
-        .unwrap();
-
-        // --- Filesystem fallback loader (for admin/site templates) ---
-        if let Some(template_dir) = template_dir {
-            env.set_loader(move |name| {
-                let path = template_dir.join(name);
-                if path.is_file() {
-                    match std::fs::read_to_string(&path) {
-                        Ok(content) => Ok(Some(content)),
-                        Err(_) => Ok(None),
+        // --- Filesystem loader with embedded site template fallbacks ---
+        //
+        // Resolution order for a template name:
+        //   1. Embedded templates registered via `add_template()` above (widget/forge/shared)
+        //   2. Site template dir on filesystem (user-customizable, checked first for site/ names)
+        //   3. Admin template dir on filesystem
+        //   4. Embedded site template defaults (compiled into the binary)
+        {
+            let site_dir = site_template_dir;
+            let admin_dir = template_dir;
+            env.set_loader(move |name: &str| {
+                // Check site template dir first (user customizations take priority)
+                if let Some(ref dir) = site_dir {
+                    // Site templates are scaffolded without the "site/" prefix,
+                    // so strip it when looking up on the filesystem.
+                    let fs_name = name.strip_prefix("site/").unwrap_or(name);
+                    let path = dir.join(fs_name);
+                    if path.is_file() {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            return Ok(Some(content));
+                        }
                     }
-                } else {
-                    Ok(None)
+                }
+
+                // Check admin template dir
+                if let Some(ref dir) = admin_dir {
+                    let path = dir.join(name);
+                    if path.is_file() {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            return Ok(Some(content));
+                        }
+                    }
+                }
+
+                // Embedded site template defaults
+                match name {
+                    "site/base.html" => Ok(Some(include_str!("../templates/site/base.html").to_string())),
+                    "site/index.html" => Ok(Some(include_str!("../templates/site/index.html").to_string())),
+                    "site/login.html" => Ok(Some(include_str!("../templates/site/login.html").to_string())),
+                    "site/login_card.html" => Ok(Some(include_str!("../templates/site/login_card.html").to_string())),
+                    "site/entities.html" => Ok(Some(include_str!("../templates/site/entities.html").to_string())),
+                    "site/entity_detail.html" => Ok(Some(include_str!("../templates/site/entity_detail.html").to_string())),
+                    "site/entity_form.html" => Ok(Some(include_str!("../templates/site/entity_form.html").to_string())),
+                    _ => Ok(None),
                 }
             });
         }
@@ -271,7 +273,7 @@ mod tests {
 
     #[test]
     fn embedded_templates_loadable() {
-        let engine = TemplateEngine::new(None);
+        let engine = TemplateEngine::new(None, None);
         let names = [
             "forge/entity_list.html",
             "forge/entity_form.html",
@@ -298,7 +300,7 @@ mod tests {
 
     #[test]
     fn admin_filesystem_templates_loadable() {
-        let engine = TemplateEngine::new(Some(test_template_dir()));
+        let engine = TemplateEngine::new(Some(test_template_dir()), None);
         let names = [
             "admin/base.html",
             "admin/login.html",
@@ -320,7 +322,7 @@ mod tests {
     #[test]
     fn split_filter_works() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = TemplateEngine::new(Some(dir.path().to_path_buf()));
+        let engine = TemplateEngine::new(Some(dir.path().to_path_buf()), None);
         // Use an embedded template that exercises the split filter
         // The field_display template uses `split` — test it directly
         #[derive(Serialize)]
@@ -350,7 +352,7 @@ mod tests {
 
     #[test]
     fn missing_template_returns_error() {
-        let engine = TemplateEngine::new(None);
+        let engine = TemplateEngine::new(None, None);
         let result = engine.render("nonexistent.html", &());
         assert!(result.is_err());
     }

@@ -147,6 +147,10 @@ pub async fn run(
         if let Some(ref dir) = args.template_dir {
             builder = builder.with_template_dir(dir.clone());
         }
+        if enable_site {
+            let site_dir = std::path::PathBuf::from("site/templates");
+            builder = builder.with_site_template_dir(site_dir);
+        }
         Some(
             builder.build().await.map_err(|e| CliError::Server {
                 message: format!("failed to build SchemaForgeExtension: {e}"),

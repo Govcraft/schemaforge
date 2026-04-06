@@ -68,6 +68,7 @@ pub struct SchemaForgeExtensionBuilder {
     auth_store: Option<Arc<dyn DynAuthStore>>,
     admin_credentials: Option<(String, String)>,
     template_dir: Option<std::path::PathBuf>,
+    site_template_dir: Option<std::path::PathBuf>,
     webhook_config: crate::webhook::WebhookConfig,
 }
 
@@ -80,6 +81,7 @@ impl SchemaForgeExtensionBuilder {
             auth_store: None,
             admin_credentials: None,
             template_dir: None,
+            site_template_dir: None,
             webhook_config: crate::webhook::WebhookConfig::default(),
         }
     }
@@ -157,6 +159,15 @@ impl SchemaForgeExtensionBuilder {
         self
     }
 
+    /// Set the directory for user-customizable site templates.
+    ///
+    /// Site templates are loaded from this directory first. If a template
+    /// is not found on the filesystem, the embedded default is used.
+    pub fn with_site_template_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.site_template_dir = Some(dir);
+        self
+    }
+
     /// Set the webhook configuration.
     pub fn with_webhook_config(mut self, config: crate::webhook::WebhookConfig) -> Self {
         self.webhook_config = config;
@@ -222,8 +233,10 @@ impl SchemaForgeExtensionBuilder {
         // Construct MiniJinja template engine.
         // Widget/forge/shared templates are always embedded in the binary.
         // Admin templates are loaded from the filesystem when a template dir is provided.
-        let template_engine =
-            Arc::new(crate::template_engine::TemplateEngine::new(self.template_dir));
+        let template_engine = Arc::new(crate::template_engine::TemplateEngine::new(
+            self.template_dir,
+            self.site_template_dir,
+        ));
 
         // Initialize webhook dispatcher if enabled
         let webhook_dispatcher = if self.webhook_config.enabled {
