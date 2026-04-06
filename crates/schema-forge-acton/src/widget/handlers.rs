@@ -57,9 +57,25 @@ pub async fn entity_list(
     let limit = params.limit.unwrap_or(25);
     let offset = params.offset.unwrap_or(0);
 
-    let query = schema_forge_core::query::Query::new(schema_def.id.clone())
+    // Parse field projection early so it can be pushed into the query
+    let proj = if let Some(ref fields_str) = params.fields {
+        Some(
+            crate::routes::query_params::parse_fields_param(fields_str, &schema_def)
+                .map_err(|e| {
+                    WidgetError::from(crate::error::ForgeError::InvalidQuery { message: e })
+                })?,
+        )
+    } else {
+        None
+    };
+
+    let mut query = schema_forge_core::query::Query::new(schema_def.id.clone())
         .with_limit(limit)
         .with_offset(offset);
+    if let Some(ref proj) = proj {
+        query = query.with_projection(proj.iter().cloned().collect());
+    }
+
     let result = state
         .backend
         .query(&query)
@@ -76,12 +92,8 @@ pub async fn entity_list(
     let pagination = PaginationView::new(total_count, limit, offset);
     let mut schema = SchemaView::from_definition(&schema_def);
 
-    // Apply field projection if requested
-    if let Some(ref fields_str) = params.fields {
-        let proj = crate::routes::query_params::parse_fields_param(fields_str, &schema_def)
-            .map_err(|e| {
-                WidgetError::from(crate::error::ForgeError::InvalidQuery { message: e })
-            })?;
+    // View-level field projection (defense-in-depth; DB-level projection above is primary)
+    if let Some(ref proj) = proj {
         for entity in &mut entities {
             entity.field_values.retain(|fv| proj.contains(&fv.name));
             entity.summary.retain(|fv| proj.contains(&fv.name));

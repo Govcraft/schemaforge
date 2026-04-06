@@ -306,6 +306,11 @@ pub struct Query {
     /// Number of results to skip (for pagination).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
+    /// Optional field projection: only these columns will be fetched.
+    /// `None` means all columns (`SELECT *`). The `id` column is always
+    /// included by the SQL backend regardless of whether it appears here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<Vec<String>>,
 }
 
 impl Query {
@@ -317,6 +322,7 @@ impl Query {
             sort: Vec::new(),
             limit: None,
             offset: None,
+            projection: None,
         }
     }
 
@@ -344,6 +350,17 @@ impl Query {
         self
     }
 
+    /// Set the field projection (columns to fetch).
+    ///
+    /// When set, only these fields are returned from the database.
+    /// The `id` column is always included by the backend regardless.
+    /// Callers are responsible for including relation fields if they
+    /// need `resolve_ref_display` to work.
+    pub fn with_projection(mut self, fields: Vec<String>) -> Self {
+        self.projection = Some(fields);
+        self
+    }
+
     /// Validate the query structure.
     pub fn validate(&self) -> Result<(), QueryError> {
         if let (Some(limit), Some(offset)) = (self.limit, self.offset) {
@@ -363,7 +380,18 @@ impl Query {
 
 impl fmt::Display for Query {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SELECT * FROM {}", self.schema)?;
+        match &self.projection {
+            None => write!(f, "SELECT * FROM {}", self.schema)?,
+            Some(fields) => {
+                let mut cols: Vec<&str> = vec!["id"];
+                for field in fields {
+                    if field != "id" {
+                        cols.push(field.as_str());
+                    }
+                }
+                write!(f, "SELECT {} FROM {}", cols.join(", "), self.schema)?;
+            }
+        }
         if let Some(filter) = &self.filter {
             write!(f, " WHERE {filter}")?;
         }

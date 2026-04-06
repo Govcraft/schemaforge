@@ -606,6 +606,11 @@ async fn execute_entity_query(
     let tenant_config = ask_forge(rx).await?;
     inject_tenant_scope(query, claims, &tenant_config);
 
+    // Push field projection into the query for DB-level column selection
+    if let Some(proj) = projection {
+        query.projection = Some(proj.iter().cloned().collect());
+    }
+
     // Execute query via actor
     let (tx, rx) = oneshot::channel();
     forge

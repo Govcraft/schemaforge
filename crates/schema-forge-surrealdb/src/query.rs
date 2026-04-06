@@ -10,7 +10,19 @@ use schema_forge_core::types::DynamicValue;
 ///
 /// The `table` argument is the SurrealDB table name (derived from `SchemaName`).
 pub fn query_to_surql(query: &Query, table: &str) -> String {
-    let mut sql = format!("SELECT * FROM {table}");
+    let select_clause = match &query.projection {
+        None => "*".to_string(),
+        Some(fields) => {
+            let mut cols = vec!["id".to_string()];
+            for f in fields {
+                if f != "id" {
+                    cols.push(f.clone());
+                }
+            }
+            cols.join(", ")
+        }
+    };
+    let mut sql = format!("SELECT {select_clause} FROM {table}");
 
     if let Some(filter) = &query.filter {
         sql.push_str(&format!(" WHERE {}", filter_to_surql(filter)));
@@ -511,5 +523,44 @@ mod tests {
             .with_sort(FieldPath::single("name"), SortOrder::Ascending);
         let sql = count_to_surql(&q, "Contact");
         assert_eq!(sql, "SELECT count() FROM Contact GROUP ALL;");
+    }
+
+    // --- field projection tests ---
+
+    #[test]
+    fn select_no_projection_is_star() {
+        let q = Query::new(SchemaId::new());
+        let sql = query_to_surql(&q, "Contact");
+        assert_eq!(sql, "SELECT * FROM Contact;");
+    }
+
+    #[test]
+    fn select_with_projection() {
+        let q = Query::new(SchemaId::new())
+            .with_projection(vec!["name".into(), "email".into()]);
+        let sql = query_to_surql(&q, "Contact");
+        assert_eq!(sql, "SELECT id, name, email FROM Contact;");
+    }
+
+    #[test]
+    fn select_projection_always_includes_id() {
+        let q = Query::new(SchemaId::new()).with_projection(vec!["name".into()]);
+        let sql = query_to_surql(&q, "Contact");
+        assert_eq!(sql, "SELECT id, name FROM Contact;");
+    }
+
+    #[test]
+    fn select_projection_deduplicates_id() {
+        let q =
+            Query::new(SchemaId::new()).with_projection(vec!["id".into(), "name".into()]);
+        let sql = query_to_surql(&q, "Contact");
+        assert_eq!(sql, "SELECT id, name FROM Contact;");
+    }
+
+    #[test]
+    fn select_empty_projection() {
+        let q = Query::new(SchemaId::new()).with_projection(vec![]);
+        let sql = query_to_surql(&q, "Contact");
+        assert_eq!(sql, "SELECT id FROM Contact;");
     }
 }

@@ -221,6 +221,26 @@ pub fn relative_time_display(dt_str: &str, now: chrono::DateTime<chrono::Utc>) -
     }
 }
 
+/// Humanize an enum value for display: strip leading numeric prefix (`N_`),
+/// replace underscores with spaces, and title-case each word.
+///
+/// Examples: `9_award` → `Award`, `5_initial_engagement` → `Initial Engagement`, `lost` → `Lost`
+pub fn humanize_enum_value(raw: &str) -> String {
+    // Strip leading `<digits>_` prefix
+    let stripped = raw
+        .find('_')
+        .and_then(|pos| {
+            if raw[..pos].chars().all(|c| c.is_ascii_digit()) {
+                Some(&raw[pos + 1..])
+            } else {
+                None
+            }
+        })
+        .unwrap_or(raw);
+
+    snake_to_label(stripped)
+}
+
 /// Convert a snake_case field name to a human-readable label.
 pub fn snake_to_label(name: &str) -> String {
     name.split('_')
@@ -396,12 +416,13 @@ impl EntityView {
                     formatted
                 };
 
-                // For status_badge widget, compute badge class from value
-                let badge_class = if widget_type.as_deref() == Some("status_badge") && !is_empty {
-                    Some(badge_color_class(&raw_value).to_string())
-                } else {
-                    None
-                };
+                // For status_badge widget, compute badge class from raw value
+                let badge_class =
+                    if widget_type.as_deref() == Some("status_badge") && !is_empty {
+                        Some(badge_color_class(&raw_value).to_string())
+                    } else {
+                        None
+                    };
 
                 FieldDisplayView {
                     name: f.name.as_str().to_string(),
@@ -508,7 +529,8 @@ fn format_with_refs(
     display_with_refs(value, ref_display)
 }
 
-/// Display a DynamicValue, resolving Ref/RefArray via a lookup map.
+/// Display a DynamicValue, resolving Ref/RefArray via a lookup map
+/// and humanizing enum values for readability.
 fn display_with_refs(
     value: &DynamicValue,
     ref_display: &std::collections::HashMap<String, String>,
@@ -532,6 +554,7 @@ fn display_with_refs(
             })
             .collect::<Vec<_>>()
             .join(", "),
+        DynamicValue::Enum(s) => humanize_enum_value(s),
         other => dynamic_value_display(other),
     }
 }
@@ -629,7 +652,7 @@ fn field_type_to_input(field_type: &FieldType, value: Option<&DynamicValue>) -> 
             let options = variants
                 .as_slice()
                 .iter()
-                .map(|v| (v.clone(), v.clone()))
+                .map(|v| (v.clone(), humanize_enum_value(v)))
                 .collect();
             ("select".to_string(), vec![], options, false, vec![], None)
         }
@@ -1180,6 +1203,36 @@ mod tests {
     #[test]
     fn display_boolean() {
         assert_eq!(dynamic_value_display(&DynamicValue::Boolean(true)), "true");
+    }
+
+    // --- humanize_enum_value tests ---
+
+    #[test]
+    fn humanize_strips_numeric_prefix() {
+        assert_eq!(humanize_enum_value("9_award"), "Award");
+    }
+
+    #[test]
+    fn humanize_strips_prefix_and_title_cases() {
+        assert_eq!(
+            humanize_enum_value("5_initial_engagement"),
+            "Initial Engagement"
+        );
+    }
+
+    #[test]
+    fn humanize_no_prefix() {
+        assert_eq!(humanize_enum_value("lost"), "Lost");
+    }
+
+    #[test]
+    fn humanize_no_prefix_multi_word() {
+        assert_eq!(humanize_enum_value("in_progress"), "In Progress");
+    }
+
+    #[test]
+    fn humanize_empty_string() {
+        assert_eq!(humanize_enum_value(""), "");
     }
 
     // --- FieldView with default value ---
