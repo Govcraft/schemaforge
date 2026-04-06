@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use schema_forge_backend::entity::Entity;
+use schema_forge_core::query::{FieldPath, Filter};
 use schema_forge_core::types::{
-    Annotation, DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName,
+    Annotation, DynamicValue, FieldType, SchemaDefinition,
 };
 
 use crate::state::ForgeState;
@@ -10,8 +11,8 @@ use crate::state::ForgeState;
 /// Resolve relation display values for a set of entities.
 ///
 /// Scans the schema for relation fields, collects referenced entity IDs,
-/// fetches those entities from the backend, and returns a map from
-/// entity ID string → display value string.
+/// and batch-fetches referenced entities per target schema in a single
+/// `WHERE id IN (...)` query (instead of one query per referenced entity).
 pub async fn resolve_ref_display(
     state: &ForgeState,
     schema: &SchemaDefinition,
@@ -19,8 +20,8 @@ pub async fn resolve_ref_display(
 ) -> HashMap<String, String> {
     let mut ref_display = HashMap::new();
 
-    // Collect (target_schema_name, [entity_ids]) for each relation field
-    let mut targets: HashMap<String, Vec<String>> = HashMap::new();
+    // Collect (target_schema_name, {unique_entity_ids}) for each relation field
+    let mut targets: HashMap<String, HashSet<String>> = HashMap::new();
 
     for field in &schema.fields {
         let target_name = match &field.field_type {
@@ -35,14 +36,14 @@ pub async fn resolve_ref_display(
                         targets
                             .entry(target_name.clone())
                             .or_default()
-                            .push(id.as_str().to_string());
+                            .insert(id.as_str().to_string());
                     }
                     DynamicValue::RefArray(ids) => {
                         for id in ids {
                             targets
                                 .entry(target_name.clone())
                                 .or_default()
-                                .push(id.as_str().to_string());
+                                .insert(id.as_str().to_string());
                         }
                     }
                     _ => {}
@@ -51,8 +52,12 @@ pub async fn resolve_ref_display(
         }
     }
 
-    // For each target schema, fetch the entities and extract display values
+    // For each target schema, batch-fetch all referenced entities in one query
     for (target_name, ids) in &targets {
+        if ids.is_empty() {
+            continue;
+        }
+
         let target_schema = match state.registry.get(target_name).await {
             Some(s) => s,
             None => continue,
@@ -64,25 +69,30 @@ pub async fn resolve_ref_display(
             _ => None,
         });
 
-        for id_str in ids {
-            if ref_display.contains_key(id_str) {
-                continue; // already resolved
-            }
-            let entity_id = match EntityId::parse(id_str) {
-                Ok(eid) => eid,
-                Err(_) => continue,
-            };
-            let target_sn = match SchemaName::new(target_name) {
-                Ok(sn) => sn,
-                Err(_) => continue,
-            };
-            let entity = match state.backend.get(&target_sn, &entity_id).await {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
+        // Build a single query: SELECT id, <display_field> FROM target WHERE id IN (...)
+        let id_values: Vec<DynamicValue> = ids
+            .iter()
+            .map(|id| DynamicValue::Text(id.clone()))
+            .collect();
 
-            let label = resolve_entity_label(&entity, &target_schema, display_field.as_deref());
-            ref_display.insert(id_str.clone(), label);
+        let mut query = schema_forge_core::query::Query::new(target_schema.id.clone())
+            .with_filter(Filter::in_set(FieldPath::single("id"), id_values));
+
+        // Project only the display field to minimize data transfer
+        if let Some(ref df) = display_field {
+            query = query.with_projection(vec![df.clone()]);
+        }
+
+        let result = match state.backend.query(&query).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        for entity in &result.entities {
+            let id_str = entity.id.as_str().to_string();
+            let label =
+                resolve_entity_label(entity, &target_schema, display_field.as_deref());
+            ref_display.insert(id_str, label);
         }
     }
 

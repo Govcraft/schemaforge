@@ -5435,7 +5435,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-acton"
-version = "0.14.1"
+version = "0.14.2"
 dependencies = [
  "acton-service",
  "arc-swap",
@@ -5478,7 +5478,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "acton-service",
  "assert_cmd",
