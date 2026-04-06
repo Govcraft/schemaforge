@@ -146,6 +146,7 @@ Returns a paginated table of entities.
 |-------|------|---------|-------------|
 | `limit` | usize | 25 | Page size |
 | `offset` | usize | 0 | Starting offset |
+| `fields` | string | all | Comma-separated field names for projection (e.g. `?fields=name,email`) |
 
 **HTML response:**
 ```html

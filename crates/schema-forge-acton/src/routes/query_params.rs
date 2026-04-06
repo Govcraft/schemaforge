@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use schema_forge_core::query::{FieldPath, Filter, SortOrder};
 use schema_forge_core::types::{DynamicValue, FieldType, SchemaDefinition};
 
 /// Reserved query parameter names that are not filter fields.
-const RESERVED_PARAMS: &[&str] = &["limit", "offset", "sort"];
+const RESERVED_PARAMS: &[&str] = &["limit", "offset", "sort", "fields"];
 
 /// Supported filter operators parsed from `field__op` suffixes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +207,32 @@ pub fn parse_filter_params(
         1 => Some(filters.into_iter().next().unwrap()),
         _ => Some(Filter::and(filters)),
     })
+}
+
+/// Parse a comma-separated `fields` parameter into a validated set of field names.
+///
+/// Each name is trimmed and checked against the schema's field definitions.
+/// Returns an error listing any unknown field names.
+pub fn parse_fields_param(
+    value: &str,
+    schema: &SchemaDefinition,
+) -> Result<HashSet<String>, String> {
+    let names: Vec<&str> = value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if names.is_empty() {
+        return Err("fields parameter must contain at least one field name".to_string());
+    }
+
+    let unknown: Vec<&str> = names
+        .iter()
+        .filter(|n| !schema.fields.iter().any(|f| f.name.as_str() == **n))
+        .copied()
+        .collect();
+
+    if !unknown.is_empty() {
+        return Err(format!("unknown fields: {}", unknown.join(", ")));
+    }
+
+    Ok(names.into_iter().map(String::from).collect())
 }
 
 #[cfg(test)]
@@ -622,5 +648,68 @@ mod tests {
         // sort should be excluded, only name filter
         let filter = result.unwrap();
         assert!(matches!(filter, Filter::Eq { .. }));
+    }
+
+    #[test]
+    fn parse_filter_key_reserved_fields() {
+        assert_eq!(parse_filter_key("fields"), None);
+    }
+
+    // -- parse_fields_param tests --
+
+    #[test]
+    fn parse_fields_param_single() {
+        let schema = test_schema();
+        let result = parse_fields_param("name", &schema).unwrap();
+        assert_eq!(result, HashSet::from(["name".to_string()]));
+    }
+
+    #[test]
+    fn parse_fields_param_multiple() {
+        let schema = test_schema();
+        let result = parse_fields_param("name,age,status", &schema).unwrap();
+        assert_eq!(
+            result,
+            HashSet::from([
+                "name".to_string(),
+                "age".to_string(),
+                "status".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_fields_param_trims_whitespace() {
+        let schema = test_schema();
+        let result = parse_fields_param("name , age", &schema).unwrap();
+        assert_eq!(
+            result,
+            HashSet::from(["name".to_string(), "age".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_fields_param_unknown_field() {
+        let schema = test_schema();
+        let result = parse_fields_param("name,bogus", &schema);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("bogus"));
+    }
+
+    #[test]
+    fn parse_fields_param_empty_string() {
+        let schema = test_schema();
+        let result = parse_fields_param("", &schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_fields_param_skips_empty_segments() {
+        let schema = test_schema();
+        let result = parse_fields_param("name,,age", &schema).unwrap();
+        assert_eq!(
+            result,
+            HashSet::from(["name".to_string(), "age".to_string()])
+        );
     }
 }

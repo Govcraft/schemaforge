@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use acton_service::middleware::Claims;
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::instrument;
 
-use super::query_params::{parse_filter_params, parse_sort_param};
+use super::query_params::{parse_fields_param, parse_filter_params, parse_sort_param};
 use crate::access::{
     check_schema_access, filter_entity_fields, inject_tenant_on_create, inject_tenant_scope,
     AccessAction, FieldFilterDirection, OptionalClaims,
@@ -245,6 +245,9 @@ pub struct EntityQueryBody {
     /// Number of entities to skip.
     #[serde(default)]
     pub offset: Option<usize>,
+    /// Field projection — only return these fields in the response.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 /// A single sort clause in a POST query body.
@@ -587,6 +590,7 @@ async fn execute_entity_query(
     schema_def: &SchemaDefinition,
     claims: Option<&Claims>,
     query: &mut schema_forge_core::query::Query,
+    projection: Option<&HashSet<String>>,
 ) -> Result<ListEntitiesResponse, ForgeError> {
     let forge = state
         .actor::<ForgeActor>()
@@ -630,11 +634,14 @@ async fn execute_entity_query(
             result.entities
         };
 
-    // Filter read-restricted fields from each entity
+    // Filter read-restricted fields, then apply optional field projection
     let entities: Vec<EntityResponse> = visible_entities
         .into_iter()
         .map(|mut e| {
             filter_entity_fields(&mut e, schema_def, claims, FieldFilterDirection::Read);
+            if let Some(proj) = projection {
+                e.fields.retain(|k, _| proj.contains(k));
+            }
             entity_to_response(&e)
         })
         .collect();
@@ -841,7 +848,24 @@ pub async fn list_entities(
         query = query.with_filter(f);
     }
 
-    let response = execute_entity_query(&state, &schema_def, claims.as_ref(), &mut query).await?;
+    // Parse field projection
+    let projection = if let Some(fields_str) = params.get("fields") {
+        Some(
+            parse_fields_param(fields_str, &schema_def)
+                .map_err(|e| ForgeError::InvalidQuery { message: e })?,
+        )
+    } else {
+        None
+    };
+
+    let response = execute_entity_query(
+        &state,
+        &schema_def,
+        claims.as_ref(),
+        &mut query,
+        projection.as_ref(),
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -921,7 +945,32 @@ pub async fn query_entities(
         query = query.with_filter(filter);
     }
 
-    let response = execute_entity_query(&state, &schema_def, claims.as_ref(), &mut query).await?;
+    // Validate field projection
+    let projection = if let Some(ref field_names) = body.fields {
+        let set: HashSet<String> = field_names.iter().cloned().collect();
+        let unknown: Vec<&str> = set
+            .iter()
+            .filter(|n| !schema_def.fields.iter().any(|f| f.name.as_str() == n.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !unknown.is_empty() {
+            return Err(ForgeError::InvalidQuery {
+                message: format!("unknown fields: {}", unknown.join(", ")),
+            });
+        }
+        Some(set)
+    } else {
+        None
+    };
+
+    let response = execute_entity_query(
+        &state,
+        &schema_def,
+        claims.as_ref(),
+        &mut query,
+        projection.as_ref(),
+    )
+    .await?;
     Ok(Json(response))
 }
 
@@ -1561,5 +1610,62 @@ mod tests {
         });
         let filter = json_to_filter(&json, &schema).unwrap();
         assert!(matches!(filter, Filter::And { ref filters } if filters.len() == 2));
+    }
+
+    // -- EntityQueryBody fields deserialization --
+
+    #[test]
+    fn query_body_deserializes_fields() {
+        let json = serde_json::json!({
+            "fields": ["name", "age"],
+            "limit": 10
+        });
+        let body: EntityQueryBody = serde_json::from_value(json).unwrap();
+        assert_eq!(body.fields, Some(vec!["name".to_string(), "age".to_string()]));
+        assert_eq!(body.limit, Some(10));
+    }
+
+    #[test]
+    fn query_body_fields_defaults_to_none() {
+        let json = serde_json::json!({ "limit": 10 });
+        let body: EntityQueryBody = serde_json::from_value(json).unwrap();
+        assert!(body.fields.is_none());
+    }
+
+    // -- Projection applied to entity fields --
+
+    #[test]
+    fn projection_filters_entity_fields() {
+        let mut entity = Entity::new(
+            SchemaName::new("Contact").unwrap(),
+            BTreeMap::from([
+                ("name".to_string(), DynamicValue::Text("Alice".into())),
+                ("age".to_string(), DynamicValue::Integer(30)),
+                ("active".to_string(), DynamicValue::Boolean(true)),
+            ]),
+        );
+        let proj: HashSet<String> = ["name".to_string()].into_iter().collect();
+        entity.fields.retain(|k, _| proj.contains(k));
+        let response = entity_to_response(&entity);
+        assert_eq!(response.fields.len(), 1);
+        assert_eq!(
+            response.fields.get("name"),
+            Some(&serde_json::json!("Alice"))
+        );
+        assert!(response.fields.get("age").is_none());
+        assert!(response.fields.get("active").is_none());
+    }
+
+    #[test]
+    fn projection_none_returns_all_fields() {
+        let entity = Entity::new(
+            SchemaName::new("Contact").unwrap(),
+            BTreeMap::from([
+                ("name".to_string(), DynamicValue::Text("Alice".into())),
+                ("age".to_string(), DynamicValue::Integer(30)),
+            ]),
+        );
+        let response = entity_to_response(&entity);
+        assert_eq!(response.fields.len(), 2);
     }
 }

@@ -25,11 +25,13 @@ use super::templates::{
 /// URL prefix for widget routes: `/forge`.
 const WIDGET_URL_PREFIX: &str = "/forge";
 
-/// Query params for entity list pagination.
+/// Query params for entity list pagination and field projection.
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct PaginationParams {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    /// Comma-separated field names for projection (e.g. `?fields=name,email`).
+    pub fields: Option<String>,
 }
 
 /// GET /forge/{schema}/entities -- Paginated entity list.
@@ -66,13 +68,26 @@ pub async fn entity_list(
 
     let total_count = result.total_count.unwrap_or(result.entities.len());
     let ref_display = resolve_ref_display(&state, &schema_def, &result.entities).await;
-    let entities: Vec<EntityView> = result
+    let mut entities: Vec<EntityView> = result
         .entities
         .iter()
         .map(|e| EntityView::from_entity_with_refs(e, &schema_def, &ref_display))
         .collect();
     let pagination = PaginationView::new(total_count, limit, offset);
-    let schema = SchemaView::from_definition(&schema_def);
+    let mut schema = SchemaView::from_definition(&schema_def);
+
+    // Apply field projection if requested
+    if let Some(ref fields_str) = params.fields {
+        let proj = crate::routes::query_params::parse_fields_param(fields_str, &schema_def)
+            .map_err(|e| {
+                WidgetError::from(crate::error::ForgeError::InvalidQuery { message: e })
+            })?;
+        for entity in &mut entities {
+            entity.field_values.retain(|fv| proj.contains(&fv.name));
+            entity.summary.retain(|fv| proj.contains(&fv.name));
+        }
+        schema.fields.retain(|fv| proj.contains(&fv.name));
+    }
 
     if wants_json(&headers) {
         return Ok(Json(serde_json::json!({
