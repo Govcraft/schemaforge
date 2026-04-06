@@ -1,0 +1,25 @@
+{% extends "site/base.html" %}
+
+{% block title %}Home - SchemaForge{% endblock %}
+
+{% block content %}
+<div class="welcome">
+    <h1>Welcome{% if current_user %}, {{ current_user.display_name }}{% endif %}</h1>
+    <p>Your data, your schemas. Browse and manage entities below.</p>
+</div>
+
+{% if schemas | length > 0 %}
+<div class="schema-grid">
+    {% for schema in schemas %}
+    <a href="/site/schemas/{{ schema.name }}/entities" class="schema-card">
+        <h2>{{ schema.name }}</h2>
+        <p class="schema-fields">{{ schema.field_count }} field{% if schema.field_count != 1 %}s{% endif %}</p>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <p>No schemas defined yet. Create <code>.schema</code> files and restart the server.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SchemaForge{% endblock %}</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="stylesheet" href="/site/static/site.css">
+</head>
+<body>
+    <nav class="site-nav">
+        <div class="nav-inner">
+            <a href="/site/" class="nav-brand">SchemaForge</a>
+            <div class="nav-links">
+                {% if current_user %}
+                <span class="nav-user">{{ current_user.display_name }}</span>
+                <button hx-post="/site/logout" class="btn btn-sm">Sign out</button>
+                {% else %}
+                <a href="/site/login" class="btn btn-sm">Sign in</a>
+                {% endif %}
+            </div>
+        </div>
+    </nav>
+
+    <main class="site-main">
+        {% if flash %}
+        <div class="flash-container">
+            {% for msg in flash %}
+            <div class="flash {{ msg.css_class }}">{{ msg.message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <p>Powered by SchemaForge</p>
+    </footer>
+</body>
+</html>

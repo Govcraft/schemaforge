@@ -13,6 +13,7 @@ pub mod messages;
 pub mod routes;
 pub mod shared;
 pub mod shared_auth;
+pub mod site;
 pub mod state;
 pub mod system;
 pub mod template_engine;

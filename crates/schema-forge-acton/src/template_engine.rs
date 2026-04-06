@@ -134,7 +134,51 @@ impl TemplateEngine {
         )
         .unwrap();
 
-        // --- Filesystem fallback loader (for admin templates) ---
+        // Admin fragments (field input dispatcher used by forge and site forms)
+        env.add_template(
+            "admin/fragments/field_input.html",
+            include_str!("../templates/admin/fragments/field_input.html"),
+        )
+        .unwrap();
+
+        // Site templates
+        env.add_template(
+            "site/base.html",
+            include_str!("../templates/site/base.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "site/index.html",
+            include_str!("../templates/site/index.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "site/login.html",
+            include_str!("../templates/site/login.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "site/login_card.html",
+            include_str!("../templates/site/login_card.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "site/entities.html",
+            include_str!("../templates/site/entities.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "site/entity_detail.html",
+            include_str!("../templates/site/entity_detail.html"),
+        )
+        .unwrap();
+        env.add_template(
+            "site/entity_form.html",
+            include_str!("../templates/site/entity_form.html"),
+        )
+        .unwrap();
+
+        // --- Filesystem fallback loader (for admin/site templates) ---
         if let Some(template_dir) = template_dir {
             env.set_loader(move |name| {
                 let path = template_dir.join(name);
@@ -238,6 +282,9 @@ mod tests {
             "shared/organisms/entity_list.html",
             "shared/organisms/entity_detail.html",
             "organisms/entity_detail.html",
+            "site/base.html",
+            "site/index.html",
+            "site/login.html",
         ];
         for name in &names {
             let result = engine.env.get_template(name);

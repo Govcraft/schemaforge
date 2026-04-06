@@ -441,6 +441,15 @@ impl SchemaForgeExtension {
         crate::admin::routes::admin_routes().with_state(self.state.clone())
     }
 
+    /// Build site UI routes as a standalone `Router<()>` (state pre-applied).
+    ///
+    /// Includes login/logout and a home page listing available schemas.
+    /// The session layer is **not** included — apply it externally so admin,
+    /// widget, and site routes share the same layer.
+    pub fn site_frontend_router(&self) -> axum::Router {
+        crate::site::routes::site_routes().with_state(self.state.clone())
+    }
+
     /// Build widget UI routes as a standalone `Router<()>` (state pre-applied).
     ///
     /// Includes the `session_to_claims` middleware so browser sessions are

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -127,9 +128,15 @@ pub async fn run(
     // Resolve runtime UI toggles: config.toml defaults, CLI flags override
     let enable_admin = config.server.admin_ui && !args.no_admin_ui;
     let enable_widget = config.server.widget_ui && !args.no_widget_ui;
+    let enable_site = args.with_htmx;
 
-    // 7. Build SchemaForgeExtension for admin/widget UI routes (shared session layer)
-    let extension = if enable_admin || enable_widget {
+    // Scaffold site templates when --with-htmx is active
+    if enable_site {
+        scaffold_site_templates(Path::new("."), output)?;
+    }
+
+    // 7. Build SchemaForgeExtension for admin/widget/site UI routes (shared session layer)
+    let extension = if enable_admin || enable_widget || enable_site {
         let mut builder = SchemaForgeExtension::builder()
             .with_backend_arc(init_data.backend.clone())
             .with_auth_store_arc(auth_store);
@@ -150,7 +157,7 @@ pub async fn run(
     };
 
     // 8. Build versioned routes via acton-service, with optional frontend routes
-    let routes = build_versioned_routes(extension.as_ref(), enable_admin, enable_widget);
+    let routes = build_versioned_routes(extension.as_ref(), enable_admin, enable_widget, enable_site);
 
     // 8. Configure and serve via acton-service
     // Load from config.toml (picks up [token] section), then override serve-specific fields
@@ -169,13 +176,16 @@ pub async fn run(
 
     // Add frontend route prefixes to token auth's public_paths so the PASETO/JWT
     // middleware passes through without rejecting session-based browser requests.
-    if enable_admin || enable_widget {
+    if enable_admin || enable_widget || enable_site {
         let mut public_paths = Vec::new();
         if enable_admin {
             public_paths.push("/admin".to_string());
         }
         if enable_widget {
             public_paths.push("/forge".to_string());
+        }
+        if enable_site {
+            public_paths.push("/site".to_string());
         }
         if let Some(acton_service::config::TokenConfig::Paseto(ref mut pc)) = svc_config.token {
             pc.public_paths.extend(public_paths);
@@ -204,6 +214,9 @@ pub async fn run(
     }
     if enable_widget {
         output.status("    GET  /forge/{schema}/entities");
+    }
+    if enable_site {
+        output.status("    GET  /site/");
     }
     output.status("  Press Ctrl+C to stop.");
 
@@ -387,6 +400,7 @@ fn build_versioned_routes(
     extension: Option<&SchemaForgeExtension>,
     enable_admin: bool,
     enable_widget: bool,
+    enable_site: bool,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
     let mut builder =
         VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
@@ -406,6 +420,11 @@ fn build_versioned_routes(
         } else {
             None
         };
+        let ext_site = if enable_site {
+            Some(ext.site_frontend_router())
+        } else {
+            None
+        };
         let session_layer = ext.session_layer();
         builder = builder.with_frontend_routes(move |router| {
             let mut r = router;
@@ -419,11 +438,50 @@ fn build_versioned_routes(
             if let Some(widget_router) = ext_widget {
                 r = r.nest_service("/forge", widget_router);
             }
+            if let Some(site_router) = ext_site {
+                use axum::response::Redirect;
+                use axum::routing::get;
+                r = r
+                    .nest_service("/site/", site_router)
+                    .route("/site", get(|| async { Redirect::permanent("/site/") }));
+            }
             r.layer(session_layer)
         });
     }
 
     builder.build_routes()
+}
+
+/// Scaffold starter HTMX site templates into `{project_dir}/site/templates/`.
+///
+/// Writes the embedded default templates only if the directory does not already
+/// exist, so user customizations are never overwritten.
+fn scaffold_site_templates(project_dir: &Path, output: &OutputContext) -> Result<(), CliError> {
+    let site_dir = project_dir.join("site/templates");
+    if site_dir.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&site_dir).map_err(|e| CliError::Io {
+        path: site_dir.clone(),
+        source: e,
+    })?;
+    let templates: &[(&str, &str)] = &[
+        ("base.html", include_str!("../../../schema-forge-acton/templates/site/base.html")),
+        ("index.html", include_str!("../../../schema-forge-acton/templates/site/index.html")),
+        ("login.html", include_str!("../../../schema-forge-acton/templates/site/login.html")),
+        ("login_card.html", include_str!("../../../schema-forge-acton/templates/site/login_card.html")),
+        ("entities.html", include_str!("../../../schema-forge-acton/templates/site/entities.html")),
+        ("entity_detail.html", include_str!("../../../schema-forge-acton/templates/site/entity_detail.html")),
+        ("entity_form.html", include_str!("../../../schema-forge-acton/templates/site/entity_form.html")),
+    ];
+    for (name, content) in templates {
+        std::fs::write(site_dir.join(name), content).map_err(|e| CliError::Io {
+            path: site_dir.join(name),
+            source: e,
+        })?;
+    }
+    output.status("  Scaffolded site templates into site/templates/");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -433,7 +491,7 @@ mod tests {
     #[test]
     fn build_versioned_routes_is_callable() {
         // Compile-time verification: builds routes without an extension
-        let _routes = build_versioned_routes(None, false, false);
+        let _routes = build_versioned_routes(None, false, false, false);
     }
 
     #[cfg(feature = "surrealdb")]
@@ -460,6 +518,36 @@ mod tests {
         assert_eq!(config.retry_delay_secs, CONNECT_BASE_DELAY_SECS);
         assert!(!config.optional);
         assert!(!config.lazy_init);
+    }
+
+    fn test_output() -> OutputContext {
+        OutputContext {
+            mode: crate::output::OutputMode::Plain,
+            verbose: 0,
+            quiet: true,
+            use_color: false,
+        }
+    }
+
+    #[test]
+    fn scaffold_creates_site_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        scaffold_site_templates(dir.path(), &test_output()).unwrap();
+        assert!(dir.path().join("site/templates/base.html").exists());
+        assert!(dir.path().join("site/templates/index.html").exists());
+        assert!(dir.path().join("site/templates/login.html").exists());
+    }
+
+    #[test]
+    fn scaffold_skips_if_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let site_dir = dir.path().join("site/templates");
+        std::fs::create_dir_all(&site_dir).unwrap();
+        std::fs::write(site_dir.join("base.html"), "custom").unwrap();
+        scaffold_site_templates(dir.path(), &test_output()).unwrap();
+        // Should not overwrite
+        let content = std::fs::read_to_string(site_dir.join("base.html")).unwrap();
+        assert_eq!(content, "custom");
     }
 
     #[cfg(feature = "surrealdb")]

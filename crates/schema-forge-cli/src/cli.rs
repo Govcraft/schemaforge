@@ -278,6 +278,11 @@ pub struct ServeArgs {
     /// Disable widget UI routes (overrides config.toml)
     #[arg(long = "no-widget-ui")]
     pub no_widget_ui: bool,
+
+    /// Enable the HTMX site UI at /site/ with login/logout and schema browsing.
+    /// Scaffolds starter templates into site/templates/ on first run.
+    #[arg(long = "with-htmx")]
+    pub with_htmx: bool,
 }
 
 /// Export subcommands.

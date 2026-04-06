@@ -112,6 +112,37 @@ fn create_project_structure(project_dir: &Path, template: Template) -> Result<()
             create_dir(&project_dir.join("policies/generated"))?;
             create_dir(&project_dir.join("policies/custom"))?;
 
+            // Site templates for --with-htmx
+            create_dir(&project_dir.join("site/templates"))?;
+            write_file(
+                &project_dir.join("site/templates/base.html"),
+                include_str!("../../../schema-forge-acton/templates/site/base.html"),
+            )?;
+            write_file(
+                &project_dir.join("site/templates/index.html"),
+                include_str!("../../../schema-forge-acton/templates/site/index.html"),
+            )?;
+            write_file(
+                &project_dir.join("site/templates/login.html"),
+                include_str!("../../../schema-forge-acton/templates/site/login.html"),
+            )?;
+            write_file(
+                &project_dir.join("site/templates/login_card.html"),
+                include_str!("../../../schema-forge-acton/templates/site/login_card.html"),
+            )?;
+            write_file(
+                &project_dir.join("site/templates/entities.html"),
+                include_str!("../../../schema-forge-acton/templates/site/entities.html"),
+            )?;
+            write_file(
+                &project_dir.join("site/templates/entity_detail.html"),
+                include_str!("../../../schema-forge-acton/templates/site/entity_detail.html"),
+            )?;
+            write_file(
+                &project_dir.join("site/templates/entity_form.html"),
+                include_str!("../../../schema-forge-acton/templates/site/entity_form.html"),
+            )?;
+
             // Placeholder Dockerfile
             let dockerfile =
                 "# SchemaForge Application\nFROM rust:1.84 as builder\n# TODO: customize\n";
@@ -171,6 +202,11 @@ fn print_project_tree(project_dir: &Path, template: Template) {
             println!("    policies/");
             println!("      generated/");
             println!("      custom/");
+            println!("    site/");
+            println!("      templates/");
+            println!("        base.html");
+            println!("        index.html");
+            println!("        login.html");
             println!("    Dockerfile");
             println!("    k8s/");
         }
@@ -218,6 +254,9 @@ mod tests {
         assert!(project.join("schemas").exists());
         assert!(project.join("policies/generated").exists());
         assert!(project.join("policies/custom").exists());
+        assert!(project.join("site/templates/base.html").exists());
+        assert!(project.join("site/templates/index.html").exists());
+        assert!(project.join("site/templates/login.html").exists());
         assert!(project.join("Dockerfile").exists());
         assert!(project.join("k8s").exists());
     }
