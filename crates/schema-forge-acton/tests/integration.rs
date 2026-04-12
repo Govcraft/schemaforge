@@ -49,6 +49,7 @@ struct TestForgeInit {
     registry: HashMap<String, SchemaDefinition>,
     tenant_config: Option<TenantConfig>,
     record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+    hook_dispatcher: Option<Arc<dyn schema_forge_acton::hooks::HookDispatcher>>,
 }
 
 /// Build a test `AppState<SchemaForgeConfig>` with a ForgeActor initialized from the given params.
@@ -75,6 +76,7 @@ async fn build_test_app_state(init: TestForgeInit) -> AppState<SchemaForgeConfig
             backend: init.backend,
             tenant_config: init.tenant_config,
             record_access_policy: init.record_access_policy,
+            hook_dispatcher: init.hook_dispatcher,
             reply: ReplyChannel::new(tx),
         })
         .await;
@@ -97,6 +99,7 @@ async fn test_app_state() -> AppState<SchemaForgeConfig> {
         registry: HashMap::new(),
         tenant_config: None,
         record_access_policy: None,
+        hook_dispatcher: None,
     })
     .await
 }
@@ -627,6 +630,7 @@ async fn request_with_admin_claims_succeeds() {
         registry: HashMap::new(),
         tenant_config: None,
         record_access_policy: None,
+        hook_dispatcher: None,
     })
     .await;
     let app = test_app_with_claims_state(state, make_test_claims(&["admin"]));
@@ -688,6 +692,7 @@ async fn request_without_claims_returns_401() {
         registry,
         tenant_config: None,
         record_access_policy: None,
+        hook_dispatcher: None,
     })
     .await;
     // No Claims injected — requests should get 401
@@ -763,6 +768,7 @@ async fn access_test_state(
         registry,
         tenant_config: None,
         record_access_policy: None,
+        hook_dispatcher: None,
     })
     .await;
 
@@ -882,6 +888,7 @@ async fn request_without_claims_on_access_controlled_schema_returns_401() {
         registry,
         tenant_config: None,
         record_access_policy: None,
+        hook_dispatcher: None,
     })
     .await;
     let app = test_app_with_state(state);
@@ -960,6 +967,7 @@ async fn field_filtering_hides_restricted_fields() {
         registry,
         tenant_config: None,
         record_access_policy: None,
+        hook_dispatcher: None,
     })
     .await;
     let app = test_app_with_claims_state(state, make_test_claims(&["member"]));

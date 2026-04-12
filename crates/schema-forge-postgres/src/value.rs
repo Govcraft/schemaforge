@@ -402,7 +402,7 @@ mod tests {
         assert!(bind_dynamic_value(&mut args, &DynamicValue::Integer(42)).is_ok());
 
         let mut args = PgArguments::default();
-        assert!(bind_dynamic_value(&mut args, &DynamicValue::Float(3.14)).is_ok());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Float(2.5)).is_ok());
 
         let mut args = PgArguments::default();
         assert!(bind_dynamic_value(&mut args, &DynamicValue::Boolean(true)).is_ok());

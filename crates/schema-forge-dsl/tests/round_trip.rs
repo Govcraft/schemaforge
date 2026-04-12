@@ -270,3 +270,46 @@ fn round_trip_combined_annotations() {
         }"#,
     );
 }
+
+#[test]
+fn round_trip_hook_single_event() {
+    assert_round_trip(
+        r#"@hook(before_change) """Validate the translation request and call AWS Translate."""
+        schema Translation {
+            source_text: text required
+            target_language: text required
+        }"#,
+    );
+}
+
+#[test]
+fn round_trip_hook_multiple_events() {
+    assert_round_trip(
+        r#"@hook(before_change) """Call AWS Translate."""
+        @hook(after_change) """Publish a NATS event."""
+        @hook(before_delete) """Refuse delete if document is locked."""
+        schema Document {
+            title: text required
+        }"#,
+    );
+}
+
+#[test]
+fn round_trip_hook_multiline_intent() {
+    assert_round_trip(
+        "@hook(before_validate) \"\"\"\n            Line one of intent.\n            Line two of intent.\n            \"\"\"\n        schema Doc { title: text }",
+    );
+}
+
+#[test]
+fn round_trip_hook_with_other_annotations() {
+    assert_round_trip(
+        r#"@version(2)
+        @access(read: ["user"], write: ["user"])
+        @hook(before_change) """Run AI moderation."""
+        @hook(after_change) """Index in search."""
+        schema Post {
+            body: text required
+        }"#,
+    );
+}

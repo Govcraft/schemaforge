@@ -49,6 +49,89 @@ pub enum Annotation {
         /// Optional HMAC signing secret for inline subscription.
         secret: Option<String>,
     },
+    /// `@hook(event) """intent"""` -- declares a lifecycle hook served by an
+    /// external gRPC service. One annotation per `(schema, event)` pair.
+    Hook {
+        /// Which lifecycle event this hook listens for.
+        event: HookEvent,
+        /// Natural-language description of the intended behavior. Used as
+        /// requirements documentation and as a generation prompt for the
+        /// hook implementation.
+        intent: String,
+    },
+}
+
+/// Lifecycle events that a `@hook` annotation can target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum HookEvent {
+    /// Fires before field validation. May modify data or abort.
+    BeforeValidate,
+    /// Fires before create/update, after validation. May modify data or abort.
+    BeforeChange,
+    /// Fires after create/update is persisted. Cannot modify data; cannot abort.
+    AfterChange,
+    /// Fires before query execution. Cannot modify data; may abort.
+    BeforeRead,
+    /// Fires after query, before response. May transform results.
+    AfterRead,
+    /// Fires before deletion. May abort.
+    BeforeDelete,
+    /// Fires after deletion. Cannot abort.
+    AfterDelete,
+}
+
+impl std::str::FromStr for HookEvent {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "before_validate" => Ok(Self::BeforeValidate),
+            "before_change" => Ok(Self::BeforeChange),
+            "after_change" => Ok(Self::AfterChange),
+            "before_read" => Ok(Self::BeforeRead),
+            "after_read" => Ok(Self::AfterRead),
+            "before_delete" => Ok(Self::BeforeDelete),
+            "after_delete" => Ok(Self::AfterDelete),
+            _ => Err(()),
+        }
+    }
+}
+
+impl HookEvent {
+    /// The DSL keyword for this event, suitable for printing.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BeforeValidate => "before_validate",
+            Self::BeforeChange => "before_change",
+            Self::AfterChange => "after_change",
+            Self::BeforeRead => "before_read",
+            Self::AfterRead => "after_read",
+            Self::BeforeDelete => "before_delete",
+            Self::AfterDelete => "after_delete",
+        }
+    }
+
+    /// Whether this event runs synchronously and blocks the request.
+    pub fn is_blocking(self) -> bool {
+        matches!(
+            self,
+            Self::BeforeValidate
+                | Self::BeforeChange
+                | Self::BeforeRead
+                | Self::BeforeDelete
+        )
+    }
+
+    /// All hook events in declaration order.
+    pub const ALL: &'static [HookEvent] = &[
+        Self::BeforeValidate,
+        Self::BeforeChange,
+        Self::AfterChange,
+        Self::BeforeRead,
+        Self::AfterRead,
+        Self::BeforeDelete,
+        Self::AfterDelete,
+    ];
 }
 
 impl std::fmt::Display for Annotation {
@@ -131,6 +214,9 @@ impl std::fmt::Display for Annotation {
                 }
                 write!(f, ")")
             }
+            Self::Hook { event, intent } => {
+                write!(f, "@hook({}) \"\"\"{}\"\"\"", event.as_str(), intent)
+            }
         }
     }
 }
@@ -155,6 +241,15 @@ impl Annotation {
             Self::Tenant(_) => "tenant",
             Self::Dashboard { .. } => "dashboard",
             Self::Webhook { .. } => "webhook",
+            Self::Hook { event, .. } => match event {
+                HookEvent::BeforeValidate => "hook:before_validate",
+                HookEvent::BeforeChange => "hook:before_change",
+                HookEvent::AfterChange => "hook:after_change",
+                HookEvent::BeforeRead => "hook:before_read",
+                HookEvent::AfterRead => "hook:after_read",
+                HookEvent::BeforeDelete => "hook:before_delete",
+                HookEvent::AfterDelete => "hook:after_delete",
+            },
         }
     }
 }

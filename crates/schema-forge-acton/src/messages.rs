@@ -89,6 +89,16 @@ pub struct GetRecordAccessPolicy {
     pub reply: ReplyChannel<Option<Arc<dyn RecordAccessPolicy>>>,
 }
 
+/// Retrieve the configured hook dispatcher, if any.
+///
+/// Returns `None` when hook dispatch has not been wired into the actor
+/// (e.g. during tests that do not exercise hooks, or in production
+/// deployments where `hooks.enabled = false`).
+#[derive(Clone, Debug)]
+pub struct GetHookDispatcher {
+    pub reply: ReplyChannel<Option<Arc<dyn crate::hooks::HookDispatcher>>>,
+}
+
 // ---------------------------------------------------------------------------
 // Registry mutations
 // ---------------------------------------------------------------------------
@@ -208,6 +218,7 @@ pub struct InitForge {
     pub backend: Arc<dyn crate::state::DynForgeBackend>,
     pub tenant_config: Option<TenantConfig>,
     pub record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+    pub hook_dispatcher: Option<Arc<dyn crate::hooks::HookDispatcher>>,
     pub reply: ReplyChannel<()>,
 }
 
@@ -220,6 +231,10 @@ impl std::fmt::Debug for InitForge {
             .field(
                 "record_access_policy",
                 &self.record_access_policy.as_ref().map(|_| ".."),
+            )
+            .field(
+                "hook_dispatcher",
+                &self.hook_dispatcher.as_ref().map(|_| ".."),
             )
             .field("reply", &self.reply)
             .finish()

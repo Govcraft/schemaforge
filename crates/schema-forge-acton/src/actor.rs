@@ -17,11 +17,12 @@ use schema_forge_backend::error::BackendError;
 use schema_forge_backend::tenant::TenantConfig;
 use schema_forge_core::types::SchemaDefinition;
 
+use crate::hooks::HookDispatcher;
 use crate::messages::{
     AggregateEntities, ApplyMigration, CountEntities, CreateEntity, DeleteEntity, GetEntity,
-    GetRecordAccessPolicy, GetSchema, GetTenantConfig, InitForge, InsertSchema, ListSchemas,
-    LoadSchemaMetadata, QueryEntities, RemoveSchema, StoreSchemaMetadata, UpdateEntity,
-    UpdateTenantConfig,
+    GetHookDispatcher, GetRecordAccessPolicy, GetSchema, GetTenantConfig, InitForge, InsertSchema,
+    ListSchemas, LoadSchemaMetadata, QueryEntities, RemoveSchema, StoreSchemaMetadata,
+    UpdateEntity, UpdateTenantConfig,
 };
 use crate::state::DynForgeBackend;
 
@@ -39,6 +40,7 @@ pub struct ForgeActor {
     pub(crate) backend: Option<Arc<dyn DynForgeBackend>>,
     pub(crate) tenant_config: Option<TenantConfig>,
     pub(crate) record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+    pub(crate) hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
 }
 
 impl std::fmt::Debug for ForgeActor {
@@ -50,6 +52,10 @@ impl std::fmt::Debug for ForgeActor {
             .field(
                 "record_access_policy",
                 &self.record_access_policy.as_ref().map(|_| ".."),
+            )
+            .field(
+                "hook_dispatcher",
+                &self.hook_dispatcher.as_ref().map(|_| ".."),
             )
             .finish()
     }
@@ -66,6 +72,7 @@ impl ForgeActor {
             backend: Some(backend),
             tenant_config: None,
             record_access_policy: None,
+            hook_dispatcher: None,
         }
     }
 }
@@ -91,6 +98,7 @@ fn configure_init(actor: &mut ManagedActor<Idle, ForgeActor>) {
         actor.model.backend = Some(msg.backend.clone());
         actor.model.tenant_config = msg.tenant_config.clone();
         actor.model.record_access_policy = msg.record_access_policy.clone();
+        actor.model.hook_dispatcher = msg.hook_dispatcher.clone();
         let reply = msg.reply.clone();
         Reply::pending(async move {
             reply.send(()).await;
@@ -133,6 +141,14 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             reply.send(policy).await;
+        })
+    });
+
+    actor.act_on::<GetHookDispatcher>(|actor, ctx| {
+        let dispatcher = actor.model.hook_dispatcher.clone();
+        let reply = ctx.message().reply.clone();
+        Reply::pending(async move {
+            reply.send(dispatcher).await;
         })
     });
 }

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SchemaError;
 
-use super::annotation::Annotation;
+use super::annotation::{Annotation, HookEvent};
 use super::field_definition::FieldDefinition;
 use super::schema_id::SchemaId;
 use super::schema_name::SchemaName;
@@ -105,6 +105,32 @@ impl SchemaDefinition {
             Some(Annotation::Webhook { .. }) => vec!["created", "updated", "deleted"],
             _ => vec![],
         }
+    }
+
+    /// Returns the `@hook` annotation for the given event, if declared.
+    pub fn hook_for(&self, event: HookEvent) -> Option<(&HookEvent, &str)> {
+        self.annotations.iter().find_map(|a| match a {
+            Annotation::Hook { event: e, intent } if *e == event => Some((e, intent.as_str())),
+            _ => None,
+        })
+    }
+
+    /// Returns true if this schema declares any `@hook` annotation.
+    pub fn has_hooks(&self) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::Hook { .. }))
+    }
+
+    /// Returns all hook events declared on this schema, in declaration order.
+    pub fn hook_events(&self) -> Vec<HookEvent> {
+        self.annotations
+            .iter()
+            .filter_map(|a| match a {
+                Annotation::Hook { event, .. } => Some(*event),
+                _ => None,
+            })
+            .collect()
     }
 }
 

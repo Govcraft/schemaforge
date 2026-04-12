@@ -18,6 +18,7 @@ mod schema_version;
 mod text_constraints;
 
 pub use annotation::Annotation;
+pub use annotation::HookEvent;
 pub use annotation::TenantKind;
 pub use cardinality::Cardinality;
 pub use default_value::DefaultValue;

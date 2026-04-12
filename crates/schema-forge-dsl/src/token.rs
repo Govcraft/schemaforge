@@ -1,4 +1,15 @@
-use logos::Logos;
+use logos::{Lexer, Logos};
+
+/// Callback for the triple-quoted string token. After logos has matched
+/// the opening `"""`, scans the remainder for the closing `"""` and
+/// advances the lexer cursor past it. Returns `None` (lex error) if no
+/// closing delimiter is found.
+fn lex_triple_string(lex: &mut Lexer<Token>) -> Option<()> {
+    let rest = lex.remainder();
+    let end = rest.find("\"\"\"")?;
+    lex.bump(end + 3);
+    Some(())
+}
 
 /// Tokens produced by the SchemaDSL lexer.
 ///
@@ -86,6 +97,14 @@ pub enum Token {
     At,
 
     // -- Literals --
+    /// A triple-quoted string literal, e.g. `"""hello world"""`.
+    /// May span multiple lines and contain unescaped double quotes
+    /// (up to two in a row). Used for `@hook` intent descriptions.
+    /// Must be matched before `StringLiteral` so logos picks the longer
+    /// `"""` opener over `""` (an empty `StringLiteral`).
+    #[token("\"\"\"", lex_triple_string)]
+    TripleStringLiteral,
+
     /// A double-quoted string literal, e.g. `"hello"`.
     #[regex(r#""([^"\\]|\\.)*""#)]
     StringLiteral,
@@ -135,6 +154,7 @@ impl Token {
             Self::Arrow => "'->'",
             Self::At => "'@'",
             Self::StringLiteral => "string literal",
+            Self::TripleStringLiteral => "triple-quoted string literal",
             Self::IntegerLiteral => "integer literal",
             Self::FloatLiteral => "float literal",
             Self::Ident => "identifier",

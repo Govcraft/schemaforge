@@ -9,6 +9,7 @@ pub mod extension;
 pub mod form;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+pub mod hooks;
 pub mod messages;
 pub mod routes;
 pub mod shared;

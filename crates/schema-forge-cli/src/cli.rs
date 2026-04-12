@@ -110,6 +110,65 @@ pub enum Commands {
 
     /// Generate shell completion scripts
     Completions(CompletionsArgs),
+
+    /// Generate, list, or diff hook service scaffolds for `@hook(...)`
+    /// annotations declared in your schemas.
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommands,
+    },
+}
+
+/// Hook scaffolding subcommands.
+#[derive(Subcommand)]
+pub enum HooksCommands {
+    /// Generate a hook service project for one or all schemas
+    Generate(HooksGenerateArgs),
+    /// List all `@hook(...)` annotations across the schema directory
+    List(HooksListArgs),
+    /// Diff hook annotations between two schema versions / directories
+    Diff(HooksDiffArgs),
+}
+
+/// Arguments for `schema-forge hooks generate`.
+#[derive(Args)]
+pub struct HooksGenerateArgs {
+    /// Schema directory to scan for `@hook(...)` annotations
+    #[arg(long, default_value = "schemas")]
+    pub schema_dir: PathBuf,
+
+    /// Output directory for the generated hook service project
+    #[arg(short = 'o', long, default_value = "hooks-service")]
+    pub out_dir: PathBuf,
+
+    /// Generate stubs for every annotated schema (one combined project)
+    #[arg(long, conflicts_with = "schema")]
+    pub all: bool,
+
+    /// Generate stubs for a single named schema
+    #[arg(long, conflicts_with = "all")]
+    pub schema: Option<String>,
+
+    /// Overwrite existing files in `out_dir`
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Arguments for `schema-forge hooks list`.
+#[derive(Args)]
+pub struct HooksListArgs {
+    /// Schema directory to scan
+    #[arg(long, default_value = "schemas")]
+    pub schema_dir: PathBuf,
+}
+
+/// Arguments for `schema-forge hooks diff`.
+#[derive(Args)]
+pub struct HooksDiffArgs {
+    /// Old schema directory
+    pub old: PathBuf,
+    /// New schema directory
+    pub new: PathBuf,
 }
 
 /// Token management subcommands.

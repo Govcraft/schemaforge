@@ -29,6 +29,9 @@ async fn main() {
         }
         cli::Commands::Token { command } => commands::token::run(command, &output).await,
         cli::Commands::Completions(args) => commands::completions::run(args),
+        cli::Commands::Hooks { command } => {
+            commands::hooks::run(command, &cli.global, &output).await
+        }
     };
 
     match result {

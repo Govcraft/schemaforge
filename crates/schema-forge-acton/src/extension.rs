@@ -33,6 +33,8 @@ pub struct InitForgeData {
     pub tenant_config: Option<TenantConfig>,
     /// Optional record-level access policy.
     pub record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+    /// Optional hook dispatcher for `@hook` lifecycle events.
+    pub hook_dispatcher: Option<Arc<dyn crate::hooks::HookDispatcher>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +345,7 @@ impl SchemaForgeExtension {
             backend,
             tenant_config,
             record_access_policy,
+            hook_dispatcher: None,
         })
     }
 

@@ -25,10 +25,15 @@ use crate::access::{
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
-use crate::messages::{
-    CreateEntity, DeleteEntity, GetEntity, GetRecordAccessPolicy, GetSchema, GetTenantConfig,
-    QueryEntities, ReplyChannel, UpdateEntity,
+use crate::hooks::{
+    run_after_hook, run_before_hook, HookDispatcher, HookInvocation, HooksConfig,
 };
+use crate::messages::{
+    CreateEntity, DeleteEntity, GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema,
+    GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
+};
+use schema_forge_core::types::HookEvent;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Actor request helper
@@ -50,6 +55,141 @@ async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
         .map_err(|_| ForgeError::Internal {
             message: "forge actor unavailable".into(),
         })
+}
+
+// ---------------------------------------------------------------------------
+// Hook dispatch helpers
+// ---------------------------------------------------------------------------
+
+/// Retrieve the hook dispatcher from the actor, or `None` if hooks are
+/// globally disabled or no dispatcher was wired at init time. Returns
+/// `None` (not an error) so callers can short-circuit with no extra cost
+/// on the hot path when hooks are not in use.
+async fn fetch_hook_dispatcher(
+    forge: &acton_service::prelude::ActorHandle,
+) -> Option<Arc<dyn HookDispatcher>> {
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetHookDispatcher {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await.ok().flatten()
+}
+
+/// Build a `HookInvocation` for the given schema, event, operation, and
+/// field snapshot.
+fn build_invocation(
+    schema: &SchemaDefinition,
+    event: HookEvent,
+    operation: &str,
+    user: Option<&Claims>,
+    entity_id: Option<String>,
+    fields: &BTreeMap<String, DynamicValue>,
+) -> HookInvocation {
+    HookInvocation {
+        schema: schema.name.as_str().to_string(),
+        event,
+        operation: operation.to_string(),
+        user_id: user.map(|c| c.sub.clone()),
+        entity_id,
+        fields: fields.clone(),
+    }
+}
+
+/// Context bundle for [`apply_before_hook`]. Groups the per-request
+/// parameters that are constant across a hook call so the helper does
+/// not balloon into a wide argument list.
+struct BeforeHookCtx<'a> {
+    dispatcher: &'a dyn HookDispatcher,
+    hooks_config: &'a HooksConfig,
+    schema: &'a SchemaDefinition,
+    event: HookEvent,
+    operation: &'a str,
+    user: Option<&'a Claims>,
+    entity_id: Option<String>,
+}
+
+/// Run a `before_*` hook on a mutable field map. If the hook returns
+/// modified fields, replaces the entries in-place. Propagates aborts as
+/// [`ForgeError::HookAborted`] and required-hook errors as
+/// [`ForgeError::HookUnavailable`].
+async fn apply_before_hook(
+    ctx: BeforeHookCtx<'_>,
+    fields: &mut BTreeMap<String, DynamicValue>,
+) -> Result<(), ForgeError> {
+    let invocation = build_invocation(
+        ctx.schema,
+        ctx.event,
+        ctx.operation,
+        ctx.user,
+        ctx.entity_id,
+        fields,
+    );
+    let outcome = run_before_hook(ctx.dispatcher, ctx.hooks_config, invocation)
+        .await
+        .map_err(ForgeError::from)?;
+    if let Some(outcome) = outcome {
+        if let Some(modified) = outcome.modified_fields {
+            for (k, v) in modified {
+                fields.insert(k, v);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run a blocking read hook (`before_read` or `after_read`) using the
+/// `before` dispatch path. Read-side hooks need to be blocking so the
+/// route handler can apply field-level modifications (e.g. redaction)
+/// or honor an abort. Both events route through `dispatcher.call_before`
+/// to share the modify/abort response shape.
+///
+/// Returns `Ok(())` if the hook is not configured or if it ran cleanly.
+/// Mutates `fields` in place when the hook returns modifications.
+async fn apply_read_hook(
+    ctx: BeforeHookCtx<'_>,
+    fields: &mut BTreeMap<String, DynamicValue>,
+) -> Result<(), ForgeError> {
+    // Early exit when this schema has no hook for this specific event —
+    // avoids paying any per-call cost in the common case.
+    if ctx.schema.hook_for(ctx.event).is_none() {
+        return Ok(());
+    }
+    apply_before_hook(ctx, fields).await
+}
+
+/// Owned parameter bundle for [`fire_after_hook`]. Everything is moved
+/// into a spawned task, so each field is `'static`-friendly (owned).
+struct AfterHookCtx {
+    dispatcher: Arc<dyn HookDispatcher>,
+    hooks_config: HooksConfig,
+    schema: SchemaDefinition,
+    event: HookEvent,
+    operation: String,
+    user_id: Option<String>,
+}
+
+/// Dispatch an `after_*` hook. Fire-and-forget: never errors into the
+/// caller's response. Honors the global `enabled` flag and per-schema
+/// binding presence via [`run_after_hook`].
+fn fire_after_hook(ctx: AfterHookCtx, entity: &Entity) {
+    let invocation = HookInvocation {
+        schema: ctx.schema.name.as_str().to_string(),
+        event: ctx.event,
+        operation: ctx.operation,
+        user_id: ctx.user_id,
+        entity_id: Some(entity.id.as_str().to_string()),
+        fields: entity.fields.clone(),
+    };
+    // Spawn into background so the response path never blocks on the
+    // after-hook call. The dispatcher is itself responsible for
+    // bounding internal concurrency.
+    let dispatcher = ctx.dispatcher;
+    let hooks_config = ctx.hooks_config;
+    tokio::spawn(async move {
+        run_after_hook(dispatcher.as_ref(), &hooks_config, invocation).await;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +860,29 @@ pub async fn create_entity(
     let tenant_config = ask_forge(rx).await?;
     inject_tenant_on_create(&mut fields, claims.as_ref(), &tenant_config);
 
+    // before_change hook
+    let hooks_config = state.config().custom.schema_forge.hooks.clone();
+    let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
+        fetch_hook_dispatcher(forge).await
+    } else {
+        None
+    };
+    if let Some(ref dispatcher) = hook_dispatcher {
+        apply_before_hook(
+            BeforeHookCtx {
+                dispatcher: dispatcher.as_ref(),
+                hooks_config: &hooks_config,
+                schema: &schema_def,
+                event: HookEvent::BeforeChange,
+                operation: "create",
+                user: claims.as_ref(),
+                entity_id: None,
+            },
+            &mut fields,
+        )
+        .await?;
+    }
+
     // Create the entity, filtering write-restricted fields
     let mut entity = Entity::new(schema_name, fields);
     filter_entity_fields(
@@ -738,6 +901,21 @@ pub async fn create_entity(
         })
         .await;
     let mut created = ask_forge(rx).await?.map_err(ForgeError::from)?;
+
+    // after_change hook (fire-and-forget)
+    if let Some(dispatcher) = hook_dispatcher.clone() {
+        fire_after_hook(
+            AfterHookCtx {
+                dispatcher,
+                hooks_config: hooks_config.clone(),
+                schema: schema_def.clone(),
+                event: HookEvent::AfterChange,
+                operation: "create".to_string(),
+                user_id: claims.as_ref().map(|c| c.sub.clone()),
+            },
+            &created,
+        );
+    }
 
     // Filter read-restricted fields from response
     filter_entity_fields(
@@ -804,6 +982,27 @@ pub async fn list_entities(
 
     // Access check
     check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
+
+    // before_read hook gate (no entity_id, no fields — list scope).
+    let hooks_config = state.config().custom.schema_forge.hooks.clone();
+    if hooks_config.enabled && schema_def.hook_for(HookEvent::BeforeRead).is_some() {
+        if let Some(dispatcher) = fetch_hook_dispatcher(forge).await {
+            let mut empty = BTreeMap::new();
+            apply_read_hook(
+                BeforeHookCtx {
+                    dispatcher: dispatcher.as_ref(),
+                    hooks_config: &hooks_config,
+                    schema: &schema_def,
+                    event: HookEvent::BeforeRead,
+                    operation: "list",
+                    user: claims.as_ref(),
+                    entity_id: None,
+                },
+                &mut empty,
+            )
+            .await?;
+        }
+    }
 
     // Build a query
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
@@ -903,6 +1102,27 @@ pub async fn query_entities(
 
     // Access check
     check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
+
+    // before_read hook gate (no entity_id, no fields — query scope).
+    let hooks_config = state.config().custom.schema_forge.hooks.clone();
+    if hooks_config.enabled && schema_def.hook_for(HookEvent::BeforeRead).is_some() {
+        if let Some(dispatcher) = fetch_hook_dispatcher(forge).await {
+            let mut empty = BTreeMap::new();
+            apply_read_hook(
+                BeforeHookCtx {
+                    dispatcher: dispatcher.as_ref(),
+                    hooks_config: &hooks_config,
+                    schema: &schema_def,
+                    event: HookEvent::BeforeRead,
+                    operation: "query",
+                    user: claims.as_ref(),
+                    entity_id: None,
+                },
+                &mut empty,
+            )
+            .await?;
+        }
+    }
 
     // Build a query
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
@@ -1010,12 +1230,43 @@ pub async fn get_entity(
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
+    // Resolve hook configuration up front. Only fetch the dispatcher when
+    // this schema actually declares a read-side hook — keeps the cost
+    // zero for the common case where reads are unhooked.
+    let hooks_config = state.config().custom.schema_forge.hooks.clone();
+    let read_hook_dispatcher = if hooks_config.enabled
+        && (schema_def.hook_for(HookEvent::BeforeRead).is_some()
+            || schema_def.hook_for(HookEvent::AfterRead).is_some())
+    {
+        fetch_hook_dispatcher(forge).await
+    } else {
+        None
+    };
+
+    // before_read hook (blocking; no fields yet — entity has not been fetched).
+    if let Some(ref dispatcher) = read_hook_dispatcher {
+        let mut empty_fields = BTreeMap::new();
+        apply_read_hook(
+            BeforeHookCtx {
+                dispatcher: dispatcher.as_ref(),
+                hooks_config: &hooks_config,
+                schema: &schema_def,
+                event: HookEvent::BeforeRead,
+                operation: "read",
+                user: claims.as_ref(),
+                entity_id: Some(entity_id.as_str().to_string()),
+            },
+            &mut empty_fields,
+        )
+        .await?;
+    }
+
     // Get entity via actor
     let (tx, rx) = oneshot::channel();
     forge
         .send(GetEntity {
             schema: schema_name,
-            id: entity_id,
+            id: entity_id.clone(),
             reply: ReplyChannel::new(tx),
         })
         .await;
@@ -1048,6 +1299,24 @@ pub async fn get_entity(
         claims.as_ref(),
         FieldFilterDirection::Read,
     );
+
+    // after_read hook (blocking; runs through the same call_before path
+    // so it can patch the response payload — e.g. redact, decorate).
+    if let Some(ref dispatcher) = read_hook_dispatcher {
+        apply_read_hook(
+            BeforeHookCtx {
+                dispatcher: dispatcher.as_ref(),
+                hooks_config: &hooks_config,
+                schema: &schema_def,
+                event: HookEvent::AfterRead,
+                operation: "read",
+                user: claims.as_ref(),
+                entity_id: Some(entity.id.as_str().to_string()),
+            },
+            &mut entity.fields,
+        )
+        .await?;
+    }
 
     Ok(Json(entity_to_response(&entity)))
 }
@@ -1126,8 +1395,31 @@ pub async fn update_entity(
     }
 
     // Convert JSON fields
-    let fields = json_to_entity_fields(&schema_def, &body.fields)
+    let mut fields = json_to_entity_fields(&schema_def, &body.fields)
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
+
+    // before_change hook
+    let hooks_config = state.config().custom.schema_forge.hooks.clone();
+    let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
+        fetch_hook_dispatcher(forge).await
+    } else {
+        None
+    };
+    if let Some(ref dispatcher) = hook_dispatcher {
+        apply_before_hook(
+            BeforeHookCtx {
+                dispatcher: dispatcher.as_ref(),
+                hooks_config: &hooks_config,
+                schema: &schema_def,
+                event: HookEvent::BeforeChange,
+                operation: "update",
+                user: claims.as_ref(),
+                entity_id: Some(entity_id.as_str().to_string()),
+            },
+            &mut fields,
+        )
+        .await?;
+    }
 
     // Build entity with specific ID, filtering write-restricted fields
     let mut entity = Entity::with_id(entity_id, schema_name, fields);
@@ -1147,6 +1439,21 @@ pub async fn update_entity(
         })
         .await;
     let mut updated = ask_forge(rx).await?.map_err(ForgeError::from)?;
+
+    // after_change hook (fire-and-forget)
+    if let Some(dispatcher) = hook_dispatcher.clone() {
+        fire_after_hook(
+            AfterHookCtx {
+                dispatcher,
+                hooks_config: hooks_config.clone(),
+                schema: schema_def.clone(),
+                event: HookEvent::AfterChange,
+                operation: "update".to_string(),
+                user_id: claims.as_ref().map(|c| c.sub.clone()),
+            },
+            &updated,
+        );
+    }
 
     // Filter read-restricted fields from response
     filter_entity_fields(
@@ -1253,6 +1560,52 @@ pub async fn delete_entity(
         }
     }
 
+    // before_delete / after_delete hook setup. Fetch entity snapshot when a
+    // hook is configured so the dispatcher sees the fields being deleted.
+    let hooks_config = state.config().custom.schema_forge.hooks.clone();
+    let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
+        fetch_hook_dispatcher(forge).await
+    } else {
+        None
+    };
+    let mut pre_delete_snapshot: Option<Entity> = None;
+    if hook_dispatcher.is_some()
+        && (hooks_config
+            .binding_for(schema_def.name.as_str(), HookEvent::BeforeDelete)
+            .is_some()
+            || hooks_config
+                .binding_for(schema_def.name.as_str(), HookEvent::AfterDelete)
+                .is_some())
+    {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetEntity {
+                schema: schema_name.clone(),
+                id: entity_id.clone(),
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        if let Ok(Ok(e)) = ask_forge(rx).await {
+            pre_delete_snapshot = Some(e);
+        }
+    }
+    if let (Some(ref dispatcher), Some(snapshot)) = (&hook_dispatcher, &pre_delete_snapshot) {
+        let mut fields = snapshot.fields.clone();
+        apply_before_hook(
+            BeforeHookCtx {
+                dispatcher: dispatcher.as_ref(),
+                hooks_config: &hooks_config,
+                schema: &schema_def,
+                event: HookEvent::BeforeDelete,
+                operation: "delete",
+                user: claims.as_ref(),
+                entity_id: Some(entity_id.as_str().to_string()),
+            },
+            &mut fields,
+        )
+        .await?;
+    }
+
     // Delete entity via actor
     let (tx, rx) = oneshot::channel();
     forge
@@ -1263,6 +1616,21 @@ pub async fn delete_entity(
         })
         .await;
     ask_forge(rx).await?.map_err(ForgeError::from)?;
+
+    // after_delete hook (fire-and-forget)
+    if let (Some(dispatcher), Some(snapshot)) = (hook_dispatcher.clone(), pre_delete_snapshot) {
+        fire_after_hook(
+            AfterHookCtx {
+                dispatcher,
+                hooks_config: hooks_config.clone(),
+                schema: schema_def.clone(),
+                event: HookEvent::AfterDelete,
+                operation: "delete".to_string(),
+                user_id: claims.as_ref().map(|c| c.sub.clone()),
+            },
+            &snapshot,
+        );
+    }
 
     // Audit: entity deleted
     if let Some(logger) = state.audit_logger() {

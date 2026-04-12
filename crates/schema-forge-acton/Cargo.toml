@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-acton"
-version = "0.14.3"
+version = "0.15.0"
 edition = "2021"
 
 [dependencies]
@@ -27,6 +27,13 @@ sha2 = "0.11.0"
 hex = "0.4.3"
 uuid = { version = "1.23.0", features = ["v4"] }
 humantime = "2.3.0"
+async-trait = "0.1.89"
+tonic = "0.14"
+prost = "0.14.3"
+prost-reflect = "0.16.3"
+bytes = "1.11.1"
+http = "1.4.0"
+tonic-prost = "0.14"
 
 
 [features]
@@ -40,3 +47,9 @@ tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5" }
 http-body-util = "0.1"
 tempfile = "3.25.0"
+tokio-stream = { version = "0.1.18", features = ["net"] }
+
+[build-dependencies]
+prost-build = "0.14.3"
+tonic-build = "0.14"
+tonic-prost-build = "0.14"

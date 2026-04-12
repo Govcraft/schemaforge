@@ -25,6 +25,10 @@ pub struct SchemaForgeSettings {
     /// Webhook notification settings.
     #[serde(default)]
     pub webhooks: crate::webhook::WebhookConfig,
+
+    /// Lifecycle hook settings.
+    #[serde(default)]
+    pub hooks: crate::hooks::HooksConfig,
 }
 
 fn default_route_prefix() -> String {
@@ -37,6 +41,7 @@ impl Default for SchemaForgeSettings {
             route_prefix: default_route_prefix(),
             auto_generate_cedar_policies: false,
             webhooks: crate::webhook::WebhookConfig::default(),
+            hooks: crate::hooks::HooksConfig::default(),
         }
     }
 }
@@ -59,6 +64,7 @@ mod tests {
                 route_prefix: "/api/forge".to_string(),
                 auto_generate_cedar_policies: true,
                 webhooks: crate::webhook::WebhookConfig::default(),
+                hooks: crate::hooks::HooksConfig::default(),
             },
         };
         let json = serde_json::to_string(&config).unwrap();

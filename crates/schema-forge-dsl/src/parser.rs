@@ -4,8 +4,8 @@ use tracing::instrument;
 
 use schema_forge_core::types::{
     Annotation, Cardinality, DefaultValue, EnumVariants, FieldAnnotation, FieldDefinition,
-    FieldModifier, FieldName, FieldType, FloatConstraints, IntegerConstraints, SchemaDefinition,
-    SchemaId, SchemaName, SchemaVersion, TenantKind, TextConstraints,
+    FieldModifier, FieldName, FieldType, FloatConstraints, HookEvent, IntegerConstraints,
+    SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind, TextConstraints,
 };
 
 use crate::error::{DslError, Span};
@@ -296,6 +296,23 @@ impl Parser {
                 };
                 self.expect(&Token::RParen)?;
                 Annotation::Tenant(kind)
+            }
+            "hook" => {
+                self.expect(&Token::LParen)?;
+                let event_tok = self.expect_ident("hook event")?;
+                let event = event_tok.text.parse::<HookEvent>().map_err(|()| {
+                    DslError::UnexpectedToken {
+                        expected: "one of: before_validate, before_change, after_change, \
+                                   before_read, after_read, before_delete, after_delete"
+                            .to_string(),
+                        found: format!("'{}'", event_tok.text),
+                        span: event_tok.span.clone(),
+                    }
+                })?;
+                self.expect(&Token::RParen)?;
+                let intent_tok = self.expect_triple_string_literal()?;
+                let intent = unquote_triple_string(&intent_tok.text);
+                Annotation::Hook { event, intent }
             }
             "webhook" => {
                 if self.peek_token() == Some(&Token::LParen) {
@@ -910,6 +927,20 @@ impl Parser {
             }),
         }
     }
+
+    fn expect_triple_string_literal(&mut self) -> Result<SpannedToken, DslError> {
+        match self.advance() {
+            Some(st) if st.token == Token::TripleStringLiteral => Ok(st),
+            Some(st) => Err(DslError::UnexpectedToken {
+                expected: "triple-quoted string literal".to_string(),
+                found: format!("{} ('{}')", st.token.description(), st.text),
+                span: st.span,
+            }),
+            None => Err(DslError::UnexpectedEndOfInput {
+                expected: "triple-quoted string literal".to_string(),
+            }),
+        }
+    }
 }
 
 /// Tokens that can appear as identifiers in parameter-name contexts.
@@ -929,6 +960,14 @@ fn is_contextual_ident(token: &Token) -> bool {
             | Token::Indexed
             | Token::Schema
     )
+}
+
+/// Strip the surrounding `"""` delimiters from a triple-quoted string literal.
+/// No escape processing — the body is returned verbatim, preserving newlines
+/// and embedded double quotes (up to two in a row).
+fn unquote_triple_string(s: &str) -> String {
+    debug_assert!(s.starts_with("\"\"\"") && s.ends_with("\"\"\"") && s.len() >= 6);
+    s[3..s.len() - 3].to_string()
 }
 
 /// Remove surrounding quotes from a string literal and handle escape sequences.

@@ -162,6 +162,13 @@ fn print_annotation(annotation: &Annotation, output: &mut String) {
                 output.push(')');
             }
         }
+        Annotation::Hook { event, intent } => {
+            output.push_str("@hook(");
+            output.push_str(event.as_str());
+            output.push_str(") \"\"\"");
+            output.push_str(intent);
+            output.push_str("\"\"\"");
+        }
         _ => {
             // Future annotation kinds -- print as @unknown for forward compatibility
             output.push_str("@unknown");

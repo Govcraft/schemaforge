@@ -109,6 +109,7 @@ async fn build_test_app_state(
             backend,
             tenant_config,
             record_access_policy,
+            hook_dispatcher: None,
             reply: ReplyChannel::new(tx),
         })
         .await;

@@ -5,6 +5,9 @@ use std::time::Duration;
 use acton_service::prelude::ActorHandleInterface;
 use acton_service::service_builder::ServiceBuilder;
 use acton_service::versioning::{ApiVersion, VersionedApiBuilder};
+use schema_forge_acton::hooks::{
+    HookDispatcher, TonicDispatcherConfig, TonicHookDispatcher,
+};
 use schema_forge_acton::{
     DynForgeBackend, ForgeActor, InitForge, InitForgeData, ReplyChannel, SchemaForgeExtension,
 };
@@ -118,6 +121,7 @@ pub async fn run(
         backend: backend_arc,
         tenant_config,
         record_access_policy: None,
+        hook_dispatcher: None,
     };
 
     // 6. Warn about --watch
@@ -238,6 +242,32 @@ pub async fn run(
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered after ServiceBuilder::build()");
 
+    // Build the hook dispatcher from the resolved schema-forge config now that
+    // svc_config has been finalized. This loads every binding's descriptor and
+    // resolves the per-event service+method up front, so misconfiguration
+    // surfaces immediately rather than on the first hooked CRUD call.
+    let hooks_cfg = service.config().custom.schema_forge.hooks.clone();
+    let hook_dispatcher: Option<Arc<dyn HookDispatcher>> = if hooks_cfg.enabled
+        && !hooks_cfg.bindings.is_empty()
+    {
+        match TonicHookDispatcher::new(&hooks_cfg, TonicDispatcherConfig::default()) {
+            Ok(d) => {
+                output.status(&format!(
+                    "  Hook dispatcher initialized with {} binding(s).",
+                    d.binding_count()
+                ));
+                Some(Arc::new(d) as Arc<dyn HookDispatcher>)
+            }
+            Err(e) => {
+                return Err(CliError::Server {
+                    message: format!("failed to build hook dispatcher: {e}"),
+                });
+            }
+        }
+    } else {
+        init_data.hook_dispatcher
+    };
+
     let (tx, rx) = oneshot::channel();
     forge_handle
         .send(InitForge {
@@ -245,6 +275,7 @@ pub async fn run(
             backend: init_data.backend,
             tenant_config: init_data.tenant_config,
             record_access_policy: init_data.record_access_policy,
+            hook_dispatcher,
             reply: ReplyChannel::new(tx),
         })
         .await;

@@ -31,6 +31,10 @@ pub enum ForgeError {
     Forbidden { message: String },
     /// Backend storage error. Maps to 502.
     BackendUnavailable { message: String },
+    /// A lifecycle hook explicitly aborted the request. Maps to 422.
+    HookAborted { reason: String },
+    /// A required lifecycle hook timed out or was unreachable. Maps to 503.
+    HookUnavailable { message: String },
     /// Internal error. Maps to 500.
     Internal { message: String },
 }
@@ -74,6 +78,12 @@ impl fmt::Display for ForgeError {
             Self::BackendUnavailable { message } => {
                 write!(f, "backend unavailable: {message}")
             }
+            Self::HookAborted { reason } => {
+                write!(f, "hook aborted request: {reason}")
+            }
+            Self::HookUnavailable { message } => {
+                write!(f, "required hook unavailable: {message}")
+            }
             Self::Internal { message } => {
                 write!(f, "internal error: {message}")
             }
@@ -96,6 +106,8 @@ impl ForgeError {
             Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             Self::Forbidden { .. } => StatusCode::FORBIDDEN,
             Self::BackendUnavailable { .. } => StatusCode::BAD_GATEWAY,
+            Self::HookAborted { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::HookUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -113,6 +125,8 @@ impl ForgeError {
             Self::Unauthorized { .. } => "unauthorized",
             Self::Forbidden { .. } => "forbidden",
             Self::BackendUnavailable { .. } => "backend_unavailable",
+            Self::HookAborted { .. } => "hook_aborted",
+            Self::HookUnavailable { .. } => "hook_unavailable",
             Self::Internal { .. } => "internal_error",
         }
     }
@@ -126,6 +140,28 @@ impl IntoResponse for ForgeError {
             "message": self.to_string(),
         });
         (status, axum::Json(body)).into_response()
+    }
+}
+
+impl From<crate::hooks::HookError> for ForgeError {
+    fn from(err: crate::hooks::HookError) -> Self {
+        use crate::hooks::HookError;
+        match err {
+            HookError::Aborted(reason) => Self::HookAborted { reason },
+            HookError::Timeout {
+                endpoint,
+                timeout_ms,
+            } => Self::HookUnavailable {
+                message: format!("{endpoint} timed out after {timeout_ms}ms"),
+            },
+            HookError::Unavailable { endpoint, message } => Self::HookUnavailable {
+                message: format!("{endpoint}: {message}"),
+            },
+            HookError::Protocol { message } => Self::HookUnavailable {
+                message: format!("protocol error: {message}"),
+            },
+            HookError::Internal { message } => Self::Internal { message },
+        }
     }
 }
 

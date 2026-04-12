@@ -193,6 +193,25 @@ pub enum MigrationStep {
     },
     /// Remove a default value from a field.
     RemoveDefault { field: FieldName },
+    /// Declare a new `@hook(event)` annotation on this schema. Hook
+    /// changes are metadata-only — no on-disk migration is required;
+    /// the operator must regenerate any hook service scaffold so the
+    /// proto interface picks up the new event.
+    AddHook {
+        event: crate::types::HookEvent,
+        intent: String,
+    },
+    /// Remove a previously-declared `@hook(event)` annotation. Same
+    /// metadata-only semantics as `AddHook`.
+    RemoveHook { event: crate::types::HookEvent },
+    /// Change the intent string of an existing `@hook(event)`. The wire
+    /// signature is unchanged, but the scaffolded prompt files (and any
+    /// auto-generated documentation) need refreshing.
+    ChangeHookIntent {
+        event: crate::types::HookEvent,
+        old_intent: String,
+        new_intent: String,
+    },
 }
 
 impl MigrationStep {
@@ -206,7 +225,10 @@ impl MigrationStep {
             | Self::RemoveIndex { .. }
             | Self::RemoveRequired { .. }
             | Self::SetDefault { .. }
-            | Self::RemoveDefault { .. } => MigrationSafety::Safe,
+            | Self::RemoveDefault { .. }
+            | Self::AddHook { .. }
+            | Self::RemoveHook { .. }
+            | Self::ChangeHookIntent { .. } => MigrationSafety::Safe,
 
             Self::RenameField { .. }
             | Self::ChangeType { .. }
@@ -267,6 +289,17 @@ impl fmt::Display for MigrationStep {
                 write!(f, "SET DEFAULT on '{field}' to {value}")
             }
             Self::RemoveDefault { field } => write!(f, "REMOVE DEFAULT on '{field}'"),
+            Self::AddHook { event, intent } => {
+                write!(f, "ADD HOOK {} \"{intent}\"", event.as_str())
+            }
+            Self::RemoveHook { event } => {
+                write!(f, "REMOVE HOOK {}", event.as_str())
+            }
+            Self::ChangeHookIntent {
+                event, new_intent, ..
+            } => {
+                write!(f, "CHANGE HOOK INTENT {} -> \"{new_intent}\"", event.as_str())
+            }
         }
     }
 }
@@ -392,8 +425,55 @@ impl DiffEngine {
 
         Self::diff_fields_with_renames(old, new, renames, &mut steps);
         Self::diff_modifiers_with_renames(old, new, renames, &mut steps);
+        Self::diff_hooks(old, new, &mut steps);
 
         MigrationPlan::new(new.id.clone(), new.name.clone(), steps)
+    }
+
+    /// Compare the `@hook(...)` annotations between two schema versions
+    /// and emit `AddHook` / `RemoveHook` / `ChangeHookIntent` steps. Hook
+    /// changes are metadata-only — no on-disk migration is needed — but
+    /// the operator must regenerate the hook scaffold to pick up the new
+    /// proto interface.
+    fn diff_hooks(
+        old: &crate::types::SchemaDefinition,
+        new: &crate::types::SchemaDefinition,
+        steps: &mut Vec<MigrationStep>,
+    ) {
+        use std::collections::BTreeMap;
+        let mut old_map: BTreeMap<crate::types::HookEvent, &str> = BTreeMap::new();
+        let mut new_map: BTreeMap<crate::types::HookEvent, &str> = BTreeMap::new();
+        for a in &old.annotations {
+            if let Annotation::Hook { event, intent } = a {
+                old_map.insert(*event, intent);
+            }
+        }
+        for a in &new.annotations {
+            if let Annotation::Hook { event, intent } = a {
+                new_map.insert(*event, intent);
+            }
+        }
+        for (event, new_intent) in &new_map {
+            match old_map.get(event) {
+                None => steps.push(MigrationStep::AddHook {
+                    event: *event,
+                    intent: (*new_intent).to_string(),
+                }),
+                Some(old_intent) if old_intent != new_intent => {
+                    steps.push(MigrationStep::ChangeHookIntent {
+                        event: *event,
+                        old_intent: (*old_intent).to_string(),
+                        new_intent: (*new_intent).to_string(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        for event in old_map.keys() {
+            if !new_map.contains_key(event) {
+                steps.push(MigrationStep::RemoveHook { event: *event });
+            }
+        }
     }
 
     /// Create a migration plan for a brand new schema (no old version).
@@ -1555,5 +1635,71 @@ mod tests {
             vec![],
         )
         .unwrap()
+    }
+
+    // -----------------------------------------------------------------
+    // Hook diff tests (Phase 5)
+    // -----------------------------------------------------------------
+
+    fn schema_with_hooks(name: &str, hooks: Vec<(crate::types::HookEvent, &str)>) -> SchemaDefinition {
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new(name).unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("name").unwrap(),
+                FieldType::Text(crate::types::TextConstraints::unconstrained()),
+            )],
+            hooks
+                .into_iter()
+                .map(|(event, intent)| Annotation::Hook {
+                    event,
+                    intent: intent.to_string(),
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn diff_detects_added_hook() {
+        let old = schema_with_hooks("S", vec![]);
+        let new = schema_with_hooks("S", vec![(crate::types::HookEvent::BeforeChange, "patch")]);
+        let plan = DiffEngine::diff(&old, &new);
+        assert!(matches!(
+            plan.steps.as_slice(),
+            [MigrationStep::AddHook { intent, .. }] if intent == "patch"
+        ));
+    }
+
+    #[test]
+    fn diff_detects_removed_hook() {
+        let old = schema_with_hooks("S", vec![(crate::types::HookEvent::AfterChange, "publish")]);
+        let new = schema_with_hooks("S", vec![]);
+        let plan = DiffEngine::diff(&old, &new);
+        assert!(matches!(
+            plan.steps.as_slice(),
+            [MigrationStep::RemoveHook { .. }]
+        ));
+    }
+
+    #[test]
+    fn diff_detects_changed_hook_intent() {
+        let old = schema_with_hooks("S", vec![(crate::types::HookEvent::BeforeChange, "old")]);
+        let new = schema_with_hooks("S", vec![(crate::types::HookEvent::BeforeChange, "new")]);
+        let plan = DiffEngine::diff(&old, &new);
+        assert!(matches!(
+            plan.steps.as_slice(),
+            [MigrationStep::ChangeHookIntent { old_intent, new_intent, .. }]
+                if old_intent == "old" && new_intent == "new"
+        ));
+    }
+
+    #[test]
+    fn hook_diff_steps_are_safe() {
+        let step = MigrationStep::AddHook {
+            event: crate::types::HookEvent::BeforeChange,
+            intent: "x".into(),
+        };
+        assert_eq!(step.safety(), MigrationSafety::Safe);
     }
 }

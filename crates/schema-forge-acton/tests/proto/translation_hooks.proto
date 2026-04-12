@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package schema_forge_test;
+
+// Mirrors what the Phase 3 scaffold generator will emit for a schema named
+// `Translation` with `before_change` and `after_change` hooks. Used by the
+// tonic dispatcher integration test.
+
+service TranslationHooks {
+  rpc BeforeChange(TranslationBeforeChangeRequest) returns (TranslationBeforeChangeResponse);
+  rpc AfterChange(TranslationAfterChangeRequest) returns (TranslationAfterChangeResponse);
+}
+
+message TranslationBeforeChangeRequest {
+  string operation = 1;
+  optional string user_id = 2;
+  optional string entity_id = 3;
+  string source_text = 100;
+  string translated_text = 101;
+}
+
+message TranslationBeforeChangeResponse {
+  optional string abort_reason = 1;
+  optional string source_text = 100;
+  optional string translated_text = 101;
+}
+
+message TranslationAfterChangeRequest {
+  string operation = 1;
+  optional string user_id = 2;
+  optional string entity_id = 3;
+  string source_text = 100;
+  string translated_text = 101;
+}
+
+message TranslationAfterChangeResponse {}
