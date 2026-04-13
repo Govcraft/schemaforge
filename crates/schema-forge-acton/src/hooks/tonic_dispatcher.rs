@@ -315,22 +315,22 @@ fn build_request(
         let name = field.name();
         match name {
             "operation" => {
-                msg.set_field_by_name(name, Value::String(invocation.operation.clone()));
+                checked_set(&mut msg, name, Value::String(invocation.operation.clone()))?;
             }
             "user_id" => {
                 if let Some(uid) = &invocation.user_id {
-                    msg.set_field_by_name(name, Value::String(uid.clone()));
+                    checked_set(&mut msg, name, Value::String(uid.clone()))?;
                 }
             }
             "entity_id" => {
                 if let Some(eid) = &invocation.entity_id {
-                    msg.set_field_by_name(name, Value::String(eid.clone()));
+                    checked_set(&mut msg, name, Value::String(eid.clone()))?;
                 }
             }
             _ => {
                 if let Some(dv) = invocation.fields.get(name) {
-                    if let Some(v) = dynamic_value_to_proto(dv, &field.kind()) {
-                        msg.set_field_by_name(name, v);
+                    if let Some(v) = dynamic_value_to_proto(dv, &field.kind(), field.is_list()) {
+                        checked_set(&mut msg, name, v)?;
                     }
                 }
             }
@@ -340,7 +340,35 @@ fn build_request(
     Ok(msg)
 }
 
-fn dynamic_value_to_proto(value: &DynamicValue, kind: &Kind) -> Option<Value> {
+/// Wrapper around [`DynamicMessage::try_set_field_by_name`] that translates a
+/// `prost-reflect` rejection into [`HookError::Protocol`] instead of a panic.
+/// This is the firewall between user-controlled payloads and the panic-based
+/// `set_field_by_name` API: any cardinality / type mismatch becomes a clean
+/// 4xx-class error, never a 500 from `tower_http::catch_panic`.
+fn checked_set(msg: &mut DynamicMessage, name: &str, value: Value) -> Result<(), HookError> {
+    msg.try_set_field_by_name(name, value)
+        .map_err(|e| HookError::Protocol {
+            message: format!("hook field `{name}` does not match proto descriptor: {e}"),
+        })
+}
+
+/// Convert a [`DynamicValue`] into a `prost-reflect` [`Value`] suitable for
+/// the target proto field.
+///
+/// `is_list` reflects whether the destination proto field is `repeated`.
+/// When `true`, scalar inputs are wrapped into a single-element list and
+/// list inputs are passed through; when `false`, list inputs against a
+/// scalar field are rejected (returning `None` so the caller can decide
+/// whether to drop or error — `build_request` errors via the strict
+/// [`checked_set`] path).
+fn dynamic_value_to_proto(value: &DynamicValue, kind: &Kind, is_list: bool) -> Option<Value> {
+    if is_list {
+        return list_value_for_field(value, kind);
+    }
+    scalar_value_for_field(value, kind)
+}
+
+fn scalar_value_for_field(value: &DynamicValue, kind: &Kind) -> Option<Value> {
     match value {
         DynamicValue::Null => None,
         DynamicValue::Text(s) => Some(match kind {
@@ -365,16 +393,31 @@ fn dynamic_value_to_proto(value: &DynamicValue, kind: &Kind) -> Option<Value> {
         DynamicValue::Enum(s) => Some(Value::String(s.clone())),
         DynamicValue::Json(j) => Some(Value::String(j.to_string())),
         DynamicValue::Ref(id) => Some(Value::String(id.to_string())),
+        // List-on-scalar: no value to set; `try_set_field_by_name` will not
+        // be called and the field stays unset.
+        DynamicValue::Array(_) | DynamicValue::RefArray(_) => None,
+        DynamicValue::Composite(_) => None,
+        _ => None,
+    }
+}
+
+/// Build a [`Value::List`] for a `repeated` proto field. Scalar inputs are
+/// promoted into a single-element list so a hook author can send either
+/// `"a"` or `["a"]` and have it work — matching the JSON ingest behavior.
+fn list_value_for_field(value: &DynamicValue, kind: &Kind) -> Option<Value> {
+    match value {
+        DynamicValue::Null => None,
+        DynamicValue::Array(items) => Some(Value::List(
+            items
+                .iter()
+                .filter_map(|v| scalar_value_for_field(v, kind))
+                .collect(),
+        )),
         DynamicValue::RefArray(ids) => Some(Value::List(
             ids.iter().map(|i| Value::String(i.to_string())).collect(),
         )),
-        DynamicValue::Array(arr) => Some(Value::List(
-            arr.iter()
-                .filter_map(|v| dynamic_value_to_proto(v, kind))
-                .collect(),
-        )),
-        DynamicValue::Composite(_) => None,
-        _ => None,
+        // Scalar-on-repeated: promote into a one-element list.
+        scalar => scalar_value_for_field(scalar, kind).map(|v| Value::List(vec![v])),
     }
 }
 
@@ -517,19 +560,64 @@ mod tests {
 
     #[test]
     fn dynamic_value_text_to_string_kind() {
-        let v = dynamic_value_to_proto(&DynamicValue::Text("hi".into()), &Kind::String);
+        let v = dynamic_value_to_proto(&DynamicValue::Text("hi".into()), &Kind::String, false);
         assert!(matches!(v, Some(Value::String(s)) if s == "hi"));
     }
 
     #[test]
     fn dynamic_value_integer_to_int64() {
-        let v = dynamic_value_to_proto(&DynamicValue::Integer(42), &Kind::Int64);
+        let v = dynamic_value_to_proto(&DynamicValue::Integer(42), &Kind::Int64, false);
         assert!(matches!(v, Some(Value::I64(42))));
     }
 
     #[test]
     fn dynamic_value_null_skipped() {
-        assert!(dynamic_value_to_proto(&DynamicValue::Null, &Kind::String).is_none());
+        assert!(dynamic_value_to_proto(&DynamicValue::Null, &Kind::String, false).is_none());
+    }
+
+    #[test]
+    fn dynamic_value_array_routes_to_list() {
+        let v = dynamic_value_to_proto(
+            &DynamicValue::Array(vec![
+                DynamicValue::Text("a".into()),
+                DynamicValue::Text("b".into()),
+            ]),
+            &Kind::String,
+            true,
+        );
+        match v {
+            Some(Value::List(items)) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(&items[0], Value::String(s) if s == "a"));
+                assert!(matches!(&items[1], Value::String(s) if s == "b"));
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_value_scalar_promoted_to_singleton_list_for_repeated_field() {
+        let v = dynamic_value_to_proto(&DynamicValue::Text("solo".into()), &Kind::String, true);
+        match v {
+            Some(Value::List(items)) => {
+                assert_eq!(items.len(), 1);
+                assert!(matches!(&items[0], Value::String(s) if s == "solo"));
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_value_list_against_scalar_field_yields_none() {
+        let v = dynamic_value_to_proto(
+            &DynamicValue::Array(vec![DynamicValue::Text("a".into())]),
+            &Kind::String,
+            false,
+        );
+        assert!(
+            v.is_none(),
+            "list against scalar field must not produce a value"
+        );
     }
 
     #[test]
