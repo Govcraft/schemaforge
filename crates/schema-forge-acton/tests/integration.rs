@@ -1008,3 +1008,181 @@ async fn field_filtering_hides_restricted_fields() {
         get_json["fields"]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #10 regression tests: GET → modify → PUT round-trip + PATCH support
+// ---------------------------------------------------------------------------
+
+/// Regression for issue #10: POST → GET → PUT (with the GET response body
+/// echoed back unchanged) must succeed with 200. The pre-fix behavior
+/// returned 502 for two unrelated reasons: GET emitted a `+00:00` datetime
+/// suffix that the client could echo back fine but that downstream null
+/// coercion and full-replacement validation tripped over; and the postgres
+/// binder bound `null` fields as `text`, mismatching typed columns. This
+/// test exercises the round-trip on the in-memory SurrealDB backend (which
+/// shares the field-conversion code path with postgres), guaranteeing the
+/// JSON serialization and required-field checks both accept the round-tripped
+/// payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_round_trip_after_get_returns_200() {
+    let app = test_app().await;
+
+    // Schema: required name + optional updated_at datetime + optional notes.
+    let schema_body = serde_json::json!({
+        "name": "Contact",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "updated_at", "field_type": "DateTime"},
+            {"name": "notes", "field_type": "Text"}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // POST an entity that exercises a datetime field.
+    let create_body = serde_json::json!({
+        "fields": {
+            "name": "Alice",
+            "updated_at": "2026-04-13T12:00:00Z",
+            "notes": "initial"
+        }
+    });
+    let (create_status, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Contact/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(create_status, StatusCode::CREATED);
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Contact/entities/{entity_id}");
+
+    // GET the entity — capture its serialized fields verbatim.
+    let (get_status, fetched) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(get_status, StatusCode::OK);
+    let fetched_fields = fetched["fields"].clone();
+
+    // The GET response must serialize datetimes with a `Z` suffix
+    // (issue #10 fix #1) so generic clients consuming the format are happy.
+    let serialized_dt = fetched_fields["updated_at"].as_str().unwrap();
+    assert!(
+        serialized_dt.ends_with('Z'),
+        "expected datetime to end in 'Z', got {serialized_dt}"
+    );
+
+    // PUT the GET response body back unchanged. Pre-fix this returned 502;
+    // post-fix it must return 200 because (a) the round-tripped datetime
+    // re-parses cleanly and (b) the full payload satisfies the required-
+    // field check.
+    let put_body = serde_json::json!({ "fields": fetched_fields });
+    let (put_status, put_json) = json_request(&app, Method::PUT, &path, Some(put_body)).await;
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "round-trip PUT should succeed, got {put_status} body={put_json}"
+    );
+    assert_eq!(put_json["fields"]["name"], "Alice");
+}
+
+/// Regression for issue #10: PATCH must merge a partial payload onto the
+/// existing entity, preserving fields that are not mentioned in the
+/// request body — including required ones.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn patch_entity_merges_partial_fields() {
+    let app = test_app().await;
+
+    // Schema with two required fields plus one optional field. PATCH must
+    // be able to update only `notes` without re-supplying `name` or `email`.
+    let schema_body = serde_json::json!({
+        "name": "Contact",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "email", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "notes", "field_type": "Text"}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    let create_body = serde_json::json!({
+        "fields": {
+            "name": "Alice",
+            "email": "alice@example.com",
+            "notes": "initial"
+        }
+    });
+    let (_, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Contact/entities",
+        Some(create_body),
+    )
+    .await;
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Contact/entities/{entity_id}");
+
+    // Patch only the notes field.
+    let patch_body = serde_json::json!({ "fields": { "notes": "patched" } });
+    let (patch_status, patched) =
+        json_request(&app, Method::PATCH, &path, Some(patch_body)).await;
+    assert_eq!(
+        patch_status,
+        StatusCode::OK,
+        "PATCH should succeed, got {patch_status} body={patched}"
+    );
+
+    // The unmodified required fields must still be present and unchanged.
+    assert_eq!(patched["fields"]["name"], "Alice");
+    assert_eq!(patched["fields"]["email"], "alice@example.com");
+    assert_eq!(patched["fields"]["notes"], "patched");
+
+    // Confirm via GET that the merge was actually persisted.
+    let (_, fetched) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(fetched["fields"]["name"], "Alice");
+    assert_eq!(fetched["fields"]["email"], "alice@example.com");
+    assert_eq!(fetched["fields"]["notes"], "patched");
+}
+
+/// Regression for issue #10: PUT with a missing required field must return
+/// 422 and the error body must direct callers to PATCH for partial updates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_missing_required_field_suggests_patch() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Contact",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "email", "field_type": "Text", "modifiers": ["required"]}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    let create_body = serde_json::json!({
+        "fields": { "name": "Alice", "email": "alice@example.com" }
+    });
+    let (_, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Contact/entities",
+        Some(create_body),
+    )
+    .await;
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Contact/entities/{entity_id}");
+
+    // PUT with only the `name` field — `email` is missing.
+    let put_body = serde_json::json!({ "fields": { "name": "Alice Updated" } });
+    let (status, body) = json_request(&app, Method::PUT, &path, Some(put_body)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // The error message must include the actionable PATCH hint.
+    let message = body["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("PATCH"),
+        "error message should mention PATCH for partial updates, got: {message}"
+    );
+    assert!(
+        message.contains("email"),
+        "error message should name the missing field, got: {message}"
+    );
+}

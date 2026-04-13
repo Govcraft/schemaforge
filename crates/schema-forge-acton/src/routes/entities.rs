@@ -418,13 +418,48 @@ pub struct SortClause {
 // Conversion helpers (pure functions)
 // ---------------------------------------------------------------------------
 
+/// Conversion mode for [`json_to_entity_fields_with_mode`].
+///
+/// Determines whether required-field validation runs. PUT semantics demand
+/// a complete entity payload, so any required field missing from the body
+/// is a validation error. PATCH semantics merge a partial payload onto an
+/// existing entity, so unspecified fields are intentionally absent and
+/// must not trip the required-field check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversionMode {
+    /// Full-replacement payload (POST, PUT). Enforces required fields.
+    Replace,
+    /// Partial payload (PATCH). Skips required-field validation; the
+    /// caller is expected to merge the converted fields onto an
+    /// existing entity.
+    Merge,
+}
+
 /// Convert a JSON field map to `DynamicValue` fields using schema type information.
 ///
 /// Pure function: no I/O. Returns a list of validation errors if any fields
-/// fail type conversion.
+/// fail type conversion. Equivalent to
+/// `json_to_entity_fields_with_mode(schema, json_fields, ConversionMode::Replace)`.
 pub fn json_to_entity_fields(
     schema: &SchemaDefinition,
     json_fields: &serde_json::Map<String, serde_json::Value>,
+) -> Result<BTreeMap<String, DynamicValue>, Vec<String>> {
+    json_to_entity_fields_with_mode(schema, json_fields, ConversionMode::Replace)
+}
+
+/// Convert a JSON field map to `DynamicValue` fields using schema type
+/// information, controlling whether required-field validation runs via
+/// [`ConversionMode`].
+///
+/// Pure function: no I/O. In [`ConversionMode::Merge`] (PATCH), only the
+/// fields actually present in `json_fields` are validated for type
+/// correctness — missing required fields are not flagged because the
+/// caller will merge the result onto an existing entity that already
+/// satisfies the schema's required-field invariants.
+pub fn json_to_entity_fields_with_mode(
+    schema: &SchemaDefinition,
+    json_fields: &serde_json::Map<String, serde_json::Value>,
+    mode: ConversionMode,
 ) -> Result<BTreeMap<String, DynamicValue>, Vec<String>> {
     let mut fields = BTreeMap::new();
     let mut errors = Vec::new();
@@ -450,13 +485,17 @@ pub fn json_to_entity_fields(
         }
     }
 
-    // Check for required fields that are missing
-    for field_def in &schema.fields {
-        if field_def.is_required() && !json_fields.contains_key(field_def.name.as_str()) {
-            errors.push(format!(
-                "required field '{}' is missing",
-                field_def.name.as_str()
-            ));
+    // Check for required fields that are missing — only in Replace mode.
+    // PATCH explicitly tolerates partial payloads.
+    if mode == ConversionMode::Replace {
+        for field_def in &schema.fields {
+            if field_def.is_required() && !json_fields.contains_key(field_def.name.as_str()) {
+                errors.push(format!(
+                    "required field '{}' is missing (PUT requires a complete entity; \
+                     use PATCH for partial updates)",
+                    field_def.name.as_str()
+                ));
+            }
         }
     }
 
@@ -1581,6 +1620,198 @@ pub async fn update_entity(
         logger
             .log_custom(
                 "forge.entity.updated",
+                acton_service::audit::AuditSeverity::Informational,
+                Some(serde_json::json!({
+                    "schema": schema,
+                    "entity_id": updated.id.as_str(),
+                    "user": claims.as_ref().map(|c| &c.sub),
+                })),
+            )
+            .await;
+    }
+
+    // Webhook: fire notifications
+    let webhook_event = crate::webhook::WebhookEvent::from_update(
+        &schema,
+        &updated,
+        claims.as_ref().map(|c| c.sub.as_str()),
+    );
+    dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
+
+    Ok(Json(entity_to_response(&updated)))
+}
+
+/// PATCH /schemas/{schema}/entities/{id} -- Partially update entity.
+///
+/// Unlike PUT, which has full-replacement semantics and requires every
+/// required field in the payload, PATCH merges the supplied fields onto
+/// the existing entity. Fields omitted from the request body are
+/// preserved unchanged. The merged entity is then dispatched through the
+/// same `UpdateEntity` actor message used by PUT, so `before_change` /
+/// `after_change` hooks, webhooks, and audit logging fire identically.
+#[instrument(skip_all, fields(schema = %schema))]
+pub async fn patch_entity(
+    State(state): State<AppState<SchemaForgeConfig>>,
+    Path((schema, id)): Path<(String, String)>,
+    OptionalClaims(claims): OptionalClaims,
+    Json(body): Json<EntityRequest>,
+) -> Result<impl IntoResponse, ForgeError> {
+    let schema_name = validate_schema_name(&schema)?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
+    // Parse the entity ID
+    let entity_id =
+        EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
+
+    // Look up schema via actor
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: schema_name.as_str().to_string(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schema_def = ask_forge(rx).await?.ok_or(ForgeError::SchemaNotFound {
+        name: schema_name.as_str().to_string(),
+    })?;
+
+    // Access check
+    if let Err(e) = check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write) {
+        if let Some(logger) = state.audit_logger() {
+            logger
+                .log_custom(
+                    "forge.access.denied",
+                    acton_service::audit::AuditSeverity::Warning,
+                    Some(serde_json::json!({
+                        "schema": &schema,
+                        "action": "write",
+                        "user": claims.as_ref().map(|c| &c.sub),
+                    })),
+                )
+                .await;
+        }
+        return Err(e);
+    }
+
+    // Always fetch the existing entity — PATCH needs it both for the
+    // record-level ownership check and for the field merge step below.
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetEntity {
+            schema: schema_name.clone(),
+            id: entity_id.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let existing = ask_forge(rx).await?.map_err(ForgeError::from)?;
+
+    // Record-level ownership check
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetRecordAccessPolicy {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let record_access_policy = ask_forge(rx).await?;
+
+    if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
+        if !policy.can_modify(&schema_def, c, &existing).await {
+            return Err(ForgeError::Forbidden {
+                message: format!("not authorized to modify entity '{id}'"),
+            });
+        }
+    }
+
+    // Convert only the fields supplied by the client. Merge mode skips
+    // the required-field check so partial payloads are valid.
+    let patch_fields = json_to_entity_fields_with_mode(
+        &schema_def,
+        &body.fields,
+        ConversionMode::Merge,
+    )
+    .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
+
+    // Merge the patch onto the existing entity's field map.
+    let mut fields = existing.fields.clone();
+    for (k, v) in patch_fields {
+        fields.insert(k, v);
+    }
+
+    // before_change hook — operates on the already-merged field set so
+    // hooks see the post-patch state.
+    let hooks_config = state.config().custom.schema_forge.hooks.clone();
+    let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
+        fetch_hook_dispatcher(forge).await
+    } else {
+        None
+    };
+    if let Some(ref dispatcher) = hook_dispatcher {
+        apply_before_hook(
+            BeforeHookCtx {
+                dispatcher: dispatcher.as_ref(),
+                hooks_config: &hooks_config,
+                schema: &schema_def,
+                event: HookEvent::BeforeChange,
+                operation: "patch",
+                user: claims.as_ref(),
+                entity_id: Some(entity_id.as_str().to_string()),
+            },
+            &mut fields,
+        )
+        .await?;
+    }
+
+    // Build entity with the existing ID, filtering write-restricted fields.
+    let mut entity = Entity::with_id(entity_id, schema_name, fields);
+    filter_entity_fields(
+        &mut entity,
+        &schema_def,
+        claims.as_ref(),
+        FieldFilterDirection::Write,
+    );
+
+    // Dispatch through the same UpdateEntity actor message as PUT so
+    // backend writes, after-hooks, audit logging, and webhooks all
+    // share one code path.
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(UpdateEntity {
+            entity,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let mut updated = ask_forge(rx).await?.map_err(ForgeError::from)?;
+
+    // after_change hook (fire-and-forget)
+    if let Some(dispatcher) = hook_dispatcher.clone() {
+        fire_after_hook(
+            AfterHookCtx {
+                dispatcher,
+                hooks_config: hooks_config.clone(),
+                schema: schema_def.clone(),
+                event: HookEvent::AfterChange,
+                operation: "patch".to_string(),
+                user_id: claims.as_ref().map(|c| c.sub.clone()),
+            },
+            &updated,
+        );
+    }
+
+    // Filter read-restricted fields from response
+    filter_entity_fields(
+        &mut updated,
+        &schema_def,
+        claims.as_ref(),
+        FieldFilterDirection::Read,
+    );
+
+    // Audit: entity patched
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_custom(
+                "forge.entity.patched",
                 acton_service::audit::AuditSeverity::Informational,
                 Some(serde_json::json!({
                     "schema": schema,

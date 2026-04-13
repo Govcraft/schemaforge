@@ -1,9 +1,16 @@
+use chrono::SecondsFormat;
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::DynamicValue;
 
 use crate::routes::entities::EntityResponse;
 
 /// Convert a `DynamicValue` to a JSON value.
+///
+/// Datetime values are emitted in RFC 3339 form with a `Z` UTC marker
+/// (e.g. `2026-04-13T12:34:56.789Z`). Using the `Z` suffix ensures that
+/// `GET → modify → PUT` round-trips parse back via
+/// `chrono::DateTime::<Utc>::from_str`, which rejects `+00:00` offsets in
+/// some downstream clients but always accepts `Z`.
 pub fn dynamic_value_to_json(value: &DynamicValue) -> serde_json::Value {
     match value {
         DynamicValue::Null => serde_json::Value::Null,
@@ -11,7 +18,9 @@ pub fn dynamic_value_to_json(value: &DynamicValue) -> serde_json::Value {
         DynamicValue::Integer(i) => serde_json::json!(i),
         DynamicValue::Float(f) => serde_json::json!(f),
         DynamicValue::Boolean(b) => serde_json::Value::Bool(*b),
-        DynamicValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        DynamicValue::DateTime(dt) => {
+            serde_json::Value::String(dt.to_rfc3339_opts(SecondsFormat::Millis, true))
+        }
         DynamicValue::Enum(s) => serde_json::Value::String(s.clone()),
         DynamicValue::Json(v) => v.clone(),
         DynamicValue::Array(arr) => {

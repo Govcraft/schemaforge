@@ -29,10 +29,7 @@ pub fn bind_dynamic_value(
 ) -> Result<(), BackendError> {
     match value {
         DynamicValue::Null => {
-            args.add(None::<String>)
-                .map_err(|e| BackendError::Internal {
-                    message: format!("failed to bind NULL: {e}"),
-                })?;
+            bind_null(args, field_type)?;
         }
         DynamicValue::Text(s) | DynamicValue::Enum(s) => {
             args.add(s.as_str()).map_err(|e| BackendError::Internal {
@@ -95,6 +92,59 @@ pub fn bind_dynamic_value(
         }
     }
     Ok(())
+}
+
+/// Bind a SQL `NULL` for the given column, using the schema's `FieldType`
+/// to choose a typed `Option::<T>::None` so PostgreSQL can resolve the
+/// parameter type.
+///
+/// Without this, sqlx infers a `text` parameter from `None::<String>`,
+/// which fails with "column X is of type timestamp with time zone but
+/// expression is of type text" when the underlying column is anything
+/// other than text. This commonly bites the `GET → modify → PUT`
+/// round-trip path, where a client sends back a JSON `null` for a typed
+/// optional column.
+///
+/// When `field_type` is `None` (e.g. positional query parameters with no
+/// schema context), the function falls back to a `text`-typed null,
+/// matching the previous behavior.
+fn bind_null(args: &mut PgArguments, field_type: Option<&FieldType>) -> Result<(), BackendError> {
+    let result = match field_type {
+        Some(FieldType::Integer(_)) => args.add(None::<i64>),
+        Some(FieldType::Float(_)) => args.add(None::<f64>),
+        Some(FieldType::Boolean) => args.add(None::<bool>),
+        Some(FieldType::DateTime) => args.add(None::<chrono::DateTime<chrono::Utc>>),
+        Some(FieldType::Json | FieldType::Composite(_)) => {
+            args.add(None::<sqlx::types::Json<serde_json::Value>>)
+        }
+        Some(FieldType::Array(inner)) => return bind_null_array(args, inner),
+        // Text, RichText, Enum, Relation (single id stored as text), or
+        // unknown column types all serialize as nullable text.
+        _ => args.add(None::<String>),
+    };
+    result.map_err(|e| BackendError::Internal {
+        message: format!("failed to bind NULL: {e}"),
+    })
+}
+
+/// Bind a typed NULL for an array column. Mirrors the per-element matching
+/// used by [`bind_array`] so the parameter type matches the column's native
+/// Postgres array type (`bigint[]`, `timestamptz[]`, etc.).
+fn bind_null_array(args: &mut PgArguments, inner: &FieldType) -> Result<(), BackendError> {
+    let result = match inner {
+        FieldType::Text(_) | FieldType::RichText | FieldType::Enum(_) => {
+            args.add(None::<Vec<String>>)
+        }
+        FieldType::Integer(_) => args.add(None::<Vec<i64>>),
+        FieldType::Float(_) => args.add(None::<Vec<f64>>),
+        FieldType::Boolean => args.add(None::<Vec<bool>>),
+        FieldType::DateTime => args.add(None::<Vec<chrono::DateTime<chrono::Utc>>>),
+        // Nested arrays, composites, relations, etc. are stored as JSONB.
+        _ => args.add(None::<sqlx::types::Json<serde_json::Value>>),
+    };
+    result.map_err(|e| BackendError::Internal {
+        message: format!("failed to bind NULL array: {e}"),
+    })
 }
 
 /// Bind a `DynamicValue::Array` into a `PgArguments` buffer, preferring
@@ -650,6 +700,71 @@ mod tests {
         let mut args = PgArguments::default();
         let arr = DynamicValue::Array(vec![DynamicValue::Text("a".into())]);
         assert!(bind_dynamic_value(&mut args, &arr, None).is_ok());
+    }
+
+    #[test]
+    fn bind_null_with_datetime_field_type_uses_typed_none() {
+        // Regression test for issue #10: GET → modify → PUT round-trips
+        // failed because Null was bound as text, producing
+        // "column X is of type timestamp with time zone but expression is
+        // of type text". With the fix, the parameter is encoded as
+        // Option::<DateTime<Utc>>::None instead.
+        let mut args = PgArguments::default();
+        assert!(
+            bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&FieldType::DateTime)).is_ok()
+        );
+    }
+
+    #[test]
+    fn bind_null_with_integer_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        let ft = FieldType::Integer(schema_forge_core::types::IntegerConstraints::default());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_null_with_float_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        let ft = FieldType::Float(schema_forge_core::types::FloatConstraints::default());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_null_with_boolean_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        assert!(
+            bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&FieldType::Boolean)).is_ok()
+        );
+    }
+
+    #[test]
+    fn bind_null_with_text_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        let ft = FieldType::Text(schema_forge_core::types::TextConstraints::default());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_null_with_json_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&FieldType::Json)).is_ok());
+    }
+
+    #[test]
+    fn bind_null_with_array_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        let ft = FieldType::Array(Box::new(FieldType::Integer(
+            schema_forge_core::types::IntegerConstraints::default(),
+        )));
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_null_without_field_type_uses_text_fallback() {
+        // Backwards-compatible behavior: positional query parameters
+        // without schema context still bind as nullable text.
+        let mut args = PgArguments::default();
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, None).is_ok());
     }
 
     #[test]

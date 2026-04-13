@@ -43,6 +43,7 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
             "/schemas/{schema}/entities/{id}",
             get(entities::get_entity)
                 .put(entities::update_entity)
+                .patch(entities::patch_entity)
                 .delete(entities::delete_entity),
         )
 }
