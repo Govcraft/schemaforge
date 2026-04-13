@@ -25,7 +25,9 @@ use crate::access::{
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
-use crate::hooks::{run_after_hook, run_before_hook, HookDispatcher, HookInvocation, HooksConfig};
+use crate::hooks::{
+    run_before_hook, DispatchHook, HookDispatchActor, HookDispatcher, HookInvocation, HooksConfig,
+};
 use crate::messages::{
     CreateEntity, DeleteEntity, GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema,
     GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
@@ -173,8 +175,11 @@ async fn apply_read_hook(
     apply_before_hook(ctx, fields).await
 }
 
-/// Owned parameter bundle for [`fire_after_hook`]. Everything is moved
-/// into a spawned task, so each field is `'static`-friendly (owned).
+/// Owned parameter bundle for [`fire_after_hook`].
+///
+/// Everything is owned and `'static`-friendly because the dispatch is
+/// handed off to [`HookDispatchActor`] for asynchronous execution under
+/// acton-reactive supervision.
 struct AfterHookCtx {
     dispatcher: Arc<dyn HookDispatcher>,
     hooks_config: HooksConfig,
@@ -184,10 +189,15 @@ struct AfterHookCtx {
     user_id: Option<String>,
 }
 
-/// Dispatch an `after_*` hook. Fire-and-forget: never errors into the
-/// caller's response. Honors the global `enabled` flag and per-schema
-/// binding presence via [`run_after_hook`].
-fn fire_after_hook(ctx: AfterHookCtx, entity: &Entity) {
+/// Queue an `after_*` hook on the [`HookDispatchActor`] for detached
+/// dispatch. Honors the global `enabled` flag and per-schema binding
+/// presence inside the actor, so this helper itself is unconditional
+/// once a dispatcher exists.
+///
+/// Detached, not "fire-and-forget": the dispatch runs under acton
+/// supervision so in-flight hook calls participate in graceful shutdown
+/// and the runtime's concurrency budget.
+async fn fire_after_hook(state: &AppState<SchemaForgeConfig>, ctx: AfterHookCtx, entity: &Entity) {
     let invocation = HookInvocation {
         schema: ctx.schema.name.as_str().to_string(),
         event: ctx.event,
@@ -196,14 +206,29 @@ fn fire_after_hook(ctx: AfterHookCtx, entity: &Entity) {
         entity_id: Some(entity.id.as_str().to_string()),
         fields: entity.fields.clone(),
     };
-    // Spawn into background so the response path never blocks on the
-    // after-hook call. The dispatcher is itself responsible for
-    // bounding internal concurrency.
-    let dispatcher = ctx.dispatcher;
-    let hooks_config = ctx.hooks_config;
-    tokio::spawn(async move {
-        run_after_hook(dispatcher.as_ref(), &hooks_config, invocation).await;
-    });
+    match state.actor::<HookDispatchActor>() {
+        Some(actor) => {
+            actor
+                .send(DispatchHook {
+                    invocation,
+                    dispatcher: Some(ctx.dispatcher),
+                    config: ctx.hooks_config,
+                })
+                .await;
+        }
+        None => {
+            // Defensive fallback: if the dispatch actor wasn't wired
+            // into the service (e.g. a test that forgot to register
+            // it), log and drop. We deliberately do **not** spawn here
+            // — doing so would reintroduce the orphaned-task anti-
+            // pattern that issue #11 was filed against.
+            tracing::warn!(
+                schema = %invocation.schema,
+                event = ?invocation.event,
+                "HookDispatchActor not registered; after-hook dispatch dropped"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,7 +1032,10 @@ pub async fn create_entity(
     let tenant_config = ask_forge(rx).await?;
     inject_tenant_on_create(&mut fields, claims.as_ref(), &tenant_config);
 
-    // before_change hook
+    // before_validate / before_change hooks. `before_validate` runs
+    // first so a hook can mutate or add fields before any
+    // persistence-side validation, then `before_change` runs on the
+    // (possibly mutated) fields.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
         fetch_hook_dispatcher(forge).await
@@ -1015,6 +1043,19 @@ pub async fn create_entity(
         None
     };
     if let Some(ref dispatcher) = hook_dispatcher {
+        apply_before_hook(
+            BeforeHookCtx {
+                dispatcher: dispatcher.as_ref(),
+                hooks_config: &hooks_config,
+                schema: &schema_def,
+                event: HookEvent::BeforeValidate,
+                operation: "create",
+                user: claims.as_ref(),
+                entity_id: None,
+            },
+            &mut fields,
+        )
+        .await?;
         apply_before_hook(
             BeforeHookCtx {
                 dispatcher: dispatcher.as_ref(),
@@ -1049,9 +1090,11 @@ pub async fn create_entity(
         .await;
     let mut created = ask_forge(rx).await?.map_err(ForgeError::from)?;
 
-    // after_change hook (fire-and-forget)
+    // after_change hook — handed off to HookDispatchActor for
+    // detached dispatch under acton supervision.
     if let Some(dispatcher) = hook_dispatcher.clone() {
         fire_after_hook(
+            &state,
             AfterHookCtx {
                 dispatcher,
                 hooks_config: hooks_config.clone(),
@@ -1061,7 +1104,8 @@ pub async fn create_entity(
                 user_id: claims.as_ref().map(|c| c.sub.clone()),
             },
             &created,
-        );
+        )
+        .await;
     }
 
     // Filter read-restricted fields from response
@@ -1550,7 +1594,10 @@ pub async fn update_entity(
     let mut fields = json_to_entity_fields(&schema_def, &body.fields)
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
-    // before_change hook
+    // before_validate / before_change hooks. `before_validate` runs
+    // first so a hook can mutate or add fields before any
+    // persistence-side validation, then `before_change` runs on the
+    // (possibly mutated) fields.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
         fetch_hook_dispatcher(forge).await
@@ -1558,6 +1605,19 @@ pub async fn update_entity(
         None
     };
     if let Some(ref dispatcher) = hook_dispatcher {
+        apply_before_hook(
+            BeforeHookCtx {
+                dispatcher: dispatcher.as_ref(),
+                hooks_config: &hooks_config,
+                schema: &schema_def,
+                event: HookEvent::BeforeValidate,
+                operation: "update",
+                user: claims.as_ref(),
+                entity_id: Some(entity_id.as_str().to_string()),
+            },
+            &mut fields,
+        )
+        .await?;
         apply_before_hook(
             BeforeHookCtx {
                 dispatcher: dispatcher.as_ref(),
@@ -1592,9 +1652,11 @@ pub async fn update_entity(
         .await;
     let mut updated = ask_forge(rx).await?.map_err(ForgeError::from)?;
 
-    // after_change hook (fire-and-forget)
+    // after_change hook — handed off to HookDispatchActor for
+    // detached dispatch under acton supervision.
     if let Some(dispatcher) = hook_dispatcher.clone() {
         fire_after_hook(
+            &state,
             AfterHookCtx {
                 dispatcher,
                 hooks_config: hooks_config.clone(),
@@ -1604,7 +1666,8 @@ pub async fn update_entity(
                 user_id: claims.as_ref().map(|c| c.sub.clone()),
             },
             &updated,
-        );
+        )
+        .await;
     }
 
     // Filter read-restricted fields from response
@@ -1961,9 +2024,11 @@ pub async fn delete_entity(
         .await;
     ask_forge(rx).await?.map_err(ForgeError::from)?;
 
-    // after_delete hook (fire-and-forget)
+    // after_delete hook — handed off to HookDispatchActor for
+    // detached dispatch under acton supervision.
     if let (Some(dispatcher), Some(snapshot)) = (hook_dispatcher.clone(), pre_delete_snapshot) {
         fire_after_hook(
+            &state,
             AfterHookCtx {
                 dispatcher,
                 hooks_config: hooks_config.clone(),
@@ -1973,7 +2038,8 @@ pub async fn delete_entity(
                 user_id: claims.as_ref().map(|c| c.sub.clone()),
             },
             &snapshot,
-        );
+        )
+        .await;
     }
 
     // Audit: entity deleted

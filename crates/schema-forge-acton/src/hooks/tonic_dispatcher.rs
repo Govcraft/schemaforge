@@ -42,7 +42,10 @@ use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Status};
 use tracing::{debug, warn};
 
-use super::{HookBinding, HookDispatcher, HookError, HookInvocation, HookOutcome, HooksConfig};
+use super::{
+    HookBinding, HookDispatcher, HookError, HookInvocation, HookOutcome, HooksConfig,
+    DEFAULT_HOOK_TIMEOUT_MS,
+};
 
 /// Configuration knobs that influence dispatcher construction (timeouts
 /// for the channel, descriptor loader, etc.). Distinct from
@@ -222,7 +225,7 @@ impl HookDispatcher for TonicHookDispatcher {
             endpoint = %binding.endpoint,
             "tonic dispatch (before)"
         );
-        let timeout = binding.timeout_ms.unwrap_or(5000);
+        let timeout = binding.timeout_ms.unwrap_or(DEFAULT_HOOK_TIMEOUT_MS);
         let response = self.invoke(binding, invocation, timeout).await?;
         Ok(decode_outcome(&response))
     }
@@ -238,7 +241,7 @@ impl HookDispatcher for TonicHookDispatcher {
             endpoint = %binding.endpoint,
             "tonic dispatch (after)"
         );
-        let timeout = binding.timeout_ms.unwrap_or(5000);
+        let timeout = binding.timeout_ms.unwrap_or(DEFAULT_HOOK_TIMEOUT_MS);
         let _ = self.invoke(binding, invocation, timeout).await?;
         Ok(())
     }

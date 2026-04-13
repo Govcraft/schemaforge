@@ -115,13 +115,13 @@ current runtime; two are reserved for future use.
 
 | Event | DSL keyword | Fires on | Blocking? | May abort? | May modify? | System operation values |
 |---|---|---|---|---|---|---|
+| Before validate | `before_validate` | POST/PUT | yes | yes | yes | `create`, `update` |
 | Before change | `before_change` | POST/PUT | yes | yes | yes | `create`, `update` |
-| After change | `after_change` | POST/PUT | no (fire-and-forget) | no | no | `create`, `update` |
+| After change | `after_change` | POST/PUT | no (detached) | no | no | `create`, `update` |
 | Before delete | `before_delete` | DELETE | yes | yes | n/a (no payload) | `delete` |
-| After delete | `after_delete` | DELETE | no (fire-and-forget) | no | n/a | `delete` |
+| After delete | `after_delete` | DELETE | no (detached) | no | n/a | `delete` |
 | Before read | `before_read` | GET one, GET list, POST query | yes | yes | n/a (no payload) | `read`, `list`, `query` |
 | After read | `after_read` | GET one | yes | yes | yes | `read` |
-| Before validate | `before_validate` | *(reserved)* | — | — | — | — |
 
 A few semantic notes:
 
@@ -129,24 +129,41 @@ A few semantic notes:
   SchemaForge only persists (or responds) after the hook accepts the
   operation. If you need something asynchronous, use the corresponding
   `after_*` event instead.
-- **Fire-and-forget events** (`after_change`, `after_delete`) are
-  dispatched on a background task. Errors are logged; they never
-  reach the HTTP client. The persisted entity is already committed
-  when these fire.
+- **Detached events** (`after_change`, `after_delete`) run **after** the
+  HTTP response is sent. Dispatch is owned by an internal
+  `HookDispatchActor` running under acton-reactive supervision — it is
+  **not** a raw `tokio::spawn`, so in-flight hook calls participate in
+  graceful shutdown and the runtime's concurrency budget. Errors are
+  logged; they never reach the HTTP client. The persisted entity is
+  already committed when these fire.
 - **Read-side hooks** fire on the list and query endpoints for
   `before_read` only, with `operation` set to `list` or `query`
   respectively. `after_read` is per-entity and currently fires only
   on single-entity GETs.
-- **`before_validate`** is reserved; the variant exists in the DSL
-  today but is not yet wired into the runtime. Use `before_change`
-  for pre-persistence logic.
+- **`before_validate` vs `before_change`.** Both fire pre-persistence
+  on POST/PUT. `before_validate` runs first, so it is the right hook
+  to use when you need to compute or default a field before any
+  validation considers it (it can mutate fields with no risk of a row
+  lock window). `before_change` runs immediately after, on the
+  possibly-mutated payload, and is a good place for invariants that
+  must hold across both inputs and computed defaults.
+
+> **Writing back to the trigger entity from `after_change`.** This is
+> supported — the row is fully committed before the hook fires and the
+> dispatch is fully detached from the HTTP request — but each
+> write-back will itself trigger another `after_change`. **Implement a
+> reentrancy guard in your hook handler** (e.g. skip the writeback when
+> a sentinel field is already set, or short-circuit on the second
+> invocation per row). If you only need to compute a derived field
+> from the input, prefer `before_validate`: it runs inline, leaves no
+> lock window, and never recurses.
 
 ### 2.3 Dispatch lifecycle
 
 The flow below shows what happens on a `POST /schemas/Translation/entities`
 request against a schema with both `@hook(before_change)` and
 `@hook(after_change)` declared. Blocking events are drawn with solid
-arrows; fire-and-forget with dashed.
+arrows; detached dispatch with dashed.
 
 ```
   HTTP request
@@ -174,7 +191,8 @@ arrows; fire-and-forget with dashed.
        ▼
   ┌──────────────────────┐
   │  after_change hook   │
-  │  (fire-and-forget)   │
+  │  (detached, runs in  │
+  │  HookDispatchActor)  │
   └──────────────────────┘
 ```
 
@@ -395,9 +413,9 @@ columns. A response value that cannot be coerced — for example, a
 with HTTP 422 `hook_aborted` and a message identifying the offending
 field.
 
-For fire-and-forget events (`after_change`, `after_delete`), the
-response message is empty — the transport round-trip still happens,
-but its contents are ignored.
+For detached events (`after_change`, `after_delete`), the response
+message is empty — the transport round-trip still happens, but its
+contents are ignored.
 
 ---
 
@@ -415,7 +433,7 @@ Hooks live under `[schema_forge.hooks]` in your `config.toml`:
 ```toml
 [schema_forge.hooks]
 enabled = true
-default_timeout_ms = 5000
+default_timeout_ms = 30000
 max_concurrent_async = 100
 
 [[schema_forge.hooks.bindings]]
@@ -438,7 +456,7 @@ Top-level fields:
 | Field | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Global kill-switch. When `false`, all hook annotations are ignored at runtime. Set this to `false` in local dev to run without hook services. |
-| `default_timeout_ms` | `5000` | Per-call timeout applied to any binding that does not set its own. |
+| `default_timeout_ms` | `30000` | Per-call timeout applied to any binding that does not set its own. Bumped from 5s in v0.13 (issue #11) so handlers that walk related rows or call back into SchemaForge have realistic headroom. |
 | `max_concurrent_async` | `100` | Upper bound on background after-hook dispatches. |
 | `bindings` | `[]` | List of per-(schema, event) bindings. |
 

@@ -34,6 +34,7 @@ prost-reflect = "0.16.3"
 bytes = "1.11.1"
 http = "1.4.0"
 tonic-prost = "0.14"
+sync_wrapper = "1.0.2"
 
 
 [features]
