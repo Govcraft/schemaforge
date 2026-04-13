@@ -1816,6 +1816,19 @@ pub async fn patch_entity(
                 dispatcher: dispatcher.as_ref(),
                 hooks_config: &hooks_config,
                 schema: &schema_def,
+                event: HookEvent::BeforeValidate,
+                operation: "patch",
+                user: claims.as_ref(),
+                entity_id: Some(entity_id.as_str().to_string()),
+            },
+            &mut fields,
+        )
+        .await?;
+        apply_before_hook(
+            BeforeHookCtx {
+                dispatcher: dispatcher.as_ref(),
+                hooks_config: &hooks_config,
+                schema: &schema_def,
                 event: HookEvent::BeforeChange,
                 operation: "patch",
                 user: claims.as_ref(),
@@ -1847,9 +1860,10 @@ pub async fn patch_entity(
         .await;
     let mut updated = ask_forge(rx).await?.map_err(ForgeError::from)?;
 
-    // after_change hook (fire-and-forget)
+    // after_change hook — dispatched via HookDispatchActor
     if let Some(dispatcher) = hook_dispatcher.clone() {
         fire_after_hook(
+            &state,
             AfterHookCtx {
                 dispatcher,
                 hooks_config: hooks_config.clone(),
@@ -1859,7 +1873,8 @@ pub async fn patch_entity(
                 user_id: claims.as_ref().map(|c| c.sub.clone()),
             },
             &updated,
-        );
+        )
+        .await;
     }
 
     // Filter read-restricted fields from response
