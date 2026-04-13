@@ -22,12 +22,19 @@
 //!    response before persisting. If `abort_reason` is set, the request
 //!    aborts with [`crate::error::ForgeError::HookAborted`]. If the
 //!    response carries modified fields, they replace the entity payload.
-//! 2. **Fire-and-forget (`after_*`)**: the dispatcher spawns the call on
-//!    a background task and returns immediately. Errors are logged.
+//! 2. **Detached (`after_*`)**: the route handler queues a
+//!    [`dispatch_actor::DispatchHook`] message on the
+//!    [`dispatch_actor::HookDispatchActor`] and returns immediately to
+//!    the caller. The actor runs the dispatch concurrently under
+//!    acton-reactive supervision, so in-flight hook calls participate in
+//!    graceful shutdown and the runtime's backpressure budget. Errors
+//!    are logged.
 //!
-//! See `docs/hooks.md` for full semantics.
+//! See `docs/hooks-reference.md` for full semantics.
 
+pub mod dispatch_actor;
 pub mod tonic_dispatcher;
+pub use dispatch_actor::{DispatchHook, HookDispatchActor};
 pub use tonic_dispatcher::{TonicDispatcherConfig, TonicHookDispatcher};
 
 use std::collections::BTreeMap;
@@ -54,7 +61,11 @@ pub struct HooksConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Default timeout per blocking hook call, in milliseconds. Default: 5000.
+    /// Default timeout per hook call, in milliseconds. Default: 30000.
+    ///
+    /// Bumped from 5s to 30s in v0.13 (issue #11): the previous 5s default
+    /// was too aggressive for any hook that walks related rows or makes
+    /// nested HTTP / database calls back into SchemaForge.
     #[serde(default = "default_timeout_ms")]
     pub default_timeout_ms: u32,
 
@@ -69,8 +80,13 @@ pub struct HooksConfig {
     pub bindings: Vec<HookBinding>,
 }
 
+/// Default hook timeout in milliseconds.
+///
+/// 30 seconds. See `HooksConfig::default_timeout_ms` for the rationale.
+pub(crate) const DEFAULT_HOOK_TIMEOUT_MS: u32 = 30_000;
+
 fn default_timeout_ms() -> u32 {
-    5000
+    DEFAULT_HOOK_TIMEOUT_MS
 }
 
 fn default_max_concurrent() -> usize {
@@ -623,7 +639,8 @@ mod tests {
     async fn hooks_config_defaults() {
         let config = HooksConfig::default();
         assert!(!config.enabled);
-        assert_eq!(config.default_timeout_ms, 5000);
+        // Issue #11: bumped from 5_000 to 30_000.
+        assert_eq!(config.default_timeout_ms, 30_000);
         assert_eq!(config.max_concurrent_async, 100);
         assert!(config.bindings.is_empty());
     }
@@ -635,6 +652,6 @@ mod tests {
         let config = HooksConfig::default();
         assert_eq!(b.effective_timeout_ms(&config), 1234);
         b.timeout_ms = None;
-        assert_eq!(b.effective_timeout_ms(&config), 5000);
+        assert_eq!(b.effective_timeout_ms(&config), 30_000);
     }
 }

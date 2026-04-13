@@ -190,12 +190,20 @@ fn configure_registry_mutations(actor: &mut ManagedActor<Idle, ForgeActor>) {
 }
 
 // ---------------------------------------------------------------------------
-// Backend operations (read-only actor access, async backend calls)
+// Backend operations
 //
-// The DynForgeBackend trait methods return `Pin<Box<dyn Future + Send>>` (not
-// `+ Sync`), but acton-reactive's `FutureBox` requires `Send + Sync`. We
-// bridge this by spawning the backend call on a tokio task and awaiting the
-// `JoinHandle`, which is both `Send` and `Sync`.
+// `act_on` handlers run with shared (read-only) access to actor state and
+// are scheduled concurrently by the acton runtime, so awaiting backend
+// calls directly here is the idiomatic pattern. We deliberately do **not**
+// wrap these calls in `tokio::spawn` — that would orphan the work from
+// acton's supervision tree (no backpressure, no graceful shutdown
+// coordination, and historically the source of issue #11 self-deadlocks
+// when an `after_change` hook tried to write back to the trigger entity).
+//
+// The boxed futures returned by `DynEntityStore` / `DynSchemaBackend`
+// are wrapped in `sync_wrapper::SyncFuture` at the trait boundary so they
+// satisfy acton-reactive's `Send + Sync` `FutureBox` bound (see
+// `crate::state` for details).
 // ---------------------------------------------------------------------------
 
 /// Helper: return a "no backend configured" error.
@@ -212,13 +220,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => tokio::spawn(async move { b.create(&entity).await })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(BackendError::Internal {
-                            message: e.to_string(),
-                        })
-                    }),
+                Some(b) => b.create(&entity).await,
                 None => {
                     warn!("CreateEntity received but no backend is configured");
                     Err(no_backend_error())
@@ -235,13 +237,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => tokio::spawn(async move { b.get(&schema, &id).await })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(BackendError::Internal {
-                            message: e.to_string(),
-                        })
-                    }),
+                Some(b) => b.get(&schema, &id).await,
                 None => {
                     warn!("GetEntity received but no backend is configured");
                     Err(no_backend_error())
@@ -257,13 +253,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => tokio::spawn(async move { b.update(&entity).await })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(BackendError::Internal {
-                            message: e.to_string(),
-                        })
-                    }),
+                Some(b) => b.update(&entity).await,
                 None => {
                     warn!("UpdateEntity received but no backend is configured");
                     Err(no_backend_error())
@@ -280,13 +270,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => tokio::spawn(async move { b.delete(&schema, &id).await })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(BackendError::Internal {
-                            message: e.to_string(),
-                        })
-                    }),
+                Some(b) => b.delete(&schema, &id).await,
                 None => {
                     warn!("DeleteEntity received but no backend is configured");
                     Err(no_backend_error())
@@ -302,13 +286,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => tokio::spawn(async move { b.query(&query).await })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(BackendError::Internal {
-                            message: e.to_string(),
-                        })
-                    }),
+                Some(b) => b.query(&query).await,
                 None => {
                     warn!("QueryEntities received but no backend is configured");
                     Err(no_backend_error())
@@ -324,13 +302,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => tokio::spawn(async move { b.count(&query).await })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(BackendError::Internal {
-                            message: e.to_string(),
-                        })
-                    }),
+                Some(b) => b.count(&query).await,
                 None => {
                     warn!("CountEntities received but no backend is configured");
                     Err(no_backend_error())
@@ -346,13 +318,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => tokio::spawn(async move { b.aggregate(&query).await })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(BackendError::Internal {
-                            message: e.to_string(),
-                        })
-                    }),
+                Some(b) => b.aggregate(&query).await,
                 None => {
                     warn!("AggregateEntities received but no backend is configured");
                     Err(no_backend_error())
@@ -369,15 +335,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.apply_migration(&schema_name, &steps).await })
-                        .await
-                        .unwrap_or_else(|e| {
-                            Err(BackendError::Internal {
-                                message: e.to_string(),
-                            })
-                        })
-                }
+                Some(b) => b.apply_migration(&schema_name, &steps).await,
                 None => {
                     warn!("ApplyMigration received but no backend is configured");
                     Err(no_backend_error())
@@ -393,13 +351,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => tokio::spawn(async move { b.store_schema_metadata(&definition).await })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(BackendError::Internal {
-                            message: e.to_string(),
-                        })
-                    }),
+                Some(b) => b.store_schema_metadata(&definition).await,
                 None => {
                     warn!("StoreSchemaMetadata received but no backend is configured");
                     Err(no_backend_error())
@@ -415,13 +367,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => tokio::spawn(async move { b.load_schema_metadata(&name).await })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(BackendError::Internal {
-                            message: e.to_string(),
-                        })
-                    }),
+                Some(b) => b.load_schema_metadata(&name).await,
                 None => {
                     warn!("LoadSchemaMetadata received but no backend is configured");
                     Err(no_backend_error())

@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-acton"
-version = "0.15.1"
+version = "0.16.0"
 edition = "2021"
 
 [dependencies]
@@ -34,6 +34,7 @@ prost-reflect = "0.16.3"
 bytes = "1.11.1"
 http = "1.4.0"
 tonic-prost = "0.14"
+sync_wrapper = "1.0.2"
 
 
 [features]

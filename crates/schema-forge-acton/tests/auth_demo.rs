@@ -95,6 +95,7 @@ async fn build_test_app_state(
     let service = ServiceBuilder::new()
         .with_config(config)
         .with_actor::<ForgeActor>()
+        .with_actor::<schema_forge_acton::HookDispatchActor>()
         .build();
 
     let forge_handle = service

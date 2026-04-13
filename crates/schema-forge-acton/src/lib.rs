@@ -27,6 +27,7 @@ pub use actor::ForgeActor;
 pub use config::SchemaForgeConfig;
 pub use error::ForgeError;
 pub use extension::{InitForgeData, SchemaForgeExtension};
+pub use hooks::HookDispatchActor;
 pub use messages::{InitForge, ReplyChannel};
 pub use state::{
     DynAuthStore, DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry,

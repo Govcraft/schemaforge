@@ -229,6 +229,7 @@ pub async fn run(
     let service = ServiceBuilder::new()
         .with_config(svc_config)
         .with_actor::<ForgeActor>()
+        .with_actor::<schema_forge_acton::HookDispatchActor>()
         .with_routes(routes)
         .build();
 

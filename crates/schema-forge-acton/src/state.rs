@@ -10,6 +10,7 @@ use schema_forge_backend::user_store::{AuthStore, ForgeUser};
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
 use schema_forge_core::types::{EntityId, SchemaDefinition, SchemaName};
+use sync_wrapper::SyncFuture;
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -26,24 +27,26 @@ pub trait DynSchemaBackend: Send + Sync {
         &'a self,
         schema_name: &'a SchemaName,
         steps: &'a [MigrationStep],
-    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>>;
 
     /// Store (upsert) schema metadata in the backend.
     fn store_schema_metadata<'a>(
         &'a self,
         definition: &'a SchemaDefinition,
-    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>>;
 
     /// Load schema metadata by name.
     fn load_schema_metadata<'a>(
         &'a self,
         name: &'a SchemaName,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<SchemaDefinition>, BackendError>> + Send + 'a>>;
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Option<SchemaDefinition>, BackendError>> + Send + Sync + 'a>,
+    >;
 
     /// List all stored schema metadata.
     fn list_schema_metadata(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<SchemaDefinition>, BackendError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<SchemaDefinition>, BackendError>> + Send + Sync + '_>>;
 }
 
 /// Blanket impl: any concrete `SchemaBackend` automatically implements `DynSchemaBackend`.
@@ -52,30 +55,39 @@ impl<T: SchemaBackend + 'static> DynSchemaBackend for T {
         &'a self,
         schema_name: &'a SchemaName,
         steps: &'a [MigrationStep],
-    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
-        Box::pin(SchemaBackend::apply_migration(self, schema_name, steps))
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(SchemaBackend::apply_migration(
+            self,
+            schema_name,
+            steps,
+        )))
     }
 
     fn store_schema_metadata<'a>(
         &'a self,
         definition: &'a SchemaDefinition,
-    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
-        Box::pin(SchemaBackend::store_schema_metadata(self, definition))
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(SchemaBackend::store_schema_metadata(
+            self, definition,
+        )))
     }
 
     fn load_schema_metadata<'a>(
         &'a self,
         name: &'a SchemaName,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<SchemaDefinition>, BackendError>> + Send + 'a>>
-    {
-        Box::pin(SchemaBackend::load_schema_metadata(self, name))
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Option<SchemaDefinition>, BackendError>> + Send + Sync + 'a>,
+    > {
+        Box::pin(SyncFuture::new(SchemaBackend::load_schema_metadata(
+            self, name,
+        )))
     }
 
     fn list_schema_metadata(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<SchemaDefinition>, BackendError>> + Send + '_>>
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<SchemaDefinition>, BackendError>> + Send + Sync + '_>>
     {
-        Box::pin(SchemaBackend::list_schema_metadata(self))
+        Box::pin(SyncFuture::new(SchemaBackend::list_schema_metadata(self)))
     }
 }
 
@@ -88,101 +100,115 @@ impl<T: SchemaBackend + 'static> DynSchemaBackend for T {
 /// Same pattern as `DynSchemaBackend`: boxed futures for dynamic dispatch.
 pub trait DynEntityStore: Send + Sync {
     /// Create a new entity in the backend.
+    ///
+    /// The returned future is `Send + Sync` so it can be awaited inside an
+    /// acton-reactive `act_on` handler body without going through an inner
+    /// `tokio::spawn` (which would orphan the work from the runtime).
     fn create<'a>(
         &'a self,
         entity: &'a Entity,
-    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + Sync + 'a>>;
 
     /// Retrieve an entity by schema name and entity ID.
     fn get<'a>(
         &'a self,
         schema: &'a SchemaName,
         id: &'a EntityId,
-    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + Sync + 'a>>;
 
     /// Update an existing entity.
     fn update<'a>(
         &'a self,
         entity: &'a Entity,
-    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + Sync + 'a>>;
 
     /// Delete an entity by schema name and entity ID.
     fn delete<'a>(
         &'a self,
         schema: &'a SchemaName,
         id: &'a EntityId,
-    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>>;
 
     /// Execute a query and return matching entities.
     fn query<'a>(
         &'a self,
         query: &'a Query,
-    ) -> Pin<Box<dyn Future<Output = Result<QueryResult, BackendError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<QueryResult, BackendError>> + Send + Sync + 'a>>;
 
     /// Count entities matching a query (ignoring limit/offset).
     fn count<'a>(
         &'a self,
         query: &'a Query,
-    ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + Sync + 'a>>;
 
     /// Compute aggregate values over entities matching a query.
     fn aggregate<'a>(
         &'a self,
         query: &'a AggregateQuery,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<AggregateResult>, BackendError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<AggregateResult>, BackendError>> + Send + Sync + 'a>>;
 }
 
 /// Blanket impl: any concrete `EntityStore` automatically implements `DynEntityStore`.
+///
+/// The underlying `EntityStore` futures are `Send` only — many backend
+/// implementations (notably sqlx-based ones) hold `!Sync` state across
+/// `await` points. Wrapping them in [`SyncFuture`] is sound because
+/// [`Future::poll`] takes `Pin<&mut Self>` (exclusive access), so no two
+/// threads can ever observe the inner non-`Sync` state simultaneously.
+/// This tightening lets the boxed future satisfy acton-reactive's
+/// `Send + Sync` `FutureBox` bound, so backend calls can be awaited
+/// directly inside `act_on` handlers without an inner `tokio::spawn`.
 impl<T: EntityStore + 'static> DynEntityStore for T {
     fn create<'a>(
         &'a self,
         entity: &'a Entity,
-    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + 'a>> {
-        Box::pin(EntityStore::create(self, entity))
+    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(EntityStore::create(self, entity)))
     }
 
     fn get<'a>(
         &'a self,
         schema: &'a SchemaName,
         id: &'a EntityId,
-    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + 'a>> {
-        Box::pin(EntityStore::get(self, schema, id))
+    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(EntityStore::get(self, schema, id)))
     }
 
     fn update<'a>(
         &'a self,
         entity: &'a Entity,
-    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + 'a>> {
-        Box::pin(EntityStore::update(self, entity))
+    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(EntityStore::update(self, entity)))
     }
 
     fn delete<'a>(
         &'a self,
         schema: &'a SchemaName,
         id: &'a EntityId,
-    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
-        Box::pin(EntityStore::delete(self, schema, id))
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(EntityStore::delete(self, schema, id)))
     }
 
     fn query<'a>(
         &'a self,
         query: &'a Query,
-    ) -> Pin<Box<dyn Future<Output = Result<QueryResult, BackendError>> + Send + 'a>> {
-        Box::pin(EntityStore::query(self, query))
+    ) -> Pin<Box<dyn Future<Output = Result<QueryResult, BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(EntityStore::query(self, query)))
     }
 
     fn count<'a>(
         &'a self,
         query: &'a Query,
-    ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + 'a>> {
-        Box::pin(EntityStore::count(self, query))
+    ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(EntityStore::count(self, query)))
     }
 
     fn aggregate<'a>(
         &'a self,
         query: &'a AggregateQuery,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<AggregateResult>, BackendError>> + Send + 'a>> {
-        Box::pin(EntityStore::aggregate(self, query))
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<AggregateResult>, BackendError>> + Send + Sync + 'a>>
+    {
+        Box::pin(SyncFuture::new(EntityStore::aggregate(self, query)))
     }
 }
 

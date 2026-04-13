@@ -120,6 +120,7 @@ async fn setup(
     let service = ServiceBuilder::new()
         .with_config(config)
         .with_actor::<ForgeActor>()
+        .with_actor::<schema_forge_acton::HookDispatchActor>()
         .build();
 
     let forge = service
@@ -522,6 +523,293 @@ async fn before_change_hook_invalid_datetime_returns_422() {
         message.contains("published_at") && message.contains("invalid datetime"),
         "unexpected message: {message}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #11 — `after_change` writeback regression coverage
+// ---------------------------------------------------------------------------
+
+/// Custom dispatcher that simulates a real hook service writing back to
+/// the trigger entity on `after_change`. This is the exact pattern that
+/// used to self-deadlock at the 5s default timeout in v0.12.x.
+#[derive(Debug)]
+struct WriteBackDispatcher {
+    forge: acton_service::prelude::ActorHandle,
+    /// Schema name used to construct the writeback `UpdateEntity` message.
+    schema_name: schema_forge_core::types::SchemaName,
+    /// Reentrancy guard: hook handlers that mutate the trigger entity
+    /// will themselves trigger another `after_change`. Without a guard,
+    /// the dispatcher would recurse forever. Two writes are enough to
+    /// prove the `after_change` -> writeback path completes once and
+    /// then short-circuits.
+    writes: std::sync::atomic::AtomicUsize,
+    /// Channel to signal that the writeback has landed in the backend.
+    done: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+#[async_trait::async_trait]
+impl schema_forge_acton::hooks::HookDispatcher for WriteBackDispatcher {
+    async fn call_before(
+        &self,
+        _binding: &HookBinding,
+        _invocation: schema_forge_acton::hooks::HookInvocation,
+    ) -> Result<HookOutcome, HookError> {
+        Ok(HookOutcome::default())
+    }
+
+    async fn call_after(
+        &self,
+        _binding: &HookBinding,
+        invocation: schema_forge_acton::hooks::HookInvocation,
+    ) -> Result<(), HookError> {
+        // Reentrancy guard: only the first writeback runs. The second
+        // `after_change` (triggered by our own UpdateEntity below) is
+        // ignored.
+        let nth = self
+            .writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if nth > 0 {
+            return Ok(());
+        }
+
+        let entity_id_str = invocation.entity_id.as_deref().unwrap_or("");
+        let entity_id = schema_forge_core::types::EntityId::parse(entity_id_str).map_err(|e| {
+            HookError::Internal {
+                message: format!("invalid entity id `{entity_id_str}`: {e}"),
+            }
+        })?;
+
+        // Build the updated entity: existing fields + a new
+        // `translated_text`. This is exactly what a real hook service
+        // would do via the REST API; we shortcut through the actor here
+        // to keep the test hermetic (no extra HTTP layer).
+        let mut new_fields = invocation.fields.clone();
+        new_fields.insert(
+            "translated_text".to_string(),
+            DynamicValue::Text("written-back-by-hook".into()),
+        );
+        let entity = schema_forge_backend::entity::Entity::with_id(
+            entity_id,
+            self.schema_name.clone(),
+            new_fields,
+        );
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.forge
+            .send(schema_forge_acton::messages::UpdateEntity {
+                entity,
+                reply: schema_forge_acton::messages::ReplyChannel::new(tx),
+            })
+            .await;
+
+        // Bound the wait so a regression of issue #11 surfaces as a
+        // test timeout rather than a hung suite.
+        match tokio::time::timeout(Duration::from_secs(10), rx).await {
+            Ok(Ok(Ok(_))) => {
+                if let Some(done) = self.done.lock().await.take() {
+                    let _ = done.send(());
+                }
+                Ok(())
+            }
+            Ok(Ok(Err(e))) => Err(HookError::Internal {
+                message: format!("writeback backend error: {e}"),
+            }),
+            Ok(Err(_)) => Err(HookError::Internal {
+                message: "writeback reply channel dropped".into(),
+            }),
+            Err(_) => Err(HookError::Timeout {
+                endpoint: "writeback".into(),
+                timeout_ms: 10_000,
+            }),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn after_change_writeback_to_trigger_entity_is_eventually_consistent() {
+    use acton_service::prelude::ActorHandleInterface;
+
+    // Empty hook config used only to bootstrap the app state — we'll
+    // replace the dispatcher by re-initializing the actor below.
+    let bootstrap_config = HooksConfig {
+        enabled: true,
+        bindings: vec![binding(false, HookEvent::AfterChange)],
+        ..HooksConfig::default()
+    };
+    let state = setup(
+        bootstrap_config.clone(),
+        Some(Arc::new(MockHookDispatcher::new())),
+    )
+    .await;
+    let forge = state.actor::<ForgeActor>().expect("ForgeActor").clone();
+
+    // Look up the schema id so the writeback dispatcher can construct a
+    // valid `Entity`.
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(schema_forge_acton::messages::GetSchema {
+            name: "Translation".to_string(),
+            reply: schema_forge_acton::messages::ReplyChannel::new(tx),
+        })
+        .await;
+    let schema_def = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .expect("GetSchema timeout")
+        .expect("GetSchema channel dropped")
+        .expect("Translation schema not found");
+
+    // Build the writeback dispatcher and re-init the forge actor with
+    // it as the live dispatcher.
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let writeback: Arc<dyn schema_forge_acton::hooks::HookDispatcher> =
+        Arc::new(WriteBackDispatcher {
+            forge: forge.clone(),
+            schema_name: schema_def.name.clone(),
+            writes: std::sync::atomic::AtomicUsize::new(0),
+            done: tokio::sync::Mutex::new(Some(done_tx)),
+        });
+    let (init_tx, init_rx) = oneshot::channel();
+    forge
+        .send(InitForge {
+            registry: {
+                let mut m = HashMap::new();
+                m.insert("Translation".to_string(), schema_def.clone());
+                m
+            },
+            backend: Arc::new(
+                SurrealBackend::connect_memory("test", "test")
+                    .await
+                    .expect("backend"),
+            ),
+            tenant_config: None,
+            record_access_policy: None,
+            hook_dispatcher: Some(writeback),
+            reply: schema_forge_acton::messages::ReplyChannel::new(init_tx),
+        })
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), init_rx)
+        .await
+        .expect("re-init timeout")
+        .expect("re-init channel dropped");
+
+    // Reapply the migration on the new backend (the previous setup()
+    // backend was discarded with re-init).
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema_def);
+    let (mtx, mrx) = oneshot::channel();
+    forge
+        .send(ApplyMigration {
+            schema_name: schema_def.name.clone(),
+            steps: plan.steps,
+            reply: schema_forge_acton::messages::ReplyChannel::new(mtx),
+        })
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), mrx)
+        .await
+        .expect("ApplyMigration timeout")
+        .expect("ApplyMigration channel dropped")
+        .expect("ApplyMigration failed");
+
+    // Insert the schema into the registry too (re-init wiped it).
+    forge
+        .send(InsertSchema {
+            name: schema_def.name.as_str().to_string(),
+            definition: schema_def.clone(),
+        })
+        .await;
+
+    // Drive a POST through the router. The `after_change` hook will
+    // synchronously write back via the WriteBackDispatcher; we then
+    // assert that the writeback landed within a bounded poll window.
+    let router = test_router(state.clone());
+    let (status, json) = post_entity(
+        &router,
+        "Translation",
+        serde_json::json!({"source_text": "hola"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "POST failed: {json}");
+    let entity_id = json["id"]
+        .as_str()
+        .expect("response missing id")
+        .to_string();
+
+    // Wait for the writeback to complete (regression of #11 would
+    // either time this out or never fire).
+    tokio::time::timeout(Duration::from_secs(5), done_rx)
+        .await
+        .expect("writeback did not complete within 5s — issue #11 regression")
+        .expect("writeback channel dropped");
+
+    // Poll the entity until the written-back field is visible.
+    let mut found = false;
+    for _ in 0..50 {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(schema_forge_acton::messages::GetEntity {
+                schema: schema_def.name.clone(),
+                id: schema_forge_core::types::EntityId::parse(&entity_id).unwrap(),
+                reply: schema_forge_acton::messages::ReplyChannel::new(tx),
+            })
+            .await;
+        if let Ok(Ok(Ok(e))) = tokio::time::timeout(Duration::from_secs(2), rx).await {
+            if let Some(DynamicValue::Text(t)) = e.fields.get("translated_text") {
+                if t == "written-back-by-hook" {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        found,
+        "after_change writeback did not become visible within poll window"
+    );
+}
+
+/// `before_validate` mutations should be visible in the committed entity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn before_validate_hook_mutates_committed_entity() {
+    let dispatcher = Arc::new(MockHookDispatcher::new());
+    let mut modified = std::collections::BTreeMap::new();
+    modified.insert(
+        "translated_text".to_string(),
+        DynamicValue::Text("set-by-before-validate".into()),
+    );
+    dispatcher
+        .respond_before(
+            "Translation",
+            HookEvent::BeforeValidate,
+            HookOutcome {
+                abort_reason: None,
+                modified_fields: Some(modified),
+            },
+        )
+        .await;
+
+    let config = HooksConfig {
+        enabled: true,
+        bindings: vec![binding(true, HookEvent::BeforeValidate)],
+        ..HooksConfig::default()
+    };
+    let state = setup(config, Some(dispatcher.clone())).await;
+    let router = test_router(state);
+
+    let (status, json) = post_entity(
+        &router,
+        "Translation",
+        serde_json::json!({"source_text": "hello"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {json}");
+    assert_eq!(
+        json["fields"]["translated_text"], "set-by-before-validate",
+        "before_validate mutation must be persisted"
+    );
+
+    let calls = dispatcher.before_calls().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].event, HookEvent::BeforeValidate);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
