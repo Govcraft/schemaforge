@@ -50,17 +50,55 @@ The AI agent takes this further. Describe what you need in plain English, and an
 
 ### Prerequisites
 
-- Rust 1.75+ (2021 edition)
-- SurrealDB 2.x (for backend operations; embedded mode works for development)
+- A running SurrealDB 2.x or PostgreSQL 14+ instance (SurrealDB embedded mode works for development)
+- Rust 1.75+ only if you intend to build from source
 
-### Install and Initialize
+### Install the Prebuilt Binary
+
+Each release ships a single statically-linked `schemaforge` binary for Linux x86_64, built against exactly one database backend. Pick the flavor that matches your target database and run the matching one-liner:
 
 ```bash
-# Install the CLI
-cargo install schema-forge-cli
+# PostgreSQL build
+TAG=$(curl -fsSL https://api.github.com/repos/Govcraft/schemaforge/releases/latest | grep '"tag_name"' | cut -d'"' -f4) && \
+  curl -fsSL "https://github.com/Govcraft/schemaforge/releases/download/${TAG}/schemaforge-${TAG}-x86_64-unknown-linux-gnu-postgres.tar.gz" \
+  | sudo tar -xz -C /usr/local/bin
+```
 
-# Scaffold a new project
-schema-forge init my-platform
+```bash
+# SurrealDB build
+TAG=$(curl -fsSL https://api.github.com/repos/Govcraft/schemaforge/releases/latest | grep '"tag_name"' | cut -d'"' -f4) && \
+  curl -fsSL "https://github.com/Govcraft/schemaforge/releases/download/${TAG}/schemaforge-${TAG}-x86_64-unknown-linux-gnu-surrealdb.tar.gz" \
+  | sudo tar -xz -C /usr/local/bin
+```
+
+Each command downloads the latest release tarball, extracts the `schemaforge` binary into `/usr/local/bin`, and leaves it immediately runnable. To install somewhere on your `PATH` without `sudo`, swap `/usr/local/bin` for a user-writable directory such as `~/.local/bin`.
+
+The backend is compiled in — there is no runtime flag to switch between PostgreSQL and SurrealDB. If you need both, download both tarballs and rename the binaries (e.g. `schemaforge-pg`, `schemaforge-surreal`).
+
+Verify the install:
+
+```bash
+schemaforge --version
+```
+
+### Build from Source (alternative)
+
+If you need a different target triple, or want to track `main`:
+
+```bash
+# PostgreSQL build
+cargo install --git https://github.com/Govcraft/schemaforge schema-forge-cli \
+  --no-default-features --features postgres
+
+# SurrealDB build
+cargo install --git https://github.com/Govcraft/schemaforge schema-forge-cli \
+  --no-default-features --features surrealdb
+```
+
+### Scaffold a Project
+
+```bash
+schemaforge init my-platform
 cd my-platform
 ```
 
@@ -118,16 +156,16 @@ schema Contact {
 
 ```bash
 # Parse and validate your schemas
-schema-forge parse schemas/
+schemaforge parse schemas/
 
 # Apply schemas to SurrealDB (creates tables, fields, indexes)
-schema-forge apply schemas/ --db-url ws://localhost:8000
+schemaforge apply schemas/ --db-url ws://localhost:8000
 
 # Preview migration steps without applying
-schema-forge apply schemas/ --dry-run
+schemaforge apply schemas/ --dry-run
 
 # Start the API server with dynamic CRUD routes
-schema-forge serve --schemas schemas/ --db-url ws://localhost:8000 --db-ns app --db-name main
+schemaforge serve --schemas schemas/ --db-url ws://localhost:8000 --db-ns app --db-name main
 ```
 
 Once served, every registered schema automatically gets REST endpoints:
@@ -149,11 +187,11 @@ Instead of writing DSL by hand, describe what you need:
 
 ```bash
 # One-shot generation
-schema-forge generate "A ticketing system with tickets linked to contacts,
+schemaforge generate "A ticketing system with tickets linked to contacts,
     priority levels, status tracking, and assignment" --batch -o schemas/ticketing.schema
 
 # Interactive conversational mode
-schema-forge generate
+schemaforge generate
 ```
 
 The AI agent calls `list_schemas` to see what already exists, generates DSL, calls `validate_schema` to check correctness, fixes any errors automatically, and applies the result after confirmation. No custom retry logic -- the LLM's tool execution loop handles self-correction naturally.
@@ -330,7 +368,7 @@ webhook_params = "events" ":" string_list
 ## CLI Reference
 
 ```
-schema-forge <command> [options]
+schemaforge <command> [options]
 ```
 
 | Command | Description |
