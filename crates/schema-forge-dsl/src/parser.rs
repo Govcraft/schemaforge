@@ -1971,9 +1971,7 @@ mod tests {
 
     #[test]
     fn parse_webhook_invalid_event() {
-        let result = parse(
-            r#"@webhook(events: ["created", "exploded"]) schema S { name: text }"#,
-        );
+        let result = parse(r#"@webhook(events: ["created", "exploded"]) schema S { name: text }"#);
         assert!(result.is_err());
     }
 }

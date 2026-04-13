@@ -9,9 +9,9 @@ use crate::state::{
     DynAuthStore, DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry,
 };
 
+use crate::config::SchemaForgeConfig;
 use acton_service::session::{MemoryStore, SessionManagerLayer};
 use acton_service::state::AppState;
-use crate::config::SchemaForgeConfig;
 use schema_forge_backend::auth::RecordAccessPolicy;
 use schema_forge_backend::tenant::TenantConfig;
 use schema_forge_core::types::SchemaDefinition;
@@ -329,11 +329,10 @@ impl SchemaForgeExtension {
 
         // Build tenant config from all registered schemas
         let all_schemas: Vec<SchemaDefinition> = registry.values().cloned().collect();
-        let tenant_config = TenantConfig::from_schemas(&all_schemas).map_err(|e| {
-            ForgeError::Internal {
+        let tenant_config =
+            TenantConfig::from_schemas(&all_schemas).map_err(|e| ForgeError::Internal {
                 message: format!("Invalid tenant configuration: {e}"),
-            }
-        })?;
+            })?;
         let tenant_config = if tenant_config.is_enabled() {
             Some(tenant_config)
         } else {
@@ -359,8 +358,7 @@ impl SchemaForgeExtension {
     where
         S: Clone + Send + Sync + 'static,
     {
-        let forge_router = forge_routes()
-            .with_state(AppState::<SchemaForgeConfig>::default());
+        let forge_router = forge_routes().with_state(AppState::<SchemaForgeConfig>::default());
         router.nest("/forge", forge_router)
     }
 
@@ -385,8 +383,8 @@ impl SchemaForgeExtension {
     where
         T: serde::Serialize + serde::de::DeserializeOwned + Clone + Default + Send + Sync + 'static,
     {
-        let forge_router: Router<()> = forge_routes()
-            .with_state(AppState::<SchemaForgeConfig>::default());
+        let forge_router: Router<()> =
+            forge_routes().with_state(AppState::<SchemaForgeConfig>::default());
         router.nest_service("/forge", forge_router)
     }
 

@@ -247,9 +247,8 @@ pub trait DynAuthStore: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
 
     /// Count the total number of users.
-    fn count_users(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + '_>>;
+    fn count_users(&self)
+        -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + '_>>;
 }
 
 /// Blanket impl: any concrete `AuthStore` automatically implements `DynAuthStore`.

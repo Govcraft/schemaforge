@@ -263,10 +263,7 @@ mod tests {
         let policy = OwnershipBasedPolicy;
         let schema = make_schema_with_owner();
         let user_id = EntityId::new();
-        let claims = make_claims_with_sub(
-            &format!("user:{}", user_id.as_str()),
-            &["member"],
-        );
+        let claims = make_claims_with_sub(&format!("user:{}", user_id.as_str()), &["member"]);
 
         let entities = vec![
             make_entity_with_owner("Task", user_id.as_str()),
@@ -301,10 +298,7 @@ mod tests {
         let policy = OwnershipBasedPolicy;
         let schema = make_schema_with_owner();
         let user_id = EntityId::new();
-        let claims = make_claims_with_sub(
-            &format!("user:{}", user_id.as_str()),
-            &["member"],
-        );
+        let claims = make_claims_with_sub(&format!("user:{}", user_id.as_str()), &["member"]);
         let entity = make_entity_with_owner("Task", user_id.as_str());
 
         assert!(policy.can_modify(&schema, &claims, &entity).await);

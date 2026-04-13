@@ -92,15 +92,16 @@ impl TonicHookDispatcher {
         let mut bindings: HashMap<(String, HookEvent), ResolvedBinding> = HashMap::new();
 
         for binding in &hooks.bindings {
-            let path = binding.descriptor_path.as_deref().ok_or_else(|| {
-                HookError::Internal {
+            let path = binding
+                .descriptor_path
+                .as_deref()
+                .ok_or_else(|| HookError::Internal {
                     message: format!(
                         "binding {schema}/{event:?} has no descriptor_path",
                         schema = binding.schema,
                         event = binding.event
                     ),
-                }
-            })?;
+                })?;
 
             let pool = if let Some(p) = pools_by_path.get(path) {
                 p.clone()
@@ -276,11 +277,10 @@ fn resolve_binding(
         })?;
 
     let path_str = format!("/{}/{}", service.full_name(), method.name());
-    let path = PathAndQuery::from_maybe_shared(path_str.clone()).map_err(|e| {
-        HookError::Internal {
+    let path =
+        PathAndQuery::from_maybe_shared(path_str.clone()).map_err(|e| HookError::Internal {
             message: format!("invalid grpc path `{path_str}`: {e}"),
-        }
-    })?;
+        })?;
 
     Ok(ResolvedBinding {
         request_descriptor: method.input(),
@@ -517,10 +517,7 @@ mod tests {
 
     #[test]
     fn dynamic_value_text_to_string_kind() {
-        let v = dynamic_value_to_proto(
-            &DynamicValue::Text("hi".into()),
-            &Kind::String,
-        );
+        let v = dynamic_value_to_proto(&DynamicValue::Text("hi".into()), &Kind::String);
         assert!(matches!(v, Some(Value::String(s)) if s == "hi"));
     }
 
@@ -576,4 +573,3 @@ mod tests {
         assert!(matches!(err, HookError::Internal { .. }));
     }
 }
-

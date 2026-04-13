@@ -25,8 +25,8 @@ mod pb {
 
 use pb::translation_hooks_server::{TranslationHooks, TranslationHooksServer};
 use pb::{
-    TranslationAfterChangeRequest, TranslationAfterChangeResponse,
-    TranslationBeforeChangeRequest, TranslationBeforeChangeResponse,
+    TranslationAfterChangeRequest, TranslationAfterChangeResponse, TranslationBeforeChangeRequest,
+    TranslationBeforeChangeResponse,
 };
 
 const DESCRIPTOR_PATH: &str = env!("TRANSLATION_HOOKS_DESCRIPTOR");
@@ -263,7 +263,10 @@ async fn unreachable_endpoint_yields_unavailable() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, HookError::Unavailable { .. } | HookError::Timeout { .. }),
+        matches!(
+            err,
+            HookError::Unavailable { .. } | HookError::Timeout { .. }
+        ),
         "unexpected error: {err:?}"
     );
 }

@@ -298,7 +298,11 @@ impl fmt::Display for MigrationStep {
             Self::ChangeHookIntent {
                 event, new_intent, ..
             } => {
-                write!(f, "CHANGE HOOK INTENT {} -> \"{new_intent}\"", event.as_str())
+                write!(
+                    f,
+                    "CHANGE HOOK INTENT {} -> \"{new_intent}\"",
+                    event.as_str()
+                )
             }
         }
     }
@@ -1641,7 +1645,10 @@ mod tests {
     // Hook diff tests (Phase 5)
     // -----------------------------------------------------------------
 
-    fn schema_with_hooks(name: &str, hooks: Vec<(crate::types::HookEvent, &str)>) -> SchemaDefinition {
+    fn schema_with_hooks(
+        name: &str,
+        hooks: Vec<(crate::types::HookEvent, &str)>,
+    ) -> SchemaDefinition {
         SchemaDefinition::new(
             SchemaId::new(),
             SchemaName::new(name).unwrap(),

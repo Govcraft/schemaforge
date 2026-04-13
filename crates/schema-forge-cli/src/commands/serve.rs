@@ -5,9 +5,7 @@ use std::time::Duration;
 use acton_service::prelude::ActorHandleInterface;
 use acton_service::service_builder::ServiceBuilder;
 use acton_service::versioning::{ApiVersion, VersionedApiBuilder};
-use schema_forge_acton::hooks::{
-    HookDispatcher, TonicDispatcherConfig, TonicHookDispatcher,
-};
+use schema_forge_acton::hooks::{HookDispatcher, TonicDispatcherConfig, TonicHookDispatcher};
 use schema_forge_acton::{
     DynForgeBackend, ForgeActor, InitForge, InitForgeData, ReplyChannel, SchemaForgeExtension,
 };
@@ -145,8 +143,7 @@ pub async fn run(
             .with_backend_arc(init_data.backend.clone())
             .with_auth_store_arc(auth_store);
         if let Some(ref password) = args.admin_password {
-            builder =
-                builder.with_admin_credentials(args.admin_user.clone(), password.clone());
+            builder = builder.with_admin_credentials(args.admin_user.clone(), password.clone());
         }
         if let Some(ref dir) = args.template_dir {
             builder = builder.with_template_dir(dir.clone());
@@ -156,17 +153,16 @@ pub async fn run(
                 .with_site_template_dir(std::path::PathBuf::from("site/templates"))
                 .with_site_static_dir(std::path::PathBuf::from("site/static"));
         }
-        Some(
-            builder.build().await.map_err(|e| CliError::Server {
-                message: format!("failed to build SchemaForgeExtension: {e}"),
-            })?,
-        )
+        Some(builder.build().await.map_err(|e| CliError::Server {
+            message: format!("failed to build SchemaForgeExtension: {e}"),
+        })?)
     } else {
         None
     };
 
     // 8. Build versioned routes via acton-service, with optional frontend routes
-    let routes = build_versioned_routes(extension.as_ref(), enable_admin, enable_widget, enable_site);
+    let routes =
+        build_versioned_routes(extension.as_ref(), enable_admin, enable_widget, enable_site);
 
     // 8. Configure and serve via acton-service
     // Load from config.toml (picks up [token] section), then override serve-specific fields
@@ -247,26 +243,25 @@ pub async fn run(
     // resolves the per-event service+method up front, so misconfiguration
     // surfaces immediately rather than on the first hooked CRUD call.
     let hooks_cfg = service.config().custom.schema_forge.hooks.clone();
-    let hook_dispatcher: Option<Arc<dyn HookDispatcher>> = if hooks_cfg.enabled
-        && !hooks_cfg.bindings.is_empty()
-    {
-        match TonicHookDispatcher::new(&hooks_cfg, TonicDispatcherConfig::default()) {
-            Ok(d) => {
-                output.status(&format!(
-                    "  Hook dispatcher initialized with {} binding(s).",
-                    d.binding_count()
-                ));
-                Some(Arc::new(d) as Arc<dyn HookDispatcher>)
+    let hook_dispatcher: Option<Arc<dyn HookDispatcher>> =
+        if hooks_cfg.enabled && !hooks_cfg.bindings.is_empty() {
+            match TonicHookDispatcher::new(&hooks_cfg, TonicDispatcherConfig::default()) {
+                Ok(d) => {
+                    output.status(&format!(
+                        "  Hook dispatcher initialized with {} binding(s).",
+                        d.binding_count()
+                    ));
+                    Some(Arc::new(d) as Arc<dyn HookDispatcher>)
+                }
+                Err(e) => {
+                    return Err(CliError::Server {
+                        message: format!("failed to build hook dispatcher: {e}"),
+                    });
+                }
             }
-            Err(e) => {
-                return Err(CliError::Server {
-                    message: format!("failed to build hook dispatcher: {e}"),
-                });
-            }
-        }
-    } else {
-        init_data.hook_dispatcher
-    };
+        } else {
+            init_data.hook_dispatcher
+        };
 
     let (tx, rx) = oneshot::channel();
     forge_handle
@@ -396,10 +391,7 @@ async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError
         }
         #[allow(unreachable_patterns)]
         other => Err(CliError::Config {
-            message: format!(
-                "backend '{}' is not enabled in this build",
-                other.url()
-            ),
+            message: format!("backend '{}' is not enabled in this build", other.url()),
         }),
     }
 }
@@ -438,12 +430,11 @@ fn build_versioned_routes(
     enable_widget: bool,
     enable_site: bool,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
-    let mut builder =
-        VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
-            .with_base_path("/api")
-            .add_version(ApiVersion::V1, |router| {
-                SchemaForgeExtension::versioned_forge_routes(router)
-            });
+    let mut builder = VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
+        .with_base_path("/api")
+        .add_version(ApiVersion::V1, |router| {
+            SchemaForgeExtension::versioned_forge_routes(router)
+        });
 
     if let Some(ext) = extension {
         let ext_admin = if enable_admin {
@@ -502,13 +493,34 @@ fn scaffold_site_assets(project_dir: &Path, output: &OutputContext) -> Result<()
             source: e,
         })?;
         let templates: &[(&str, &str)] = &[
-            ("base.html", include_str!("../../../schema-forge-acton/templates/site/base.html")),
-            ("index.html", include_str!("../../../schema-forge-acton/templates/site/index.html")),
-            ("login.html", include_str!("../../../schema-forge-acton/templates/site/login.html")),
-            ("login_card.html", include_str!("../../../schema-forge-acton/templates/site/login_card.html")),
-            ("entities.html", include_str!("../../../schema-forge-acton/templates/site/entities.html")),
-            ("entity_detail.html", include_str!("../../../schema-forge-acton/templates/site/entity_detail.html")),
-            ("entity_form.html", include_str!("../../../schema-forge-acton/templates/site/entity_form.html")),
+            (
+                "base.html",
+                include_str!("../../../schema-forge-acton/templates/site/base.html"),
+            ),
+            (
+                "index.html",
+                include_str!("../../../schema-forge-acton/templates/site/index.html"),
+            ),
+            (
+                "login.html",
+                include_str!("../../../schema-forge-acton/templates/site/login.html"),
+            ),
+            (
+                "login_card.html",
+                include_str!("../../../schema-forge-acton/templates/site/login_card.html"),
+            ),
+            (
+                "entities.html",
+                include_str!("../../../schema-forge-acton/templates/site/entities.html"),
+            ),
+            (
+                "entity_detail.html",
+                include_str!("../../../schema-forge-acton/templates/site/entity_detail.html"),
+            ),
+            (
+                "entity_form.html",
+                include_str!("../../../schema-forge-acton/templates/site/entity_form.html"),
+            ),
         ];
         for (name, content) in templates {
             std::fs::write(template_dir.join(name), content).map_err(|e| CliError::Io {
@@ -526,9 +538,10 @@ fn scaffold_site_assets(project_dir: &Path, output: &OutputContext) -> Result<()
             path: static_dir.clone(),
             source: e,
         })?;
-        let assets: &[(&str, &str)] = &[
-            ("site.css", include_str!("../../../schema-forge-acton/static/css/site.css")),
-        ];
+        let assets: &[(&str, &str)] = &[(
+            "site.css",
+            include_str!("../../../schema-forge-acton/static/css/site.css"),
+        )];
         for (name, content) in assets {
             std::fs::write(static_dir.join(name), content).map_err(|e| CliError::Io {
                 path: static_dir.join(name),

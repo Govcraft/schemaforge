@@ -380,12 +380,7 @@ impl MockHookDispatcher {
     }
 
     /// Configure a canned error for a `before_*` call.
-    pub async fn fail_before(
-        &self,
-        schema: impl Into<String>,
-        event: HookEvent,
-        error: HookError,
-    ) {
+    pub async fn fail_before(&self, schema: impl Into<String>, event: HookEvent, error: HookError) {
         self.inner
             .lock()
             .await
@@ -394,12 +389,7 @@ impl MockHookDispatcher {
     }
 
     /// Configure an `after_*` call to fail.
-    pub async fn fail_after(
-        &self,
-        schema: impl Into<String>,
-        event: HookEvent,
-        error: HookError,
-    ) {
+    pub async fn fail_after(&self, schema: impl Into<String>, event: HookEvent, error: HookError) {
         self.inner
             .lock()
             .await
@@ -492,9 +482,13 @@ mod tests {
     async fn run_before_hook_skipped_when_disabled() {
         let dispatcher = MockHookDispatcher::new();
         let config = HooksConfig::default(); // enabled=false
-        let result = run_before_hook(&dispatcher, &config, invocation("S", HookEvent::BeforeChange))
-            .await
-            .unwrap();
+        let result = run_before_hook(
+            &dispatcher,
+            &config,
+            invocation("S", HookEvent::BeforeChange),
+        )
+        .await
+        .unwrap();
         assert!(result.is_none());
         assert!(dispatcher.before_calls().await.is_empty());
     }
@@ -503,9 +497,13 @@ mod tests {
     async fn run_before_hook_skipped_when_no_binding() {
         let dispatcher = MockHookDispatcher::new();
         let config = cfg(vec![]);
-        let result = run_before_hook(&dispatcher, &config, invocation("S", HookEvent::BeforeChange))
-            .await
-            .unwrap();
+        let result = run_before_hook(
+            &dispatcher,
+            &config,
+            invocation("S", HookEvent::BeforeChange),
+        )
+        .await
+        .unwrap();
         assert!(result.is_none());
     }
 

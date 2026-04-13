@@ -2,7 +2,6 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-
 use acton_service::htmx::HxRedirect;
 use acton_service::prelude::{AuthSession, TypedSession};
 use acton_service::session::{FlashMessage, FlashMessages};
@@ -299,8 +298,7 @@ pub async fn entity_detail(
             message: e.to_string(),
         })?;
 
-    let ref_display =
-        resolve_ref_display(&state, &schema_def, std::slice::from_ref(&entity)).await;
+    let ref_display = resolve_ref_display(&state, &schema_def, std::slice::from_ref(&entity)).await;
     let entity_view = EntityView::from_entity_with_refs(&entity, &schema_def, &ref_display);
     let schema = SchemaView::from_definition(&schema_def);
 

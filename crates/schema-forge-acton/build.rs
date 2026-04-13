@@ -10,10 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(true)
         .build_client(false)
         .out_dir(&out_dir)
-        .compile_protos(
-            &["tests/proto/translation_hooks.proto"],
-            &["tests/proto"],
-        )?;
+        .compile_protos(&["tests/proto/translation_hooks.proto"], &["tests/proto"])?;
 
     println!("cargo:rerun-if-changed=tests/proto/translation_hooks.proto");
     println!(

@@ -95,7 +95,10 @@ pub fn aggregate_to_sql(query: &AggregateQuery, table: &str) -> CompiledQuery {
         .map(|(i, op)| match op {
             AggregateOp::Count => format!("COUNT(*) AS \"agg_{i}\""),
             AggregateOp::Sum { field } => {
-                format!("COALESCE(SUM({}), 0) AS \"agg_{i}\"", field_path_to_sql(field))
+                format!(
+                    "COALESCE(SUM({}), 0) AS \"agg_{i}\"",
+                    field_path_to_sql(field)
+                )
             }
             AggregateOp::Avg { field } => {
                 format!(
@@ -234,7 +237,10 @@ mod tests {
             DynamicValue::Text("Jane".into()),
         ));
         let compiled = query_to_sql(&q, "Contact");
-        assert_eq!(compiled.sql, "SELECT * FROM \"Contact\" WHERE \"name\" = $1;");
+        assert_eq!(
+            compiled.sql,
+            "SELECT * FROM \"Contact\" WHERE \"name\" = $1;"
+        );
         assert_eq!(compiled.params, vec![DynamicValue::Text("Jane".into())]);
     }
 
@@ -245,7 +251,10 @@ mod tests {
             DynamicValue::Integer(25),
         ));
         let compiled = query_to_sql(&q, "Contact");
-        assert_eq!(compiled.sql, "SELECT * FROM \"Contact\" WHERE \"age\" > $1;");
+        assert_eq!(
+            compiled.sql,
+            "SELECT * FROM \"Contact\" WHERE \"age\" > $1;"
+        );
         assert_eq!(compiled.params, vec![DynamicValue::Integer(25)]);
     }
 
@@ -387,10 +396,7 @@ mod tests {
     fn aggregate_count_only() {
         let q = AggregateQuery::new(SchemaId::new()).with_op(AggregateOp::Count);
         let compiled = aggregate_to_sql(&q, "Deal");
-        assert_eq!(
-            compiled.sql,
-            "SELECT COUNT(*) AS \"agg_0\" FROM \"Deal\";"
-        );
+        assert_eq!(compiled.sql, "SELECT COUNT(*) AS \"agg_0\" FROM \"Deal\";");
     }
 
     #[test]
@@ -457,8 +463,7 @@ mod tests {
 
     #[test]
     fn select_with_projection() {
-        let q = Query::new(SchemaId::new())
-            .with_projection(vec!["name".into(), "email".into()]);
+        let q = Query::new(SchemaId::new()).with_projection(vec!["name".into(), "email".into()]);
         let compiled = query_to_sql(&q, "Contact");
         assert_eq!(
             compiled.sql,
@@ -475,8 +480,7 @@ mod tests {
 
     #[test]
     fn select_projection_deduplicates_id() {
-        let q =
-            Query::new(SchemaId::new()).with_projection(vec!["id".into(), "name".into()]);
+        let q = Query::new(SchemaId::new()).with_projection(vec!["id".into(), "name".into()]);
         let compiled = query_to_sql(&q, "Contact");
         assert_eq!(compiled.sql, "SELECT \"id\", \"name\" FROM \"Contact\";");
     }

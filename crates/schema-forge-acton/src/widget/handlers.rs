@@ -60,10 +60,9 @@ pub async fn entity_list(
     // Parse field projection early so it can be pushed into the query
     let proj = if let Some(ref fields_str) = params.fields {
         Some(
-            crate::routes::query_params::parse_fields_param(fields_str, &schema_def)
-                .map_err(|e| {
-                    WidgetError::from(crate::error::ForgeError::InvalidQuery { message: e })
-                })?,
+            crate::routes::query_params::parse_fields_param(fields_str, &schema_def).map_err(
+                |e| WidgetError::from(crate::error::ForgeError::InvalidQuery { message: e }),
+            )?,
         )
     } else {
         None
@@ -131,7 +130,14 @@ pub async fn entity_table_fragment(
     Query(params): Query<PaginationParams>,
 ) -> Result<Response, WidgetError> {
     // Delegate to entity_list -- same response for widgets
-    entity_list(State(state), OptionalClaims(claims), headers, Path(name), Query(params)).await
+    entity_list(
+        State(state),
+        OptionalClaims(claims),
+        headers,
+        Path(name),
+        Query(params),
+    )
+    .await
 }
 
 /// GET /forge/{schema}/entities/new -- Create entity form fragment.
@@ -577,9 +583,7 @@ pub async fn relation_options(
     if wants_json(&headers) {
         let json_options: Vec<serde_json::Value> = options
             .iter()
-            .map(|(value, label)| {
-                serde_json::json!({ "value": value, "label": label })
-            })
+            .map(|(value, label)| serde_json::json!({ "value": value, "label": label }))
             .collect();
         return Ok(Json(json_options).into_response());
     }

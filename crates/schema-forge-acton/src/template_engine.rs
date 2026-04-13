@@ -183,13 +183,27 @@ impl TemplateEngine {
 
                 // Embedded site template defaults
                 match name {
-                    "site/base.html" => Ok(Some(include_str!("../templates/site/base.html").to_string())),
-                    "site/index.html" => Ok(Some(include_str!("../templates/site/index.html").to_string())),
-                    "site/login.html" => Ok(Some(include_str!("../templates/site/login.html").to_string())),
-                    "site/login_card.html" => Ok(Some(include_str!("../templates/site/login_card.html").to_string())),
-                    "site/entities.html" => Ok(Some(include_str!("../templates/site/entities.html").to_string())),
-                    "site/entity_detail.html" => Ok(Some(include_str!("../templates/site/entity_detail.html").to_string())),
-                    "site/entity_form.html" => Ok(Some(include_str!("../templates/site/entity_form.html").to_string())),
+                    "site/base.html" => Ok(Some(
+                        include_str!("../templates/site/base.html").to_string(),
+                    )),
+                    "site/index.html" => Ok(Some(
+                        include_str!("../templates/site/index.html").to_string(),
+                    )),
+                    "site/login.html" => Ok(Some(
+                        include_str!("../templates/site/login.html").to_string(),
+                    )),
+                    "site/login_card.html" => Ok(Some(
+                        include_str!("../templates/site/login_card.html").to_string(),
+                    )),
+                    "site/entities.html" => Ok(Some(
+                        include_str!("../templates/site/entities.html").to_string(),
+                    )),
+                    "site/entity_detail.html" => Ok(Some(
+                        include_str!("../templates/site/entity_detail.html").to_string(),
+                    )),
+                    "site/entity_form.html" => Ok(Some(
+                        include_str!("../templates/site/entity_form.html").to_string(),
+                    )),
                     _ => Ok(None),
                 }
             });

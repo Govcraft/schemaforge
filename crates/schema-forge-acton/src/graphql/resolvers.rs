@@ -165,9 +165,7 @@ pub async fn resolve_list_entities<'a>(
     // Record-level access filtering
     let visible_entities =
         if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
-            policy
-                .filter_visible(schema_def, c, result.entities)
-                .await
+            policy.filter_visible(schema_def, c, result.entities).await
         } else {
             result.entities
         };
@@ -369,7 +367,8 @@ pub async fn resolve_relation_one<'a>(
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
     let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(target_schema_def, claims, AccessAction::Read).map_err(forge_error_to_gql)?;
+    check_schema_access(target_schema_def, claims, AccessAction::Read)
+        .map_err(forge_error_to_gql)?;
 
     let target_schema = SchemaName::new(target_schema_name).map_err(|_| {
         forge_error_to_gql(ForgeError::InvalidSchemaName {
@@ -412,7 +411,8 @@ pub async fn resolve_relation_many<'a>(
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
     let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(target_schema_def, claims, AccessAction::Read).map_err(forge_error_to_gql)?;
+    check_schema_access(target_schema_def, claims, AccessAction::Read)
+        .map_err(forge_error_to_gql)?;
 
     let target_schema = SchemaName::new(target_schema_name).map_err(|_| {
         forge_error_to_gql(ForgeError::InvalidSchemaName {

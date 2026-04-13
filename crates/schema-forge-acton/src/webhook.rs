@@ -198,7 +198,9 @@ pub struct WebhookDispatcher {
 impl WebhookDispatcher {
     /// Create a new dispatcher with the given configuration.
     pub fn new(config: WebhookConfig) -> Self {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_deliveries));
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(
+            config.max_concurrent_deliveries,
+        ));
         Self {
             client: reqwest::Client::new(),
             config,
@@ -470,9 +472,7 @@ async fn query_webhook_subscriptions(
 /// Rejects private/loopback IPs and enforces allowed URL schemes.
 pub fn validate_webhook_url(url: &str, allowed_schemes: &[String]) -> Result<(), WebhookUrlError> {
     // Basic URL parsing without the `url` crate
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or(WebhookUrlError::InvalidUrl)?;
+    let (scheme, rest) = url.split_once("://").ok_or(WebhookUrlError::InvalidUrl)?;
 
     if !allowed_schemes.iter().any(|s| s == scheme) {
         return Err(WebhookUrlError::DisallowedScheme(scheme.to_string()));

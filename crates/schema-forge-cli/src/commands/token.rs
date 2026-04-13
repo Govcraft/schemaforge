@@ -92,11 +92,10 @@ fn generate(args: GenerateTokenArgs, output: &OutputContext) -> Result<(), CliEr
         include_jti: true,
     };
 
-    let generator = PasetoGenerator::new(&paseto_config, &token_config).map_err(|e| {
-        CliError::Config {
+    let generator =
+        PasetoGenerator::new(&paseto_config, &token_config).map_err(|e| CliError::Config {
             message: format!("failed to initialize token generator: {e}"),
-        }
-    })?;
+        })?;
 
     let mut builder = ClaimsBuilder::new().subject(&args.sub);
 
@@ -117,9 +116,11 @@ fn generate(args: GenerateTokenArgs, output: &OutputContext) -> Result<(), CliEr
         message: format!("failed to build claims: {e}"),
     })?;
 
-    let token = generator.generate_token(&claims).map_err(|e| CliError::Config {
-        message: format!("failed to generate token: {e}"),
-    })?;
+    let token = generator
+        .generate_token(&claims)
+        .map_err(|e| CliError::Config {
+            message: format!("failed to generate token: {e}"),
+        })?;
 
     output.success("Token generated:");
     // Print the raw token so it can be piped
@@ -127,4 +128,3 @@ fn generate(args: GenerateTokenArgs, output: &OutputContext) -> Result<(), CliEr
 
     Ok(())
 }
-

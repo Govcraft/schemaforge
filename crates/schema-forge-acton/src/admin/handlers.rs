@@ -892,9 +892,12 @@ pub async fn user_list(
             message: "Auth store not configured".to_string(),
         })?;
 
-    let users = auth_store.list_users().await.map_err(|e| AdminError::Internal {
-        message: format!("User query failed: {e}"),
-    })?;
+    let users = auth_store
+        .list_users()
+        .await
+        .map_err(|e| AdminError::Internal {
+            message: format!("User query failed: {e}"),
+        })?;
 
     Ok(render_template(
         &state.template_engine,

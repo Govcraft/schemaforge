@@ -576,9 +576,8 @@ async fn extension_builder_with_backend_loads_schemas() {
 
     let mut builder = SchemaForgeExtension::builder();
     builder = builder.with_backend(backend);
-    builder = builder.with_template_dir(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
-    );
+    builder = builder
+        .with_template_dir(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"));
     let extension = builder.build().await.expect("failed to build extension");
 
     // Registry should contain exactly the 5 system schemas after seeding
@@ -610,7 +609,9 @@ async fn extension_register_routes_nests_under_forge() {
         .header("content-type", "application/json")
         .body(Body::empty())
         .unwrap();
-    request.extensions_mut().insert(make_test_claims(&["admin"]));
+    request
+        .extensions_mut()
+        .insert(make_test_claims(&["admin"]));
 
     let response = router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -698,8 +699,7 @@ async fn request_without_claims_returns_401() {
     // No Claims injected — requests should get 401
     let app = test_app_with_state(state);
 
-    let (status, json) =
-        json_request(&app, Method::GET, "/schemas/Contact/entities", None).await;
+    let (status, json) = json_request(&app, Method::GET, "/schemas/Contact/entities", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(json["error"], "unauthorized");
 }
@@ -772,9 +772,7 @@ async fn access_test_state(
     })
     .await;
 
-    let claims = make_test_claims(
-        &user_roles.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-    );
+    let claims = make_test_claims(&user_roles.iter().map(|s| s.as_str()).collect::<Vec<_>>());
     let app = test_app_with_claims_state(state.clone(), claims);
     (state, app)
 }

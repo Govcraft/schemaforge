@@ -489,5 +489,4 @@ mod tests {
             StatusCode::FORBIDDEN
         );
     }
-
 }

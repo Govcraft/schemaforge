@@ -2,9 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::query::{FieldPath, Filter};
-use schema_forge_core::types::{
-    Annotation, DynamicValue, FieldType, SchemaDefinition,
-};
+use schema_forge_core::types::{Annotation, DynamicValue, FieldType, SchemaDefinition};
 
 use crate::state::ForgeState;
 
@@ -90,8 +88,7 @@ pub async fn resolve_ref_display(
 
         for entity in &result.entities {
             let id_str = entity.id.as_str().to_string();
-            let label =
-                resolve_entity_label(entity, &target_schema, display_field.as_deref());
+            let label = resolve_entity_label(entity, &target_schema, display_field.as_deref());
             ref_display.insert(id_str, label);
         }
     }

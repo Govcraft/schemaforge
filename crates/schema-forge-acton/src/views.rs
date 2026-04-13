@@ -417,12 +417,11 @@ impl EntityView {
                 };
 
                 // For status_badge widget, compute badge class from raw value
-                let badge_class =
-                    if widget_type.as_deref() == Some("status_badge") && !is_empty {
-                        Some(badge_color_class(&raw_value).to_string())
-                    } else {
-                        None
-                    };
+                let badge_class = if widget_type.as_deref() == Some("status_badge") && !is_empty {
+                    Some(badge_color_class(&raw_value).to_string())
+                } else {
+                    None
+                };
 
                 FieldDisplayView {
                     name: f.name.as_str().to_string(),
@@ -1414,14 +1413,7 @@ mod tests {
         let second = badge_color_class("custom_status");
         assert_eq!(first, second);
         // Should be one of the 5 classes
-        assert!([
-            "success",
-            "info",
-            "warning",
-            "error",
-            "neutral"
-        ]
-        .contains(&first));
+        assert!(["success", "info", "warning", "error", "neutral"].contains(&first));
     }
 
     // --- relative_time_display tests ---
@@ -1656,5 +1648,4 @@ mod tests {
         assert_eq!(summary[1].name, "c");
         assert_eq!(summary[2].name, "d");
     }
-
 }

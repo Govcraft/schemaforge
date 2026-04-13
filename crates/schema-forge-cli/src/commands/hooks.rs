@@ -101,10 +101,7 @@ fn generate(
         args.schema_dir.display()
     ));
     let schemas = parse_all_schemas(std::slice::from_ref(&args.schema_dir))?;
-    let mut hooked: Vec<SchemaHooks> = schemas
-        .into_iter()
-        .filter_map(SchemaHooks::from)
-        .collect();
+    let mut hooked: Vec<SchemaHooks> = schemas.into_iter().filter_map(SchemaHooks::from).collect();
 
     if let Some(only) = &args.schema {
         hooked.retain(|h| h.name == *only);
@@ -124,10 +121,7 @@ fn generate(
         return Ok(());
     }
 
-    output.status(&format!(
-        "  found {} schema(s) with hooks",
-        hooked.len()
-    ));
+    output.status(&format!("  found {} schema(s) with hooks", hooked.len()));
 
     write_project(&args.out_dir, &hooked, args.force)?;
 
@@ -136,21 +130,14 @@ fn generate(
         args.out_dir.display()
     ));
     output.status("  Next steps:");
-    output.status(&format!(
-        "    cd {} && cargo check",
-        args.out_dir.display()
-    ));
+    output.status(&format!("    cd {} && cargo check", args.out_dir.display()));
     output.status("    Implement each TODO in src/hooks/<schema>.rs");
     output.status("    Read the .prompt.md files for AI-assist prompts");
 
     Ok(())
 }
 
-fn write_project(
-    out_dir: &Path,
-    hooked: &[SchemaHooks],
-    force: bool,
-) -> Result<(), CliError> {
+fn write_project(out_dir: &Path, hooked: &[SchemaHooks], force: bool) -> Result<(), CliError> {
     fs::create_dir_all(out_dir).map_err(io_err)?;
     fs::create_dir_all(out_dir.join("proto")).map_err(io_err)?;
     fs::create_dir_all(out_dir.join("src")).map_err(io_err)?;
@@ -162,27 +149,40 @@ fn write_project(
         .unwrap_or("hooks-service")
         .to_snake_case();
 
-    write_file(&out_dir.join("Cargo.toml"), &render_cargo_toml(&project_name), true)?;
+    write_file(
+        &out_dir.join("Cargo.toml"),
+        &render_cargo_toml(&project_name),
+        true,
+    )?;
     write_file(&out_dir.join("build.rs"), BUILD_RS, true)?;
     write_file(&out_dir.join("src/main.rs"), &render_main_rs(hooked), true)?;
-    write_file(&out_dir.join("src/hooks/mod.rs"), &render_hooks_mod(hooked), true)?;
+    write_file(
+        &out_dir.join("src/hooks/mod.rs"),
+        &render_hooks_mod(hooked),
+        true,
+    )?;
 
     for h in hooked {
-        let proto_path = out_dir.join("proto").join(format!("{}_hooks.proto", h.snake));
+        let proto_path = out_dir
+            .join("proto")
+            .join(format!("{}_hooks.proto", h.snake));
         write_file(&proto_path, &render_proto(h), true)?;
 
         // The per-schema impl is preserved by default — only `--force`
         // overwrites it. The first generation always writes a fresh stub.
         let impl_path = out_dir.join("src/hooks").join(format!("{}.rs", h.snake));
-        write_file(&impl_path, &render_impl_stub(h), force || !impl_path.exists())?;
+        write_file(
+            &impl_path,
+            &render_impl_stub(h),
+            force || !impl_path.exists(),
+        )?;
 
         // Prompt files (Phase 4) are always rewritten — they describe the
         // schema as it stands today and may have been updated.
         let prompt_dir = out_dir.join("src/hooks").join(&h.snake);
         fs::create_dir_all(&prompt_dir).map_err(io_err)?;
         for (event, intent) in &h.events {
-            let prompt_path =
-                prompt_dir.join(format!("{}.prompt.md", event.as_str()));
+            let prompt_path = prompt_dir.join(format!("{}.prompt.md", event.as_str()));
             write_file(&prompt_path, &render_prompt(h, *event, intent), true)?;
         }
     }
@@ -378,7 +378,10 @@ fn scalar_proto_fields(schema: &SchemaDefinition) -> Vec<(String, &'static str, 
                 FieldType::Relation { .. } => "string",
                 _ => "string",
             };
-            let required = f.modifiers.iter().any(|m| matches!(m, FieldModifier::Required));
+            let required = f
+                .modifiers
+                .iter()
+                .any(|m| matches!(m, FieldModifier::Required));
             (f.name.as_str().to_string(), ty, required)
         })
         .collect()
@@ -391,9 +394,7 @@ fn render_impl_stub(h: &SchemaHooks) -> String {
         h.name
     ));
     s.push_str("//!\n");
-    s.push_str(
-        "//! Re-running `schema-forge hooks generate` does NOT overwrite this\n",
-    );
+    s.push_str("//! Re-running `schema-forge hooks generate` does NOT overwrite this\n");
     s.push_str("//! file (use `--force` to opt in). Add real logic to each method.\n\n");
 
     s.push_str(&format!(
@@ -440,10 +441,7 @@ fn render_prompt(h: &SchemaHooks, event: HookEvent, intent: &str) -> String {
     let method_snake = event.as_str();
     let scalar_fields = scalar_proto_fields(&h.schema);
     let mut s = String::new();
-    s.push_str(&format!(
-        "# `{}` — `{}`\n\n",
-        h.name, method_snake
-    ));
+    s.push_str(&format!("# `{}` — `{}`\n\n", h.name, method_snake));
     s.push_str("## Intent\n\n");
     s.push_str(intent);
     s.push_str("\n\n");
@@ -499,11 +497,7 @@ fn event_to_method(event: HookEvent) -> &'static str {
 // hooks list
 // ---------------------------------------------------------------------------
 
-fn list(
-    args: HooksListArgs,
-    _global: &GlobalOpts,
-    output: &OutputContext,
-) -> Result<(), CliError> {
+fn list(args: HooksListArgs, _global: &GlobalOpts, output: &OutputContext) -> Result<(), CliError> {
     let schemas = parse_all_schemas(std::slice::from_ref(&args.schema_dir))?;
     let mut found = 0;
     for def in &schemas {
@@ -535,11 +529,7 @@ fn list(
 // hooks diff
 // ---------------------------------------------------------------------------
 
-fn diff(
-    args: HooksDiffArgs,
-    _global: &GlobalOpts,
-    output: &OutputContext,
-) -> Result<(), CliError> {
+fn diff(args: HooksDiffArgs, _global: &GlobalOpts, output: &OutputContext) -> Result<(), CliError> {
     let old = parse_all_schemas(std::slice::from_ref(&args.old))?;
     let new = parse_all_schemas(std::slice::from_ref(&args.new))?;
 
@@ -547,8 +537,7 @@ fn diff(
     let new_map = build_hook_map(&new);
 
     let mut any = false;
-    let all_keys: std::collections::BTreeSet<_> =
-        old_map.keys().chain(new_map.keys()).collect();
+    let all_keys: std::collections::BTreeSet<_> = old_map.keys().chain(new_map.keys()).collect();
 
     for key in all_keys {
         let (schema, event) = key;
@@ -562,10 +551,7 @@ fn diff(
                 any = true;
             }
             (Some(old_intent), Some(new_intent)) if old_intent != new_intent => {
-                output.status(&format!(
-                    "~ {schema}.{} (intent changed)",
-                    event.as_str()
-                ));
+                output.status(&format!("~ {schema}.{} (intent changed)", event.as_str()));
                 any = true;
             }
             _ => {}
@@ -577,9 +563,7 @@ fn diff(
     Ok(())
 }
 
-fn build_hook_map(
-    schemas: &[SchemaDefinition],
-) -> BTreeMap<(String, HookEvent), String> {
+fn build_hook_map(schemas: &[SchemaDefinition]) -> BTreeMap<(String, HookEvent), String> {
     let mut map = BTreeMap::new();
     for s in schemas {
         for a in &s.annotations {

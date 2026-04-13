@@ -33,8 +33,7 @@ pub trait AuthStore: Send + Sync {
     ) -> impl Future<Output = Result<Option<ForgeUser>, BackendError>> + Send;
 
     /// List all users ordered by username.
-    fn list_users(&self)
-        -> impl Future<Output = Result<Vec<ForgeUser>, BackendError>> + Send;
+    fn list_users(&self) -> impl Future<Output = Result<Vec<ForgeUser>, BackendError>> + Send;
 
     /// Get a single user by username.
     fn get_user(
@@ -66,8 +65,7 @@ pub trait AuthStore: Send + Sync {
     ) -> impl Future<Output = Result<(), BackendError>> + Send;
 
     /// Count the total number of users.
-    fn count_users(&self)
-        -> impl Future<Output = Result<usize, BackendError>> + Send;
+    fn count_users(&self) -> impl Future<Output = Result<usize, BackendError>> + Send;
 }
 
 #[cfg(test)]

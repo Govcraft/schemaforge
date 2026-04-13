@@ -199,9 +199,8 @@ async fn demo_system_schemas_seeded_at_startup() {
         .unwrap();
     let mut builder = schema_forge_acton::SchemaForgeExtension::builder();
     builder = builder.with_backend(backend);
-    builder = builder.with_template_dir(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"),
-    );
+    builder = builder
+        .with_template_dir(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"));
     let extension = builder.build().await.expect("extension build");
 
     let schemas = extension.registry().list().await;
@@ -287,13 +286,7 @@ async fn demo_schema_access_control() {
 
     // --- Scenario A: "editor" can read and write ---
     println!("  Scenario A: editor role can read and write");
-    let state = build_test_app_state(
-        backend.clone(),
-        registry.clone(),
-        None,
-        None,
-    )
-    .await;
+    let state = build_test_app_state(backend.clone(), registry.clone(), None, None).await;
     let app = test_app_with_claims(state, make_test_claims(&["editor"]));
 
     let (status, json) = json_request(
@@ -312,13 +305,7 @@ async fn demo_schema_access_control() {
 
     // --- Scenario B: "viewer" can read but NOT write ---
     println!("  Scenario B: viewer role can read but NOT write");
-    let state = build_test_app_state(
-        backend.clone(),
-        registry.clone(),
-        None,
-        None,
-    )
-    .await;
+    let state = build_test_app_state(backend.clone(), registry.clone(), None, None).await;
     let app = test_app_with_claims(state, make_test_claims(&["viewer"]));
 
     let (status, _) = json_request(&app, Method::GET, "/schemas/Article/entities", None).await;
@@ -400,13 +387,7 @@ async fn demo_field_access_filtering() {
 
     // --- HR user creates employee with salary ---
     println!("  HR user creates employee with salary field");
-    let state = build_test_app_state(
-        backend.clone(),
-        registry.clone(),
-        None,
-        None,
-    )
-    .await;
+    let state = build_test_app_state(backend.clone(), registry.clone(), None, None).await;
     let app = test_app_with_claims(state, make_test_claims(&["hr"]));
 
     let (status, json) = json_request(
@@ -426,13 +407,7 @@ async fn demo_field_access_filtering() {
 
     // --- Regular member reads same employee ---
     println!("  Regular member reads same employee");
-    let state = build_test_app_state(
-        backend.clone(),
-        registry.clone(),
-        None,
-        None,
-    )
-    .await;
+    let state = build_test_app_state(backend.clone(), registry.clone(), None, None).await;
     let app = test_app_with_claims(state, make_test_claims(&["member"]));
 
     let path = format!("/schemas/Employee/entities/{entity_id}");
@@ -524,8 +499,7 @@ async fn demo_record_ownership() {
 
     // --- Bob tries to update Alice's note ---
     println!("  Bob tries to update Alice's note");
-    let bob_claims =
-        make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["member"]);
+    let bob_claims = make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["member"]);
     let state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -554,8 +528,7 @@ async fn demo_record_ownership() {
 
     // --- Admin can modify anyone's note ---
     println!("  Admin overrides ownership check");
-    let admin_claims =
-        make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["admin"]);
+    let admin_claims = make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["admin"]);
     let state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -658,11 +631,8 @@ async fn demo_multi_tenancy_isolation() {
 
     // --- Tenant A creates a project ---
     println!("  Tenant A creates a project");
-    let tenant_a_claims = make_test_claims_with_tenant(
-        "user:tenant-a-user",
-        &["member"],
-        org_a_id.as_str(),
-    );
+    let tenant_a_claims =
+        make_test_claims_with_tenant("user:tenant-a-user", &["member"], org_a_id.as_str());
     let state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -694,11 +664,8 @@ async fn demo_multi_tenancy_isolation() {
 
     // --- Tenant B creates a project ---
     println!("  Tenant B creates a project");
-    let tenant_b_claims = make_test_claims_with_tenant(
-        "user:tenant-b-user",
-        &["member"],
-        org_b_id.as_str(),
-    );
+    let tenant_b_claims =
+        make_test_claims_with_tenant("user:tenant-b-user", &["member"], org_b_id.as_str());
     let state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -1009,10 +976,8 @@ async fn demo_all_auth_layers_combined() {
     // @access: manager in read list -> allowed
     // @owner: manager is NOT the author -> 403
     println!("  Step 2: non-owner manager blocked by @owner");
-    let manager_claims = make_test_claims_with_sub(
-        &format!("user:{}", EntityId::new().as_str()),
-        &["manager"],
-    );
+    let manager_claims =
+        make_test_claims_with_sub(&format!("user:{}", EntityId::new().as_str()), &["manager"]);
     let manager_state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -1035,10 +1000,8 @@ async fn demo_all_auth_layers_combined() {
     // @owner: admin bypasses
     // @field_access: admin bypasses
     println!("  Step 3: admin bypasses all layers");
-    let admin_claims = make_test_claims_with_sub(
-        &format!("user:{}", EntityId::new().as_str()),
-        &["admin"],
-    );
+    let admin_claims =
+        make_test_claims_with_sub(&format!("user:{}", EntityId::new().as_str()), &["admin"]);
     let admin_state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -1060,10 +1023,8 @@ async fn demo_all_auth_layers_combined() {
     // --- Step 4: Guest blocked at schema level (@access) ---
     // @access: guest NOT in read list -> 403 (never reaches @owner check)
     println!("  Step 4: guest blocked by @access (schema level)");
-    let guest_claims = make_test_claims_with_sub(
-        &format!("user:{}", EntityId::new().as_str()),
-        &["guest"],
-    );
+    let guest_claims =
+        make_test_claims_with_sub(&format!("user:{}", EntityId::new().as_str()), &["guest"]);
     let guest_state = build_test_app_state(
         backend.clone(),
         registry.clone(),

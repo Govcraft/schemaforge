@@ -25,9 +25,7 @@ use crate::access::{
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
-use crate::hooks::{
-    run_after_hook, run_before_hook, HookDispatcher, HookInvocation, HooksConfig,
-};
+use crate::hooks::{run_after_hook, run_before_hook, HookDispatcher, HookInvocation, HooksConfig};
 use crate::messages::{
     CreateEntity, DeleteEntity, GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema,
     GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
@@ -137,9 +135,9 @@ async fn apply_before_hook(
                         coerce_dynamic_value_with_type_hint(v, &field_def.field_type).map_err(
                             |reason| ForgeError::HookAborted {
                                 reason: format!(
-                                    "hook returned invalid value for field '{k}' of type {}: {reason}",
-                                    field_def.field_type
-                                ),
+                            "hook returned invalid value for field '{k}' of type {}: {reason}",
+                            field_def.field_type
+                        ),
                             },
                         )?
                     }
@@ -883,14 +881,11 @@ async fn execute_entity_query(
         .await;
     let record_access_policy = ask_forge(rx).await?;
 
-    let visible_entities =
-        if let (Some(ref policy), Some(c)) = (&record_access_policy, claims) {
-            policy
-                .filter_visible(schema_def, c, result.entities)
-                .await
-        } else {
-            result.entities
-        };
+    let visible_entities = if let (Some(ref policy), Some(c)) = (&record_access_policy, claims) {
+        policy.filter_visible(schema_def, c, result.entities).await
+    } else {
+        result.entities
+    };
 
     // Filter read-restricted fields, then apply optional field projection
     let entities: Vec<EntityResponse> = visible_entities
@@ -1288,7 +1283,12 @@ pub async fn query_entities(
         let set: HashSet<String> = field_names.iter().cloned().collect();
         let unknown: Vec<&str> = set
             .iter()
-            .filter(|n| !schema_def.fields.iter().any(|f| f.name.as_str() == n.as_str()))
+            .filter(|n| {
+                !schema_def
+                    .fields
+                    .iter()
+                    .any(|f| f.name.as_str() == n.as_str())
+            })
             .map(String::as_str)
             .collect();
         if !unknown.is_empty() {
@@ -2107,7 +2107,10 @@ mod tests {
             "limit": 10
         });
         let body: EntityQueryBody = serde_json::from_value(json).unwrap();
-        assert_eq!(body.fields, Some(vec!["name".to_string(), "age".to_string()]));
+        assert_eq!(
+            body.fields,
+            Some(vec!["name".to_string(), "age".to_string()])
+        );
         assert_eq!(body.limit, Some(10));
     }
 
@@ -2186,11 +2189,9 @@ mod tests {
     #[test]
     fn coerce_datetime_passthrough() {
         let dt = chrono::Utc::now();
-        let result = coerce_dynamic_value_with_type_hint(
-            DynamicValue::DateTime(dt),
-            &FieldType::DateTime,
-        )
-        .unwrap();
+        let result =
+            coerce_dynamic_value_with_type_hint(DynamicValue::DateTime(dt), &FieldType::DateTime)
+                .unwrap();
         assert_eq!(result, DynamicValue::DateTime(dt));
     }
 
@@ -2234,11 +2235,9 @@ mod tests {
             target: SchemaName::new("Company").unwrap(),
             cardinality: Cardinality::One,
         };
-        let err = coerce_dynamic_value_with_type_hint(
-            DynamicValue::Text("not-an-id".into()),
-            &relation,
-        )
-        .unwrap_err();
+        let err =
+            coerce_dynamic_value_with_type_hint(DynamicValue::Text("not-an-id".into()), &relation)
+                .unwrap_err();
         assert!(
             err.contains("invalid entity reference"),
             "unexpected error: {err}"
@@ -2299,9 +2298,7 @@ mod tests {
     fn coerce_integer_from_text() {
         let result = coerce_dynamic_value_with_type_hint(
             DynamicValue::Text("42".into()),
-            &FieldType::Integer(
-                schema_forge_core::types::IntegerConstraints::unconstrained(),
-            ),
+            &FieldType::Integer(schema_forge_core::types::IntegerConstraints::unconstrained()),
         )
         .unwrap();
         assert_eq!(result, DynamicValue::Integer(42));

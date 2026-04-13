@@ -499,14 +499,9 @@ mod tests {
 
     #[test]
     fn parse_migrate_command() {
-        let cli = Cli::try_parse_from([
-            "schemaforge",
-            "migrate",
-            "--execute",
-            "--schema",
-            "Contact",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["schemaforge", "migrate", "--execute", "--schema", "Contact"])
+                .unwrap();
         if let Commands::Migrate(args) = cli.command {
             assert!(args.execute);
             assert_eq!(args.schema, Some("Contact".to_string()));
@@ -604,8 +599,7 @@ mod tests {
 
     #[test]
     fn invalid_format_rejected() {
-        let result =
-            Cli::try_parse_from(["schemaforge", "--format", "xml", "completions", "bash"]);
+        let result = Cli::try_parse_from(["schemaforge", "--format", "xml", "completions", "bash"]);
         assert!(result.is_err());
     }
 

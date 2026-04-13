@@ -91,8 +91,7 @@ pub async fn login_submit(
         .await
         .map_err(|e| AdminError::Internal {
             message: e.to_string(),
-        })?
-    {
+        })? {
         Some(user) => {
             let display_name = user.display_name.unwrap_or_else(|| user.username.clone());
             auth.data_mut().login(user.username.clone(), user.roles);

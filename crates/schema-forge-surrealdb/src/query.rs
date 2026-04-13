@@ -536,8 +536,7 @@ mod tests {
 
     #[test]
     fn select_with_projection() {
-        let q = Query::new(SchemaId::new())
-            .with_projection(vec!["name".into(), "email".into()]);
+        let q = Query::new(SchemaId::new()).with_projection(vec!["name".into(), "email".into()]);
         let sql = query_to_surql(&q, "Contact");
         assert_eq!(sql, "SELECT id, name, email FROM Contact;");
     }
@@ -551,8 +550,7 @@ mod tests {
 
     #[test]
     fn select_projection_deduplicates_id() {
-        let q =
-            Query::new(SchemaId::new()).with_projection(vec!["id".into(), "name".into()]);
+        let q = Query::new(SchemaId::new()).with_projection(vec!["id".into(), "name".into()]);
         let sql = query_to_surql(&q, "Contact");
         assert_eq!(sql, "SELECT id, name FROM Contact;");
     }

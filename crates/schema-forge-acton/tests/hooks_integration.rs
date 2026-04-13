@@ -81,10 +81,7 @@ fn translation_schema_with_hooks() -> SchemaDefinition {
                 FieldName::new("translated_text").unwrap(),
                 FieldType::Text(TextConstraints::unconstrained()),
             ),
-            FieldDefinition::new(
-                FieldName::new("published_at").unwrap(),
-                FieldType::DateTime,
-            ),
+            FieldDefinition::new(FieldName::new("published_at").unwrap(), FieldType::DateTime),
         ],
         vec![
             Annotation::Hook {
@@ -138,7 +135,8 @@ async fn setup(
             backend: Arc::new(backend),
             tenant_config: None,
             record_access_policy: None,
-            hook_dispatcher: dispatcher.map(|d| d as Arc<dyn schema_forge_acton::hooks::HookDispatcher>),
+            hook_dispatcher: dispatcher
+                .map(|d| d as Arc<dyn schema_forge_acton::hooks::HookDispatcher>),
             reply: ReplyChannel::new(tx),
         })
         .await;

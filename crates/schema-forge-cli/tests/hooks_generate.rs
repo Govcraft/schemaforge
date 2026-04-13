@@ -36,12 +36,7 @@ fn generate_emits_expected_layout() {
     let out_dir = workdir.path().join("hooks-service");
 
     schema_forge()
-        .args([
-            "hooks",
-            "generate",
-            "--all",
-            "--schema-dir",
-        ])
+        .args(["hooks", "generate", "--all", "--schema-dir"])
         .arg(&schema_dir)
         .arg("--out-dir")
         .arg(&out_dir)
@@ -118,7 +113,10 @@ fn generate_preserves_existing_impl_without_force() {
         .success();
 
     let after = fs::read_to_string(&impl_path).unwrap();
-    assert_eq!(after, "// USER EDITED\n", "impl was clobbered without --force");
+    assert_eq!(
+        after, "// USER EDITED\n",
+        "impl was clobbered without --force"
+    );
 
     // Re-run WITH --force
     schema_forge()

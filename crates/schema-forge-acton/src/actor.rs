@@ -93,7 +93,10 @@ impl ActorExtension for ForgeActor {
 fn configure_init(actor: &mut ManagedActor<Idle, ForgeActor>) {
     actor.mutate_on::<InitForge>(|actor, ctx| {
         let msg = ctx.message();
-        debug!("initializing ForgeActor with {} schemas", msg.registry.len());
+        debug!(
+            "initializing ForgeActor with {} schemas",
+            msg.registry.len()
+        );
         actor.model.registry = msg.registry.clone();
         actor.model.backend = Some(msg.backend.clone());
         actor.model.tenant_config = msg.tenant_config.clone();
@@ -211,7 +214,11 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
             let result = match backend {
                 Some(b) => tokio::spawn(async move { b.create(&entity).await })
                     .await
-                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
+                    .unwrap_or_else(|e| {
+                        Err(BackendError::Internal {
+                            message: e.to_string(),
+                        })
+                    }),
                 None => {
                     warn!("CreateEntity received but no backend is configured");
                     Err(no_backend_error())
@@ -230,7 +237,11 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
             let result = match backend {
                 Some(b) => tokio::spawn(async move { b.get(&schema, &id).await })
                     .await
-                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
+                    .unwrap_or_else(|e| {
+                        Err(BackendError::Internal {
+                            message: e.to_string(),
+                        })
+                    }),
                 None => {
                     warn!("GetEntity received but no backend is configured");
                     Err(no_backend_error())
@@ -248,7 +259,11 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
             let result = match backend {
                 Some(b) => tokio::spawn(async move { b.update(&entity).await })
                     .await
-                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
+                    .unwrap_or_else(|e| {
+                        Err(BackendError::Internal {
+                            message: e.to_string(),
+                        })
+                    }),
                 None => {
                     warn!("UpdateEntity received but no backend is configured");
                     Err(no_backend_error())
@@ -267,7 +282,11 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
             let result = match backend {
                 Some(b) => tokio::spawn(async move { b.delete(&schema, &id).await })
                     .await
-                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
+                    .unwrap_or_else(|e| {
+                        Err(BackendError::Internal {
+                            message: e.to_string(),
+                        })
+                    }),
                 None => {
                     warn!("DeleteEntity received but no backend is configured");
                     Err(no_backend_error())
@@ -285,7 +304,11 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
             let result = match backend {
                 Some(b) => tokio::spawn(async move { b.query(&query).await })
                     .await
-                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
+                    .unwrap_or_else(|e| {
+                        Err(BackendError::Internal {
+                            message: e.to_string(),
+                        })
+                    }),
                 None => {
                     warn!("QueryEntities received but no backend is configured");
                     Err(no_backend_error())
@@ -303,7 +326,11 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
             let result = match backend {
                 Some(b) => tokio::spawn(async move { b.count(&query).await })
                     .await
-                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
+                    .unwrap_or_else(|e| {
+                        Err(BackendError::Internal {
+                            message: e.to_string(),
+                        })
+                    }),
                 None => {
                     warn!("CountEntities received but no backend is configured");
                     Err(no_backend_error())
@@ -321,7 +348,11 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
             let result = match backend {
                 Some(b) => tokio::spawn(async move { b.aggregate(&query).await })
                     .await
-                    .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() })),
+                    .unwrap_or_else(|e| {
+                        Err(BackendError::Internal {
+                            message: e.to_string(),
+                        })
+                    }),
                 None => {
                     warn!("AggregateEntities received but no backend is configured");
                     Err(no_backend_error())
@@ -341,7 +372,11 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
                 Some(b) => {
                     tokio::spawn(async move { b.apply_migration(&schema_name, &steps).await })
                         .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
+                        .unwrap_or_else(|e| {
+                            Err(BackendError::Internal {
+                                message: e.to_string(),
+                            })
+                        })
                 }
                 None => {
                     warn!("ApplyMigration received but no backend is configured");
@@ -358,11 +393,13 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.store_schema_metadata(&definition).await })
-                        .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
-                }
+                Some(b) => tokio::spawn(async move { b.store_schema_metadata(&definition).await })
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(BackendError::Internal {
+                            message: e.to_string(),
+                        })
+                    }),
                 None => {
                     warn!("StoreSchemaMetadata received but no backend is configured");
                     Err(no_backend_error())
@@ -378,11 +415,13 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => {
-                    tokio::spawn(async move { b.load_schema_metadata(&name).await })
-                        .await
-                        .unwrap_or_else(|e| Err(BackendError::Internal { message: e.to_string() }))
-                }
+                Some(b) => tokio::spawn(async move { b.load_schema_metadata(&name).await })
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(BackendError::Internal {
+                            message: e.to_string(),
+                        })
+                    }),
                 None => {
                     warn!("LoadSchemaMetadata received but no backend is configured");
                     Err(no_backend_error())

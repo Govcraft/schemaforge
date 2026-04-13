@@ -115,10 +115,7 @@ impl HookEvent {
     pub fn is_blocking(self) -> bool {
         matches!(
             self,
-            Self::BeforeValidate
-                | Self::BeforeChange
-                | Self::BeforeRead
-                | Self::BeforeDelete
+            Self::BeforeValidate | Self::BeforeChange | Self::BeforeRead | Self::BeforeDelete
         )
     }
 
@@ -478,10 +475,7 @@ mod tests {
             url: Some("https://example.com/hook".into()),
             secret: None,
         };
-        assert_eq!(
-            a.to_string(),
-            "@webhook(url: \"https://example.com/hook\")"
-        );
+        assert_eq!(a.to_string(), "@webhook(url: \"https://example.com/hook\")");
     }
 
     #[test]

@@ -217,7 +217,11 @@ pub fn parse_fields_param(
     value: &str,
     schema: &SchemaDefinition,
 ) -> Result<HashSet<String>, String> {
-    let names: Vec<&str> = value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let names: Vec<&str> = value
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
     if names.is_empty() {
         return Err("fields parameter must contain at least one field name".to_string());
     }
@@ -670,11 +674,7 @@ mod tests {
         let result = parse_fields_param("name,age,status", &schema).unwrap();
         assert_eq!(
             result,
-            HashSet::from([
-                "name".to_string(),
-                "age".to_string(),
-                "status".to_string()
-            ])
+            HashSet::from(["name".to_string(), "age".to_string(), "status".to_string()])
         );
     }
 

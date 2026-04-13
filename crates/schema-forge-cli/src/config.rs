@@ -139,7 +139,11 @@ impl std::fmt::Display for DbParams {
         match self {
             DbParams::Surrealdb(p) => {
                 let user = p.username.as_deref().unwrap_or("(anonymous)");
-                let masked_pass = if p.password.is_some() { "***" } else { "(none)" };
+                let masked_pass = if p.password.is_some() {
+                    "***"
+                } else {
+                    "(none)"
+                };
                 write!(
                     f,
                     "surrealdb {}/{}@{} (user={user}, pass={masked_pass})",

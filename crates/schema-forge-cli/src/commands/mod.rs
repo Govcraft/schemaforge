@@ -51,9 +51,7 @@ pub async fn connect_backend(
     }
 }
 
-async fn connect_backend_inner(
-    db_params: &DbParams,
-) -> Result<Arc<dyn DynForgeBackend>, CliError> {
+async fn connect_backend_inner(db_params: &DbParams) -> Result<Arc<dyn DynForgeBackend>, CliError> {
     match db_params {
         #[cfg(feature = "surrealdb")]
         DbParams::Surrealdb(p) => {
@@ -74,7 +72,8 @@ async fn connect_backend_inner(
                         p.url
                     );
                     let b = schema_forge_surrealdb::SurrealBackend::connect_memory(
-                        &p.namespace, &p.database,
+                        &p.namespace,
+                        &p.database,
                     )
                     .await
                     .map_err(CliError::Backend)?;
