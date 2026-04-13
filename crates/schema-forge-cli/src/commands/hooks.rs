@@ -28,7 +28,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use heck::{ToPascalCase, ToSnakeCase};
-use schema_forge_core::types::{Annotation, FieldType, HookEvent, SchemaDefinition};
+use schema_forge_core::types::{Annotation, Cardinality, FieldType, HookEvent, SchemaDefinition};
 
 use crate::cli::{GlobalOpts, HooksCommands, HooksDiffArgs, HooksGenerateArgs, HooksListArgs};
 use crate::commands::parse::parse_all_schemas;
@@ -166,7 +166,7 @@ fn write_project(out_dir: &Path, hooked: &[SchemaHooks], force: bool) -> Result<
         let proto_path = out_dir
             .join("proto")
             .join(format!("{}_hooks.proto", h.snake));
-        write_file(&proto_path, &render_proto(h), true)?;
+        write_file(&proto_path, &render_proto(h)?, true)?;
 
         // The per-schema impl is preserved by default — only `--force`
         // overwrites it. The first generation always writes a fresh stub.
@@ -183,7 +183,7 @@ fn write_project(out_dir: &Path, hooked: &[SchemaHooks], force: bool) -> Result<
         fs::create_dir_all(&prompt_dir).map_err(io_err)?;
         for (event, intent) in &h.events {
             let prompt_path = prompt_dir.join(format!("{}.prompt.md", event.as_str()));
-            write_file(&prompt_path, &render_prompt(h, *event, intent), true)?;
+            write_file(&prompt_path, &render_prompt(h, *event, intent)?, true)?;
         }
     }
 
@@ -307,7 +307,23 @@ fn render_hooks_mod(hooked: &[SchemaHooks]) -> String {
     s
 }
 
-fn render_proto(h: &SchemaHooks) -> String {
+/// Description of a single proto field emitted from a schema field.
+#[derive(Debug)]
+struct ProtoField {
+    name: String,
+    /// Proto scalar type (e.g. `"string"`, `"int64"`).
+    proto_type: &'static str,
+    /// `true` if the field is `required` (used in request messages); ignored
+    /// for repeated fields, which are never marked `optional`.
+    required: bool,
+    /// `true` if the field maps to a `repeated` proto field (DSL array or
+    /// `Cardinality::Many` relation).
+    repeated: bool,
+}
+
+fn render_proto(h: &SchemaHooks) -> Result<String, CliError> {
+    let scalar_fields = scalar_proto_fields(&h.schema)?;
+
     let mut s = String::new();
     s.push_str("syntax = \"proto3\";\n\n");
     s.push_str(&format!("package {};\n\n", h.proto_package));
@@ -327,8 +343,6 @@ fn render_proto(h: &SchemaHooks) -> String {
     }
     s.push_str("}\n\n");
 
-    let scalar_fields = scalar_proto_fields(&h.schema);
-
     for (event, _) in &h.events {
         let method = event_to_method(*event);
         // Request
@@ -337,54 +351,144 @@ fn render_proto(h: &SchemaHooks) -> String {
         s.push_str("  optional string user_id = 2;\n");
         s.push_str("  optional string entity_id = 3;\n");
         let mut tag = 100;
-        for (name, ty, required) in &scalar_fields {
-            if *required {
-                s.push_str(&format!("  {ty} {name} = {tag};\n"));
-            } else {
-                s.push_str(&format!("  optional {ty} {name} = {tag};\n"));
-            }
+        for f in &scalar_fields {
+            s.push_str(&render_proto_field_line(f, tag, /* request = */ true));
             tag += 1;
         }
         s.push_str("}\n\n");
 
-        // Response — every field is optional (modifiable) plus abort_reason
+        // Response — every scalar field is optional (modifiable), repeated
+        // fields stay repeated; plus the abort_reason marker.
         s.push_str(&format!("message {}{}Response {{\n", h.pascal, method));
         s.push_str("  optional string abort_reason = 1;\n");
         let mut tag = 100;
-        for (name, ty, _) in &scalar_fields {
-            s.push_str(&format!("  optional {ty} {name} = {tag};\n"));
+        for f in &scalar_fields {
+            s.push_str(&render_proto_field_line(f, tag, /* request = */ false));
             tag += 1;
         }
         s.push_str("}\n\n");
     }
 
-    s
+    Ok(s)
 }
 
-/// Map a schema's field definitions to (name, proto-type, required) triples.
-fn scalar_proto_fields(schema: &SchemaDefinition) -> Vec<(String, &'static str, bool)> {
+/// Format a single proto field line. `request = true` honors the `required`
+/// flag (omitting `optional`); `request = false` always emits `optional` for
+/// scalars. Repeated fields are always emitted as `repeated <type>`.
+fn render_proto_field_line(f: &ProtoField, tag: u32, request: bool) -> String {
+    if f.repeated {
+        format!(
+            "  repeated {ty} {name} = {tag};\n",
+            ty = f.proto_type,
+            name = f.name
+        )
+    } else if request && f.required {
+        format!("  {ty} {name} = {tag};\n", ty = f.proto_type, name = f.name)
+    } else {
+        format!(
+            "  optional {ty} {name} = {tag};\n",
+            ty = f.proto_type,
+            name = f.name
+        )
+    }
+}
+
+/// Map a schema's field definitions to [`ProtoField`] descriptors. Returns an
+/// error if any field uses a structure protobuf cannot represent without a
+/// wrapper message (e.g. nested arrays such as `text[][]`).
+fn scalar_proto_fields(schema: &SchemaDefinition) -> Result<Vec<ProtoField>, CliError> {
     use schema_forge_core::types::FieldModifier;
-    schema
-        .fields
-        .iter()
-        .map(|f| {
-            let ty = match &f.field_type {
-                FieldType::Text(_) => "string",
-                FieldType::Integer(_) => "int64",
-                FieldType::Float(_) => "double",
-                FieldType::Boolean => "bool",
-                FieldType::DateTime => "string",
-                FieldType::Enum(_) => "string",
-                FieldType::Relation { .. } => "string",
-                _ => "string",
-            };
-            let required = f
-                .modifiers
-                .iter()
-                .any(|m| matches!(m, FieldModifier::Required));
-            (f.name.as_str().to_string(), ty, required)
-        })
-        .collect()
+    let mut out = Vec::with_capacity(schema.fields.len());
+    for f in &schema.fields {
+        let required = f
+            .modifiers
+            .iter()
+            .any(|m| matches!(m, FieldModifier::Required));
+        let (proto_type, repeated) =
+            field_type_to_proto(&f.field_type, f.name.as_str(), schema.name.as_str())?;
+        out.push(ProtoField {
+            name: f.name.as_str().to_string(),
+            proto_type,
+            required,
+            repeated,
+        });
+    }
+    Ok(out)
+}
+
+/// Map a single [`FieldType`] to `(proto_scalar_type, is_repeated)`.
+///
+/// Recurses into [`FieldType::Array`] exactly one level. Nested arrays
+/// (`text[][]`) and arrays of relations/composites are rejected because
+/// protobuf does not support repeated-of-repeated without a wrapper message.
+fn field_type_to_proto(
+    ft: &FieldType,
+    field_name: &str,
+    schema_name: &str,
+) -> Result<(&'static str, bool), CliError> {
+    match ft {
+        FieldType::Text(_) | FieldType::RichText => Ok(("string", false)),
+        FieldType::Integer(_) => Ok(("int64", false)),
+        FieldType::Float(_) => Ok(("double", false)),
+        FieldType::Boolean => Ok(("bool", false)),
+        FieldType::DateTime => Ok(("string", false)),
+        FieldType::Enum(_) => Ok(("string", false)),
+        FieldType::Json => Ok(("string", false)),
+        FieldType::Relation { cardinality, .. } => {
+            Ok(("string", matches!(cardinality, Cardinality::Many)))
+        }
+        FieldType::Array(inner) => {
+            // One level only: recurse into the inner type and forbid nesting.
+            let (inner_type, inner_repeated) = scalar_inner(inner, field_name, schema_name)?;
+            if inner_repeated {
+                return Err(CliError::Config {
+                    message: format!(
+                        "schema `{schema_name}` field `{field_name}`: nested arrays \
+                         (e.g. `text[][]`) are not supported by the hooks proto generator; \
+                         protobuf has no native repeated-of-repeated. Wrap the inner array \
+                         in a composite or restructure the schema.",
+                    ),
+                });
+            }
+            Ok((inner_type, true))
+        }
+        FieldType::Composite(_) => Err(CliError::Config {
+            message: format!(
+                "schema `{schema_name}` field `{field_name}`: composite fields cannot \
+                 yet be projected into hook proto messages",
+            ),
+        }),
+        // `FieldType` is `#[non_exhaustive]`. Future variants must be
+        // explicitly added to the proto generator.
+        other => Err(CliError::Config {
+            message: format!(
+                "schema `{schema_name}` field `{field_name}`: unsupported field type \
+                 `{other}` for hooks proto generation",
+            ),
+        }),
+    }
+}
+
+/// Inner-array helper: same as [`field_type_to_proto`] but rejects arrays of
+/// relations because the proto cardinality of a `Relation::Many` already
+/// implies `repeated`, which would collide with the outer array's `repeated`.
+fn scalar_inner(
+    ft: &FieldType,
+    field_name: &str,
+    schema_name: &str,
+) -> Result<(&'static str, bool), CliError> {
+    match ft {
+        FieldType::Relation {
+            cardinality: Cardinality::Many,
+            ..
+        } => Err(CliError::Config {
+            message: format!(
+                "schema `{schema_name}` field `{field_name}`: array of many-relations \
+                 is ambiguous; use a single `-> Foo[]` instead of nesting `[]`.",
+            ),
+        }),
+        other => field_type_to_proto(other, field_name, schema_name),
+    }
 }
 
 fn render_impl_stub(h: &SchemaHooks) -> String {
@@ -437,9 +541,9 @@ fn render_impl_stub(h: &SchemaHooks) -> String {
     s
 }
 
-fn render_prompt(h: &SchemaHooks, event: HookEvent, intent: &str) -> String {
+fn render_prompt(h: &SchemaHooks, event: HookEvent, intent: &str) -> Result<String, CliError> {
     let method_snake = event.as_str();
-    let scalar_fields = scalar_proto_fields(&h.schema);
+    let scalar_fields = scalar_proto_fields(&h.schema)?;
     let mut s = String::new();
     s.push_str(&format!("# `{}` — `{}`\n\n", h.name, method_snake));
     s.push_str("## Intent\n\n");
@@ -461,10 +565,17 @@ fn render_prompt(h: &SchemaHooks, event: HookEvent, intent: &str) -> String {
     s.push_str("| operation | string | yes (system) |\n");
     s.push_str("| user_id | optional string | no (system) |\n");
     s.push_str("| entity_id | optional string | no (system) |\n");
-    for (name, ty, required) in &scalar_fields {
+    for f in &scalar_fields {
+        let ty_display = if f.repeated {
+            format!("repeated {}", f.proto_type)
+        } else {
+            f.proto_type.to_string()
+        };
         s.push_str(&format!(
-            "| {name} | {ty} | {} |\n",
-            if *required { "yes" } else { "no" }
+            "| {name} | {ty} | {req} |\n",
+            name = f.name,
+            ty = ty_display,
+            req = if f.required { "yes" } else { "no" },
         ));
     }
     s.push_str("\n## Response fields\n\n");
@@ -478,7 +589,7 @@ fn render_prompt(h: &SchemaHooks, event: HookEvent, intent: &str) -> String {
     s.push_str("      desired modified fields.\n");
     s.push_str("- [ ] Edge cases (malformed input, downstream failures) are\n");
     s.push_str("      handled without panics.\n");
-    s
+    Ok(s)
 }
 
 fn event_to_method(event: HookEvent) -> &'static str {
@@ -579,3 +690,126 @@ fn build_hook_map(schemas: &[SchemaDefinition]) -> BTreeMap<(String, HookEvent),
 // future subcommands need it.
 #[allow(dead_code)]
 fn _placeholder(_: PathBuf) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use schema_forge_core::types::{
+        Cardinality, EnumVariants, FieldDefinition, FieldName, FieldType, IntegerConstraints,
+        SchemaDefinition, SchemaId, SchemaName, TextConstraints,
+    };
+
+    fn field(name: &str, ft: FieldType) -> FieldDefinition {
+        FieldDefinition::new(FieldName::new(name).unwrap(), ft)
+    }
+
+    fn schema(name: &str, fields: Vec<FieldDefinition>) -> SchemaDefinition {
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new(name).unwrap(),
+            fields,
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn array_of_text_maps_to_repeated_string() {
+        let s = schema(
+            "Task",
+            vec![field(
+                "tags",
+                FieldType::Array(Box::new(FieldType::Text(TextConstraints::unconstrained()))),
+            )],
+        );
+        let fields = scalar_proto_fields(&s).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "tags");
+        assert_eq!(fields[0].proto_type, "string");
+        assert!(fields[0].repeated);
+    }
+
+    #[test]
+    fn array_of_integer_maps_to_repeated_int64() {
+        let s = schema(
+            "Task",
+            vec![field(
+                "scores",
+                FieldType::Array(Box::new(FieldType::Integer(
+                    IntegerConstraints::unconstrained(),
+                ))),
+            )],
+        );
+        let fields = scalar_proto_fields(&s).unwrap();
+        assert_eq!(fields[0].proto_type, "int64");
+        assert!(fields[0].repeated);
+    }
+
+    #[test]
+    fn array_of_enum_maps_to_repeated_string() {
+        let s = schema(
+            "Task",
+            vec![field(
+                "labels",
+                FieldType::Array(Box::new(FieldType::Enum(
+                    EnumVariants::new(vec!["a".into(), "b".into()]).unwrap(),
+                ))),
+            )],
+        );
+        let fields = scalar_proto_fields(&s).unwrap();
+        assert_eq!(fields[0].proto_type, "string");
+        assert!(fields[0].repeated);
+    }
+
+    #[test]
+    fn many_relation_maps_to_repeated_string() {
+        let s = schema(
+            "Task",
+            vec![field(
+                "projects",
+                FieldType::Relation {
+                    target: SchemaName::new("Project").unwrap(),
+                    cardinality: Cardinality::Many,
+                },
+            )],
+        );
+        let fields = scalar_proto_fields(&s).unwrap();
+        assert_eq!(fields[0].proto_type, "string");
+        assert!(fields[0].repeated);
+    }
+
+    #[test]
+    fn one_relation_stays_scalar() {
+        let s = schema(
+            "Task",
+            vec![field(
+                "owner",
+                FieldType::Relation {
+                    target: SchemaName::new("User").unwrap(),
+                    cardinality: Cardinality::One,
+                },
+            )],
+        );
+        let fields = scalar_proto_fields(&s).unwrap();
+        assert!(!fields[0].repeated);
+    }
+
+    #[test]
+    fn nested_array_is_rejected_with_clear_error() {
+        let s = schema(
+            "Bad",
+            vec![field(
+                "matrix",
+                FieldType::Array(Box::new(FieldType::Array(Box::new(FieldType::Text(
+                    TextConstraints::unconstrained(),
+                ))))),
+            )],
+        );
+        let err = scalar_proto_fields(&s).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("nested arrays"),
+            "expected nested-arrays error, got: {msg}"
+        );
+    }
+}

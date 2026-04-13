@@ -133,6 +133,115 @@ fn generate_preserves_existing_impl_without_force() {
     );
 }
 
+/// Schema with array-typed fields: scalar arrays, enum array, and a many-relation.
+const TASK_SCHEMA: &str = r#"
+schema Project {
+  name: text required
+}
+
+@hook(before_change) """validate task arrays"""
+schema Task {
+  title: text required
+  tags: text[]
+  scores: integer[]
+  flags: boolean[]
+  labels: enum("a","b")[]
+  projects: -> Project[]
+}
+"#;
+
+#[test]
+fn generate_emits_repeated_for_array_and_many_relation_fields() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("task.schema"), TASK_SCHEMA).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+
+    let proto = fs::read_to_string(out_dir.join("proto/task_hooks.proto")).unwrap();
+    // Required scalar stays unmarked.
+    assert!(
+        proto.contains("string title ="),
+        "expected `string title = ...`; proto:\n{proto}"
+    );
+    // Scalar arrays must become `repeated <type>`, never `optional string`.
+    assert!(
+        proto.contains("repeated string tags ="),
+        "expected `repeated string tags`; proto:\n{proto}"
+    );
+    assert!(
+        proto.contains("repeated int64 scores ="),
+        "expected `repeated int64 scores`; proto:\n{proto}"
+    );
+    assert!(
+        proto.contains("repeated bool flags ="),
+        "expected `repeated bool flags`; proto:\n{proto}"
+    );
+    // Enum arrays become repeated string.
+    assert!(
+        proto.contains("repeated string labels ="),
+        "expected `repeated string labels`; proto:\n{proto}"
+    );
+    // Many-relations become repeated string of ids.
+    assert!(
+        proto.contains("repeated string projects ="),
+        "expected `repeated string projects`; proto:\n{proto}"
+    );
+    // No accidental `optional` on a repeated field.
+    assert!(
+        !proto.contains("optional string tags"),
+        "tags must not be `optional string`; proto:\n{proto}"
+    );
+
+    // Response message also keeps repeated cardinality so hooks can echo
+    // a modified array back without `prost-reflect` rejecting it.
+    let response_block_start = proto
+        .find("message TaskBeforeChangeResponse")
+        .expect("response message present");
+    let response_block = &proto[response_block_start..];
+    let response_end = response_block.find("\n}\n").unwrap();
+    let response_body = &response_block[..response_end];
+    assert!(
+        response_body.contains("repeated string tags"),
+        "response should also emit `repeated string tags`; body:\n{response_body}"
+    );
+}
+
+const NESTED_ARRAY_SCHEMA: &str = r#"
+@hook(before_change) """nested arrays should fail"""
+schema Bad {
+  matrix: text[][]
+}
+"#;
+
+#[test]
+fn generate_rejects_nested_arrays() {
+    // The DSL parser refuses `text[][]` outright; the codegen guard is a
+    // defense-in-depth check for synthetic AST consumers. Either rejection
+    // path is acceptable — both are non-zero exit with an error printed.
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("bad.schema"), NESTED_ARRAY_SCHEMA).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .failure();
+}
+
 #[test]
 fn list_reports_hooks() {
     let workdir = TempDir::new().unwrap();

@@ -17,12 +17,14 @@ message TranslationBeforeChangeRequest {
   optional string entity_id = 3;
   string source_text = 100;
   string translated_text = 101;
+  repeated string tags = 102;
 }
 
 message TranslationBeforeChangeResponse {
   optional string abort_reason = 1;
   optional string source_text = 100;
   optional string translated_text = 101;
+  repeated string tags = 102;
 }
 
 message TranslationAfterChangeRequest {
@@ -31,6 +33,7 @@ message TranslationAfterChangeRequest {
   optional string entity_id = 3;
   string source_text = 100;
   string translated_text = 101;
+  repeated string tags = 102;
 }
 
 message TranslationAfterChangeResponse {}

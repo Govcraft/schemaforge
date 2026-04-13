@@ -37,6 +37,7 @@ struct CapturedRequest {
     operation: String,
     user_id: Option<String>,
     entity_id: Option<String>,
+    tags: Vec<String>,
 }
 
 struct TestService {
@@ -67,17 +68,20 @@ impl TranslationHooks for TestService {
             operation: req.operation.clone(),
             user_id: req.user_id.clone(),
             entity_id: req.entity_id.clone(),
+            tags: req.tags.clone(),
         });
         let resp = match &self.behavior {
             Behavior::Modify => TranslationBeforeChangeResponse {
                 abort_reason: None,
                 source_text: None,
                 translated_text: Some("¡hola!".to_string()),
+                tags: Vec::new(),
             },
             Behavior::Abort(reason) => TranslationBeforeChangeResponse {
                 abort_reason: Some(reason.clone()),
                 source_text: None,
                 translated_text: None,
+                tags: Vec::new(),
             },
             Behavior::PassThrough => TranslationBeforeChangeResponse::default(),
         };
@@ -238,6 +242,105 @@ async fn after_change_round_trips() {
         .await
         .expect("call");
     assert_eq!(*svc.after_count.lock().await, 1);
+    let _ = shutdown.send(());
+}
+
+/// Regression for issue #9: a list-valued `DynamicValue::Array` against a
+/// `repeated string` proto field used to panic inside `prost-reflect` (which
+/// `tower_http::catch_panic` would surface as a 500). The dispatcher now
+/// routes the list into the repeated field cleanly and the hook receives
+/// every element.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn before_change_array_field_dispatches_without_panic() {
+    let (addr, svc, shutdown) = spawn_server(Behavior::PassThrough).await;
+    let cfg = HooksConfig {
+        enabled: true,
+        bindings: vec![binding(addr, HookEvent::BeforeChange)],
+        ..HooksConfig::default()
+    };
+    let dispatcher =
+        TonicHookDispatcher::new(&cfg, TonicDispatcherConfig::default()).expect("dispatcher");
+
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert(
+        "source_text".to_string(),
+        DynamicValue::Text("hello".to_string()),
+    );
+    fields.insert(
+        "translated_text".to_string(),
+        DynamicValue::Text(String::new()),
+    );
+    fields.insert(
+        "tags".to_string(),
+        DynamicValue::Array(vec![
+            DynamicValue::Text("urgent".to_string()),
+            DynamicValue::Text("review".to_string()),
+        ]),
+    );
+    let inv = HookInvocation {
+        schema: "Translation".to_string(),
+        event: HookEvent::BeforeChange,
+        operation: "create".to_string(),
+        user_id: None,
+        entity_id: None,
+        fields,
+    };
+
+    dispatcher
+        .call_before(&cfg.bindings[0], inv)
+        .await
+        .expect("call should not panic or 500");
+
+    let captured = svc.captured.lock().await;
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0].tags,
+        vec!["urgent".to_string(), "review".to_string()]
+    );
+    let _ = shutdown.send(());
+}
+
+/// Regression for issue #9: scalar-on-repeated should be promoted into a
+/// single-element list rather than panicking. Hook authors commonly send a
+/// bare string when they mean `[string]`; matching the JSON ingest behavior
+/// here keeps the dispatcher panic-free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn before_change_scalar_promoted_to_singleton_list() {
+    let (addr, svc, shutdown) = spawn_server(Behavior::PassThrough).await;
+    let cfg = HooksConfig {
+        enabled: true,
+        bindings: vec![binding(addr, HookEvent::BeforeChange)],
+        ..HooksConfig::default()
+    };
+    let dispatcher =
+        TonicHookDispatcher::new(&cfg, TonicDispatcherConfig::default()).expect("dispatcher");
+
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert(
+        "source_text".to_string(),
+        DynamicValue::Text("hello".to_string()),
+    );
+    fields.insert(
+        "translated_text".to_string(),
+        DynamicValue::Text(String::new()),
+    );
+    fields.insert("tags".to_string(), DynamicValue::Text("solo".to_string()));
+    let inv = HookInvocation {
+        schema: "Translation".to_string(),
+        event: HookEvent::BeforeChange,
+        operation: "create".to_string(),
+        user_id: None,
+        entity_id: None,
+        fields,
+    };
+
+    dispatcher
+        .call_before(&cfg.bindings[0], inv)
+        .await
+        .expect("call");
+
+    let captured = svc.captured.lock().await;
+    assert_eq!(captured[0].tags, vec!["solo".to_string()]);
     let _ = shutdown.send(());
 }
 
