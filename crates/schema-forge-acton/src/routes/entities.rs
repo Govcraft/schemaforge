@@ -1796,10 +1796,13 @@ pub async fn patch_entity(
     )
     .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
-    // Merge the patch onto the existing entity's field map.
-    let mut fields = existing.fields.clone();
+    // Merge the patch onto the existing entity's field map so hooks see
+    // the post-patch view of the entity. The merged map is only used to
+    // drive the hook path and to compute the final delta against the
+    // loaded baseline; it is NOT what gets written to the backend.
+    let mut merged = existing.fields.clone();
     for (k, v) in patch_fields {
-        fields.insert(k, v);
+        merged.insert(k, v);
     }
 
     // before_change hook — operates on the already-merged field set so
@@ -1821,7 +1824,7 @@ pub async fn patch_entity(
                 user: claims.as_ref(),
                 entity_id: Some(entity_id.as_str().to_string()),
             },
-            &mut fields,
+            &mut merged,
         )
         .await?;
         apply_before_hook(
@@ -1834,31 +1837,49 @@ pub async fn patch_entity(
                 user: claims.as_ref(),
                 entity_id: Some(entity_id.as_str().to_string()),
             },
-            &mut fields,
+            &mut merged,
         )
         .await?;
     }
 
-    // Build entity with the existing ID, filtering write-restricted fields.
-    let mut entity = Entity::with_id(entity_id, schema_name, fields);
-    filter_entity_fields(
-        &mut entity,
-        &schema_def,
-        claims.as_ref(),
-        FieldFilterDirection::Write,
-    );
+    // Compute the delta: only keys whose final value differs from the
+    // loaded baseline go to the backend. This keeps PATCH's SQL UPDATE
+    // actually partial, which makes the whole class of "null column
+    // being rebound with the wrong type" bugs structurally impossible
+    // (see issue #12). An unchanged field never hits bind_dynamic_value.
+    let mut delta = std::collections::BTreeMap::new();
+    for (k, v) in &merged {
+        match existing.fields.get(k) {
+            Some(existing_v) if existing_v == v => {}
+            _ => {
+                delta.insert(k.clone(), v.clone());
+            }
+        }
+    }
 
-    // Dispatch through the same UpdateEntity actor message as PUT so
-    // backend writes, after-hooks, audit logging, and webhooks all
-    // share one code path.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(UpdateEntity {
-            entity,
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    let mut updated = ask_forge(rx).await?.map_err(ForgeError::from)?;
+    // Empty delta: nothing to write (the patch body was a no-op after
+    // merge, e.g. every patched field already held the requested value,
+    // or a before_change hook reverted the changes). Skip the backend
+    // round-trip and return the existing entity as-is.
+    let mut updated = if delta.is_empty() {
+        existing
+    } else {
+        let mut entity = Entity::with_id(entity_id, schema_name, delta);
+        filter_entity_fields(
+            &mut entity,
+            &schema_def,
+            claims.as_ref(),
+            FieldFilterDirection::Write,
+        );
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(UpdateEntity {
+                entity,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        ask_forge(rx).await?.map_err(ForgeError::from)?
+    };
 
     // after_change hook — dispatched via HookDispatchActor
     if let Some(dispatcher) = hook_dispatcher.clone() {

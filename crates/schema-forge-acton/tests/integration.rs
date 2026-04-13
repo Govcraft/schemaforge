@@ -1143,6 +1143,125 @@ async fn patch_entity_merges_partial_fields() {
     assert_eq!(fetched["fields"]["notes"], "patched");
 }
 
+/// Regression for issue #12 and the partial-PATCH structural fix.
+///
+/// When PATCH only touches one field, the backend must receive an entity
+/// containing *only* that delta — not the full merged row. This keeps the
+/// backend's UPDATE narrow and structurally prevents the "null column gets
+/// rebound with the wrong type" class of bugs (#12 was one instance of it
+/// involving relation-many columns stored as text[]).
+///
+/// The observable surface of "narrow UPDATE" is that an unrelated field
+/// that was never included in the patch body is still present and
+/// unchanged after the round-trip. This test covers that semantic on a
+/// schema that mixes scalar, array, and nullable fields.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn patch_entity_narrow_update_preserves_untouched_nullable_fields() {
+    let app = test_app().await;
+
+    // Schema with a required scalar, a required scalar we will patch, and
+    // two optional typed fields that stay null through the whole lifecycle.
+    // DateTime is the salient case: its null binding used to fall through
+    // to text before #10 landed typed-null binding.
+    let schema_body = serde_json::json!({
+        "name": "Task",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "duration_days", "field_type": "Float", "modifiers": ["required"]},
+            {"name": "early_start", "field_type": "DateTime"},
+            {"name": "total_slack", "field_type": "Float"}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // Create without setting `early_start` or `total_slack` so they stay null.
+    let create_body = serde_json::json!({
+        "fields": {
+            "name": "Discovery",
+            "duration_days": 5.0
+        }
+    });
+    let (_, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Task/entities",
+        Some(create_body),
+    )
+    .await;
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Task/entities/{entity_id}");
+
+    // Patch only `duration_days`. Prior to the partial-PATCH fix, the
+    // merged entity (including both null `early_start` and null
+    // `total_slack`) would reach the backend and the null rebind would
+    // fail on any backend whose null-binding path had a weak spot. With
+    // the delta fix, the backend only ever sees `duration_days` in the
+    // UPDATE.
+    let patch_body = serde_json::json!({ "fields": { "duration_days": 7.5 } });
+    let (patch_status, patched) =
+        json_request(&app, Method::PATCH, &path, Some(patch_body)).await;
+    assert_eq!(
+        patch_status,
+        StatusCode::OK,
+        "PATCH should succeed even when unrelated columns are null, got {patch_status} body={patched}"
+    );
+
+    // Follow-up GET confirms the patched field landed and the untouched
+    // nullable fields are still null.
+    let (_, fetched) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(fetched["fields"]["name"], "Discovery");
+    assert_eq!(fetched["fields"]["duration_days"], 7.5);
+    assert!(
+        fetched["fields"]["early_start"].is_null(),
+        "early_start must still be null after PATCH, got {}",
+        fetched["fields"]["early_start"]
+    );
+    assert!(
+        fetched["fields"]["total_slack"].is_null(),
+        "total_slack must still be null after PATCH, got {}",
+        fetched["fields"]["total_slack"]
+    );
+}
+
+/// A PATCH that re-sends fields identical to the current values must be
+/// treated as a no-op: the backend does not need to be hit, and the
+/// response is still the existing entity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn patch_entity_noop_when_body_matches_existing_values() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Contact",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "email", "field_type": "Text", "modifiers": ["required"]}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    let create_body = serde_json::json!({
+        "fields": { "name": "Alice", "email": "alice@example.com" }
+    });
+    let (_, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Contact/entities",
+        Some(create_body),
+    )
+    .await;
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Contact/entities/{entity_id}");
+
+    // Patch with the exact same values the row already has.
+    let patch_body = serde_json::json!({
+        "fields": { "name": "Alice", "email": "alice@example.com" }
+    });
+    let (status, body) = json_request(&app, Method::PATCH, &path, Some(patch_body)).await;
+    assert_eq!(status, StatusCode::OK, "no-op PATCH should succeed");
+    assert_eq!(body["fields"]["name"], "Alice");
+    assert_eq!(body["fields"]["email"], "alice@example.com");
+}
+
 /// Regression for issue #10: PUT with a missing required field must return
 /// 422 and the error body must direct callers to PATCH for partial updates.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

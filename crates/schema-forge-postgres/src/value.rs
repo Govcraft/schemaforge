@@ -109,22 +109,50 @@ pub fn bind_dynamic_value(
 /// schema context), the function falls back to a `text`-typed null,
 /// matching the previous behavior.
 fn bind_null(args: &mut PgArguments, field_type: Option<&FieldType>) -> Result<(), BackendError> {
+    use schema_forge_core::types::Cardinality;
+    // Enumerate every known FieldType variant. The match is exhaustive
+    // against today's DSL; the wildcard arm only catches future
+    // `#[non_exhaustive]` additions and surfaces them as a loud error
+    // rather than silently falling through to a text-typed null — that
+    // silent fallback was the shape of issue #12.
     let result = match field_type {
+        // Stored as text / varchar.
+        Some(FieldType::Text(_) | FieldType::RichText | FieldType::Enum(_)) => {
+            args.add(None::<String>)
+        }
+        // Stored as bigint / double / boolean / timestamptz.
         Some(FieldType::Integer(_)) => args.add(None::<i64>),
         Some(FieldType::Float(_)) => args.add(None::<f64>),
         Some(FieldType::Boolean) => args.add(None::<bool>),
         Some(FieldType::DateTime) => args.add(None::<chrono::DateTime<chrono::Utc>>),
+        // Stored as jsonb.
         Some(FieldType::Json | FieldType::Composite(_)) => {
             args.add(None::<sqlx::types::Json<serde_json::Value>>)
         }
-        Some(FieldType::Array(inner)) => return bind_null_array(args, inner),
+        // Relation cardinality determines text vs text[].
         Some(FieldType::Relation {
-            cardinality: schema_forge_core::types::Cardinality::Many,
+            cardinality: Cardinality::One,
+            ..
+        }) => args.add(None::<String>),
+        Some(FieldType::Relation {
+            cardinality: Cardinality::Many,
             ..
         }) => args.add(None::<Vec<String>>),
-        // Text, RichText, Enum, Relation (single id stored as text), or
-        // unknown column types all serialize as nullable text.
-        _ => args.add(None::<String>),
+        // Array delegates to the typed-inner helper.
+        Some(FieldType::Array(inner)) => return bind_null_array(args, inner),
+        // No schema context (positional query params). Text is the
+        // documented backwards-compatible fallback.
+        None => args.add(None::<String>),
+        // Future FieldType variants (`#[non_exhaustive]`). Surface
+        // loudly instead of silently text-binding.
+        Some(other) => {
+            return Err(BackendError::Internal {
+                message: format!(
+                    "bind_null has no typed NULL binding for FieldType::{other}; \
+                     add a branch to schema_forge_postgres::value::bind_null"
+                ),
+            });
+        }
     };
     result.map_err(|e| BackendError::Internal {
         message: format!("failed to bind NULL: {e}"),
@@ -134,6 +162,10 @@ fn bind_null(args: &mut PgArguments, field_type: Option<&FieldType>) -> Result<(
 /// Bind a typed NULL for an array column. Mirrors the per-element matching
 /// used by [`bind_array`] so the parameter type matches the column's native
 /// Postgres array type (`bigint[]`, `timestamptz[]`, etc.).
+///
+/// Arrays of non-primitive elements (nested arrays, composites, relations,
+/// json) are stored as JSONB — the `_` arm is deliberately JSONB, not text,
+/// to match [`bind_array`]'s fallback and [`read_array_column`]'s decode.
 fn bind_null_array(args: &mut PgArguments, inner: &FieldType) -> Result<(), BackendError> {
     let result = match inner {
         FieldType::Text(_) | FieldType::RichText | FieldType::Enum(_) => {
