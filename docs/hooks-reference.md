@@ -384,6 +384,17 @@ of whether it is required in the schema. Setting a response field
 replaces the value SchemaForge would otherwise persist; leaving it
 unset means "no change from the incoming payload."
 
+**Type coercion of response fields.** Because the wire format encodes
+`datetime`, `enum`, and `relation` as protobuf `string`, the
+dispatcher coerces each response field against the schema's declared
+type before merging it into the pending payload. In particular,
+`datetime` response fields are parsed from RFC3339 strings into typed
+timestamps so they bind cleanly against `timestamp with time zone`
+columns. A response value that cannot be coerced — for example, a
+`datetime` field set to `"not-a-date"` — causes the hook call to fail
+with HTTP 422 `hook_aborted` and a message identifying the offending
+field.
+
 For fire-and-forget events (`after_change`, `after_delete`), the
 response message is empty — the transport round-trip still happens,
 but its contents are ignored.

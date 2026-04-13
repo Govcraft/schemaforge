@@ -81,6 +81,10 @@ fn translation_schema_with_hooks() -> SchemaDefinition {
                 FieldName::new("translated_text").unwrap(),
                 FieldType::Text(TextConstraints::unconstrained()),
             ),
+            FieldDefinition::new(
+                FieldName::new("published_at").unwrap(),
+                FieldType::DateTime,
+            ),
         ],
         vec![
             Annotation::Hook {
@@ -420,6 +424,106 @@ async fn after_change_hook_fires_without_blocking_response() {
     assert_eq!(after[0].operation, "create");
     // After-hook sees the persisted entity id.
     assert!(after[0].entity_id.is_some());
+}
+
+/// Regression for issue #6: the hook dispatcher's merge step must coerce
+/// datetime fields returned as RFC3339 strings (per the gRPC wire
+/// contract in `docs/hooks-reference.md` §3.4) into `DynamicValue::DateTime`
+/// before the Postgres backend binds them. Without this coercion, a
+/// hook-stamped datetime is bound as text against a `timestamptz`
+/// column and the write fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn before_change_hook_text_datetime_response_is_coerced() {
+    let dispatcher = Arc::new(MockHookDispatcher::new());
+    let mut modified = std::collections::BTreeMap::new();
+    // The real proto decoder surfaces `datetime` proto strings as
+    // `DynamicValue::Text`; MockHookDispatcher reproduces that shape.
+    modified.insert(
+        "published_at".to_string(),
+        DynamicValue::Text("2025-04-12T10:00:00Z".to_string()),
+    );
+    dispatcher
+        .respond_before(
+            "Translation",
+            HookEvent::BeforeChange,
+            HookOutcome {
+                abort_reason: None,
+                modified_fields: Some(modified),
+            },
+        )
+        .await;
+
+    let config = HooksConfig {
+        enabled: true,
+        bindings: vec![binding(true, HookEvent::BeforeChange)],
+        ..HooksConfig::default()
+    };
+    let state = setup(config, Some(dispatcher)).await;
+    let router = test_router(state);
+
+    let (status, json) = post_entity(
+        &router,
+        "Translation",
+        serde_json::json!({"source_text": "hello"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "response body: {json}");
+    // Backend persistence round-trips datetime as an RFC3339 string in
+    // the JSON response; verify the exact value the hook stamped.
+    let published = json["fields"]["published_at"].as_str().unwrap_or_default();
+    assert!(
+        !published.is_empty(),
+        "published_at missing from response: {json}"
+    );
+    let parsed: chrono::DateTime<chrono::Utc> = published
+        .parse()
+        .unwrap_or_else(|e| panic!("published_at not RFC3339 ({published}): {e}"));
+    let expected = "2025-04-12T10:00:00Z"
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .unwrap();
+    assert_eq!(parsed, expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn before_change_hook_invalid_datetime_returns_422() {
+    let dispatcher = Arc::new(MockHookDispatcher::new());
+    let mut modified = std::collections::BTreeMap::new();
+    modified.insert(
+        "published_at".to_string(),
+        DynamicValue::Text("not-a-date".to_string()),
+    );
+    dispatcher
+        .respond_before(
+            "Translation",
+            HookEvent::BeforeChange,
+            HookOutcome {
+                abort_reason: None,
+                modified_fields: Some(modified),
+            },
+        )
+        .await;
+
+    let config = HooksConfig {
+        enabled: true,
+        bindings: vec![binding(true, HookEvent::BeforeChange)],
+        ..HooksConfig::default()
+    };
+    let state = setup(config, Some(dispatcher)).await;
+    let router = test_router(state);
+
+    let (status, json) = post_entity(
+        &router,
+        "Translation",
+        serde_json::json!({"source_text": "hello"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
+    assert_eq!(json["error"], "hook_aborted");
+    let message = json["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("published_at") && message.contains("invalid datetime"),
+        "unexpected message: {message}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

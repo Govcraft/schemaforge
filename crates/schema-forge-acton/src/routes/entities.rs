@@ -132,7 +132,23 @@ async fn apply_before_hook(
     if let Some(outcome) = outcome {
         if let Some(modified) = outcome.modified_fields {
             for (k, v) in modified {
-                fields.insert(k, v);
+                let coerced = match ctx.schema.field(&k) {
+                    Some(field_def) => {
+                        coerce_dynamic_value_with_type_hint(v, &field_def.field_type).map_err(
+                            |reason| ForgeError::HookAborted {
+                                reason: format!(
+                                    "hook returned invalid value for field '{k}' of type {}: {reason}",
+                                    field_def.field_type
+                                ),
+                            },
+                        )?
+                    }
+                    // Unknown field name from hook: pass through. Backend
+                    // validation already rejects unknown fields, so behavior
+                    // is unchanged from before this coercion was added.
+                    None => v,
+                };
+                fields.insert(k, coerced);
             }
         }
     }
@@ -568,6 +584,103 @@ fn convert_json_untyped(value: &serde_json::Value) -> Result<DynamicValue, Strin
             }
             Ok(DynamicValue::Composite(btree))
         }
+    }
+}
+
+/// Coerce a [`DynamicValue`] against a schema [`FieldType`], parsing
+/// stringly-typed values into their typed counterparts.
+///
+/// Mirrors [`convert_json_with_type_hint`], but operates on `DynamicValue`
+/// inputs. The primary use case is the hook dispatcher's response-merge
+/// step: gRPC responses deliver `datetime`/`enum`/`relation` fields as
+/// proto `string` (per the wire contract in `docs/hooks-reference.md`
+/// §3.4), which arrives here as [`DynamicValue::Text`]. Without this
+/// coercion, text values are bound against typed Postgres columns and
+/// the write fails with a type mismatch.
+fn coerce_dynamic_value_with_type_hint(
+    value: DynamicValue,
+    field_type: &FieldType,
+) -> Result<DynamicValue, String> {
+    match field_type {
+        FieldType::Text(_) | FieldType::RichText => match value {
+            DynamicValue::Text(_) | DynamicValue::Null => Ok(value),
+            other => Ok(DynamicValue::Text(other.to_string())),
+        },
+        FieldType::Integer(_) => match value {
+            DynamicValue::Integer(_) | DynamicValue::Null => Ok(value),
+            DynamicValue::Text(s) => s
+                .parse::<i64>()
+                .map(DynamicValue::Integer)
+                .map_err(|e| format!("invalid integer '{s}': {e}")),
+            other => Err(format!("expected integer, got {other}")),
+        },
+        FieldType::Float(_) => match value {
+            DynamicValue::Float(_) | DynamicValue::Null => Ok(value),
+            DynamicValue::Integer(i) => Ok(DynamicValue::Float(i as f64)),
+            DynamicValue::Text(s) => s
+                .parse::<f64>()
+                .map(DynamicValue::Float)
+                .map_err(|e| format!("invalid float '{s}': {e}")),
+            other => Err(format!("expected float, got {other}")),
+        },
+        FieldType::Boolean => match value {
+            DynamicValue::Boolean(_) | DynamicValue::Null => Ok(value),
+            DynamicValue::Text(s) => s
+                .parse::<bool>()
+                .map(DynamicValue::Boolean)
+                .map_err(|e| format!("invalid boolean '{s}': {e}")),
+            other => Err(format!("expected boolean, got {other}")),
+        },
+        FieldType::DateTime => match value {
+            DynamicValue::DateTime(_) | DynamicValue::Null => Ok(value),
+            DynamicValue::Text(s) => s
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .map(DynamicValue::DateTime)
+                .map_err(|e| format!("invalid datetime '{s}': {e}")),
+            other => Err(format!("expected datetime, got {other}")),
+        },
+        FieldType::Enum(_) => match value {
+            DynamicValue::Enum(_) | DynamicValue::Null => Ok(value),
+            DynamicValue::Text(s) => Ok(DynamicValue::Enum(s)),
+            other => Err(format!("expected enum, got {other}")),
+        },
+        FieldType::Json => Ok(value),
+        FieldType::Relation { cardinality, .. } => match value {
+            DynamicValue::Ref(_) | DynamicValue::RefArray(_) | DynamicValue::Null => Ok(value),
+            DynamicValue::Text(s) => EntityId::parse(&s)
+                .map(DynamicValue::Ref)
+                .map_err(|e| format!("invalid entity reference '{s}': {e}")),
+            DynamicValue::Array(items) if matches!(cardinality, Cardinality::Many) => {
+                let ids = items
+                    .into_iter()
+                    .map(|item| match item {
+                        DynamicValue::Text(s) => EntityId::parse(&s)
+                            .map_err(|e| format!("invalid entity reference '{s}': {e}")),
+                        DynamicValue::Ref(id) => Ok(id),
+                        other => Err(format!("expected entity reference, got {other}")),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(DynamicValue::RefArray(ids))
+            }
+            other => Err(format!("expected entity reference, got {other}")),
+        },
+        FieldType::Array(inner) => match value {
+            DynamicValue::Array(items) => {
+                let coerced = items
+                    .into_iter()
+                    .map(|item| coerce_dynamic_value_with_type_hint(item, inner))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(DynamicValue::Array(coerced))
+            }
+            DynamicValue::Null => Ok(DynamicValue::Null),
+            other => Err(format!("expected array, got {other}")),
+        },
+        // Composite fields are passed through unchanged. Nested datetime
+        // coercion over composite structures is not exercised by any
+        // in-repo schema today; add recursion here if/when needed.
+        FieldType::Composite(_) => Ok(value),
+        // `FieldType` is `#[non_exhaustive]`; future variants pass through.
+        _ => Ok(value),
     }
 }
 
@@ -2040,5 +2153,157 @@ mod tests {
         );
         let response = entity_to_response(&entity);
         assert_eq!(response.fields.len(), 2);
+    }
+
+    // -----------------------------------------------------------------
+    // coerce_dynamic_value_with_type_hint (issue #6 regression coverage)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn coerce_datetime_from_text_succeeds() {
+        let result = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Text("2025-04-12T10:00:00Z".into()),
+            &FieldType::DateTime,
+        )
+        .unwrap();
+        let expected = "2025-04-12T10:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        assert_eq!(result, DynamicValue::DateTime(expected));
+    }
+
+    #[test]
+    fn coerce_datetime_from_text_invalid_returns_err() {
+        let err = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Text("not-a-date".into()),
+            &FieldType::DateTime,
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid datetime"), "unexpected error: {err}");
+        assert!(err.contains("not-a-date"));
+    }
+
+    #[test]
+    fn coerce_datetime_passthrough() {
+        let dt = chrono::Utc::now();
+        let result = coerce_dynamic_value_with_type_hint(
+            DynamicValue::DateTime(dt),
+            &FieldType::DateTime,
+        )
+        .unwrap();
+        assert_eq!(result, DynamicValue::DateTime(dt));
+    }
+
+    #[test]
+    fn coerce_datetime_null_passthrough() {
+        let result =
+            coerce_dynamic_value_with_type_hint(DynamicValue::Null, &FieldType::DateTime).unwrap();
+        assert_eq!(result, DynamicValue::Null);
+    }
+
+    #[test]
+    fn coerce_enum_from_text() {
+        let enum_type = FieldType::Enum(
+            schema_forge_core::types::EnumVariants::new(vec!["Active".into(), "Inactive".into()])
+                .unwrap(),
+        );
+        let result =
+            coerce_dynamic_value_with_type_hint(DynamicValue::Text("Active".into()), &enum_type)
+                .unwrap();
+        assert_eq!(result, DynamicValue::Enum("Active".into()));
+    }
+
+    #[test]
+    fn coerce_relation_from_text_parses_entity_id() {
+        let relation = FieldType::Relation {
+            target: SchemaName::new("Company").unwrap(),
+            cardinality: Cardinality::One,
+        };
+        let id = EntityId::new();
+        let result = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Text(id.as_str().to_string()),
+            &relation,
+        )
+        .unwrap();
+        assert_eq!(result, DynamicValue::Ref(id));
+    }
+
+    #[test]
+    fn coerce_relation_from_text_invalid_returns_err() {
+        let relation = FieldType::Relation {
+            target: SchemaName::new("Company").unwrap(),
+            cardinality: Cardinality::One,
+        };
+        let err = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Text("not-an-id".into()),
+            &relation,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("invalid entity reference"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn coerce_relation_many_from_array_of_text() {
+        let relation = FieldType::Relation {
+            target: SchemaName::new("Tag").unwrap(),
+            cardinality: Cardinality::Many,
+        };
+        let id1 = EntityId::new();
+        let id2 = EntityId::new();
+        let result = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Array(vec![
+                DynamicValue::Text(id1.as_str().to_string()),
+                DynamicValue::Text(id2.as_str().to_string()),
+            ]),
+            &relation,
+        )
+        .unwrap();
+        assert_eq!(result, DynamicValue::RefArray(vec![id1, id2]));
+    }
+
+    #[test]
+    fn coerce_array_of_datetime_recurses() {
+        let array_type = FieldType::Array(Box::new(FieldType::DateTime));
+        let result = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Array(vec![
+                DynamicValue::Text("2025-04-12T10:00:00Z".into()),
+                DynamicValue::Text("2025-04-13T10:00:00Z".into()),
+            ]),
+            &array_type,
+        )
+        .unwrap();
+        match result {
+            DynamicValue::Array(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(matches!(items[0], DynamicValue::DateTime(_)));
+                assert!(matches!(items[1], DynamicValue::DateTime(_)));
+            }
+            other => panic!("expected Array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn coerce_text_passthrough() {
+        let result = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Text("hello".into()),
+            &FieldType::Text(TextConstraints::unconstrained()),
+        )
+        .unwrap();
+        assert_eq!(result, DynamicValue::Text("hello".into()));
+    }
+
+    #[test]
+    fn coerce_integer_from_text() {
+        let result = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Text("42".into()),
+            &FieldType::Integer(
+                schema_forge_core::types::IntegerConstraints::unconstrained(),
+            ),
+        )
+        .unwrap();
+        assert_eq!(result, DynamicValue::Integer(42));
     }
 }
