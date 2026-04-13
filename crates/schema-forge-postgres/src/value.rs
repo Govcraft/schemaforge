@@ -118,6 +118,10 @@ fn bind_null(args: &mut PgArguments, field_type: Option<&FieldType>) -> Result<(
             args.add(None::<sqlx::types::Json<serde_json::Value>>)
         }
         Some(FieldType::Array(inner)) => return bind_null_array(args, inner),
+        Some(FieldType::Relation {
+            cardinality: schema_forge_core::types::Cardinality::Many,
+            ..
+        }) => args.add(None::<Vec<String>>),
         // Text, RichText, Enum, Relation (single id stored as text), or
         // unknown column types all serialize as nullable text.
         _ => args.add(None::<String>),
@@ -756,6 +760,35 @@ mod tests {
         let ft = FieldType::Array(Box::new(FieldType::Integer(
             schema_forge_core::types::IntegerConstraints::default(),
         )));
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_null_with_relation_many_uses_typed_text_array_none() {
+        // Regression test for issue #12: PATCH on a row with a NULL
+        // relation-many column failed with "column X is of type text[] but
+        // expression is of type text" because bind_null had no arm for
+        // Relation { cardinality: Many } and fell through to None::<String>.
+        // Relation-many is stored as text[] (see read_column), so the null
+        // bind must use None::<Vec<String>> to match.
+        let mut args = PgArguments::default();
+        let ft = FieldType::Relation {
+            target: schema_forge_core::types::SchemaName::new("Resource").unwrap(),
+            cardinality: schema_forge_core::types::Cardinality::Many,
+        };
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_null_with_relation_one_uses_text_fallback() {
+        // Relation cardinality:One is stored as a single text id, so
+        // None::<String> is the correct bind. Guards against future
+        // refactors accidentally routing One through the text[] arm.
+        let mut args = PgArguments::default();
+        let ft = FieldType::Relation {
+            target: schema_forge_core::types::SchemaName::new("Project").unwrap(),
+            cardinality: schema_forge_core::types::Cardinality::One,
+        };
         assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&ft)).is_ok());
     }
 
