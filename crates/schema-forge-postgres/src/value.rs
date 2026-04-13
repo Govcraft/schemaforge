@@ -16,15 +16,23 @@ use sqlx::{Arguments, Column, Row, ValueRef};
 ///
 /// The caller must ensure the bind position matches the `$N` placeholder
 /// in the SQL string. Returns an error if the value type is not encodable.
+///
+/// When binding a `DynamicValue::Array`, `field_type` should be the column's
+/// schema `FieldType::Array(inner)` so the correct native Postgres array type
+/// (`text[]`, `bigint[]`, etc.) can be bound. If `field_type` is `None` or the
+/// inner element type is not a sqlx-supported primitive, the array is bound
+/// as JSONB as a fallback.
 pub fn bind_dynamic_value(
     args: &mut PgArguments,
     value: &DynamicValue,
+    field_type: Option<&FieldType>,
 ) -> Result<(), BackendError> {
     match value {
         DynamicValue::Null => {
-            args.add(None::<String>).map_err(|e| BackendError::Internal {
-                message: format!("failed to bind NULL: {e}"),
-            })?;
+            args.add(None::<String>)
+                .map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind NULL: {e}"),
+                })?;
         }
         DynamicValue::Text(s) | DynamicValue::Enum(s) => {
             args.add(s.as_str()).map_err(|e| BackendError::Internal {
@@ -65,10 +73,9 @@ pub fn bind_dynamic_value(
                 })?;
         }
         DynamicValue::Ref(id) => {
-            args.add(id.as_str())
-                .map_err(|e| BackendError::Internal {
-                    message: format!("failed to bind ref: {e}"),
-                })?;
+            args.add(id.as_str()).map_err(|e| BackendError::Internal {
+                message: format!("failed to bind ref: {e}"),
+            })?;
         }
         DynamicValue::RefArray(ids) => {
             let strs: Vec<&str> = ids.iter().map(|id| id.as_str()).collect();
@@ -77,17 +84,7 @@ pub fn bind_dynamic_value(
             })?;
         }
         DynamicValue::Array(arr) => {
-            // Arrays of homogeneous primitive types can be bound as PostgreSQL arrays.
-            // For mixed types, fall back to JSONB.
-            let json_val: serde_json::Value = arr
-                .iter()
-                .map(dynamic_to_json)
-                .collect::<Vec<serde_json::Value>>()
-                .into();
-            args.add(sqlx::types::Json(&json_val))
-                .map_err(|e| BackendError::Internal {
-                    message: format!("failed to bind array: {e}"),
-                })?;
+            bind_array(args, arr, field_type)?;
         }
         _ => {
             // Future DynamicValue variants -- bind as text fallback.
@@ -98,6 +95,154 @@ pub fn bind_dynamic_value(
         }
     }
     Ok(())
+}
+
+/// Bind a `DynamicValue::Array` into a `PgArguments` buffer, preferring
+/// a native Postgres array when the schema's inner `FieldType` matches a
+/// primitive sqlx type. Falls back to JSONB when the schema is unavailable
+/// or the inner type is non-primitive (nested arrays, composites, etc.).
+fn bind_array(
+    args: &mut PgArguments,
+    arr: &[DynamicValue],
+    field_type: Option<&FieldType>,
+) -> Result<(), BackendError> {
+    if let Some(FieldType::Array(inner)) = field_type {
+        match inner.as_ref() {
+            FieldType::Text(_) | FieldType::Enum(_) | FieldType::RichText => {
+                let items = array_items_as_strings(arr, inner)?;
+                args.add(items).map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind text array: {e}"),
+                })?;
+                return Ok(());
+            }
+            FieldType::Integer(_) => {
+                let items = array_items_as_integers(arr)?;
+                args.add(items).map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind integer array: {e}"),
+                })?;
+                return Ok(());
+            }
+            FieldType::Float(_) => {
+                let items = array_items_as_floats(arr)?;
+                args.add(items).map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind float array: {e}"),
+                })?;
+                return Ok(());
+            }
+            FieldType::Boolean => {
+                let items = array_items_as_bools(arr)?;
+                args.add(items).map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind boolean array: {e}"),
+                })?;
+                return Ok(());
+            }
+            FieldType::DateTime => {
+                let items = array_items_as_datetimes(arr)?;
+                args.add(items).map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind datetime array: {e}"),
+                })?;
+                return Ok(());
+            }
+            // Nested arrays, composites, relations, json, etc. -- fall through to JSONB.
+            _ => {}
+        }
+    }
+
+    // Fallback: bind as JSONB. Used when no schema context is available
+    // (e.g. compiled query params) or the inner type is non-primitive.
+    let json_val: serde_json::Value = arr
+        .iter()
+        .map(dynamic_to_json)
+        .collect::<Vec<serde_json::Value>>()
+        .into();
+    args.add(sqlx::types::Json(&json_val))
+        .map_err(|e| BackendError::Internal {
+            message: format!("failed to bind array: {e}"),
+        })?;
+    Ok(())
+}
+
+fn array_bind_mismatch(expected: &FieldType, got: &DynamicValue) -> BackendError {
+    BackendError::Internal {
+        message: format!(
+            "expected {expected}[] for column array, got {}",
+            dynamic_variant_name(got)
+        ),
+    }
+}
+
+fn dynamic_variant_name(value: &DynamicValue) -> &'static str {
+    match value {
+        DynamicValue::Null => "Null",
+        DynamicValue::Text(_) => "Text",
+        DynamicValue::Integer(_) => "Integer",
+        DynamicValue::Float(_) => "Float",
+        DynamicValue::Boolean(_) => "Boolean",
+        DynamicValue::DateTime(_) => "DateTime",
+        DynamicValue::Enum(_) => "Enum",
+        DynamicValue::Json(_) => "Json",
+        DynamicValue::Array(_) => "Array",
+        DynamicValue::Composite(_) => "Composite",
+        DynamicValue::Ref(_) => "Ref",
+        DynamicValue::RefArray(_) => "RefArray",
+        _ => "Unknown",
+    }
+}
+
+fn array_items_as_strings(
+    arr: &[DynamicValue],
+    inner: &FieldType,
+) -> Result<Vec<String>, BackendError> {
+    arr.iter()
+        .map(|item| match item {
+            DynamicValue::Text(s) | DynamicValue::Enum(s) => Ok(s.clone()),
+            other => Err(array_bind_mismatch(inner, other)),
+        })
+        .collect()
+}
+
+fn array_items_as_integers(arr: &[DynamicValue]) -> Result<Vec<i64>, BackendError> {
+    arr.iter()
+        .map(|item| match item {
+            DynamicValue::Integer(i) => Ok(*i),
+            other => Err(array_bind_mismatch(
+                &FieldType::Integer(Default::default()),
+                other,
+            )),
+        })
+        .collect()
+}
+
+fn array_items_as_floats(arr: &[DynamicValue]) -> Result<Vec<f64>, BackendError> {
+    arr.iter()
+        .map(|item| match item {
+            DynamicValue::Float(f) => Ok(*f),
+            other => Err(array_bind_mismatch(
+                &FieldType::Float(Default::default()),
+                other,
+            )),
+        })
+        .collect()
+}
+
+fn array_items_as_bools(arr: &[DynamicValue]) -> Result<Vec<bool>, BackendError> {
+    arr.iter()
+        .map(|item| match item {
+            DynamicValue::Boolean(b) => Ok(*b),
+            other => Err(array_bind_mismatch(&FieldType::Boolean, other)),
+        })
+        .collect()
+}
+
+fn array_items_as_datetimes(
+    arr: &[DynamicValue],
+) -> Result<Vec<chrono::DateTime<chrono::Utc>>, BackendError> {
+    arr.iter()
+        .map(|item| match item {
+            DynamicValue::DateTime(dt) => Ok(*dt),
+            other => Err(array_bind_mismatch(&FieldType::DateTime, other)),
+        })
+        .collect()
 }
 
 /// Convert a PostgreSQL row to an `Entity`, guided by the schema definition.
@@ -126,7 +271,9 @@ pub fn row_to_entity(
             continue;
         }
 
-        let field_type = schema_def.and_then(|sd| sd.field(col_name)).map(|fd| &fd.field_type);
+        let field_type = schema_def
+            .and_then(|sd| sd.field(col_name))
+            .map(|fd| &fd.field_type);
         let value = read_column(row, col_name, field_type)?;
         fields.insert(col_name.to_string(), value);
     }
@@ -203,10 +350,9 @@ fn read_column(
             cardinality: schema_forge_core::types::Cardinality::Many,
             ..
         }) => {
-            let v: Vec<String> =
-                row.try_get(col_name).map_err(|e| BackendError::Internal {
-                    message: format!("failed to read ref array column '{col_name}': {e}"),
-                })?;
+            let v: Vec<String> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read ref array column '{col_name}': {e}"),
+            })?;
             let ids: Result<Vec<EntityId>, _> = v.iter().map(|s| EntityId::parse(s)).collect();
             match ids {
                 Ok(ids) => Ok(DynamicValue::RefArray(ids)),
@@ -224,20 +370,74 @@ fn read_column(
                 Err(_) => Ok(DynamicValue::Text(v)),
             }
         }
-        Some(FieldType::Array(_)) => {
-            // Try to read as JSONB array
-            let v: sqlx::types::Json<serde_json::Value> =
-                row.try_get(col_name).map_err(|e| BackendError::Internal {
-                    message: format!("failed to read array column '{col_name}': {e}"),
-                })?;
-            Ok(json_to_dynamic_array(&v.0))
-        }
+        Some(FieldType::Array(inner)) => read_array_column(row, col_name, inner),
         // Text, RichText, or unknown -- read as string
         _ => {
             let v: String = row.try_get(col_name).map_err(|e| BackendError::Internal {
                 message: format!("failed to read text column '{col_name}': {e}"),
             })?;
             Ok(DynamicValue::Text(v))
+        }
+    }
+}
+
+/// Read an array column from a PostgreSQL row, using the schema's inner field
+/// type to select the correct native Postgres array decoding. Falls back to
+/// JSONB for non-primitive inner types (nested arrays, composites, etc.).
+fn read_array_column(
+    row: &PgRow,
+    col_name: &str,
+    inner: &FieldType,
+) -> Result<DynamicValue, BackendError> {
+    match inner {
+        FieldType::Text(_) | FieldType::Enum(_) | FieldType::RichText => {
+            let v: Vec<String> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read text array column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Array(
+                v.into_iter().map(DynamicValue::Text).collect(),
+            ))
+        }
+        FieldType::Integer(_) => {
+            let v: Vec<i64> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read integer array column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Array(
+                v.into_iter().map(DynamicValue::Integer).collect(),
+            ))
+        }
+        FieldType::Float(_) => {
+            let v: Vec<f64> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read float array column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Array(
+                v.into_iter().map(DynamicValue::Float).collect(),
+            ))
+        }
+        FieldType::Boolean => {
+            let v: Vec<bool> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read boolean array column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Array(
+                v.into_iter().map(DynamicValue::Boolean).collect(),
+            ))
+        }
+        FieldType::DateTime => {
+            let v: Vec<chrono::DateTime<chrono::Utc>> =
+                row.try_get(col_name).map_err(|e| BackendError::Internal {
+                    message: format!("failed to read datetime array column '{col_name}': {e}"),
+                })?;
+            Ok(DynamicValue::Array(
+                v.into_iter().map(DynamicValue::DateTime).collect(),
+            ))
+        }
+        // Nested arrays, composites, relations, json, etc. -- fall back to JSONB.
+        _ => {
+            let v: sqlx::types::Json<serde_json::Value> =
+                row.try_get(col_name).map_err(|e| BackendError::Internal {
+                    message: format!("failed to read array column '{col_name}': {e}"),
+                })?;
+            Ok(json_to_dynamic_array(&v.0))
         }
     }
 }
@@ -393,21 +593,78 @@ mod tests {
     fn bind_dynamic_value_accepts_all_types() {
         // Verify that all DynamicValue variants can be bound without panicking
         let mut args = PgArguments::default();
-        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null).is_ok());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, None).is_ok());
 
         let mut args = PgArguments::default();
-        assert!(bind_dynamic_value(&mut args, &DynamicValue::Text("hello".into())).is_ok());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Text("hello".into()), None).is_ok());
 
         let mut args = PgArguments::default();
-        assert!(bind_dynamic_value(&mut args, &DynamicValue::Integer(42)).is_ok());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Integer(42), None).is_ok());
 
         let mut args = PgArguments::default();
-        assert!(bind_dynamic_value(&mut args, &DynamicValue::Float(2.5)).is_ok());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Float(2.5), None).is_ok());
 
         let mut args = PgArguments::default();
-        assert!(bind_dynamic_value(&mut args, &DynamicValue::Boolean(true)).is_ok());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Boolean(true), None).is_ok());
 
         let mut args = PgArguments::default();
-        assert!(bind_dynamic_value(&mut args, &DynamicValue::Enum("Active".into())).is_ok());
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Enum("Active".into()), None).is_ok());
+    }
+
+    #[test]
+    fn bind_array_with_text_field_type_binds_native_text_array() {
+        let mut args = PgArguments::default();
+        let arr = DynamicValue::Array(vec![
+            DynamicValue::Text("rust".into()),
+            DynamicValue::Text("aws".into()),
+        ]);
+        let ft = FieldType::Array(Box::new(FieldType::Text(
+            schema_forge_core::types::TextConstraints::default(),
+        )));
+        assert!(bind_dynamic_value(&mut args, &arr, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_array_with_integer_field_type_binds_native_integer_array() {
+        let mut args = PgArguments::default();
+        let arr = DynamicValue::Array(vec![DynamicValue::Integer(1), DynamicValue::Integer(2)]);
+        let ft = FieldType::Array(Box::new(FieldType::Integer(
+            schema_forge_core::types::IntegerConstraints::default(),
+        )));
+        assert!(bind_dynamic_value(&mut args, &arr, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_array_with_boolean_field_type_binds_native_boolean_array() {
+        let mut args = PgArguments::default();
+        let arr = DynamicValue::Array(vec![
+            DynamicValue::Boolean(true),
+            DynamicValue::Boolean(false),
+        ]);
+        let ft = FieldType::Array(Box::new(FieldType::Boolean));
+        assert!(bind_dynamic_value(&mut args, &arr, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_array_without_field_type_falls_back_to_jsonb() {
+        let mut args = PgArguments::default();
+        let arr = DynamicValue::Array(vec![DynamicValue::Text("a".into())]);
+        assert!(bind_dynamic_value(&mut args, &arr, None).is_ok());
+    }
+
+    #[test]
+    fn bind_array_type_mismatch_returns_internal_error() {
+        let mut args = PgArguments::default();
+        let arr = DynamicValue::Array(vec![DynamicValue::Integer(1)]);
+        let ft = FieldType::Array(Box::new(FieldType::Text(
+            schema_forge_core::types::TextConstraints::default(),
+        )));
+        let err = bind_dynamic_value(&mut args, &arr, Some(&ft))
+            .expect_err("expected type mismatch error");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("expected"),
+            "error should describe type mismatch, got: {msg}"
+        );
     }
 }

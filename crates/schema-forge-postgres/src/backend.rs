@@ -94,7 +94,14 @@ impl PgBackend {
     }
 
     /// Build a parameterized INSERT statement and arguments for an entity.
-    fn build_insert(entity: &Entity) -> Result<(String, PgArguments), BackendError> {
+    ///
+    /// When `schema_def` is provided, per-column `FieldType` context is passed
+    /// to `bind_dynamic_value` so array columns can be bound as native Postgres
+    /// arrays (`text[]`, `bigint[]`, etc.) rather than JSONB.
+    fn build_insert(
+        entity: &Entity,
+        schema_def: Option<&SchemaDefinition>,
+    ) -> Result<(String, PgArguments), BackendError> {
         let table = entity.schema.as_str();
         let mut columns = vec!["\"id\"".to_string()];
         let mut placeholders = vec!["$1".to_string()];
@@ -108,7 +115,10 @@ impl PgBackend {
         for (i, (col, val)) in entity.fields.iter().enumerate() {
             columns.push(format!("\"{col}\""));
             placeholders.push(format!("${}", i + 2));
-            bind_dynamic_value(&mut args, val)?;
+            let field_type = schema_def
+                .and_then(|sd| sd.field(col))
+                .map(|fd| &fd.field_type);
+            bind_dynamic_value(&mut args, val, field_type)?;
         }
 
         let sql = format!(
@@ -121,7 +131,14 @@ impl PgBackend {
     }
 
     /// Build a parameterized UPDATE statement and arguments for an entity.
-    fn build_update(entity: &Entity) -> Result<(String, PgArguments), BackendError> {
+    ///
+    /// When `schema_def` is provided, per-column `FieldType` context is passed
+    /// to `bind_dynamic_value` so array columns can be bound as native Postgres
+    /// arrays (`text[]`, `bigint[]`, etc.) rather than JSONB.
+    fn build_update(
+        entity: &Entity,
+        schema_def: Option<&SchemaDefinition>,
+    ) -> Result<(String, PgArguments), BackendError> {
         let table = entity.schema.as_str();
         let mut args = PgArguments::default();
 
@@ -134,7 +151,10 @@ impl PgBackend {
         let mut set_clauses = Vec::new();
         for (i, (col, val)) in entity.fields.iter().enumerate() {
             set_clauses.push(format!("\"{col}\" = ${}", i + 2));
-            bind_dynamic_value(&mut args, val)?;
+            let field_type = schema_def
+                .and_then(|sd| sd.field(col))
+                .map(|fd| &fd.field_type);
+            bind_dynamic_value(&mut args, val, field_type)?;
         }
 
         let sql = format!(
@@ -160,10 +180,17 @@ impl PgBackend {
     }
 
     /// Bind compiled query parameters into PgArguments.
+    ///
+    /// Compiled query parameters are positional and not tied to a specific
+    /// column, so array parameters fall back to JSONB binding. This is
+    /// acceptable today because compiled query WHERE-clause predicates do not
+    /// currently bind array literals; native-array binding is only needed for
+    /// column writes (INSERT/UPDATE), which go through `build_insert` /
+    /// `build_update` with schema context.
     fn bind_params(params: &[DynamicValue]) -> Result<PgArguments, BackendError> {
         let mut args = PgArguments::default();
         for param in params {
-            bind_dynamic_value(&mut args, param)?;
+            bind_dynamic_value(&mut args, param, None)?;
         }
         Ok(args)
     }
@@ -189,13 +216,12 @@ impl SchemaBackend for PgBackend {
         for step in steps {
             let statements = migration_step_to_sql(table, step);
             for stmt in &statements {
-                sqlx::query(stmt)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| BackendError::MigrationFailed {
+                sqlx::query(stmt).execute(&mut *tx).await.map_err(|e| {
+                    BackendError::MigrationFailed {
                         step: step.to_string(),
                         reason: e.to_string(),
-                    })?;
+                    }
+                })?;
             }
         }
 
@@ -253,9 +279,10 @@ impl SchemaBackend for PgBackend {
             None => Ok(None),
             Some(row) => {
                 let json: serde_json::Value =
-                    row.try_get("definition").map_err(|e| BackendError::Internal {
-                        message: format!("failed to read definition column: {e}"),
-                    })?;
+                    row.try_get("definition")
+                        .map_err(|e| BackendError::Internal {
+                            message: format!("failed to read definition column: {e}"),
+                        })?;
                 let definition: SchemaDefinition =
                     serde_json::from_value(json).map_err(|e| BackendError::Internal {
                         message: format!("failed to deserialize schema metadata: {e}"),
@@ -278,9 +305,10 @@ impl SchemaBackend for PgBackend {
         let mut definitions = Vec::new();
         for row in &rows {
             let json: serde_json::Value =
-                row.try_get("definition").map_err(|e| BackendError::Internal {
-                    message: format!("failed to read definition column: {e}"),
-                })?;
+                row.try_get("definition")
+                    .map_err(|e| BackendError::Internal {
+                        message: format!("failed to read definition column: {e}"),
+                    })?;
             let definition: SchemaDefinition =
                 serde_json::from_value(json).map_err(|e| BackendError::Internal {
                     message: format!("failed to deserialize schema metadata: {e}"),
@@ -295,7 +323,7 @@ impl SchemaBackend for PgBackend {
 impl EntityStore for PgBackend {
     async fn create(&self, entity: &Entity) -> Result<Entity, BackendError> {
         let schema_def = self.load_schema_metadata(&entity.schema).await?;
-        let (sql, args) = Self::build_insert(entity)?;
+        let (sql, args) = Self::build_insert(entity, schema_def.as_ref())?;
 
         let row: PgRow = sqlx::query_with(&sql, args)
             .fetch_one(&self.pool)
@@ -331,7 +359,7 @@ impl EntityStore for PgBackend {
 
     async fn update(&self, entity: &Entity) -> Result<Entity, BackendError> {
         let schema_def = self.load_schema_metadata(&entity.schema).await?;
-        let (sql, args) = Self::build_update(entity)?;
+        let (sql, args) = Self::build_update(entity, schema_def.as_ref())?;
 
         let row: Option<PgRow> = sqlx::query_with(&sql, args)
             .fetch_optional(&self.pool)
@@ -370,15 +398,13 @@ impl EntityStore for PgBackend {
             });
         }
 
-        sqlx::query(&format!(
-            "DELETE FROM \"{table}\" WHERE \"id\" = $1;"
-        ))
-        .bind(id.as_str())
-        .execute(&self.pool)
-        .await
-        .map_err(|e| BackendError::QueryError {
-            message: format!("failed to delete entity: {e}"),
-        })?;
+        sqlx::query(&format!("DELETE FROM \"{table}\" WHERE \"id\" = $1;"))
+            .bind(id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| BackendError::QueryError {
+                message: format!("failed to delete entity: {e}"),
+            })?;
 
         Ok(())
     }
@@ -448,9 +474,7 @@ impl EntityStore for PgBackend {
                     let key = format!("agg_{i}");
                     let value: f64 = row
                         .try_get::<f64, _>(key.as_str())
-                        .or_else(|_| {
-                            row.try_get::<i64, _>(key.as_str()).map(|v| v as f64)
-                        })
+                        .or_else(|_| row.try_get::<i64, _>(key.as_str()).map(|v| v as f64))
                         .unwrap_or(0.0);
                     results.push(AggregateResult {
                         op: op.clone(),

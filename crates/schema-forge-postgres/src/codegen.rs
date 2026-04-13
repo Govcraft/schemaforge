@@ -5,8 +5,7 @@
 
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::types::{
-    Cardinality, FieldDefinition, FieldModifier, FieldType, FloatConstraints, IntegerConstraints,
-    TextConstraints,
+    Cardinality, FieldDefinition, FieldModifier, FieldType, IntegerConstraints, TextConstraints,
 };
 
 /// Compile a single `MigrationStep` into a list of PostgreSQL DDL statements.
@@ -41,7 +40,8 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
         }
         MigrationStep::AddField { field } => {
             let pg_type = field_type_to_pg(&field.field_type);
-            let mut constraints = field_check_constraints(table, field.name.as_ref(), &field.field_type);
+            let mut constraints =
+                field_check_constraints(table, field.name.as_ref(), &field.field_type);
 
             if field.is_required() {
                 constraints.push("NOT NULL".to_string());
@@ -169,7 +169,9 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
         }
         _ => {
             // Future MigrationStep variants -- produce a no-op comment.
-            vec![format!("-- unsupported migration step for table \"{table}\"")]
+            vec![format!(
+                "-- unsupported migration step for table \"{table}\""
+            )]
         }
     }
 }
@@ -182,9 +184,8 @@ pub fn field_type_to_pg(field_type: &FieldType) -> String {
         }) => format!("VARCHAR({max})"),
         FieldType::Text(_) | FieldType::RichText => "TEXT".to_string(),
         FieldType::Integer(_) => "BIGINT".to_string(),
-        FieldType::Float(FloatConstraints { precision: Some(p) }) => {
-            format!("NUMERIC({p})")
-        }
+        // `FloatConstraints.precision` is intentionally ignored on Postgres; a future `decimal`
+        // type will handle fixed-scale currency. See issue #7.
         FieldType::Float(_) => "DOUBLE PRECISION".to_string(),
         FieldType::Boolean => "BOOLEAN".to_string(),
         FieldType::DateTime => "TIMESTAMPTZ".to_string(),
@@ -308,9 +309,7 @@ fn dynamic_value_to_sql_literal(value: &schema_forge_core::types::DynamicValue) 
 pub fn tenant_ddl_statements(table: &str) -> Vec<String> {
     vec![
         format!("ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS \"_tenant\" TEXT;"),
-        format!(
-            "CREATE INDEX IF NOT EXISTS \"idx_{table}_tenant\" ON \"{table}\" (\"_tenant\");"
-        ),
+        format!("CREATE INDEX IF NOT EXISTS \"idx_{table}_tenant\" ON \"{table}\" (\"_tenant\");"),
     ]
 }
 
@@ -322,7 +321,9 @@ fn escape_sql_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use schema_forge_core::types::{DefaultValue, EnumVariants, FieldName, SchemaName};
+    use schema_forge_core::types::{
+        DefaultValue, EnumVariants, FieldName, FloatConstraints, SchemaName,
+    };
 
     fn text_field(name: &str) -> FieldDefinition {
         FieldDefinition::new(
@@ -566,6 +567,10 @@ mod tests {
         );
         assert_eq!(
             field_type_to_pg(&FieldType::Float(FloatConstraints::unconstrained())),
+            "DOUBLE PRECISION"
+        );
+        assert_eq!(
+            field_type_to_pg(&FieldType::Float(FloatConstraints::with_precision(2))),
             "DOUBLE PRECISION"
         );
         assert_eq!(field_type_to_pg(&FieldType::Boolean), "BOOLEAN");

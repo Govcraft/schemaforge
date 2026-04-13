@@ -5498,7 +5498,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "acton-service",
  "assert_cmd",
@@ -5551,7 +5551,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-postgres"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "argon2",
  "chrono",
