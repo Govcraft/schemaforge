@@ -69,6 +69,42 @@ export function {{ entity.pascal }}Detail() {
 {%- endfor %}
           </div>
         </div>
+{%- elif f.kind == "relation_one" and f.relation_display_field %}
+        <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
+          <span className="text-muted-foreground">{{ f.label }}</span>
+          <span>
+            {data.{{ f.leaf }} ? (
+              <Link className="underline" to={`/app/{{ f.relation_target_kebab }}/${data.{{ f.leaf }}}`}>
+                {data.{{ f.leaf }}__display ?? data.{{ f.leaf }}}
+              </Link>
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            )}
+          </span>
+        </div>
+{%- elif f.kind == "relation_many" and f.relation_display_field %}
+        <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
+          <span className="text-muted-foreground">{{ f.label }}</span>
+          <span>
+            {(() => {
+              const ids = (data.{{ f.leaf }} ?? []) as string[]
+              const labels = (data.{{ f.leaf }}__display ?? []) as (string | null)[]
+              if (ids.length === 0) return <span className="text-muted-foreground">—</span>
+              return (
+                <span>
+                  {ids.map((id, i) => (
+                    <span key={id}>
+                      {i > 0 ? ", " : ""}
+                      <Link className="underline" to={`/app/{{ f.relation_target_kebab }}/${id}`}>
+                        {labels[i] ?? id}
+                      </Link>
+                    </span>
+                  ))}
+                </span>
+              )
+            })()}
+          </span>
+        </div>
 {%- else %}
         <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
           <span className="text-muted-foreground">{{ f.label }}</span>

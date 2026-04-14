@@ -427,6 +427,16 @@ pub struct EntityQueryBody {
     /// Field projection — only return these fields in the response.
     #[serde(default)]
     pub fields: Option<Vec<String>>,
+    /// Resolve relation display fields. Defaults to `true` so the
+    /// generated site gets human-readable relation labels without
+    /// extra client-side fetches; set to `false` to skip the batched
+    /// IN-query for API-only consumers that don't need the labels.
+    #[serde(default = "default_resolve_relations")]
+    pub resolve: bool,
+}
+
+const fn default_resolve_relations() -> bool {
+    true
 }
 
 /// A single sort clause in a POST query body.
@@ -900,12 +910,18 @@ fn coerce_json_filter_value(
 ///
 /// Shared by `list_entities` and `query_entities`. Sends backend queries
 /// through the actor via oneshot channels.
+///
+/// When `resolve_relations` is `true`, each `Relation(One|Many)` field
+/// gets a sibling `<field>__display` entry on every row, populated from
+/// a batched `IN`-query against the target schema's `@display("...")`
+/// field. Clients pass `?resolve=false` to opt out.
 async fn execute_entity_query(
     state: &AppState<SchemaForgeConfig>,
     schema_def: &SchemaDefinition,
     claims: Option<&Claims>,
     query: &mut schema_forge_core::query::Query,
     projection: Option<&HashSet<String>>,
+    resolve_relations: bool,
 ) -> Result<ListEntitiesResponse, ForgeError> {
     let forge = state
         .actor::<ForgeActor>()
@@ -951,6 +967,17 @@ async fn execute_entity_query(
         result.entities
     };
 
+    // Resolve relation display fields in one batched IN-query per target
+    // schema. Happens before filter_entity_fields so a read-restricted
+    // relation field is still scrubbed from the envelope alongside its
+    // `__display` sibling below.
+    let display_map = if resolve_relations && !visible_entities.is_empty() {
+        resolve_relation_displays(forge, schema_def, &visible_entities, claims, &tenant_config)
+            .await?
+    } else {
+        HashMap::new()
+    };
+
     // Filter read-restricted fields, then apply optional field projection
     let entities: Vec<EntityResponse> = visible_entities
         .into_iter()
@@ -959,7 +986,9 @@ async fn execute_entity_query(
             if let Some(proj) = projection {
                 e.fields.retain(|k, _| proj.contains(k));
             }
-            entity_to_response(&e)
+            let mut response = entity_to_response(&e);
+            apply_relation_displays(&mut response, schema_def, &e, &display_map);
+            response
         })
         .collect();
     let count = entities.len();
@@ -969,6 +998,234 @@ async fn execute_entity_query(
         count,
         total_count: result.total_count,
     })
+}
+
+/// Collect distinct relation IDs across `visible_entities` and resolve each
+/// target schema's `@display("...")` field in a single batched IN-query.
+///
+/// Returns a nested map: `field_name -> id -> display_value`. Fields whose
+/// target schema has no `@display(...)`, or whose target schema isn't
+/// registered, simply don't appear in the result — callers must treat a
+/// missing entry as "fall back to the raw ID".
+async fn resolve_relation_displays(
+    forge: &acton_service::prelude::ActorHandle,
+    parent_schema: &SchemaDefinition,
+    visible_entities: &[Entity],
+    claims: Option<&Claims>,
+    tenant_config: &Option<schema_forge_backend::tenant::TenantConfig>,
+) -> Result<HashMap<String, HashMap<String, String>>, ForgeError> {
+    // Group relation fields by target schema so we do one DB query per
+    // target no matter how many source fields point at it.
+    let mut targets: HashMap<String, Vec<&schema_forge_core::types::FieldDefinition>> =
+        HashMap::new();
+    for field in &parent_schema.fields {
+        if let FieldType::Relation { target, .. } = &field.field_type {
+            targets
+                .entry(target.as_str().to_string())
+                .or_default()
+                .push(field);
+        }
+    }
+    if targets.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+    for (target_name, fields_pointing_at_target) in targets {
+        // Fetch the target schema definition so we can (a) build a query
+        // against its SchemaId and (b) learn its display field.
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetSchema {
+                name: target_name.clone(),
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let Some(target_def) = ask_forge(rx).await? else {
+            continue;
+        };
+        let Some(display_field) = target_def.display_field().map(|s| s.to_string()) else {
+            continue;
+        };
+
+        // Collect distinct IDs referenced by any of these fields across all rows.
+        let mut distinct_ids: HashSet<String> = HashSet::new();
+        for field in &fields_pointing_at_target {
+            let field_name = field.name.as_str();
+            for entity in visible_entities {
+                let Some(value) = entity.field(field_name) else {
+                    continue;
+                };
+                collect_relation_ids(value, &mut distinct_ids);
+            }
+        }
+        if distinct_ids.is_empty() {
+            continue;
+        }
+
+        // Batched IN query for just the display field.
+        let mut display_query = schema_forge_core::query::Query::new(target_def.id.clone());
+        let id_values: Vec<DynamicValue> = distinct_ids
+            .iter()
+            .map(|s| DynamicValue::Text(s.clone()))
+            .collect();
+        display_query = display_query.with_filter(Filter::In {
+            path: FieldPath::single("id"),
+            values: id_values,
+        });
+        display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
+        // Apply tenant scope so we never leak rows the caller couldn't
+        // otherwise see through a direct list call.
+        inject_tenant_scope(&mut display_query, claims, tenant_config);
+
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(QueryEntities {
+                query: display_query,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let Ok(Ok(target_result)) = ask_forge(rx).await else {
+            continue;
+        };
+
+        // Build id -> display lookup.
+        let mut id_to_display: HashMap<String, String> = HashMap::new();
+        for target_entity in target_result.entities {
+            if let Some(display_value) = target_entity.field(&display_field) {
+                let rendered = display_value_to_string(display_value);
+                id_to_display.insert(target_entity.id.as_str().to_string(), rendered);
+            }
+        }
+
+        // Fan the same lookup out across every source field pointing at
+        // this target. Clone is cheap — just a small HashMap.
+        for field in &fields_pointing_at_target {
+            result.insert(field.name.as_str().to_string(), id_to_display.clone());
+        }
+    }
+
+    Ok(result)
+}
+
+/// Walk a `DynamicValue` that came from a relation field and push every
+/// embedded entity-ID string into `out`.
+fn collect_relation_ids(value: &DynamicValue, out: &mut HashSet<String>) {
+    match value {
+        DynamicValue::Text(s) => {
+            if !s.is_empty() {
+                out.insert(s.clone());
+            }
+        }
+        DynamicValue::Ref(id) => {
+            out.insert(id.as_str().to_string());
+        }
+        DynamicValue::RefArray(ids) => {
+            for id in ids {
+                out.insert(id.as_str().to_string());
+            }
+        }
+        DynamicValue::Array(items) => {
+            for item in items {
+                collect_relation_ids(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Stringify a display-field value for the `__display` envelope key. Only
+/// the obvious scalar kinds round-trip cleanly — anything else falls back
+/// to `Display`.
+fn display_value_to_string(value: &DynamicValue) -> String {
+    match value {
+        DynamicValue::Text(s) => s.clone(),
+        DynamicValue::Integer(n) => n.to_string(),
+        DynamicValue::Float(n) => n.to_string(),
+        DynamicValue::Boolean(b) => b.to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Append `<field>__display` entries to `response.fields` for every
+/// relation field on `parent_schema`. For `relation_many`, emits a
+/// parallel array ordered identically to the ID array. Missing lookups
+/// are silently skipped so the client can fall back to the raw ID.
+fn apply_relation_displays(
+    response: &mut EntityResponse,
+    parent_schema: &SchemaDefinition,
+    entity: &Entity,
+    display_map: &HashMap<String, HashMap<String, String>>,
+) {
+    for field in &parent_schema.fields {
+        let FieldType::Relation { cardinality, .. } = &field.field_type else {
+            continue;
+        };
+        let field_name = field.name.as_str();
+        let Some(id_to_display) = display_map.get(field_name) else {
+            continue;
+        };
+        let Some(value) = entity.field(field_name) else {
+            continue;
+        };
+        match cardinality {
+            Cardinality::One => {
+                let mut collected = HashSet::new();
+                collect_relation_ids(value, &mut collected);
+                if let Some(id) = collected.into_iter().next() {
+                    if let Some(display) = id_to_display.get(&id) {
+                        response.fields.insert(
+                            format!("{field_name}__display"),
+                            serde_json::Value::String(display.clone()),
+                        );
+                    }
+                }
+            }
+            Cardinality::Many => {
+                // Preserve order: walk the array and emit the parallel
+                // array in-place. Null slots when the ID isn't resolvable.
+                let mut out: Option<Vec<serde_json::Value>> = None;
+                match value {
+                    DynamicValue::Array(items) => {
+                        let mut parallel = Vec::with_capacity(items.len());
+                        for item in items {
+                            let mut ids = HashSet::new();
+                            collect_relation_ids(item, &mut ids);
+                            let id = ids.into_iter().next();
+                            let entry = id
+                                .and_then(|id| id_to_display.get(&id).cloned())
+                                .map(serde_json::Value::String)
+                                .unwrap_or(serde_json::Value::Null);
+                            parallel.push(entry);
+                        }
+                        out = Some(parallel);
+                    }
+                    DynamicValue::RefArray(ids) => {
+                        let parallel = ids
+                            .iter()
+                            .map(|id| {
+                                id_to_display
+                                    .get(id.as_str())
+                                    .cloned()
+                                    .map(serde_json::Value::String)
+                                    .unwrap_or(serde_json::Value::Null)
+                            })
+                            .collect();
+                        out = Some(parallel);
+                    }
+                    _ => {}
+                }
+                if let Some(arr) = out {
+                    response.fields.insert(
+                        format!("{field_name}__display"),
+                        serde_json::Value::Array(arr),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1253,15 +1510,30 @@ pub async fn list_entities(
         None
     };
 
+    // ?resolve=false opts out of the default-on relation display join.
+    let resolve_relations = parse_resolve_param(&params);
+
     let response = execute_entity_query(
         &state,
         &schema_def,
         claims.as_ref(),
         &mut query,
         projection.as_ref(),
+        resolve_relations,
     )
     .await?;
     Ok(Json(response))
+}
+
+/// Parse the `resolve` query-string flag. Any truthy value keeps the
+/// default-on behavior; `false`/`0`/`no`/`off` opts out. Unknown values
+/// are treated as "leave default on" — we never 400 for an unrecognized
+/// query param the client doesn't control precisely.
+fn parse_resolve_param(params: &HashMap<String, String>) -> bool {
+    !matches!(
+        params.get("resolve").map(|s| s.as_str()),
+        Some("false") | Some("0") | Some("no") | Some("off")
+    )
 }
 
 /// POST /schemas/{schema}/entities/query -- Advanced query with JSON body.
@@ -1390,6 +1662,7 @@ pub async fn query_entities(
         claims.as_ref(),
         &mut query,
         projection.as_ref(),
+        body.resolve,
     )
     .await?;
     Ok(Json(response))
@@ -1401,6 +1674,7 @@ pub async fn get_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
     let forge = state
@@ -1514,7 +1788,33 @@ pub async fn get_entity(
         .await?;
     }
 
-    Ok(Json(entity_to_response(&entity)))
+    let mut response = entity_to_response(&entity);
+
+    // Resolve relation display fields unless the caller opted out with
+    // `?resolve=false`. Reuses the same batched IN-query path the list
+    // endpoint uses — with a single source entity it's still one query
+    // per target schema, which is cheap.
+    if parse_resolve_param(&params) {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetTenantConfig {
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let tenant_config = ask_forge(rx).await?;
+        let entities_slice = std::slice::from_ref(&entity);
+        let display_map = resolve_relation_displays(
+            forge,
+            &schema_def,
+            entities_slice,
+            claims.as_ref(),
+            &tenant_config,
+        )
+        .await?;
+        apply_relation_displays(&mut response, &schema_def, &entity, &display_map);
+    }
+
+    Ok(Json(response))
 }
 
 /// PUT /schemas/{schema}/entities/{id} -- Update entity.
@@ -2203,6 +2503,137 @@ mod tests {
         assert_eq!(
             dynamic_value_to_json(&DynamicValue::Boolean(true)),
             serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn parse_resolve_param_defaults_to_true() {
+        let mut params = HashMap::new();
+        assert!(parse_resolve_param(&params));
+        params.insert("resolve".to_string(), "true".to_string());
+        assert!(parse_resolve_param(&params));
+    }
+
+    #[test]
+    fn parse_resolve_param_honors_falsy_values() {
+        for falsy in ["false", "0", "no", "off"] {
+            let mut params = HashMap::new();
+            params.insert("resolve".to_string(), falsy.to_string());
+            assert!(
+                !parse_resolve_param(&params),
+                "{falsy} should opt out of relation resolution"
+            );
+        }
+    }
+
+    #[test]
+    fn collect_relation_ids_handles_all_shapes() {
+        let mut out = HashSet::new();
+        collect_relation_ids(&DynamicValue::Text("abc".into()), &mut out);
+        collect_relation_ids(
+            &DynamicValue::Array(vec![
+                DynamicValue::Text("xyz".into()),
+                DynamicValue::Text("".into()), // empty strings skipped
+            ]),
+            &mut out,
+        );
+        let id = EntityId::new();
+        collect_relation_ids(&DynamicValue::RefArray(vec![id.clone()]), &mut out);
+        collect_relation_ids(&DynamicValue::Ref(id.clone()), &mut out);
+
+        assert!(out.contains("abc"));
+        assert!(out.contains("xyz"));
+        assert!(out.contains(id.as_str()));
+        assert!(!out.contains(""));
+    }
+
+    #[test]
+    fn apply_relation_displays_emits_sibling_keys() {
+        use schema_forge_core::types::{
+            Cardinality, FieldDefinition, FieldName, FieldType, SchemaId, SchemaName,
+        };
+
+        // Schema with one Relation(One) field "agency".
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Opportunity").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("agency").unwrap(),
+                FieldType::Relation {
+                    target: SchemaName::new("Agency").unwrap(),
+                    cardinality: Cardinality::One,
+                },
+            )],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "agency".to_string(),
+            DynamicValue::Text("entity_01abcd".into()),
+        );
+        let entity = Entity::new(schema.name.clone(), fields);
+        let mut response = entity_to_response(&entity);
+
+        let mut id_to_display = HashMap::new();
+        id_to_display.insert(
+            "entity_01abcd".to_string(),
+            "Department of Homeland Security".to_string(),
+        );
+        let mut display_map = HashMap::new();
+        display_map.insert("agency".to_string(), id_to_display);
+
+        apply_relation_displays(&mut response, &schema, &entity, &display_map);
+
+        assert_eq!(
+            response.fields.get("agency__display"),
+            Some(&serde_json::json!("Department of Homeland Security"))
+        );
+    }
+
+    #[test]
+    fn apply_relation_displays_many_preserves_order_and_nulls() {
+        use schema_forge_core::types::{
+            Cardinality, FieldDefinition, FieldName, FieldType, SchemaId, SchemaName,
+        };
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Opportunity").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("contacts").unwrap(),
+                FieldType::Relation {
+                    target: SchemaName::new("Contact").unwrap(),
+                    cardinality: Cardinality::Many,
+                },
+            )],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let id_a = EntityId::new();
+        let id_b = EntityId::new();
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "contacts".to_string(),
+            DynamicValue::RefArray(vec![id_a.clone(), id_b.clone()]),
+        );
+        let entity = Entity::new(schema.name.clone(), fields);
+        let mut response = entity_to_response(&entity);
+
+        let mut id_to_display = HashMap::new();
+        id_to_display.insert(id_a.as_str().to_string(), "Alice".to_string());
+        // id_b intentionally missing to assert null slot preservation.
+        let mut display_map = HashMap::new();
+        display_map.insert("contacts".to_string(), id_to_display);
+
+        apply_relation_displays(&mut response, &schema, &entity, &display_map);
+
+        let parallel = response.fields.get("contacts__display").unwrap();
+        assert_eq!(
+            parallel,
+            &serde_json::json!(["Alice", serde_json::Value::Null])
         );
     }
 

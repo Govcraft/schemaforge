@@ -8,6 +8,10 @@ export interface {{ entity.pascal }} {
 {%- for f in entity.fields %}
   /** {{ f.label }}{% if f.is_relation %} — relation to `{{ f.relation_target }}` (stored as entity id{% if f.kind == "relation_many" %}s{% endif %}){% endif %} */
   {{ f.leaf }}{% if not f.required %}?{% endif %}: {{ f.ts_type }}
+{%- if f.is_relation and f.relation_display_field %}
+  /** Resolved display value for `{{ f.leaf }}` ({{ f.relation_target }}.{{ f.relation_display_field }}). Populated when the list/get endpoint runs with the default `?resolve=true`. */
+  {{ f.leaf }}__display?: {% if f.kind == "relation_many" %}(string | null)[]{% else %}string{% endif %}
+{%- endif %}
 {%- endfor %}
 }
 {% endfor %}
