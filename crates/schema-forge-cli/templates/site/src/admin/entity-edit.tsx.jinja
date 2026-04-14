@@ -17,7 +17,7 @@ import {
   type FieldMeta,
 } from "@/admin/api-client"
 import { toast } from "sonner"
-import { FieldRenderer } from "@/admin/field-renderer"
+import { FieldRenderer, canReadField, canWriteField } from "@/admin/field-renderer"
 import { Button } from "@/components/ui/button"
 import { ErrorBlock } from "@/components/ui/error-block"
 import {
@@ -82,7 +82,10 @@ export function AdminEntityEdit() {
     )
   }
 
-  const fields = meta.data?.fields ?? []
+  // Fields the user can at least read. Fields gated by
+  // `@field_access(read=[...])` are dropped entirely; write-only-denied
+  // fields are kept but forced into read-only mode by the renderer.
+  const fields = (meta.data?.fields ?? []).filter(canReadField)
 
   function onSubmit(ev: FormEvent) {
     ev.preventDefault()
@@ -90,12 +93,19 @@ export function AdminEntityEdit() {
     // Validate required fields client-side. Anything past that is the
     // server's call — we forward the 4xx body verbatim.
     for (const f of fields) {
-      if (f.required && isBlank(values[f.name])) {
+      if (f.required && canWriteField(f) && isBlank(values[f.name])) {
         setFormError(`Field "${f.name}" is required`)
         return
       }
     }
-    save.mutate(values)
+    // Drop fields the user can't write from the payload so the backend's
+    // Cedar policy doesn't reject the whole request for an unrelated
+    // read-only field. The server still enforces this authoritatively.
+    const writable: Record<string, unknown> = {}
+    for (const f of fields) {
+      if (canWriteField(f)) writable[f.name] = values[f.name]
+    }
+    save.mutate(writable)
   }
 
   return (

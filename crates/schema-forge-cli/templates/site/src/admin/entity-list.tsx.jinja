@@ -14,6 +14,7 @@ import {
   listEntities,
   type FieldMeta,
 } from "@/admin/api-client"
+import { canReadField } from "@/admin/field-renderer"
 import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
 import { ErrorBlock } from "@/components/ui/error-block"
@@ -115,9 +116,11 @@ export function AdminEntityList() {
     )
   }
 
-  // Columns: every non-composite field plus an implicit id.
+  // Columns: every non-composite field the current user can read, plus
+  // an implicit id. Fields gated by `@field_access(read=[...])` are
+  // dropped from the table entirely.
   const fields = (meta.data?.fields ?? []).filter(
-    (f) => f.kind !== "composite",
+    (f) => f.kind !== "composite" && canReadField(f),
   )
 
   const total = rows.data?.count ?? 0

@@ -93,6 +93,10 @@ export type FieldMeta = {
   widget?: string
   /** `@format(...)` hint as a snake_case token (e.g. `"currency"`). */
   format?: string
+  /** `@field_access(read=[...])` roles — undefined means no read gate. */
+  accessRead?: string[]
+  /** `@field_access(write=[...])` roles — undefined means no write gate. */
+  accessWrite?: string[]
 }
 
 /** Project a wire `FieldResponse` into the admin's normalized `FieldMeta`. */
@@ -102,11 +106,14 @@ export function toFieldMeta(f: FieldResponse): FieldMeta {
   // defense covers the case where the field has zero modifiers and the key
   // is absent from the wire payload.
   const annotations = f.annotations ?? []
+  const access = getFieldAccess(annotations)
   const base = {
     name: f.name,
     required: (f.modifiers ?? []).includes("required"),
     widget: getFieldWidget(annotations),
     format: getFieldFormat(annotations),
+    accessRead: access?.read,
+    accessWrite: access?.write,
   }
   const raw = f.field_type
   switch (raw.type) {
@@ -193,6 +200,36 @@ export function getFieldWidget(annotations: unknown[]): string | undefined {
       if (typeof tag === "string" && tag.toLowerCase() === "widget") {
         const widget = (a as { widget_type?: string }).widget_type
         if (typeof widget === "string") return widget
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Extract the `@field_access(read=[...], write=[...])` annotation from a
+ * field's annotation list. Either list may be absent; callers should
+ * treat `undefined` as "no gate applied".
+ *
+ * Wire shape: `{annotation: "FieldAccess", read: [...], write: [...]}`.
+ * Tag matched case-insensitively, same as `getDisplayField`.
+ */
+export function getFieldAccess(
+  annotations: unknown[],
+): { read?: string[]; write?: string[] } | undefined {
+  for (const a of annotations) {
+    if (a && typeof a === "object") {
+      const tag = (a as { annotation?: string }).annotation
+      if (typeof tag === "string" && tag.toLowerCase() === "fieldaccess") {
+        const rawRead = (a as { read?: unknown }).read
+        const rawWrite = (a as { write?: unknown }).write
+        const read = Array.isArray(rawRead)
+          ? (rawRead.filter((r) => typeof r === "string") as string[])
+          : undefined
+        const write = Array.isArray(rawWrite)
+          ? (rawWrite.filter((r) => typeof r === "string") as string[])
+          : undefined
+        return { read, write }
       }
     }
   }

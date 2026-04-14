@@ -10,6 +10,27 @@ import { Input } from "@/components/ui/input"
 import { RelationSelect } from "@/components/ui/relation-select"
 import { formatFieldValue, type FieldDisplayHints } from "@/generated/formatters"
 import type { FieldMeta } from "@/admin/api-client"
+import { getCurrentRoles, hasAnyRole } from "@/lib/auth"
+
+/**
+ * Return true if the current user can read `field`. Fields without a
+ * `@field_access(read=[...])` annotation are visible to everyone.
+ */
+export function canReadField(field: FieldMeta): boolean {
+  if (!field.accessRead || field.accessRead.length === 0) return true
+  return hasAnyRole(field.accessRead, getCurrentRoles())
+}
+
+/**
+ * Return true if the current user can write `field`. Fields without a
+ * `@field_access(write=[...])` annotation are writable by anyone with
+ * read access.
+ */
+export function canWriteField(field: FieldMeta): boolean {
+  if (!canReadField(field)) return false
+  if (!field.accessWrite || field.accessWrite.length === 0) return true
+  return hasAnyRole(field.accessWrite, getCurrentRoles())
+}
 
 export type FieldRendererProps = {
   field: FieldMeta
@@ -286,7 +307,15 @@ export function FieldRenderer({
   onChange,
   readOnly,
 }: FieldRendererProps) {
-  if (readOnly || !onChange) {
+  // `@field_access(read=[...])`: hide the field entirely when the user
+  // lacks a matching role. Callers that still render a wrapper (label,
+  // grid row) should themselves check `canReadField` to avoid leaving
+  // a dangling label.
+  if (!canReadField(field)) return null
+  // `@field_access(write=[...])`: downgrade to read-only regardless of
+  // the caller's `readOnly` prop.
+  const effectiveReadOnly = readOnly || !canWriteField(field)
+  if (effectiveReadOnly || !onChange) {
     return <>{renderReadOnly(field, value)}</>
   }
   return <>{renderEditor(field, value, onChange)}</>

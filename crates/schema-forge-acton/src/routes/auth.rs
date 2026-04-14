@@ -52,6 +52,10 @@ pub struct LoginResponse {
     pub token: String,
     /// ISO-8601 UTC timestamp at which the token expires.
     pub expires_at: String,
+    /// Roles granted to the authenticated user. The generated React site
+    /// stashes this alongside the token so `@field_access` annotations can
+    /// be enforced client-side without decoding the opaque PASETO payload.
+    pub roles: Vec<String>,
 }
 
 /// Error envelope for 401 responses.
@@ -112,6 +116,7 @@ pub async fn login(
     let body = LoginResponse {
         token,
         expires_at: expires_at.to_rfc3339(),
+        roles: user.roles.clone(),
     };
     (StatusCode::OK, Json(body)).into_response()
 }
@@ -152,6 +157,7 @@ pub async fn refresh(
     let body = LoginResponse {
         token,
         expires_at: expires_at.to_rfc3339(),
+        roles: claims.roles.clone(),
     };
     (StatusCode::OK, Json(body)).into_response()
 }
