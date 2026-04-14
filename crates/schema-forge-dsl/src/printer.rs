@@ -333,6 +333,19 @@ fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
             output.push_str(format_type.as_str());
             output.push_str("\")");
         }
+        FieldAnnotation::EnumColors { colors } => {
+            output.push_str("@enum_colors(");
+            for (i, (variant, color)) in colors.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(variant);
+                output.push_str(": \"");
+                output.push_str(color.as_str());
+                output.push('"');
+            }
+            output.push(')');
+        }
         _ => {
             output.push_str("@unknown_field_annotation");
         }
@@ -943,6 +956,21 @@ mod tests {
     #[test]
     fn roundtrip_kanban_column() {
         let source = "schema S {\n    stage: text @kanban_column\n}\n";
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(
+            parsed[0].fields[0].annotations,
+            reparsed[0].fields[0].annotations
+        );
+    }
+
+    #[test]
+    fn roundtrip_enum_colors() {
+        let source = r#"schema S {
+    stage: enum("new", "won", "lost") @enum_colors(won: "green", lost: "red")
+}
+"#;
         let parsed = crate::parser::parse(source).unwrap();
         let printed = print(&parsed[0]);
         let reparsed = crate::parser::parse(&printed).unwrap();

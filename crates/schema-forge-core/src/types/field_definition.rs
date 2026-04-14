@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-use super::field_annotation::{FieldAnnotation, FormatType, WidgetType};
+use super::field_annotation::{EnumColor, FieldAnnotation, FormatType, WidgetType};
 use super::field_modifier::FieldModifier;
 use super::field_name::FieldName;
 use super::field_type::FieldType;
@@ -123,6 +125,14 @@ impl FieldDefinition {
         self.annotations
             .iter()
             .any(|a| matches!(a, FieldAnnotation::KanbanColumn))
+    }
+
+    /// Returns the variant→color map from `@enum_colors(...)` if present.
+    pub fn enum_colors(&self) -> Option<&BTreeMap<String, EnumColor>> {
+        self.annotations.iter().find_map(|a| match a {
+            FieldAnnotation::EnumColors { colors } => Some(colors),
+            _ => None,
+        })
     }
 }
 

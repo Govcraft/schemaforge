@@ -27,6 +27,58 @@ import {
 const PAGE_SIZES = [25, 50, 100, 200] as const
 type SortDir = "asc" | "desc"
 
+// Semantic color tokens from `@enum_colors(...)` are mapped to Tailwind
+// badge classes here. Keeping the map local to the generated list view
+// means any Tailwind class referenced by an enum variant is picked up by
+// the JIT scan without needing a safelist.
+const ENUM_BADGE_CLASSES: Record<string, string> = {
+  neutral: "bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200",
+  gray: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200",
+  red: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
+  amber: "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200",
+  green: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
+  blue: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200",
+  purple: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-200",
+  violet: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200",
+  teal: "bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-200",
+  rose: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200",
+}
+
+// Per-field @enum_colors map: field name → (variant → color token). Only
+// enum fields that actually carry an `@enum_colors(...)` annotation appear
+// here; other enum fields render as plain text.
+const ENUM_COLORS: Record<string, Record<string, string>> = {
+{%- for f in entity.fields %}
+{%- if f.kind == "enum" and f.enum_colors %}
+  "{{ f.leaf }}": {
+{%- for variant, color in f.enum_colors | items %}
+    "{{ variant }}": "{{ color }}",
+{%- endfor %}
+  },
+{%- endif %}
+{%- endfor %}
+}
+
+function EnumBadge({
+  field,
+  value,
+}: {
+  field: string
+  value: unknown
+}) {
+  if (value === null || value === undefined || value === "") return <span>—</span>
+  const colorMap = ENUM_COLORS[field]
+  const color = colorMap?.[String(value)] ?? "neutral"
+  const classes = ENUM_BADGE_CLASSES[color] ?? ENUM_BADGE_CLASSES.neutral
+  return (
+    <span
+      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${classes}`}
+    >
+      {String(value)}
+    </span>
+  )
+}
+
 const columns: ColumnDef<{{ entity.pascal }}>[] = [
   {
     accessorKey: "id",
@@ -42,6 +94,11 @@ const columns: ColumnDef<{{ entity.pascal }}>[] = [
   {
     accessorKey: "{{ f.leaf }}",
     header: "{{ f.label }}",
+{%- if f.kind == "enum" %}
+    cell: ({ row }) => (
+      <EnumBadge field="{{ f.leaf }}" value={row.original.{{ f.leaf }}} />
+    ),
+{%- else %}
     cell: ({ row }) =>
       formatFieldValue(row.original.{{ f.leaf }}, {
         kind: "{{ f.kind }}",
@@ -52,6 +109,7 @@ const columns: ColumnDef<{{ entity.pascal }}>[] = [
         format: "{{ f.format }}",
 {%- endif %}
       }),
+{%- endif %}
   },
 {%- endif %}
 {%- endfor %}

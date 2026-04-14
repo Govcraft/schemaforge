@@ -226,6 +226,11 @@ pub struct FieldView {
     /// For `kind == "composite"`: the flattened sub-fields, each with
     /// `name` set to its dot-path. Empty for non-composite fields.
     pub sub_fields: Vec<FieldView>,
+    /// For `kind == "enum"`: map from variant name to its `@enum_colors`
+    /// color token (one of `neutral|gray|red|amber|green|blue|purple|violet|teal|rose`).
+    /// Empty when the field carries no `@enum_colors` annotation; variants
+    /// without an explicit entry render with the default neutral badge.
+    pub enum_colors: BTreeMap<String, String>,
 }
 
 /// Derive the canonical lowerCamelCase JS property name for a DSL field name.
@@ -271,6 +276,14 @@ pub fn make_field_view(
         item_kind: None,
         item_enum_variants: Vec::new(),
         sub_fields: Vec::new(),
+        enum_colors: field
+            .enum_colors()
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 

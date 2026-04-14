@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -269,6 +270,129 @@ const VALID_FORMAT_TYPES: &[&str] = &[
     "currency", "percent", "date", "datetime", "relative", "bytes", "duration",
 ];
 
+/// Closed vocabulary of semantic color tokens accepted by `@enum_colors(...)`.
+///
+/// Each variant maps to a stable CSS token emitted by the site generator and
+/// wired to Tailwind / shadcn palette classes. The names are intentionally
+/// semantic ("amber" for in-progress, "green" for success, "red" for failure)
+/// so that schema authors can communicate intent rather than specific hues.
+///
+/// The JSON / DSL representation is the `snake_case` form, enforced by
+/// `#[serde(rename_all = "snake_case")]` and
+/// [`EnumColor::as_str`] / [`EnumColor::from_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum EnumColor {
+    Neutral,
+    Gray,
+    Red,
+    Amber,
+    Green,
+    Blue,
+    Purple,
+    Violet,
+    Teal,
+    Rose,
+}
+
+impl EnumColor {
+    /// Every color variant in declaration order.
+    pub const VARIANTS: &'static [Self] = &[
+        Self::Neutral,
+        Self::Gray,
+        Self::Red,
+        Self::Amber,
+        Self::Green,
+        Self::Blue,
+        Self::Purple,
+        Self::Violet,
+        Self::Teal,
+        Self::Rose,
+    ];
+
+    /// Returns the canonical `snake_case` token for this color.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Neutral => "neutral",
+            Self::Gray => "gray",
+            Self::Red => "red",
+            Self::Amber => "amber",
+            Self::Green => "green",
+            Self::Blue => "blue",
+            Self::Purple => "purple",
+            Self::Violet => "violet",
+            Self::Teal => "teal",
+            Self::Rose => "rose",
+        }
+    }
+}
+
+impl fmt::Display for EnumColor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Error returned when [`EnumColor::from_str`] cannot match the input to a
+/// known variant. Carries the unknown value and the full list of valid
+/// color tokens for "did you mean?" style error rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownEnumColor {
+    /// The value supplied by the caller (trimmed of enclosing quotes).
+    pub value: String,
+    /// All valid color tokens in canonical order.
+    pub valid: &'static [&'static str],
+}
+
+impl UnknownEnumColor {
+    /// Constructs a new error for the given unknown value.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            valid: VALID_ENUM_COLORS,
+        }
+    }
+}
+
+impl fmt::Display for UnknownEnumColor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "unknown enum color '{}'; valid colors: {}",
+            self.value,
+            self.valid.join(", "),
+        )
+    }
+}
+
+impl std::error::Error for UnknownEnumColor {}
+
+impl FromStr for EnumColor {
+    type Err = UnknownEnumColor;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "neutral" => Ok(Self::Neutral),
+            "gray" => Ok(Self::Gray),
+            "red" => Ok(Self::Red),
+            "amber" => Ok(Self::Amber),
+            "green" => Ok(Self::Green),
+            "blue" => Ok(Self::Blue),
+            "purple" => Ok(Self::Purple),
+            "violet" => Ok(Self::Violet),
+            "teal" => Ok(Self::Teal),
+            "rose" => Ok(Self::Rose),
+            other => Err(UnknownEnumColor::new(other)),
+        }
+    }
+}
+
+/// Canonical color token list for error reporting.
+const VALID_ENUM_COLORS: &[&str] = &[
+    "neutral", "gray", "red", "amber", "green", "blue", "purple", "violet", "teal", "rose",
+];
+
 /// Annotations that can be applied to individual fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "annotation")]
@@ -287,6 +411,14 @@ pub enum FieldAnnotation {
     KanbanColumn,
     /// `@format("format_type")` -- display format hint for field values.
     Format { format_type: FormatType },
+    /// `@enum_colors(variant: "color", ...)` -- semantic color tokens for
+    /// specific enum variants. Keyed by the variant name; the generator is
+    /// responsible for ensuring every key names a valid variant of the
+    /// enum field the annotation is attached to. Missing keys render with
+    /// the default neutral badge.
+    EnumColors {
+        colors: BTreeMap<String, EnumColor>,
+    },
 }
 
 impl FieldAnnotation {
@@ -298,6 +430,7 @@ impl FieldAnnotation {
             Self::Widget { .. } => "widget",
             Self::KanbanColumn => "kanban_column",
             Self::Format { .. } => "format",
+            Self::EnumColors { .. } => "enum_colors",
         }
     }
 }
@@ -317,6 +450,13 @@ impl fmt::Display for FieldAnnotation {
             Self::Widget { widget_type } => write!(f, "@widget(\"{widget_type}\")"),
             Self::KanbanColumn => write!(f, "@kanban_column"),
             Self::Format { format_type } => write!(f, "@format(\"{format_type}\")"),
+            Self::EnumColors { colors } => {
+                let parts: Vec<String> = colors
+                    .iter()
+                    .map(|(k, v)| format!("{k}: \"{v}\""))
+                    .collect();
+                write!(f, "@enum_colors({})", parts.join(", "))
+            }
         }
     }
 }
@@ -793,5 +933,66 @@ mod tests {
                 valid.as_str()
             );
         }
+    }
+
+    // -- EnumColor --
+
+    #[test]
+    fn enum_color_from_str_valid_all_variants() {
+        for variant in EnumColor::VARIANTS {
+            assert_eq!(EnumColor::from_str(variant.as_str()).unwrap(), *variant);
+        }
+    }
+
+    #[test]
+    fn enum_color_from_str_rejects_unknown() {
+        let err = EnumColor::from_str("magenta").unwrap_err();
+        assert_eq!(err.value, "magenta");
+        let msg = err.to_string();
+        assert!(msg.contains("magenta"));
+        assert!(msg.contains("green"));
+    }
+
+    #[test]
+    fn enum_color_variants_count() {
+        assert_eq!(EnumColor::VARIANTS.len(), 10);
+    }
+
+    #[test]
+    fn enum_color_serde_is_snake_case() {
+        let json = serde_json::to_string(&EnumColor::Amber).unwrap();
+        assert_eq!(json, "\"amber\"");
+    }
+
+    #[test]
+    fn display_enum_colors_annotation() {
+        let mut colors = BTreeMap::new();
+        colors.insert("awarded".to_string(), EnumColor::Green);
+        colors.insert("lost".to_string(), EnumColor::Red);
+        let a = FieldAnnotation::EnumColors { colors };
+        // BTreeMap gives stable alphabetical key ordering.
+        assert_eq!(
+            a.to_string(),
+            "@enum_colors(awarded: \"green\", lost: \"red\")"
+        );
+    }
+
+    #[test]
+    fn kind_enum_colors() {
+        let a = FieldAnnotation::EnumColors {
+            colors: BTreeMap::new(),
+        };
+        assert_eq!(a.kind(), "enum_colors");
+    }
+
+    #[test]
+    fn serde_roundtrip_enum_colors() {
+        let mut colors = BTreeMap::new();
+        colors.insert("pending".to_string(), EnumColor::Amber);
+        colors.insert("done".to_string(), EnumColor::Green);
+        let a = FieldAnnotation::EnumColors { colors };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
     }
 }

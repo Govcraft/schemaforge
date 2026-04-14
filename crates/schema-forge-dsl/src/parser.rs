@@ -3,9 +3,11 @@ use std::str::FromStr;
 
 use tracing::instrument;
 
+use std::collections::BTreeMap;
+
 use schema_forge_core::types::{
-    Annotation, Cardinality, DefaultValue, EnumVariants, FieldAnnotation, FieldDefinition,
-    FieldModifier, FieldName, FieldType, FloatConstraints, FormatType, HookEvent,
+    Annotation, Cardinality, DefaultValue, EnumColor, EnumVariants, FieldAnnotation,
+    FieldDefinition, FieldModifier, FieldName, FieldType, FloatConstraints, FormatType, HookEvent,
     IntegerConstraints, SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind,
     TextConstraints, WidgetType,
 };
@@ -426,7 +428,7 @@ impl Parser {
 
         let field_type = self.parse_type()?;
         let modifiers = self.parse_modifiers()?;
-        let field_annotations = self.parse_field_annotations()?;
+        let field_annotations = self.parse_field_annotations(&field_type)?;
 
         if field_annotations.is_empty() {
             if modifiers.is_empty() {
@@ -446,17 +448,25 @@ impl Parser {
         }
     }
 
-    /// Parse zero or more field-level annotations (e.g., `@owner`, `@field_access(...)`)
-    fn parse_field_annotations(&mut self) -> Result<Vec<FieldAnnotation>, DslError> {
+    /// Parse zero or more field-level annotations (e.g., `@owner`, `@field_access(...)`).
+    /// `field_type` is used by annotations that need to validate against the
+    /// field's declared type (e.g. `@enum_colors` checks variant names).
+    fn parse_field_annotations(
+        &mut self,
+        field_type: &FieldType,
+    ) -> Result<Vec<FieldAnnotation>, DslError> {
         let mut annotations = Vec::new();
         while self.peek_token() == Some(&Token::At) {
-            annotations.push(self.parse_field_annotation()?);
+            annotations.push(self.parse_field_annotation(field_type)?);
         }
         Ok(annotations)
     }
 
     /// Parse a single field-level annotation.
-    fn parse_field_annotation(&mut self) -> Result<FieldAnnotation, DslError> {
+    fn parse_field_annotation(
+        &mut self,
+        field_type: &FieldType,
+    ) -> Result<FieldAnnotation, DslError> {
         self.expect(&Token::At)?;
         let name_tok = self.expect_ident("field annotation name")?;
         match name_tok.text.as_str() {
@@ -485,6 +495,7 @@ impl Parser {
                 Ok(FieldAnnotation::Widget { widget_type })
             }
             "kanban_column" => Ok(FieldAnnotation::KanbanColumn),
+            "enum_colors" => self.parse_enum_colors_annotation(field_type, name_tok.span),
             "format" => {
                 self.expect(&Token::LParen)?;
                 let value_tok = self.expect_string_literal()?;
@@ -504,6 +515,63 @@ impl Parser {
                 span: name_tok.span,
             }),
         }
+    }
+
+    /// Parse `@enum_colors(variant: "color", ...)`. The opening `(` has not
+    /// been consumed. `field_type` is the already-parsed field type used to
+    /// validate that every key names a real enum variant.
+    fn parse_enum_colors_annotation(
+        &mut self,
+        field_type: &FieldType,
+        annotation_name_span: Span,
+    ) -> Result<FieldAnnotation, DslError> {
+        let variants: &[String] = match field_type {
+            FieldType::Enum(v) => v.as_slice(),
+            _ => {
+                return Err(DslError::EnumColorsOnNonEnum {
+                    span: annotation_name_span,
+                });
+            }
+        };
+
+        self.expect(&Token::LParen)?;
+        let open_span = self.current_span();
+        let params = self.parse_named_params()?;
+        let close_span = self.current_span();
+        self.expect(&Token::RParen)?;
+
+        if params.is_empty() {
+            return Err(DslError::EmptyEnumColors {
+                span: Span::new(open_span.start, close_span.end),
+            });
+        }
+
+        let mut colors = BTreeMap::new();
+        let mut seen = HashSet::new();
+        for (variant_name, color_token) in params {
+            if !variants.iter().any(|v| v == &variant_name) {
+                return Err(DslError::UnknownEnumColorsVariant {
+                    variant: variant_name,
+                    valid: variants.to_vec(),
+                    span: annotation_name_span.clone(),
+                });
+            }
+            if !seen.insert(variant_name.clone()) {
+                return Err(DslError::DuplicateEnumColorsVariant {
+                    variant: variant_name,
+                    span: annotation_name_span.clone(),
+                });
+            }
+            let color =
+                EnumColor::from_str(&color_token).map_err(|err| DslError::UnknownEnumColor {
+                    value: err.value,
+                    valid: err.valid,
+                    span: annotation_name_span.clone(),
+                })?;
+            colors.insert(variant_name, color);
+        }
+
+        Ok(FieldAnnotation::EnumColors { colors })
     }
 
     /// type_expr = relation_type | primitive_type ("[]")? | composite_type
@@ -1893,6 +1961,93 @@ mod tests {
                 "legacy widget token '{legacy}' must be rejected"
             );
         }
+    }
+
+    // -- @enum_colors annotation --
+
+    #[test]
+    fn parse_enum_colors_basic() {
+        let schema = parse_one(
+            r#"schema S { stage: enum("new", "won", "lost") @enum_colors(won: "green", lost: "red") }"#,
+        );
+        assert_eq!(schema.fields[0].annotations.len(), 1);
+        match &schema.fields[0].annotations[0] {
+            FieldAnnotation::EnumColors { colors } => {
+                assert_eq!(colors.len(), 2);
+                assert_eq!(colors.get("won"), Some(&EnumColor::Green));
+                assert_eq!(colors.get("lost"), Some(&EnumColor::Red));
+            }
+            other => panic!("expected EnumColors, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_enum_colors_all_color_variants() {
+        for color in EnumColor::VARIANTS {
+            let source = format!(
+                r#"schema S {{ s: enum("only") @enum_colors(only: "{}") }}"#,
+                color.as_str()
+            );
+            let schema = parse_one(&source);
+            match &schema.fields[0].annotations[0] {
+                FieldAnnotation::EnumColors { colors } => {
+                    assert_eq!(colors.get("only"), Some(color));
+                }
+                other => panic!("expected EnumColors for {}, got {other:?}", color.as_str()),
+            }
+        }
+    }
+
+    #[test]
+    fn error_enum_colors_on_non_enum() {
+        let result = parse(r#"schema S { name: text @enum_colors(a: "red") }"#);
+        let errors = result.expect_err("enum_colors on non-enum must be rejected");
+        assert!(matches!(errors[0], DslError::EnumColorsOnNonEnum { .. }));
+    }
+
+    #[test]
+    fn error_enum_colors_unknown_variant() {
+        let result =
+            parse(r#"schema S { s: enum("a", "b") @enum_colors(c: "red") }"#);
+        let errors = result.expect_err("unknown variant must be rejected");
+        match &errors[0] {
+            DslError::UnknownEnumColorsVariant { variant, valid, .. } => {
+                assert_eq!(variant, "c");
+                assert_eq!(valid, &vec!["a".to_string(), "b".to_string()]);
+            }
+            other => panic!("expected UnknownEnumColorsVariant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_enum_colors_unknown_color() {
+        let result =
+            parse(r#"schema S { s: enum("a") @enum_colors(a: "chartreuse") }"#);
+        let errors = result.expect_err("unknown color must be rejected");
+        assert!(matches!(&errors[0], DslError::UnknownEnumColor { value, .. } if value == "chartreuse"));
+    }
+
+    #[test]
+    fn error_enum_colors_duplicate_variant() {
+        let result =
+            parse(r#"schema S { s: enum("a", "b") @enum_colors(a: "red", a: "green") }"#);
+        let errors = result.expect_err("duplicate variant must be rejected");
+        assert!(matches!(
+            &errors[0],
+            DslError::DuplicateEnumColorsVariant { variant, .. } if variant == "a"
+        ));
+    }
+
+    #[test]
+    fn parse_enum_colors_accessor_on_field_definition() {
+        let schema = parse_one(
+            r#"schema S { stage: enum("a", "b") @enum_colors(a: "green", b: "red") }"#,
+        );
+        let colors = schema.fields[0]
+            .enum_colors()
+            .expect("enum_colors() must return Some");
+        assert_eq!(colors.get("a"), Some(&EnumColor::Green));
+        assert_eq!(colors.get("b"), Some(&EnumColor::Red));
     }
 
     // -- @dashboard annotation --

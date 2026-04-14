@@ -415,9 +415,10 @@ fn preserve(path: &str, contents: String) -> FilePlan {
 mod tests {
     use super::*;
     use schema_forge_core::types::{
-        FieldDefinition, FieldModifier, FieldName, FieldType, IntegerConstraints, SchemaId,
-        SchemaName, TextConstraints,
+        EnumColor, EnumVariants, FieldAnnotation, FieldDefinition, FieldModifier, FieldName,
+        FieldType, IntegerConstraints, SchemaId, SchemaName, TextConstraints,
     };
+    use std::collections::BTreeMap;
 
     fn employee_schema() -> SchemaDefinition {
         SchemaDefinition::new(
@@ -453,5 +454,84 @@ mod tests {
         let s = vec![employee_schema()];
         let err = pick_target_schemas(&s, Some("Nope")).unwrap_err();
         assert!(matches!(err, CliError::Config { .. }));
+    }
+
+    fn opportunity_schema_with_enum_colors() -> SchemaDefinition {
+        let mut colors = BTreeMap::new();
+        colors.insert("won".to_string(), EnumColor::Green);
+        colors.insert("lost".to_string(), EnumColor::Red);
+        colors.insert("qualifying".to_string(), EnumColor::Neutral);
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Opportunity").unwrap(),
+            vec![
+                FieldDefinition::with_modifiers(
+                    FieldName::new("title").unwrap(),
+                    FieldType::Text(TextConstraints::with_max_length(255)),
+                    vec![FieldModifier::Required],
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new("stage").unwrap(),
+                    FieldType::Enum(
+                        EnumVariants::new(vec![
+                            "qualifying".into(),
+                            "won".into(),
+                            "lost".into(),
+                        ])
+                        .unwrap(),
+                    ),
+                    vec![FieldModifier::Required],
+                    vec![FieldAnnotation::EnumColors { colors }],
+                ),
+            ],
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn list_template_emits_enum_colors_map() {
+        use super::context::{EntityView, PageContext, SchemaMeta};
+        use super::render::SiteRenderer;
+
+        let schema = opportunity_schema_with_enum_colors();
+        let mut catalog = BTreeMap::new();
+        catalog.insert(
+            "Opportunity".to_string(),
+            SchemaMeta::from_schema(&schema),
+        );
+        let output = crate::output::OutputContext {
+            mode: crate::output::OutputMode::Plain,
+            verbose: 0,
+            quiet: true,
+            use_color: false,
+        };
+        let entity = EntityView::from_schema(&schema, &catalog, &output).unwrap();
+        let page_ctx = PageContext {
+            project_name: "demo".to_string(),
+            entity,
+        };
+
+        let renderer = SiteRenderer::new(None).unwrap();
+        let rendered = renderer
+            .render("src/app/pages/list.tsx", &page_ctx)
+            .expect("list template must render");
+
+        // Per-field color map emitted in declaration order.
+        assert!(
+            rendered.contains("\"stage\": {"),
+            "ENUM_COLORS should carry `stage` key; got:\n{rendered}"
+        );
+        assert!(rendered.contains("\"won\": \"green\""));
+        assert!(rendered.contains("\"lost\": \"red\""));
+        assert!(rendered.contains("\"qualifying\": \"neutral\""));
+        // Badge helper and classes table both present.
+        assert!(rendered.contains("ENUM_BADGE_CLASSES"));
+        assert!(rendered.contains("function EnumBadge("));
+        // Enum column cell uses EnumBadge, not formatFieldValue.
+        assert!(
+            rendered.contains("<EnumBadge field=\"stage\""),
+            "enum column must render via EnumBadge"
+        );
     }
 }

@@ -92,6 +92,31 @@ pub enum DslError {
         valid: &'static [&'static str],
         span: Span,
     },
+
+    /// `@enum_colors(...)` was applied to a field whose type is not `enum`.
+    EnumColorsOnNonEnum { span: Span },
+
+    /// `@enum_colors()` had no variant entries.
+    EmptyEnumColors { span: Span },
+
+    /// `@enum_colors(variant: "...")` referenced a variant that is not in
+    /// the enum's declared variant list.
+    UnknownEnumColorsVariant {
+        variant: String,
+        valid: Vec<String>,
+        span: Span,
+    },
+
+    /// Same variant appeared twice inside one `@enum_colors(...)`.
+    DuplicateEnumColorsVariant { variant: String, span: Span },
+
+    /// `@enum_colors(variant: "color")` used a color token that is not in
+    /// the canonical color vocabulary.
+    UnknownEnumColor {
+        value: String,
+        valid: &'static [&'static str],
+        span: Span,
+    },
 }
 
 impl fmt::Display for DslError {
@@ -181,6 +206,42 @@ impl fmt::Display for DslError {
                 write!(
                     f,
                     "unknown format type \"{value}\" at {span}\n  valid format types: {}",
+                    valid.join(", "),
+                )
+            }
+            Self::EnumColorsOnNonEnum { span } => {
+                write!(
+                    f,
+                    "@enum_colors at {span} can only be applied to an enum field"
+                )
+            }
+            Self::EmptyEnumColors { span } => {
+                write!(
+                    f,
+                    "@enum_colors at {span} has no entries; provide at least one `variant: \"color\"` pair"
+                )
+            }
+            Self::UnknownEnumColorsVariant {
+                variant,
+                valid,
+                span,
+            } => {
+                write!(
+                    f,
+                    "@enum_colors at {span} references unknown variant '{variant}'; valid variants: {}",
+                    valid.join(", "),
+                )
+            }
+            Self::DuplicateEnumColorsVariant { variant, span } => {
+                write!(
+                    f,
+                    "@enum_colors at {span} lists variant '{variant}' more than once"
+                )
+            }
+            Self::UnknownEnumColor { value, valid, span } => {
+                write!(
+                    f,
+                    "unknown enum color \"{value}\" at {span}\n  valid colors: {}",
                     valid.join(", "),
                 )
             }
