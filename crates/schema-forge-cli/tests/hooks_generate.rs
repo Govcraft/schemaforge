@@ -242,6 +242,212 @@ fn generate_rejects_nested_arrays() {
         .failure();
 }
 
+/// A two-schema fixture used by the manifest / orphan / check tests.
+const TWO_SCHEMAS: &str = r#"
+@hook(before_change) """first hook"""
+schema Alpha {
+  name: text required
+}
+"#;
+
+const SECOND_SCHEMA: &str = r#"
+@hook(before_change) """second hook"""
+schema Beta {
+  title: text required
+}
+"#;
+
+fn run_generate(schema_dir: &std::path::Path, out_dir: &std::path::Path) {
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--schema-dir"])
+        .arg(schema_dir)
+        .arg("--out-dir")
+        .arg(out_dir)
+        .assert()
+        .success();
+}
+
+#[test]
+fn generate_creates_manifest_and_sentinel() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+
+    assert!(
+        out_dir.join(".schemaforge-hooks").exists(),
+        "sentinel file missing"
+    );
+    let manifest_path = out_dir.join(".schemaforge-manifest.toml");
+    assert!(manifest_path.exists(), "manifest missing");
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    assert!(manifest.contains("generator = \"hooks\""));
+    assert!(manifest.contains("path = \"proto/alpha_hooks.proto\""));
+    assert!(
+        !manifest.contains("path = \"src/hooks/alpha.rs\""),
+        "preserved files must not appear in the manifest"
+    );
+}
+
+#[test]
+fn regenerate_prunes_orphans_when_schema_deleted() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+    fs::write(schema_dir.join("beta.schema"), SECOND_SCHEMA).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+
+    // Both schemas produced their proto files and prompt dirs.
+    assert!(out_dir.join("proto/alpha_hooks.proto").exists());
+    assert!(out_dir.join("proto/beta_hooks.proto").exists());
+    assert!(
+        out_dir
+            .join("src/hooks/beta/before_change.prompt.md")
+            .exists()
+    );
+
+    // Delete the beta schema and regenerate.
+    fs::remove_file(schema_dir.join("beta.schema")).unwrap();
+    run_generate(&schema_dir, &out_dir);
+
+    // Beta's owned outputs are gone; alpha's remain.
+    assert!(out_dir.join("proto/alpha_hooks.proto").exists());
+    assert!(!out_dir.join("proto/beta_hooks.proto").exists());
+    assert!(!out_dir.join("src/hooks/beta").exists());
+    // The preserved beta.rs stub is NOT in the manifest, so it survives
+    // pruning — this mirrors how the generator treats user code.
+    assert!(out_dir.join("src/hooks/beta.rs").exists());
+}
+
+#[test]
+fn regenerate_errors_when_owned_file_hand_edited() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+
+    // Strip the marker from Cargo.toml.
+    fs::write(out_dir.join("Cargo.toml"), "[package]\nname = \"hand-edited\"\n").unwrap();
+
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Cargo.toml"));
+}
+
+#[test]
+fn check_flag_exits_zero_on_clean_tree() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--check", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+}
+
+#[test]
+fn check_flag_exits_nonzero_on_drift() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+
+    // Mutate an owned file (keeping the marker so it's legal to overwrite).
+    let main_path = out_dir.join("src/main.rs");
+    let original = fs::read_to_string(&main_path).unwrap();
+    fs::write(&main_path, format!("{original}\n// drift\n")).unwrap();
+
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--check", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("src/main.rs"));
+}
+
+#[test]
+fn refuses_to_write_into_foreign_dir() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    fs::create_dir_all(&out_dir).unwrap();
+    fs::write(out_dir.join("unrelated.txt"), "keep me").unwrap();
+
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("--force-init"));
+
+    // The unrelated file must not have been touched and the generator
+    // must not have scaffolded into the directory.
+    assert!(out_dir.join("unrelated.txt").exists());
+    assert!(!out_dir.join("Cargo.toml").exists());
+}
+
+#[test]
+fn force_init_overrides_foreign_dir_check() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    fs::create_dir_all(&out_dir).unwrap();
+    fs::write(out_dir.join("unrelated.txt"), "keep me").unwrap();
+
+    schema_forge()
+        .args([
+            "hooks",
+            "generate",
+            "--all",
+            "--force-init",
+            "--schema-dir",
+        ])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+
+    assert!(out_dir.join("unrelated.txt").exists());
+    assert!(out_dir.join("Cargo.toml").exists());
+    assert!(out_dir.join(".schemaforge-hooks").exists());
+}
+
 #[test]
 fn list_reports_hooks() {
     let workdir = TempDir::new().unwrap();

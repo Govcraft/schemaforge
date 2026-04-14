@@ -149,9 +149,24 @@ pub struct HooksGenerateArgs {
     #[arg(long, conflicts_with = "all")]
     pub schema: Option<String>,
 
-    /// Overwrite existing files in `out_dir`
+    /// Overwrite `Preserve`-mode user files (e.g. `src/hooks/<schema>.rs`).
+    /// `Owned` files are always rewritten and do not require this flag.
+    ///
+    /// Accepts the legacy `--force` alias for backwards compatibility.
+    #[arg(long = "force-user-files", alias = "force")]
+    pub force_user_files: bool,
+
+    /// Write into a non-empty, non-schemaforge-managed directory. Normally
+    /// the generator refuses to touch such a directory to avoid clobbering
+    /// unrelated files.
     #[arg(long)]
-    pub force: bool,
+    pub force_init: bool,
+
+    /// Dry-run mode: render the project in memory and report drift against
+    /// what is on disk. Exits non-zero if anything would change. Intended
+    /// for CI verification of generator determinism.
+    #[arg(long)]
+    pub check: bool,
 }
 
 /// Arguments for `schema-forge hooks list`.

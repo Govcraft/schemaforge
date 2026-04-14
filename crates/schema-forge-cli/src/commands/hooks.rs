@@ -6,34 +6,46 @@
 //!
 //! ```text
 //! <out-dir>/
-//!   Cargo.toml
-//!   build.rs
+//!   .schemaforge-hooks                 # sentinel (zero-byte)
+//!   .schemaforge-manifest.toml         # file ownership manifest
+//!   Cargo.toml                         # Owned, always rewritten
+//!   build.rs                           # Owned
 //!   proto/
-//!     <schema>_hooks.proto         # one per annotated schema
+//!     <schema>_hooks.proto             # Owned, one per annotated schema
 //!   src/
-//!     main.rs                       # assembles all generated services
+//!     main.rs                          # Owned
 //!     hooks/
-//!       mod.rs                      # re-exports per-schema modules
-//!       <schema>.rs                 # per-schema service impl + stubs
+//!       mod.rs                         # Owned
+//!       <schema>.rs                    # Preserve — scaffold once, user edits
 //!       <schema>/
-//!         <event>.prompt.md         # AI prompt file per stub (Phase 4)
+//!         <event>.prompt.md            # Owned prompt file per stub
 //! ```
 //!
-//! Re-running the generator does NOT clobber existing `<schema>.rs`
-//! implementation files unless `--force` is passed — only proto files,
-//! `main.rs`, and prompt files are rewritten.
+//! File ownership and regeneration behavior are delegated to the shared
+//! [`commands::codegen`][super::codegen] module. In short:
+//! - `Owned` files are always overwritten (after marker verification),
+//!   tracked in the manifest, and pruned if the schema they came from is
+//!   deleted.
+//! - `Preserve` files are written once, left alone afterwards, and only
+//!   rewritten with `--force-user-files`.
+//! - `--check` runs the generator in memory and reports drift.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use heck::{ToPascalCase, ToSnakeCase};
 use schema_forge_core::types::{Annotation, Cardinality, FieldType, HookEvent, SchemaDefinition};
 
 use crate::cli::{GlobalOpts, HooksCommands, HooksDiffArgs, HooksGenerateArgs, HooksListArgs};
+use crate::commands::codegen::{
+    check_plan, write_plan, FilePlan, SentinelKind, WriteMode, WriteOptions,
+};
 use crate::commands::parse::parse_all_schemas;
 use crate::error::CliError;
 use crate::output::OutputContext;
+
+/// Generator identifier embedded in markers and the manifest.
+const GENERATOR: &str = "hooks";
 
 /// Top-level dispatch for `schema-forge hooks ...`.
 pub async fn run(
@@ -123,7 +135,47 @@ fn generate(
 
     output.status(&format!("  found {} schema(s) with hooks", hooked.len()));
 
-    write_project(&args.out_dir, &hooked, args.force)?;
+    let project_name = args
+        .out_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("hooks-service")
+        .to_snake_case();
+    let plan = build_plan(&project_name, &hooked)?;
+
+    let options = WriteOptions {
+        generator: GENERATOR,
+        sentinel_kind: SentinelKind::Hooks,
+        force_user_files: args.force_user_files,
+        force_init: args.force_init,
+    };
+
+    if args.check {
+        let report = check_plan(&args.out_dir, &plan, options)?;
+        if report.is_clean() {
+            output.success("hooks generator is idempotent — no drift");
+            return Ok(());
+        }
+        for p in &report.differing {
+            output.status(&format!("~ {} (differs)", p.display()));
+        }
+        for p in &report.missing {
+            output.status(&format!("- {} (missing)", p.display()));
+        }
+        for p in &report.orphaned {
+            output.status(&format!("! {} (orphaned)", p.display()));
+        }
+        return Err(CliError::Config {
+            message: format!(
+                "check failed: {} differing, {} missing, {} orphaned",
+                report.differing.len(),
+                report.missing.len(),
+                report.orphaned.len(),
+            ),
+        });
+    }
+
+    write_plan(&args.out_dir, &plan, options)?;
 
     output.success(&format!(
         "Hook service scaffold written to {}",
@@ -137,69 +189,49 @@ fn generate(
     Ok(())
 }
 
-fn write_project(out_dir: &Path, hooked: &[SchemaHooks], force: bool) -> Result<(), CliError> {
-    fs::create_dir_all(out_dir).map_err(io_err)?;
-    fs::create_dir_all(out_dir.join("proto")).map_err(io_err)?;
-    fs::create_dir_all(out_dir.join("src")).map_err(io_err)?;
-    fs::create_dir_all(out_dir.join("src/hooks")).map_err(io_err)?;
-
-    let project_name = out_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("hooks-service")
-        .to_snake_case();
-
-    write_file(
-        &out_dir.join("Cargo.toml"),
-        &render_cargo_toml(&project_name),
-        true,
-    )?;
-    write_file(&out_dir.join("build.rs"), BUILD_RS, true)?;
-    write_file(&out_dir.join("src/main.rs"), &render_main_rs(hooked), true)?;
-    write_file(
-        &out_dir.join("src/hooks/mod.rs"),
-        &render_hooks_mod(hooked),
-        true,
-    )?;
+/// Build the flat [`FilePlan`] list describing every file the hooks
+/// generator wants to produce. Pure function — no I/O, no mutation.
+fn build_plan(project_name: &str, hooked: &[SchemaHooks]) -> Result<Vec<FilePlan>, CliError> {
+    let mut plan: Vec<FilePlan> = vec![
+        owned("Cargo.toml", render_cargo_toml(project_name)),
+        owned("build.rs", BUILD_RS.to_string()),
+        owned("src/main.rs", render_main_rs(hooked)),
+        owned("src/hooks/mod.rs", render_hooks_mod(hooked)),
+    ];
 
     for h in hooked {
-        let proto_path = out_dir
-            .join("proto")
-            .join(format!("{}_hooks.proto", h.snake));
-        write_file(&proto_path, &render_proto(h)?, true)?;
-
-        // The per-schema impl is preserved by default — only `--force`
-        // overwrites it. The first generation always writes a fresh stub.
-        let impl_path = out_dir.join("src/hooks").join(format!("{}.rs", h.snake));
-        write_file(
-            &impl_path,
-            &render_impl_stub(h),
-            force || !impl_path.exists(),
-        )?;
-
-        // Prompt files (Phase 4) are always rewritten — they describe the
-        // schema as it stands today and may have been updated.
-        let prompt_dir = out_dir.join("src/hooks").join(&h.snake);
-        fs::create_dir_all(&prompt_dir).map_err(io_err)?;
+        plan.push(owned(
+            &format!("proto/{}_hooks.proto", h.snake),
+            render_proto(h)?,
+        ));
+        plan.push(preserve(
+            &format!("src/hooks/{}.rs", h.snake),
+            render_impl_stub(h),
+        ));
         for (event, intent) in &h.events {
-            let prompt_path = prompt_dir.join(format!("{}.prompt.md", event.as_str()));
-            write_file(&prompt_path, &render_prompt(h, *event, intent)?, true)?;
+            plan.push(owned(
+                &format!("src/hooks/{}/{}.prompt.md", h.snake, event.as_str()),
+                render_prompt(h, *event, intent)?,
+            ));
         }
     }
 
-    Ok(())
+    Ok(plan)
 }
 
-fn write_file(path: &Path, contents: &str, overwrite: bool) -> Result<(), CliError> {
-    if path.exists() && !overwrite {
-        return Ok(());
+fn owned(path: &str, contents: String) -> FilePlan {
+    FilePlan {
+        relative_path: PathBuf::from(path),
+        contents,
+        mode: WriteMode::Owned,
     }
-    fs::write(path, contents).map_err(io_err)
 }
 
-fn io_err(e: std::io::Error) -> CliError {
-    CliError::Config {
-        message: format!("io error: {e}"),
+fn preserve(path: &str, contents: String) -> FilePlan {
+    FilePlan {
+        relative_path: PathBuf::from(path),
+        contents,
+        mode: WriteMode::Preserve,
     }
 }
 
@@ -685,11 +717,6 @@ fn build_hook_map(schemas: &[SchemaDefinition]) -> BTreeMap<(String, HookEvent),
     }
     map
 }
-
-// Keep `_global` accessible without warning suppression by re-exporting if
-// future subcommands need it.
-#[allow(dead_code)]
-fn _placeholder(_: PathBuf) {}
 
 #[cfg(test)]
 mod tests {

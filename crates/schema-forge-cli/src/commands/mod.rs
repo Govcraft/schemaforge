@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod codegen;
 pub mod completions;
 pub mod export;
 pub mod hooks;
