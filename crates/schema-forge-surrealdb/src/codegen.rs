@@ -50,7 +50,10 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         } => {
             let surql_type = field_type_to_surql(new_type);
             let assertions = field_assertions(new_type);
-            let mut stmt = format!("DEFINE FIELD OVERWRITE {name} ON {table} TYPE {surql_type}");
+            let flex_prefix = if needs_flexible(new_type) { "FLEXIBLE " } else { "" };
+            let mut stmt = format!(
+                "DEFINE FIELD OVERWRITE {name} ON {table} {flex_prefix}TYPE {surql_type}"
+            );
             if !assertions.is_empty() {
                 stmt.push_str(&format!(" ASSERT {}", assertions.join(" AND ")));
             }
@@ -132,6 +135,16 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
     }
 }
 
+/// Returns `true` when a SurrealDB `DEFINE FIELD` for this type must carry
+/// the `FLEXIBLE` keyword. SCHEMAFULL tables otherwise reject unknown
+/// sub-keys on object-valued columns. Applies to `json` fields and the
+/// parent of a `composite { ... }` (the nested sub-fields are explicit,
+/// but the parent itself must still be FLEXIBLE or SurrealDB treats it as
+/// the schema of the whole object).
+fn needs_flexible(field_type: &FieldType) -> bool {
+    matches!(field_type, FieldType::Json | FieldType::Composite(_))
+}
+
 /// Convert a `FieldType` to its SurrealQL TYPE string.
 pub fn field_type_to_surql(field_type: &FieldType) -> String {
     match field_type {
@@ -203,10 +216,19 @@ fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
         base_type
     };
 
+    // FLEXIBLE is required for SCHEMAFULL `object` fields that need to accept
+    // arbitrary keys. Without it, SurrealDB silently drops unknown sub-fields,
+    // reducing a `json` column to an empty object on read-back.
+    let flex_prefix = if needs_flexible(&field.field_type) {
+        "FLEXIBLE "
+    } else {
+        ""
+    };
+
     let mut parts = Vec::new();
 
     // Build base DEFINE FIELD
-    let mut stmt = format!("DEFINE FIELD {name} ON {table} TYPE {surql_type}");
+    let mut stmt = format!("DEFINE FIELD {name} ON {table} {flex_prefix}TYPE {surql_type}");
 
     // Gather assertions from type constraints
     let mut assertions = field_assertions(&field.field_type);
@@ -237,15 +259,31 @@ fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
         parts.push(format!("DEFINE INDEX {idx_name} ON {table} FIELDS {name};"));
     }
 
-    // If composite, emit nested DEFINE FIELD statements
+    // If composite, emit nested DEFINE FIELD statements. Apply the same
+    // option<> wrapping + assertion logic the top-level field gets, so
+    // optional sub-fields accept NONE and required sub-fields enforce it.
     if let FieldType::Composite(sub_fields) = &field.field_type {
         for sub in sub_fields {
             let nested_name = format!("{name}.{}", sub.name);
-            let nested_type = field_type_to_surql(&sub.field_type);
-            let mut nested_stmt =
-                format!("DEFINE FIELD {nested_name} ON {table} TYPE {nested_type}");
+            let nested_base = field_type_to_surql(&sub.field_type);
+            let nested_type = if !sub.is_required() && !nested_base.starts_with("option<") {
+                format!("option<{nested_base}>")
+            } else {
+                nested_base
+            };
+            let nested_flex = if needs_flexible(&sub.field_type) {
+                "FLEXIBLE "
+            } else {
+                ""
+            };
+            let mut nested_stmt = format!(
+                "DEFINE FIELD {nested_name} ON {table} {nested_flex}TYPE {nested_type}"
+            );
 
-            let nested_assertions = field_assertions(&sub.field_type);
+            let mut nested_assertions = field_assertions(&sub.field_type);
+            if sub.is_required() {
+                nested_assertions.push("$value != NONE".to_string());
+            }
             if !nested_assertions.is_empty() {
                 nested_stmt.push_str(&format!(" ASSERT {}", nested_assertions.join(" AND ")));
             }
@@ -544,6 +582,104 @@ mod tests {
         assert!(stmts[0].contains("DEFINE FIELD full_name"));
         assert!(stmts[1].contains("UPDATE Contact SET full_name = name"));
         assert!(stmts[2].contains("REMOVE FIELD name"));
+    }
+
+    #[test]
+    fn json_field_emits_flexible_object() {
+        let step = MigrationStep::AddField {
+            field: FieldDefinition::new(
+                FieldName::new("metadata").unwrap(),
+                FieldType::Json,
+            ),
+        };
+        let stmts = migration_step_to_surql("Employee", &step);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(
+            stmts[0],
+            "DEFINE FIELD metadata ON Employee FLEXIBLE TYPE option<object>;"
+        );
+    }
+
+    #[test]
+    fn required_json_field_emits_flexible_object_with_assertion() {
+        let step = MigrationStep::AddField {
+            field: FieldDefinition::with_modifiers(
+                FieldName::new("config").unwrap(),
+                FieldType::Json,
+                vec![FieldModifier::Required],
+            ),
+        };
+        let stmts = migration_step_to_surql("Workflow", &step);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(
+            stmts[0],
+            "DEFINE FIELD config ON Workflow FLEXIBLE TYPE object ASSERT $value != NONE;"
+        );
+    }
+
+    #[test]
+    fn composite_sub_fields_wrap_optionals_in_option() {
+        use schema_forge_core::types::{FieldDefinition, FieldType};
+        let step = MigrationStep::AddField {
+            field: FieldDefinition::new(
+                FieldName::new("home_address").unwrap(),
+                FieldType::Composite(vec![
+                    FieldDefinition::with_modifiers(
+                        FieldName::new("city").unwrap(),
+                        FieldType::Text(TextConstraints::unconstrained()),
+                        vec![FieldModifier::Required],
+                    ),
+                    FieldDefinition::new(
+                        FieldName::new("postal_code").unwrap(),
+                        FieldType::Text(TextConstraints::with_max_length(20)),
+                    ),
+                ]),
+            ),
+        };
+        let stmts = migration_step_to_surql("Employee", &step);
+        assert_eq!(stmts.len(), 3);
+        // Parent composite is FLEXIBLE so SurrealDB accepts the nested
+        // object (and any extra keys — though only declared sub-fields
+        // are enforced).
+        assert!(
+            stmts[0].contains("FLEXIBLE TYPE option<object>"),
+            "parent: {}",
+            stmts[0]
+        );
+        // Required sub-field keeps bare string and gets a $value != NONE
+        // assertion.
+        assert!(
+            stmts[1].contains("home_address.city")
+                && stmts[1].contains("TYPE string")
+                && !stmts[1].contains("option<string>")
+                && stmts[1].contains("$value != NONE"),
+            "required sub: {}",
+            stmts[1]
+        );
+        // Optional sub-field gets option<string> so SurrealDB accepts
+        // NONE. The text max assertion still applies.
+        assert!(
+            stmts[2].contains("home_address.postal_code")
+                && stmts[2].contains("TYPE option<string>"),
+            "optional sub: {}",
+            stmts[2]
+        );
+    }
+
+    #[test]
+    fn change_type_to_json_emits_flexible() {
+        let step = MigrationStep::ChangeType {
+            name: FieldName::new("metadata").unwrap(),
+            old_type: FieldType::Text(TextConstraints::unconstrained()),
+            new_type: FieldType::Json,
+            transform: schema_forge_core::migration::ValueTransform::Identity,
+        };
+        let stmts = migration_step_to_surql("Employee", &step);
+        assert_eq!(stmts.len(), 1);
+        assert_eq!(
+            stmts[0],
+            "DEFINE FIELD OVERWRITE metadata ON Employee FLEXIBLE TYPE object;"
+        );
     }
 
     #[test]
