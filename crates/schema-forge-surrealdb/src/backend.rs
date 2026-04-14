@@ -395,7 +395,10 @@ impl EntityStore for SurrealBackend {
             entities.push(surreal_row_to_entity(&schema_name, row)?);
         }
 
-        Ok(QueryResult::new(entities, None))
+        // Also compute the total matching rows (ignoring limit/offset) so
+        // paginated list envelopes can report an accurate total.
+        let total = self.count(query).await?;
+        Ok(QueryResult::new(entities, Some(total)))
     }
 
     async fn count(&self, query: &Query) -> Result<usize, BackendError> {

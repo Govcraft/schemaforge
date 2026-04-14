@@ -92,6 +92,7 @@ type EntityEnvelope = {
 type ListEnvelope = {
   entities: EntityEnvelope[]
   count: number
+  total_count?: number
 }
 
 function flatten<T>(envelope: EntityEnvelope): T {
@@ -141,7 +142,10 @@ export async function list{{ entity.pascal }}s(params: ListParams = {}): Promise
   const envelope = await request<ListEnvelope>(
     `${FORGE_API_PREFIX}/schemas/{{ entity.schema_name }}/entities${listQuery(params)}`,
   )
-  return { items: envelope.entities.map((e) => flatten<{{ entity.pascal }}>(e)), total: envelope.count }
+  return {
+    items: envelope.entities.map((e) => flatten<{{ entity.pascal }}>(e)),
+    total: envelope.total_count ?? envelope.count,
+  }
 }
 
 export async function get{{ entity.pascal }}(id: string): Promise<{{ entity.pascal }}> {

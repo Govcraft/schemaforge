@@ -428,7 +428,11 @@ impl EntityStore for PgBackend {
             entities.push(row_to_entity(row, &schema_name, Some(&schema_def))?);
         }
 
-        Ok(QueryResult::new(entities, None))
+        // Also compute the total matching rows (ignoring limit/offset) so
+        // paginated list envelopes can report an accurate total. count_to_sql
+        // reuses the same WHERE clause and skips limit/offset/sort.
+        let total = self.count(query).await?;
+        Ok(QueryResult::new(entities, Some(total)))
     }
 
     async fn count(&self, query: &Query) -> Result<usize, BackendError> {

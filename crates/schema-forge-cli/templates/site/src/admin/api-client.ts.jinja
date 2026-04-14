@@ -53,6 +53,7 @@ type EntityEnvelope = {
 type ListEntitiesEnvelope = {
   entities: EntityEnvelope[]
   count: number
+  total_count?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -374,7 +375,7 @@ export async function listEntities(
   )
   return {
     rows: env.entities.map((e) => flatten(e) as EntityRow),
-    count: env.count,
+    count: env.total_count ?? env.count,
   }
 }
 
