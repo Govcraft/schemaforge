@@ -93,6 +93,8 @@ fn fresh_generate_emits_expected_tree() {
         "src/App.tsx",
         "src/index.css",
         "src/lib/utils.ts",
+        "src/lib/auth.ts",
+        "src/lib/require-auth.tsx",
         "src/components/ui/button.tsx",
         "src/components/ui/input.tsx",
         "src/components/ui/label.tsx",
@@ -109,6 +111,7 @@ fn fresh_generate_emits_expected_tree() {
 
     // Preserve pages
     for f in [
+        "src/pages/login.tsx",
         "src/pages/employee/list.tsx",
         "src/pages/employee/detail.tsx",
         "src/pages/employee/edit.tsx",
@@ -120,7 +123,26 @@ fn fresh_generate_emits_expected_tree() {
     let api = fs::read_to_string(out_dir.join("src/generated/api-client.ts")).unwrap();
     assert!(api.contains("listEmployees"));
     assert!(api.contains("const SCHEMA = \"Employee\""));
-    assert!(api.contains("/schemas/${SCHEMA}/entities"));
+    // Task 4: client hits the versioned forge API prefix.
+    assert!(api.contains("FORGE_API_PREFIX = \"/api/v1/forge\""));
+    assert!(api.contains("${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities"));
+    // Task 4: updates go through PATCH, not PUT.
+    assert!(api.contains("method: \"PATCH\""));
+    assert!(!api.contains("method: \"PUT\""));
+    // Task 4: the client threads the Bearer token through tokenStore.
+    assert!(api.contains("tokenStore.get()"));
+    assert!(api.contains("Bearer ${token}"));
+
+    // Task 4: auth.ts exposes the expected surface.
+    let auth_ts = fs::read_to_string(out_dir.join("src/lib/auth.ts")).unwrap();
+    assert!(auth_ts.contains("/api/v1/forge/auth/login"));
+    assert!(auth_ts.contains("export const tokenStore"));
+    assert!(auth_ts.contains("export function isAuthenticated"));
+
+    // Task 4: App.tsx wires RequireAuth and /login.
+    let app_tsx = fs::read_to_string(out_dir.join("src/App.tsx")).unwrap();
+    assert!(app_tsx.contains("<RequireAuth>"));
+    assert!(app_tsx.contains("path=\"/login\""));
 }
 
 #[test]
@@ -196,6 +218,46 @@ fn preserve_pages_survive_rerun() {
 
     let after = fs::read_to_string(&list_path).unwrap();
     assert_eq!(after, "// user edit\n");
+}
+
+#[test]
+fn login_page_is_preserve_mode() {
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+    write_schemas(&schema_dir, V0_EMPLOYEE);
+
+    run_generate(&schema_dir, &out_dir, "Employee", &[])
+        .assert()
+        .success();
+
+    let login_path = out_dir.join("src/pages/login.tsx");
+    fs::write(&login_path, "// hand-styled login page\n").unwrap();
+
+    run_generate(&schema_dir, &out_dir, "Employee", &[])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(&login_path).unwrap(),
+        "// hand-styled login page\n"
+    );
+}
+
+#[test]
+fn regenerate_after_fresh_build_passes_check() {
+    // Idempotency across the new files: fresh generate → --check clean.
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+    write_schemas(&schema_dir, V0_EMPLOYEE);
+
+    run_generate(&schema_dir, &out_dir, "Employee", &[])
+        .assert()
+        .success();
+    run_generate(&schema_dir, &out_dir, "Employee", &["--check"])
+        .assert()
+        .success();
 }
 
 #[test]

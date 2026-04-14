@@ -179,6 +179,14 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
     plan.push(owned("src/App.tsx", renderer.render("src/App.tsx", ctx)?));
     plan.push(owned("src/index.css", vendor::INDEX_CSS.to_string()));
     plan.push(owned("src/lib/utils.ts", vendor::SHADCN_UTILS_TS.to_string()));
+    plan.push(owned(
+        "src/lib/auth.ts",
+        renderer.render("src/lib/auth.ts", ctx)?,
+    ));
+    plan.push(owned(
+        "src/lib/require-auth.tsx",
+        renderer.render("src/lib/require-auth.tsx", ctx)?,
+    ));
 
     // ---- shadcn primitives (vendored, owned, unmodified) ----
     plan.push(owned("src/components/ui/button.tsx", vendor::SHADCN_BUTTON.to_string()));
@@ -204,6 +212,12 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
     plan.push(owned(
         "src/generated/route-manifest.ts",
         renderer.render("src/generated/route-manifest.ts", ctx)?,
+    ));
+
+    // ---- Top-level login page (Preserve: users restyle freely) ----
+    plan.push(preserve(
+        "src/pages/login.tsx",
+        renderer.render("src/pages/login.tsx", ctx)?,
     ));
 
     // ---- pages/<entity>/ (Preserve: scaffold-once) ----

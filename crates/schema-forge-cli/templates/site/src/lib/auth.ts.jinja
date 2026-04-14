@@ -1,0 +1,75 @@
+// Owned file: regenerated on every `schema-forge site generate` run.
+//
+// Client-side auth plumbing:
+// - `tokenStore`: sessionStorage-backed PASETO token holder (SSR-safe).
+// - `login(...)`: POSTs credentials to /api/v1/forge/auth/login and stores the
+//   returned token. Does NOT go through the api-client `request()` helper to
+//   avoid the 401 redirect loop when the store is empty.
+// - `logout()`: clears the token and navigates to /login.
+// - `isAuthenticated()`: cheap presence check used by the route guard.
+
+const STORAGE_KEY = "schemaforge.token"
+
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
+const LOGIN_PATH = "/api/v1/forge/auth/login"
+
+export type LoginResponse = {
+  token: string
+  expires_at: string
+}
+
+export const tokenStore = {
+  get(): string | null {
+    if (typeof window === "undefined") return null
+    try {
+      return window.sessionStorage.getItem(STORAGE_KEY)
+    } catch {
+      return null
+    }
+  },
+  set(token: string): void {
+    if (typeof window === "undefined") return
+    try {
+      window.sessionStorage.setItem(STORAGE_KEY, token)
+    } catch {
+      // sessionStorage quota / private mode: silently drop. The next request
+      // will get a 401 and the guard will send the user to /login again.
+    }
+  },
+  clear(): void {
+    if (typeof window === "undefined") return
+    try {
+      window.sessionStorage.removeItem(STORAGE_KEY)
+    } catch {
+      // Ignore — clear is best-effort.
+    }
+  },
+}
+
+export async function login(username: string, password: string): Promise<LoginResponse> {
+  const res = await fetch(`${API_BASE}${LOGIN_PATH}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Invalid username or password")
+    }
+    throw new Error(`Login failed: ${res.status}`)
+  }
+  const body = (await res.json()) as LoginResponse
+  tokenStore.set(body.token)
+  return body
+}
+
+export function logout(): void {
+  tokenStore.clear()
+  if (typeof window !== "undefined") {
+    window.location.replace("/login")
+  }
+}
+
+export function isAuthenticated(): boolean {
+  return tokenStore.get() !== null
+}

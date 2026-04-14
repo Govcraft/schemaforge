@@ -399,6 +399,13 @@ pub struct ServeArgs {
     /// Scaffolds starter templates into site/templates/ on first run.
     #[arg(long = "with-htmx")]
     pub with_htmx: bool,
+
+    /// Enable permissive CORS for local development.
+    ///
+    /// Allows all origins via acton-service's `with_development_cors()`.
+    /// DO NOT use in production.
+    #[arg(long = "dev-cors")]
+    pub dev_cors: bool,
 }
 
 /// Export subcommands.

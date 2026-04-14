@@ -1,10 +1,15 @@
 // Auto-generated typed REST client for schema `{{ entity.schema_name }}`.
 // Regenerated on every `schema-forge site generate` run.
 import type { {{ entity.pascal }} } from "./entity-types"
+import { tokenStore } from "@/lib/auth"
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
 
 const SCHEMA = "{{ entity.schema_name }}"
+
+/// URL prefix for SchemaForge's versioned forge API. Kept as a constant so a
+/// rename in the backend only touches one line.
+const FORGE_API_PREFIX = "/api/v1/forge"
 
 export type ListParams = {
   filter?: string
@@ -19,15 +24,32 @@ export type ListResponse<T> = {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = tokenStore.get()
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  }
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`
+  }
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
+    headers,
   })
+  if (res.status === 401) {
+    tokenStore.clear()
+    if (typeof window !== "undefined") {
+      const next = encodeURIComponent(window.location.pathname + window.location.search)
+      window.location.replace(`/login?next=${next}`)
+    }
+    throw new Error("API 401: unauthorized")
+  }
   if (!res.ok) {
     throw new Error(`API ${res.status}: ${await res.text()}`)
+  }
+  // 204 No Content: don't try to parse JSON.
+  if (res.status === 204) {
+    return undefined as T
   }
   return res.json() as Promise<T>
 }
@@ -39,29 +61,29 @@ export async function list{{ entity.pascal }}s(params: ListParams = {}): Promise
   if (params.limit !== undefined) qs.set("limit", String(params.limit))
   if (params.offset !== undefined) qs.set("offset", String(params.offset))
   const suffix = qs.toString() ? `?${qs.toString()}` : ""
-  return request<ListResponse<{{ entity.pascal }}>>(`/schemas/${SCHEMA}/entities${suffix}`)
+  return request<ListResponse<{{ entity.pascal }}>>(`${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities${suffix}`)
 }
 
 export async function get{{ entity.pascal }}(id: string): Promise<{{ entity.pascal }}> {
-  return request<{{ entity.pascal }}>(`/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`)
+  return request<{{ entity.pascal }}>(`${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`)
 }
 
 export async function create{{ entity.pascal }}(body: Partial<{{ entity.pascal }}>): Promise<{{ entity.pascal }}> {
-  return request<{{ entity.pascal }}>(`/schemas/${SCHEMA}/entities`, {
+  return request<{{ entity.pascal }}>(`${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities`, {
     method: "POST",
     body: JSON.stringify(body),
   })
 }
 
 export async function update{{ entity.pascal }}(id: string, body: Partial<{{ entity.pascal }}>): Promise<{{ entity.pascal }}> {
-  return request<{{ entity.pascal }}>(`/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`, {
-    method: "PUT",
+  return request<{{ entity.pascal }}>(`${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`, {
+    method: "PATCH",
     body: JSON.stringify(body),
   })
 }
 
 export async function delete{{ entity.pascal }}(id: string): Promise<void> {
-  await request<void>(`/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`, {
+  await request<void>(`${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`, {
     method: "DELETE",
   })
 }

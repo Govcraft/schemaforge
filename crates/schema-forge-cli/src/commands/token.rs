@@ -24,6 +24,32 @@ fn init_key(args: InitKeyArgs, output: &OutputContext) -> Result<(), CliError> {
         });
     }
 
+    write_new_paseto_key(path)?;
+
+    output.success(&format!("PASETO key written to {}", path.display()));
+    output.status("  Add to .gitignore: keys/");
+    Ok(())
+}
+
+/// Ensure a PASETO V4 symmetric key exists at `path`.
+///
+/// If the file already exists this is a no-op. Otherwise, a fresh 32-byte
+/// random key is written and (on Unix) locked down to `0o600`.
+///
+/// Used by `schema-forge serve` to make the login endpoint work out of the
+/// box with a stock `config.toml` and no manual key provisioning.
+pub fn ensure_paseto_key(path: &std::path::Path) -> Result<(), CliError> {
+    if path.exists() {
+        return Ok(());
+    }
+    write_new_paseto_key(path)
+}
+
+/// Write a fresh 32-byte random PASETO V4 key to `path`.
+///
+/// Caller is responsible for checking that the path does not already exist
+/// when overwrite protection is desired.
+fn write_new_paseto_key(path: &std::path::Path) -> Result<(), CliError> {
     // Create parent directories
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -44,7 +70,7 @@ fn init_key(args: InitKeyArgs, output: &OutputContext) -> Result<(), CliError> {
             source: e,
         })?;
     std::fs::write(path, key).map_err(|e| CliError::Io {
-        path: path.clone(),
+        path: path.to_path_buf(),
         source: e,
     })?;
 
@@ -54,13 +80,11 @@ fn init_key(args: InitKeyArgs, output: &OutputContext) -> Result<(), CliError> {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o600);
         std::fs::set_permissions(path, perms).map_err(|e| CliError::Io {
-            path: path.clone(),
+            path: path.to_path_buf(),
             source: e,
         })?;
     }
 
-    output.success(&format!("PASETO key written to {}", path.display()));
-    output.status("  Add to .gitignore: keys/");
     Ok(())
 }
 

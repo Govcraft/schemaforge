@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::Router;
 
 use crate::error::ForgeError;
-use crate::routes::forge_routes;
+use crate::routes::{auth_routes, forge_routes};
 use crate::state::{
     DynAuthStore, DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry,
 };
@@ -396,7 +396,7 @@ impl SchemaForgeExtension {
     pub fn versioned_forge_routes(
         router: Router<AppState<SchemaForgeConfig>>,
     ) -> Router<AppState<SchemaForgeConfig>> {
-        router.nest("/forge", forge_routes())
+        router.nest("/forge", forge_routes().merge(auth_routes()))
     }
 
     /// Register admin UI routes onto an existing Router.

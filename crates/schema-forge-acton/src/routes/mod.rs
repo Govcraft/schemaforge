@@ -1,6 +1,9 @@
+pub mod auth;
 pub mod entities;
 pub mod query_params;
 pub mod schemas;
+
+pub use auth::auth_routes;
 
 use axum::routing::{get, post};
 use axum::Router;

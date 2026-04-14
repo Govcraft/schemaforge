@@ -2,6 +2,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use acton_service::auth::config::{PasetoGenerationConfig, TokenGenerationConfig};
+use acton_service::auth::tokens::paseto_generator::PasetoGenerator;
 use acton_service::prelude::ActorHandleInterface;
 use acton_service::service_builder::ServiceBuilder;
 use acton_service::versioning::{ApiVersion, VersionedApiBuilder};
@@ -56,8 +58,8 @@ pub async fn run(
 
     // 3. Connect to database (try remote, fail explicitly for production)
     let connected = connect_with_retries(&db_params, output).await?;
-    let backend_arc = connected.backend;
-    let auth_store = connected.auth_store;
+    let backend_arc = connected.backend.clone();
+    let auth_store = connected.auth_store.clone();
 
     // 4. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
     let init_data = SchemaForgeExtension::build_init(backend_arc.clone(), None)
@@ -141,7 +143,7 @@ pub async fn run(
     let extension = if enable_admin || enable_widget || enable_site {
         let mut builder = SchemaForgeExtension::builder()
             .with_backend_arc(init_data.backend.clone())
-            .with_auth_store_arc(auth_store);
+            .with_auth_store_arc(auth_store.clone());
         if let Some(ref password) = args.admin_password {
             builder = builder.with_admin_credentials(args.admin_user.clone(), password.clone());
         }
@@ -160,12 +162,9 @@ pub async fn run(
         None
     };
 
-    // 8. Build versioned routes via acton-service, with optional frontend routes
-    let routes =
-        build_versioned_routes(extension.as_ref(), enable_admin, enable_widget, enable_site);
-
-    // 8. Configure and serve via acton-service
-    // Load from config.toml (picks up [token] section), then override serve-specific fields
+    // Configure acton-service before building routes so we can read the token
+    // config, mint a PasetoGenerator, and wire the login endpoint's Extension
+    // layer onto the versioned router.
     let mut svc_config =
         acton_service::config::Config::<schema_forge_acton::SchemaForgeConfig>::load_for_service(
             "schemaforge",
@@ -179,23 +178,50 @@ pub async fn run(
         svc_config.surrealdb = Some(build_surrealdb_config(&db_params));
     }
 
-    // Add frontend route prefixes to token auth's public_paths so the PASETO/JWT
-    // middleware passes through without rejecting session-based browser requests.
-    if enable_admin || enable_widget || enable_site {
-        let mut public_paths = Vec::new();
+    // Token auth public paths: frontend prefixes (when their UI is enabled)
+    // plus the JSON login endpoint, which must always be reachable without
+    // a bearer token so clients can obtain one.
+    if let Some(acton_service::config::TokenConfig::Paseto(ref mut pc)) = svc_config.token {
+        pc.public_paths.push("/api/v1/forge/auth/login".to_string());
         if enable_admin {
-            public_paths.push("/admin".to_string());
+            pc.public_paths.push("/admin".to_string());
         }
         if enable_widget {
-            public_paths.push("/forge".to_string());
+            pc.public_paths.push("/forge".to_string());
         }
         if enable_site {
-            public_paths.push("/site".to_string());
-        }
-        if let Some(acton_service::config::TokenConfig::Paseto(ref mut pc)) = svc_config.token {
-            pc.public_paths.extend(public_paths);
+            pc.public_paths.push("/site".to_string());
         }
     }
+
+    // Opt-in permissive CORS for local development. Warns loudly in logs.
+    if args.dev_cors {
+        tracing::warn!(
+            "dev CORS is enabled — allowing all origins. DO NOT use this in production."
+        );
+        svc_config.with_development_cors();
+    } else if svc_config.middleware.cors_mode == "permissive" {
+        tracing::warn!(
+            "config.toml sets [middleware] cors_mode = \"permissive\" — allowing all origins. \
+             DO NOT use this in production."
+        );
+    }
+
+    // Build the PASETO generator using the same key file that the token
+    // middleware will use to validate incoming tokens. The key file is
+    // auto-created on first boot when missing so `serve` is self-bootstrapping.
+    let paseto_generator = build_paseto_generator(&svc_config, output)?;
+
+    // 8. Build versioned routes via acton-service, with optional frontend routes.
+    let login_auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = auth_store.clone();
+    let routes = build_versioned_routes(
+        extension.as_ref(),
+        enable_admin,
+        enable_widget,
+        enable_site,
+        login_auth_store,
+        paseto_generator,
+    );
 
     let bind_addr = format!("{}:{}", args.host, args.port);
     output.success(&format!(
@@ -397,6 +423,70 @@ async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError
     }
 }
 
+/// Build a [`PasetoGenerator`] from the loaded acton-service config.
+///
+/// The generator shares the same key file as the token middleware so minted
+/// tokens round-trip through validation. If the key file does not exist yet
+/// (e.g. a fresh `mem://` smoke test before `schemaforge token init-key`
+/// has been run) it is auto-generated via
+/// [`crate::commands::token::ensure_paseto_key`].
+///
+/// Returns an error only when PASETO is not configured (e.g. the user has
+/// disabled `[token]` in `config.toml`, which would also disable token auth
+/// and therefore the login endpoint).
+fn build_paseto_generator(
+    svc_config: &acton_service::config::Config<schema_forge_acton::SchemaForgeConfig>,
+    output: &OutputContext,
+) -> Result<Arc<PasetoGenerator>, CliError> {
+    let paseto_cfg = match &svc_config.token {
+        Some(acton_service::config::TokenConfig::Paseto(pc)) => pc,
+        _ => {
+            return Err(CliError::Config {
+                message: "[token] must be configured with format = \"paseto\" for the login \
+                          endpoint to mint tokens"
+                    .to_string(),
+            });
+        }
+    };
+
+    crate::commands::token::ensure_paseto_key(&paseto_cfg.key_path)?;
+    if !paseto_cfg.key_path.exists() {
+        return Err(CliError::Config {
+            message: format!(
+                "PASETO key file missing after ensure_paseto_key at {}",
+                paseto_cfg.key_path.display()
+            ),
+        });
+    }
+    output.status(&format!(
+        "  PASETO key loaded from {}",
+        paseto_cfg.key_path.display()
+    ));
+
+    let paseto_gen_config = PasetoGenerationConfig {
+        version: paseto_cfg.version.clone(),
+        purpose: paseto_cfg.purpose.clone(),
+        key_path: paseto_cfg.key_path.clone(),
+        issuer: paseto_cfg.issuer.clone(),
+        audience: paseto_cfg.audience.clone(),
+    };
+    let token_gen_config = TokenGenerationConfig {
+        access_token_lifetime_secs: 3600,
+        issuer: paseto_cfg
+            .issuer
+            .clone()
+            .or_else(|| Some("schemaforge".to_string())),
+        audience: paseto_cfg.audience.clone(),
+        include_jti: true,
+    };
+
+    let generator =
+        PasetoGenerator::new(&paseto_gen_config, &token_gen_config).map_err(|e| CliError::Config {
+            message: format!("failed to build PASETO generator: {e}"),
+        })?;
+    Ok(Arc::new(generator))
+}
+
 /// Build an acton-service `SurrealDbConfig` from resolved CLI database parameters.
 ///
 /// This enables acton-service's health endpoint to report SurrealDB connection
@@ -430,11 +520,20 @@ fn build_versioned_routes(
     enable_admin: bool,
     enable_widget: bool,
     enable_site: bool,
+    auth_store: Arc<dyn schema_forge_acton::DynAuthStore>,
+    paseto_generator: Arc<PasetoGenerator>,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
+    // Cloned into the add_version closure so the login handler can
+    // extract them via axum::Extension.
+    let auth_store_layer = auth_store;
+    let generator_layer = paseto_generator;
     let mut builder = VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
         .with_base_path("/api")
-        .add_version(ApiVersion::V1, |router| {
+        .add_version(ApiVersion::V1, move |router| {
+            use axum::Extension;
             SchemaForgeExtension::versioned_forge_routes(router)
+                .layer(Extension(auth_store_layer))
+                .layer(Extension(generator_layer))
         });
 
     if let Some(ext) = extension {
@@ -561,8 +660,34 @@ mod tests {
 
     #[test]
     fn build_versioned_routes_is_callable() {
-        // Compile-time verification: builds routes without an extension
-        let _routes = build_versioned_routes(None, false, false, false);
+        // Compile-time verification: builds routes without an extension.
+        // A dummy PasetoGenerator is constructed from a random 32-byte symmetric
+        // key so we don't need a key file on disk.
+        use acton_service::auth::config::TokenGenerationConfig;
+        use schema_forge_surrealdb::SurrealBackend;
+
+        let key = [0u8; 32];
+        let generator = Arc::new(PasetoGenerator::with_symmetric_key(
+            key,
+            TokenGenerationConfig::default(),
+        ));
+
+        // We need an AuthStore; reuse the in-memory SurrealBackend builder via
+        // a blocking runtime because this helper test is synchronous.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let backend = rt
+            .block_on(SurrealBackend::connect_with_auth(
+                "mem://",
+                "test",
+                "test",
+                None,
+                None,
+            ))
+            .unwrap();
+        let auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = Arc::new(backend);
+
+        let _routes =
+            build_versioned_routes(None, false, false, false, auth_store, generator);
     }
 
     #[cfg(feature = "surrealdb")]

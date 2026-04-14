@@ -55,6 +55,18 @@ impl SiteRenderer {
             "../../../templates/site/src/generated/route-manifest.ts.jinja"
         );
         add!(
+            "src/lib/auth.ts",
+            "../../../templates/site/src/lib/auth.ts.jinja"
+        );
+        add!(
+            "src/lib/require-auth.tsx",
+            "../../../templates/site/src/lib/require-auth.tsx.jinja"
+        );
+        add!(
+            "src/pages/login.tsx",
+            "../../../templates/site/src/pages/login.tsx.jinja"
+        );
+        add!(
             "src/pages/list.tsx",
             "../../../templates/site/src/pages/list.tsx.jinja"
         );
