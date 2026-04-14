@@ -17,3 +17,6 @@ target/
 .worktrees/
 keys/
 config.local.toml
+
+# Generated React site from `schemaforge site generate`
+/site/
