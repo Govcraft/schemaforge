@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use schema_forge_core::types::{
     Annotation, Cardinality, DefaultValue, EnumColor, EnumVariants, FieldAnnotation,
     FieldDefinition, FieldModifier, FieldName, FieldType, FloatConstraints, FormatType, HookEvent,
-    IntegerConstraints, SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind,
-    TextConstraints, WidgetType,
+    IntegerConstraints, ListHint, SchemaDefinition, SchemaId, SchemaName, SchemaVersion,
+    TenantKind, TextConstraints, WidgetType,
 };
 
 use crate::error::{DslError, Span};
@@ -175,6 +175,23 @@ impl Parser {
                     kind: ann.kind().to_string(),
                     span: schema_span,
                 });
+            }
+        }
+
+        // Validate at most one `@list(primary)` across the schema's fields.
+        let mut first_primary: Option<String> = None;
+        for field in &fields {
+            if field.list_hint() == Some(ListHint::Primary) {
+                match &first_primary {
+                    None => first_primary = Some(field.name.as_str().to_string()),
+                    Some(first) => {
+                        return Err(DslError::MultiplePrimaryListHints {
+                            first_field: first.clone(),
+                            second_field: field.name.as_str().to_string(),
+                            span: schema_span,
+                        });
+                    }
+                }
             }
         }
 
@@ -495,6 +512,19 @@ impl Parser {
                 Ok(FieldAnnotation::Widget { widget_type })
             }
             "kanban_column" => Ok(FieldAnnotation::KanbanColumn),
+            "list" => {
+                self.expect(&Token::LParen)?;
+                let hint_tok = self.expect_ident("list hint (primary|column|hidden)")?;
+                let hint = ListHint::from_str(&hint_tok.text).map_err(|err| {
+                    DslError::UnknownListHint {
+                        value: err.value,
+                        valid: err.valid,
+                        span: hint_tok.span.clone(),
+                    }
+                })?;
+                self.expect(&Token::RParen)?;
+                Ok(FieldAnnotation::List { hint })
+            }
             "enum_colors" => self.parse_enum_colors_annotation(field_type, name_tok.span),
             "format" => {
                 self.expect(&Token::LParen)?;
@@ -2048,6 +2078,81 @@ mod tests {
             .expect("enum_colors() must return Some");
         assert_eq!(colors.get("a"), Some(&EnumColor::Green));
         assert_eq!(colors.get("b"), Some(&EnumColor::Red));
+    }
+
+    // -- @list annotation --
+
+    #[test]
+    fn parse_list_primary() {
+        let schema = parse_one(r#"schema S { title: text @list(primary) }"#);
+        assert_eq!(
+            schema.fields[0].list_hint(),
+            Some(ListHint::Primary)
+        );
+    }
+
+    #[test]
+    fn parse_list_column() {
+        let schema = parse_one(r#"schema S { amount: integer @list(column) }"#);
+        assert_eq!(schema.fields[0].list_hint(), Some(ListHint::Column));
+    }
+
+    #[test]
+    fn parse_list_hidden() {
+        let schema = parse_one(r#"schema S { secret: text @list(hidden) }"#);
+        assert_eq!(schema.fields[0].list_hint(), Some(ListHint::Hidden));
+    }
+
+    #[test]
+    fn parse_list_all_variants_round_trip() {
+        for v in ListHint::VARIANTS {
+            let source = format!(r#"schema S {{ f: text @list({}) }}"#, v.as_str());
+            let schema = parse_one(&source);
+            assert_eq!(schema.fields[0].list_hint(), Some(*v));
+        }
+    }
+
+    #[test]
+    fn error_list_unknown_hint() {
+        let result = parse(r#"schema S { f: text @list(bogus) }"#);
+        let errors = result.expect_err("unknown list hint must be rejected");
+        match &errors[0] {
+            DslError::UnknownListHint { value, valid, .. } => {
+                assert_eq!(value, "bogus");
+                assert!(valid.contains(&"primary"));
+            }
+            other => panic!("expected UnknownListHint, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_list_multiple_primary() {
+        let result = parse(
+            r#"schema S { a: text @list(primary) b: text @list(primary) }"#,
+        );
+        let errors = result.expect_err("multiple @list(primary) must be rejected");
+        match &errors[0] {
+            DslError::MultiplePrimaryListHints {
+                first_field,
+                second_field,
+                ..
+            } => {
+                assert_eq!(first_field, "a");
+                assert_eq!(second_field, "b");
+            }
+            other => panic!("expected MultiplePrimaryListHints, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_primary_does_not_conflict_across_schemas() {
+        // Two schemas each with their own @list(primary) must both parse.
+        let schemas = parse(
+            r#"schema A { title: text @list(primary) }
+schema B { title: text @list(primary) }"#,
+        )
+        .unwrap();
+        assert_eq!(schemas.len(), 2);
     }
 
     // -- @dashboard annotation --

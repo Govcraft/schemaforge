@@ -160,6 +160,21 @@ impl EntityView {
             }
         }
         let has_relation_one = fields.iter().any(has_relation_one_field);
+        let display_field = def.display_field().map(|s| s.to_string());
+
+        // `@display("field")` auto-promotes to `primary` when no explicit
+        // `@list(primary)` exists anywhere on the schema. Validation in the
+        // DSL layer already rejects multiple explicit primaries, so at
+        // most one field can carry `"primary"` after this step runs.
+        let has_explicit_primary = fields.iter().any(|f| f.list_placement == "primary");
+        if !has_explicit_primary {
+            if let Some(ref display) = display_field {
+                if let Some(f) = fields.iter_mut().find(|f| &f.leaf == display) {
+                    f.list_placement = "primary".to_string();
+                }
+            }
+        }
+
         let pascal = name.to_pascal_case();
         Ok(Self {
             pascal_plural: pluralize(&pascal),
@@ -169,7 +184,7 @@ impl EntityView {
             title: name.to_title_case(),
             schema_name: name.to_string(),
             fields,
-            display_field: def.display_field().map(|s| s.to_string()),
+            display_field,
             has_relation_one,
         })
     }
@@ -231,6 +246,17 @@ pub struct FieldView {
     /// Empty when the field carries no `@enum_colors` annotation; variants
     /// without an explicit entry render with the default neutral badge.
     pub enum_colors: BTreeMap<String, String>,
+    /// Resolved list-view placement for this field. Always one of
+    /// `"primary"`, `"column"`, or `"hidden"`, computed from the field's
+    /// `@list(...)` annotation with these fallbacks:
+    ///
+    /// 1. Explicit `@list(hint)` wins.
+    /// 2. If the schema's `@display("field")` points at this field and no
+    ///    explicit `@list(primary)` exists on the schema, it becomes `primary`.
+    /// 3. Fields whose kind is `rich_text`, `composite`, `array`,
+    ///    `relation_one`, `relation_many`, or `json` default to `hidden`.
+    /// 4. Everything else defaults to `column`.
+    pub list_placement: String,
 }
 
 /// Derive the canonical lowerCamelCase JS property name for a DSL field name.
@@ -284,6 +310,25 @@ pub fn make_field_view(
                     .collect()
             })
             .unwrap_or_default(),
+        // Default placement. `EntityView::from_schema` finalizes this
+        // after all fields are projected so it can apply the
+        // `@display(...)` auto-promotion rule with full schema context.
+        list_placement: match field.list_hint() {
+            Some(h) => h.as_str().to_string(),
+            None => default_list_placement(kind).to_string(),
+        },
+    }
+}
+
+/// Default placement for a field that carries no explicit `@list(...)`:
+/// heavyweight or link-shaped kinds stay out of the list by default,
+/// everything else renders as a column.
+fn default_list_placement(kind: &str) -> &'static str {
+    match kind {
+        "rich_text" | "composite" | "array" | "relation_one" | "relation_many" | "json" => {
+            "hidden"
+        }
+        _ => "column",
     }
 }
 

@@ -79,6 +79,9 @@ function EnumBadge({
   )
 }
 
+// Column curation is driven by each field's `@list(...)` hint (resolved in
+// the generator). `primary` is rendered first after ID with display styling;
+// `column` fields render in declaration order; `hidden` fields are omitted.
 const columns: ColumnDef<{{ entity.pascal }}>[] = [
   {
     accessorKey: "id",
@@ -90,7 +93,35 @@ const columns: ColumnDef<{{ entity.pascal }}>[] = [
     ),
   },
 {%- for f in entity.fields %}
-{%- if f.kind != "composite" %}
+{%- if f.list_placement == "primary" %}
+  {
+    accessorKey: "{{ f.leaf }}",
+    header: "{{ f.label }}",
+    cell: ({ row }) => (
+      <Link
+        className="font-semibold text-foreground hover:underline"
+        to={`/app/{{ entity.kebab }}/${row.original.id}`}
+      >
+{%- if f.kind == "enum" %}
+        <EnumBadge field="{{ f.leaf }}" value={row.original.{{ f.leaf }}} />
+{%- else %}
+        {formatFieldValue(row.original.{{ f.leaf }}, {
+          kind: "{{ f.kind }}",
+{%- if f.widget %}
+          widget: "{{ f.widget }}",
+{%- endif %}
+{%- if f.format %}
+          format: "{{ f.format }}",
+{%- endif %}
+        })}
+{%- endif %}
+      </Link>
+    ),
+  },
+{%- endif %}
+{%- endfor %}
+{%- for f in entity.fields %}
+{%- if f.list_placement == "column" %}
   {
     accessorKey: "{{ f.leaf }}",
     header: "{{ f.label }}",
@@ -115,20 +146,20 @@ const columns: ColumnDef<{{ entity.pascal }}>[] = [
 {%- endfor %}
 ]
 
-// Fields (excluding `id`) that correspond to real columns — used as the
+// Fields (excluding `id`) that correspond to visible columns — used as the
 // whitelist for click-to-sort.
 const SORTABLE_FIELDS: readonly string[] = [
 {%- for f in entity.fields %}
-{%- if f.kind != "composite" %}
+{%- if f.list_placement == "primary" or f.list_placement == "column" %}
   "{{ f.leaf }}",
 {%- endif %}
 {%- endfor %}
 ]
 
-// Text-like fields eligible for the contains filter.
+// Text-like visible fields eligible for the contains filter.
 const FILTERABLE_FIELDS: readonly string[] = [
 {%- for f in entity.fields %}
-{%- if f.kind == "text" or f.kind == "enum" %}
+{%- if (f.list_placement == "primary" or f.list_placement == "column") and (f.kind == "text" or f.kind == "enum") %}
   "{{ f.leaf }}",
 {%- endif %}
 {%- endfor %}

@@ -393,6 +393,94 @@ const VALID_ENUM_COLORS: &[&str] = &[
     "neutral", "gray", "red", "amber", "green", "blue", "purple", "violet", "teal", "rose",
 ];
 
+/// Closed set of hints accepted by `@list(hint)` — controls whether the
+/// field appears in the generated list view and how it is rendered.
+///
+/// The JSON / DSL representation is the `snake_case` form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ListHint {
+    /// The headline cell of the row — rendered with display styling.
+    /// At most one `Primary` per schema; the `@display("...")` field
+    /// auto-promotes to `Primary` if no explicit hint is declared.
+    Primary,
+    /// Show the field in the default list view. Ordering follows schema
+    /// declaration order.
+    Column,
+    /// Never show the field in a list view, even if it would otherwise
+    /// be included by default.
+    Hidden,
+}
+
+impl ListHint {
+    /// Every list-hint variant in declaration order.
+    pub const VARIANTS: &'static [Self] = &[Self::Primary, Self::Column, Self::Hidden];
+
+    /// Returns the canonical `snake_case` token for this hint.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Column => "column",
+            Self::Hidden => "hidden",
+        }
+    }
+}
+
+impl fmt::Display for ListHint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Error returned when [`ListHint::from_str`] cannot match the input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownListHint {
+    /// The token supplied by the caller.
+    pub value: String,
+    /// All valid list-hint tokens in canonical order.
+    pub valid: &'static [&'static str],
+}
+
+impl UnknownListHint {
+    /// Constructs a new error for the given unknown value.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            valid: VALID_LIST_HINTS,
+        }
+    }
+}
+
+impl fmt::Display for UnknownListHint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "unknown list hint '{}'; valid hints: {}",
+            self.value,
+            self.valid.join(", "),
+        )
+    }
+}
+
+impl std::error::Error for UnknownListHint {}
+
+impl FromStr for ListHint {
+    type Err = UnknownListHint;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "primary" => Ok(Self::Primary),
+            "column" => Ok(Self::Column),
+            "hidden" => Ok(Self::Hidden),
+            other => Err(UnknownListHint::new(other)),
+        }
+    }
+}
+
+/// Canonical list-hint token list for error reporting.
+const VALID_LIST_HINTS: &[&str] = &["primary", "column", "hidden"];
+
 /// Annotations that can be applied to individual fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "annotation")]
@@ -419,6 +507,10 @@ pub enum FieldAnnotation {
     EnumColors {
         colors: BTreeMap<String, EnumColor>,
     },
+    /// `@list(primary|column|hidden)` -- controls whether the field
+    /// appears in the generated list view and, for `primary`, marks it
+    /// as the headline cell rendered with display styling.
+    List { hint: ListHint },
 }
 
 impl FieldAnnotation {
@@ -431,6 +523,7 @@ impl FieldAnnotation {
             Self::KanbanColumn => "kanban_column",
             Self::Format { .. } => "format",
             Self::EnumColors { .. } => "enum_colors",
+            Self::List { .. } => "list",
         }
     }
 }
@@ -457,6 +550,7 @@ impl fmt::Display for FieldAnnotation {
                     .collect();
                 write!(f, "@enum_colors({})", parts.join(", "))
             }
+            Self::List { hint } => write!(f, "@list({hint})"),
         }
     }
 }

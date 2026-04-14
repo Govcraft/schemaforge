@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::field_annotation::{EnumColor, FieldAnnotation, FormatType, WidgetType};
+use super::field_annotation::{EnumColor, FieldAnnotation, FormatType, ListHint, WidgetType};
 use super::field_modifier::FieldModifier;
 use super::field_name::FieldName;
 use super::field_type::FieldType;
@@ -131,6 +131,14 @@ impl FieldDefinition {
     pub fn enum_colors(&self) -> Option<&BTreeMap<String, EnumColor>> {
         self.annotations.iter().find_map(|a| match a {
             FieldAnnotation::EnumColors { colors } => Some(colors),
+            _ => None,
+        })
+    }
+
+    /// Returns the `@list(...)` hint if present.
+    pub fn list_hint(&self) -> Option<ListHint> {
+        self.annotations.iter().find_map(|a| match a {
+            FieldAnnotation::List { hint } => Some(*hint),
             _ => None,
         })
     }

@@ -117,6 +117,21 @@ pub enum DslError {
         valid: &'static [&'static str],
         span: Span,
     },
+
+    /// `@list(...)` used a hint keyword that is not in the canonical
+    /// list-hint vocabulary.
+    UnknownListHint {
+        value: String,
+        valid: &'static [&'static str],
+        span: Span,
+    },
+
+    /// A schema declared more than one `@list(primary)` field.
+    MultiplePrimaryListHints {
+        first_field: String,
+        second_field: String,
+        span: Span,
+    },
 }
 
 impl fmt::Display for DslError {
@@ -243,6 +258,23 @@ impl fmt::Display for DslError {
                     f,
                     "unknown enum color \"{value}\" at {span}\n  valid colors: {}",
                     valid.join(", "),
+                )
+            }
+            Self::UnknownListHint { value, valid, span } => {
+                write!(
+                    f,
+                    "unknown list hint '{value}' at {span}\n  valid hints: {}",
+                    valid.join(", "),
+                )
+            }
+            Self::MultiplePrimaryListHints {
+                first_field,
+                second_field,
+                span,
+            } => {
+                write!(
+                    f,
+                    "@list(primary) at {span} on field '{second_field}' conflicts with earlier @list(primary) on field '{first_field}'; at most one primary per schema"
                 )
             }
         }

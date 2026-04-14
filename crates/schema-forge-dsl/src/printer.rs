@@ -346,6 +346,11 @@ fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
             }
             output.push(')');
         }
+        FieldAnnotation::List { hint } => {
+            output.push_str("@list(");
+            output.push_str(hint.as_str());
+            output.push(')');
+        }
         _ => {
             output.push_str("@unknown_field_annotation");
         }
@@ -963,6 +968,25 @@ mod tests {
             parsed[0].fields[0].annotations,
             reparsed[0].fields[0].annotations
         );
+    }
+
+    #[test]
+    fn roundtrip_list_hints() {
+        let source = r#"schema S {
+    title: text @list(primary)
+    amount: integer @list(column)
+    notes: richtext @list(hidden)
+}
+"#;
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        for i in 0..3 {
+            assert_eq!(
+                parsed[0].fields[i].annotations,
+                reparsed[0].fields[i].annotations
+            );
+        }
     }
 
     #[test]

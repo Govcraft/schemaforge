@@ -26,8 +26,9 @@ pub use dynamic_value::DynamicValue;
 pub use entity_id::EntityId;
 pub use enum_variants::EnumVariants;
 pub use field_annotation::{
-    sanitize_schema_metadata_json, EnumColor, FieldAnnotation, FormatType, UnknownEnumColor,
-    UnknownFormatType, UnknownWidgetType, WidgetRepair, WidgetType,
+    sanitize_schema_metadata_json, EnumColor, FieldAnnotation, FormatType, ListHint,
+    UnknownEnumColor, UnknownFormatType, UnknownListHint, UnknownWidgetType, WidgetRepair,
+    WidgetType,
 };
 pub use field_definition::FieldDefinition;
 pub use field_modifier::FieldModifier;

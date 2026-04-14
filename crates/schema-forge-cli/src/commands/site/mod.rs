@@ -415,8 +415,8 @@ fn preserve(path: &str, contents: String) -> FilePlan {
 mod tests {
     use super::*;
     use schema_forge_core::types::{
-        EnumColor, EnumVariants, FieldAnnotation, FieldDefinition, FieldModifier, FieldName,
-        FieldType, IntegerConstraints, SchemaId, SchemaName, TextConstraints,
+        Annotation, EnumColor, EnumVariants, FieldAnnotation, FieldDefinition, FieldModifier,
+        FieldName, FieldType, IntegerConstraints, ListHint, SchemaId, SchemaName, TextConstraints,
     };
     use std::collections::BTreeMap;
 
@@ -533,5 +533,135 @@ mod tests {
             rendered.contains("<EnumBadge field=\"stage\""),
             "enum column must render via EnumBadge"
         );
+    }
+
+    fn schema_with_list_hints() -> SchemaDefinition {
+        // Fields carry a mix of explicit hints and default behavior so we
+        // can assert the full partition + auto-hide policy in one fixture.
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Opportunity").unwrap(),
+            vec![
+                FieldDefinition::with_modifiers(
+                    FieldName::new("title").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                    vec![FieldModifier::Required],
+                ),
+                // Explicit column hint.
+                FieldDefinition::with_annotations(
+                    FieldName::new("stage").unwrap(),
+                    FieldType::Enum(
+                        EnumVariants::new(vec!["new".into(), "won".into()]).unwrap(),
+                    ),
+                    vec![FieldModifier::Required],
+                    vec![FieldAnnotation::List {
+                        hint: ListHint::Column,
+                    }],
+                ),
+                // Rich text auto-hides by default.
+                FieldDefinition::new(
+                    FieldName::new("description").unwrap(),
+                    FieldType::RichText,
+                ),
+                // Unannotated integer -> column.
+                FieldDefinition::new(
+                    FieldName::new("pwin").unwrap(),
+                    FieldType::Integer(IntegerConstraints::unconstrained()),
+                ),
+                // Explicit hidden even though it would otherwise show.
+                FieldDefinition::with_annotations(
+                    FieldName::new("internal_flag").unwrap(),
+                    FieldType::Boolean,
+                    vec![],
+                    vec![FieldAnnotation::List {
+                        hint: ListHint::Hidden,
+                    }],
+                ),
+            ],
+            vec![Annotation::Display {
+                field: FieldName::new("title").unwrap(),
+            }],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn list_template_partitions_fields_by_list_placement() {
+        use super::context::{EntityView, PageContext, SchemaMeta};
+        use super::render::SiteRenderer;
+
+        let schema = schema_with_list_hints();
+        let mut catalog = BTreeMap::new();
+        catalog.insert("Opportunity".to_string(), SchemaMeta::from_schema(&schema));
+        let output = crate::output::OutputContext {
+            mode: crate::output::OutputMode::Plain,
+            verbose: 0,
+            quiet: true,
+            use_color: false,
+        };
+        let entity = EntityView::from_schema(&schema, &catalog, &output).unwrap();
+
+        // title had no explicit hint but is the @display field → promoted to primary.
+        let title = entity.fields.iter().find(|f| f.leaf == "title").unwrap();
+        assert_eq!(title.list_placement, "primary");
+        // description is rich_text → auto-hidden.
+        let description = entity
+            .fields
+            .iter()
+            .find(|f| f.leaf == "description")
+            .unwrap();
+        assert_eq!(description.list_placement, "hidden");
+        // pwin defaults to column.
+        let pwin = entity.fields.iter().find(|f| f.leaf == "pwin").unwrap();
+        assert_eq!(pwin.list_placement, "column");
+        // internal_flag explicit hidden stays hidden.
+        let flag = entity
+            .fields
+            .iter()
+            .find(|f| f.leaf == "internal_flag")
+            .unwrap();
+        assert_eq!(flag.list_placement, "hidden");
+
+        let page_ctx = PageContext {
+            project_name: "demo".to_string(),
+            entity,
+        };
+        let renderer = SiteRenderer::new(None).unwrap();
+        let rendered = renderer
+            .render("src/app/pages/list.tsx", &page_ctx)
+            .expect("list template must render");
+
+        // Primary cell renders as a distinctive link with font-semibold.
+        assert!(
+            rendered.contains("font-semibold text-foreground"),
+            "primary cell must use distinctive styling"
+        );
+        assert!(
+            rendered.contains("accessorKey: \"title\""),
+            "primary field must appear as a column"
+        );
+        // Hidden fields must not appear at all.
+        assert!(
+            !rendered.contains("accessorKey: \"description\""),
+            "rich_text field must auto-hide"
+        );
+        assert!(
+            !rendered.contains("accessorKey: \"internal_flag\""),
+            "explicit @list(hidden) must omit the field"
+        );
+        // SORTABLE_FIELDS excludes hidden fields.
+        let sortable_block = rendered
+            .split("SORTABLE_FIELDS: readonly string[] = [")
+            .nth(1)
+            .and_then(|s| s.split(']').next())
+            .unwrap_or("");
+        assert!(
+            sortable_block.contains("\"title\""),
+            "sortable block missing title:\n{sortable_block}"
+        );
+        assert!(sortable_block.contains("\"stage\""));
+        assert!(sortable_block.contains("\"pwin\""));
+        assert!(!sortable_block.contains("\"description\""));
+        assert!(!sortable_block.contains("\"internal_flag\""));
     }
 }
