@@ -300,6 +300,10 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         "src/components/ui/relation-select.tsx",
         vendor::RELATION_SELECT.to_string(),
     ));
+    plan.push(owned(
+        "src/components/ui/error-block.tsx",
+        vendor::ERROR_BLOCK.to_string(),
+    ));
 
     // ---- Generated multi-entity code (shared across pages) ----
     plan.push(owned(

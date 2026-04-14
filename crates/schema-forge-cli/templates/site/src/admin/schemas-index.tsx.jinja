@@ -10,19 +10,23 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { ErrorBlock } from "@/components/ui/error-block"
 
 export function SchemasIndex() {
-  const { data, isLoading, error } = useQuery({
+  const query = useQuery({
     queryKey: ["admin", "schemas"],
     queryFn: () => listSchemas(),
   })
+  const { data, isLoading, error } = query
 
   if (isLoading) return <p>Loading schemas…</p>
   if (error) {
     return (
-      <p className="text-destructive">
-        Failed to load schemas: {String(error)}
-      </p>
+      <ErrorBlock
+        title="Failed to load schemas"
+        error={error}
+        onRetry={() => query.refetch()}
+      />
     )
   }
 

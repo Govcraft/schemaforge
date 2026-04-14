@@ -4,6 +4,7 @@ import { useNavigate, useParams } from "react-router-dom"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
 import {
   create{{ entity.pascal }},
   get{{ entity.pascal }},
@@ -307,6 +308,7 @@ export function {{ entity.pascal }}Edit() {
       return create{{ entity.pascal }}(payload as Partial<{{ entity.pascal }}>)
     },
     onSuccess: (saved) => {
+      toast.success(isEdit ? `Saved {{ entity.title }} ${saved.id}` : "Created {{ entity.title }}")
       queryClient.invalidateQueries({ queryKey: ["{{ entity.snake }}"] })
       navigate(`/{{ entity.kebab }}/${saved.id}`)
     },

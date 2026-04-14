@@ -1,7 +1,13 @@
 import React from "react"
 import ReactDOM from "react-dom/client"
 import { BrowserRouter } from "react-router-dom"
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import {
+  MutationCache,
+  QueryCache,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query"
+import { toast } from "sonner"
 import App from "./App"
 import { ensureRefreshScheduled } from "./lib/auth"
 import "./index.css"
@@ -10,7 +16,22 @@ import "./index.css"
 // page reload. No-op when no token is stored.
 ensureRefreshScheduled()
 
-const queryClient = new QueryClient()
+// Route every uncaught query/mutation error to a toast so pages don't
+// have to wire per-call error handling. 401s are handled in the
+// api-client's refresh-and-retry path and surface as a redirect
+// instead of a toast; they reach this cache only as a final fallback.
+const queryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError: (error) => {
+      toast.error(`Load failed: ${error instanceof Error ? error.message : String(error)}`)
+    },
+  }),
+  mutationCache: new MutationCache({
+    onError: (error) => {
+      toast.error(`Action failed: ${error instanceof Error ? error.message : String(error)}`)
+    },
+  }),
+})
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

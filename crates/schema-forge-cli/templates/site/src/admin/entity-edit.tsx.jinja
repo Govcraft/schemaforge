@@ -16,8 +16,10 @@ import {
   updateEntity,
   type FieldMeta,
 } from "@/admin/api-client"
+import { toast } from "sonner"
 import { FieldRenderer } from "@/admin/field-renderer"
 import { Button } from "@/components/ui/button"
+import { ErrorBlock } from "@/components/ui/error-block"
 import {
   Card,
   CardContent,
@@ -62,13 +64,22 @@ export function AdminEntityEdit() {
       if (isNew) return createEntity(schema!, body)
       return updateEntity(schema!, id!, body)
     },
-    onSuccess: (entity) => navigate(`/admin/${schema}/${entity.id}`),
+    onSuccess: (entity) => {
+      toast.success(isNew ? `Created ${schema}` : `Saved ${schema} ${entity.id}`)
+      navigate(`/admin/${schema}/${entity.id}`)
+    },
   })
 
   if (!schema) return null
   if (meta.isLoading || (!isNew && existing.isLoading)) return <p>Loading…</p>
   if (meta.error) {
-    return <p className="text-destructive">Failed to load schema.</p>
+    return (
+      <ErrorBlock
+        title="Failed to load schema"
+        error={meta.error}
+        onRetry={() => meta.refetch()}
+      />
+    )
   }
 
   const fields = meta.data?.fields ?? []
@@ -125,11 +136,6 @@ export function AdminEntityEdit() {
 
           {formError ? (
             <p className="text-destructive text-sm">{formError}</p>
-          ) : null}
-          {save.error ? (
-            <p className="text-destructive text-sm">
-              Save failed: {String(save.error)}
-            </p>
           ) : null}
 
           <div className="flex gap-2 pt-2">

@@ -7,6 +7,7 @@
 import { useEffect, useState, type ReactNode } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
 import {
   deleteEntity,
   describeSchema,
@@ -15,6 +16,7 @@ import {
 } from "@/admin/api-client"
 import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
+import { ErrorBlock } from "@/components/ui/error-block"
 import { Input } from "@/components/ui/input"
 import {
   Table,
@@ -95,17 +97,21 @@ export function AdminEntityList() {
 
   const remove = useMutation({
     mutationFn: (id: string) => deleteEntity(schema!, id),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["admin", "entities", schema] }),
+    onSuccess: (_data, id) => {
+      toast.success(`Deleted ${schema} ${id}`)
+      qc.invalidateQueries({ queryKey: ["admin", "entities", schema] })
+    },
   })
 
   if (!schema) return null
   if (meta.isLoading) return <p>Loading…</p>
   if (meta.error) {
     return (
-      <p className="text-destructive">
-        Failed to load {schema}: {String(meta.error)}
-      </p>
+      <ErrorBlock
+        title={`Failed to load ${schema}`}
+        error={meta.error}
+        onRetry={() => meta.refetch()}
+      />
     )
   }
 
@@ -202,11 +208,12 @@ export function AdminEntityList() {
           ) : null}
           {rows.error && !rows.data ? (
             <TableRow>
-              <TableCell
-                colSpan={fields.length + 2}
-                className="text-center text-destructive"
-              >
-                Failed to load: {String(rows.error)}
+              <TableCell colSpan={fields.length + 2}>
+                <ErrorBlock
+                  title="Failed to load"
+                  error={rows.error}
+                  onRetry={() => rows.refetch()}
+                />
               </TableCell>
             </TableRow>
           ) : null}
@@ -295,11 +302,6 @@ export function AdminEntityList() {
         </div>
       </div>
 
-      {remove.error ? (
-        <p className="text-destructive text-sm">
-          Delete failed: {String(remove.error)}
-        </p>
-      ) : null}
     </div>
   )
 }

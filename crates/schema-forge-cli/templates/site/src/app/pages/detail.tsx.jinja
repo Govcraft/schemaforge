@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query"
 import { get{{ entity.pascal }} } from "@/generated/api-client"
 import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
+import { ErrorBlock } from "@/components/ui/error-block"
 import {
   Card,
   CardContent,
@@ -14,14 +15,23 @@ import {
 
 export function {{ entity.pascal }}Detail() {
   const { id } = useParams<{ id: string }>()
-  const { data, isLoading, error } = useQuery({
+  const query = useQuery({
     queryKey: ["{{ entity.snake }}", "detail", id],
     queryFn: () => get{{ entity.pascal }}(id!),
     enabled: Boolean(id),
   })
+  const { data, isLoading, error } = query
 
   if (isLoading) return <p>Loading…</p>
-  if (error || !data) return <p className="text-destructive">Failed to load record.</p>
+  if (error || !data) {
+    return (
+      <ErrorBlock
+        title="Failed to load record"
+        error={error ?? new Error("record not found")}
+        onRetry={() => query.refetch()}
+      />
+    )
+  }
 
   return (
     <Card className="max-w-2xl">

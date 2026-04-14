@@ -10,6 +10,7 @@
 import { FormEvent, useEffect, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery } from "@tanstack/react-query"
+import { toast } from "sonner"
 import {
   changePassword,
   createUser,
@@ -92,7 +93,10 @@ export function UsersEdit() {
       }
       return null
     },
-    onSuccess: () => navigate("/admin/users"),
+    onSuccess: () => {
+      toast.success(isNew ? "Created user" : `Updated user '${username}'`)
+      navigate("/admin/users")
+    },
   })
 
   if (!isNew && existing.isLoading) return <p>Loading…</p>
@@ -200,11 +204,6 @@ export function UsersEdit() {
 
           {formError ? (
             <p className="text-destructive text-sm">{formError}</p>
-          ) : null}
-          {save.error ? (
-            <p className="text-destructive text-sm">
-              Save failed: {String(save.error)}
-            </p>
           ) : null}
 
           <div className="flex gap-2 pt-2">
