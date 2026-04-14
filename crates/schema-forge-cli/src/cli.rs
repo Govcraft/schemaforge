@@ -117,6 +117,48 @@ pub enum Commands {
         #[command(subcommand)]
         command: HooksCommands,
     },
+
+    /// Generate a React site scaffold (v0: one entity deep).
+    Site {
+        #[command(subcommand)]
+        command: SiteCommands,
+    },
+}
+
+/// Site generator subcommands.
+#[derive(Subcommand)]
+pub enum SiteCommands {
+    /// Generate a React + Vite + Tailwind + shadcn project for a single schema.
+    Generate(SiteGenerateArgs),
+}
+
+/// Arguments for `schema-forge site generate`.
+#[derive(Args)]
+pub struct SiteGenerateArgs {
+    /// Schema directory to scan for schema definitions.
+    #[arg(short = 's', long, default_value = "schemas")]
+    pub schema_dir: PathBuf,
+
+    /// Output directory for the generated React project.
+    #[arg(short = 'o', long, default_value = "site")]
+    pub out_dir: PathBuf,
+
+    /// Pick a single schema by name. Defaults to the first schema in the directory.
+    #[arg(long)]
+    pub schema: Option<String>,
+
+    /// Overwrite `Preserve`-mode user files (e.g. `src/pages/<entity>/list.tsx`).
+    #[arg(long = "force-user-files", alias = "force")]
+    pub force_user_files: bool,
+
+    /// Write into a non-empty, non-schemaforge-managed directory.
+    #[arg(long)]
+    pub force_init: bool,
+
+    /// Dry-run: render in memory and report drift against what is on disk.
+    /// Exits non-zero if anything would change. Intended for CI determinism checks.
+    #[arg(long)]
+    pub check: bool,
 }
 
 /// Hook scaffolding subcommands.

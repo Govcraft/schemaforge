@@ -1,0 +1,10 @@
+// Auto-generated Zod validators for schema `{{ entity.schema_name }}`.
+import { z } from "zod"
+
+export const {{ entity.snake }}Schema = z.object({
+{%- for f in entity.fields %}
+  {{ f.name }}: {{ f.zod }},
+{%- endfor %}
+})
+
+export type {{ entity.pascal }}FormValues = z.infer<typeof {{ entity.snake }}Schema>

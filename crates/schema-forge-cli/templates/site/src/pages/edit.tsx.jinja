@@ -1,0 +1,124 @@
+// Scaffolded once by `schema-forge site generate` — edit freely.
+import { useNavigate, useParams } from "react-router-dom"
+import { useForm } from "react-hook-form"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  create{{ entity.pascal }},
+  get{{ entity.pascal }},
+  update{{ entity.pascal }},
+} from "@/generated/api-client"
+import {
+  {{ entity.snake }}Schema,
+  type {{ entity.pascal }}FormValues,
+} from "@/generated/zod-schemas"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
+import { Input } from "@/components/ui/input"
+
+export function {{ entity.pascal }}Edit() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const { id } = useParams<{ id: string }>()
+  const isEdit = Boolean(id)
+
+  const { data } = useQuery({
+    queryKey: ["{{ entity.snake }}", "detail", id],
+    queryFn: () => get{{ entity.pascal }}(id!),
+    enabled: isEdit,
+  })
+
+  const form = useForm<{{ entity.pascal }}FormValues>({
+    resolver: zodResolver({{ entity.snake }}Schema),
+    defaultValues: data as {{ entity.pascal }}FormValues | undefined,
+    values: data as {{ entity.pascal }}FormValues | undefined,
+  })
+
+  const mutation = useMutation({
+    mutationFn: async (values: {{ entity.pascal }}FormValues) => {
+      if (isEdit && id) return update{{ entity.pascal }}(id, values)
+      return create{{ entity.pascal }}(values)
+    },
+    onSuccess: (saved) => {
+      queryClient.invalidateQueries({ queryKey: ["{{ entity.snake }}"] })
+      navigate(`/{{ entity.kebab }}/${saved.id}`)
+    },
+  })
+
+  return (
+    <Card className="max-w-2xl">
+      <CardHeader>
+        <CardTitle>{isEdit ? "Edit" : "New"} {{ entity.title }}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))} className="space-y-4">
+{%- for f in entity.fields %}
+            <FormField
+              control={form.control}
+              name="{{ f.name }}"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{{ f.label }}</FormLabel>
+                  <FormControl>
+{%- if f.kind == "boolean" %}
+                    <input
+                      type="checkbox"
+                      checked={Boolean(field.value)}
+                      onChange={(e) => field.onChange(e.target.checked)}
+                      className="size-4"
+                    />
+{%- elif f.kind == "enum" %}
+                    <select
+                      {...field}
+                      value={field.value as string | undefined ?? ""}
+                      className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                    >
+                      <option value="">—</option>
+{%- for variant in f.enum_variants %}
+                      <option value="{{ variant }}">{{ variant }}</option>
+{%- endfor %}
+                    </select>
+{%- elif f.kind == "integer" or f.kind == "float" %}
+                    <Input type="number" {...field} value={field.value as number | string | undefined ?? ""} />
+{%- elif f.kind == "datetime" %}
+                    <Input type="datetime-local" {...field} value={field.value as string | undefined ?? ""} />
+{%- elif f.kind == "relation_one" %}
+                    {/* v0: relation target id as a plain text input — a combobox lands in task 4. */}
+                    <Input placeholder="{{ f.relation_target }} id" {...field} value={field.value as string | undefined ?? ""} />
+{%- else %}
+                    <Input {...field} value={field.value as string | undefined ?? ""} />
+{%- endif %}
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+{%- endfor %}
+            <div className="flex gap-2">
+              <Button type="submit" disabled={mutation.isPending}>
+                {mutation.isPending ? "Saving…" : "Save"}
+              </Button>
+              <Button type="button" variant="outline" onClick={() => navigate(-1)}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        </Form>
+      </CardContent>
+    </Card>
+  )
+}

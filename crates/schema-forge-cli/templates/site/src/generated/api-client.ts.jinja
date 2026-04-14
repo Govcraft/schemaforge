@@ -1,0 +1,67 @@
+// Auto-generated typed REST client for schema `{{ entity.schema_name }}`.
+// Regenerated on every `schema-forge site generate` run.
+import type { {{ entity.pascal }} } from "./entity-types"
+
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
+
+const SCHEMA = "{{ entity.schema_name }}"
+
+export type ListParams = {
+  filter?: string
+  sort?: string
+  limit?: number
+  offset?: number
+}
+
+export type ListResponse<T> = {
+  items: T[]
+  total?: number
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+  })
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: ${await res.text()}`)
+  }
+  return res.json() as Promise<T>
+}
+
+export async function list{{ entity.pascal }}s(params: ListParams = {}): Promise<ListResponse<{{ entity.pascal }}>> {
+  const qs = new URLSearchParams()
+  if (params.filter !== undefined) qs.set("filter", params.filter)
+  if (params.sort !== undefined) qs.set("sort", params.sort)
+  if (params.limit !== undefined) qs.set("limit", String(params.limit))
+  if (params.offset !== undefined) qs.set("offset", String(params.offset))
+  const suffix = qs.toString() ? `?${qs.toString()}` : ""
+  return request<ListResponse<{{ entity.pascal }}>>(`/schemas/${SCHEMA}/entities${suffix}`)
+}
+
+export async function get{{ entity.pascal }}(id: string): Promise<{{ entity.pascal }}> {
+  return request<{{ entity.pascal }}>(`/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`)
+}
+
+export async function create{{ entity.pascal }}(body: Partial<{{ entity.pascal }}>): Promise<{{ entity.pascal }}> {
+  return request<{{ entity.pascal }}>(`/schemas/${SCHEMA}/entities`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  })
+}
+
+export async function update{{ entity.pascal }}(id: string, body: Partial<{{ entity.pascal }}>): Promise<{{ entity.pascal }}> {
+  return request<{{ entity.pascal }}>(`/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  })
+}
+
+export async function delete{{ entity.pascal }}(id: string): Promise<void> {
+  await request<void>(`/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  })
+}

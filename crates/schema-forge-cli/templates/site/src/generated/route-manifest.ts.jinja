@@ -1,0 +1,18 @@
+// Auto-generated route manifest — consumed by `src/App.tsx`.
+import type { ComponentType } from "react"
+import {{ '{' }} {{ entity.pascal }}List {{ '}' }} from "@/pages/{{ entity.kebab }}/list"
+import {{ '{' }} {{ entity.pascal }}Detail {{ '}' }} from "@/pages/{{ entity.kebab }}/detail"
+import {{ '{' }} {{ entity.pascal }}Edit {{ '}' }} from "@/pages/{{ entity.kebab }}/edit"
+
+export type RouteEntry = {
+  path: string
+  element: ComponentType
+  kind: "list" | "detail" | "edit"
+}
+
+export const routeManifest: RouteEntry[] = [
+  { path: "/{{ entity.kebab }}", element: {{ entity.pascal }}List, kind: "list" },
+  { path: "/{{ entity.kebab }}/new", element: {{ entity.pascal }}Edit, kind: "edit" },
+  { path: "/{{ entity.kebab }}/:id", element: {{ entity.pascal }}Detail, kind: "detail" },
+  { path: "/{{ entity.kebab }}/:id/edit", element: {{ entity.pascal }}Edit, kind: "edit" },
+]

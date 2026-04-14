@@ -32,6 +32,9 @@ async fn main() {
         cli::Commands::Hooks { command } => {
             commands::hooks::run(command, &cli.global, &output).await
         }
+        cli::Commands::Site { command } => {
+            commands::site::run(command, &cli.global, &output).await
+        }
     };
 
     match result {

@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-cli"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 
 [[bin]]
@@ -29,6 +29,7 @@ glob = "0.3"
 axum = { version = "0.8" }
 acton-service = { version = "0.22", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth", "htmx-full"] }
 heck = "0.5.0"
+minijinja = "2.19.0"
 
 [features]
 default = ["surrealdb"]

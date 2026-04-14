@@ -5499,7 +5499,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "acton-service",
  "assert_cmd",
@@ -5512,6 +5512,7 @@ dependencies = [
  "heck",
  "indicatif",
  "miette 7.6.0",
+ "minijinja",
  "predicates",
  "schema-forge-acton",
  "schema-forge-backend",
