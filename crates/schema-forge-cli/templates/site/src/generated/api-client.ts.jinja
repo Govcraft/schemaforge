@@ -1,11 +1,12 @@
-// Auto-generated typed REST client for schema `{{ entity.schema_name }}`.
-// Regenerated on every `schema-forge site generate` run.
-import type { {{ entity.pascal }} } from "./entity-types"
+// Auto-generated typed REST client.
+// One set of CRUD functions per schema. Regenerated on every
+// `schema-forge site generate` run.
 import { tokenStore } from "@/lib/auth"
+{%- for entity in entities %}
+import type { {{ entity.pascal }} } from "./entity-types"
+{%- endfor %}
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
-
-const SCHEMA = "{{ entity.schema_name }}"
 
 /// URL prefix for SchemaForge's versioned forge API. Kept as a constant so a
 /// rename in the backend only touches one line.
@@ -61,8 +62,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 //   single:  { id, schema, fields: {...} }
 //   list:    { entities: [{id, schema, fields}], count }
 //   request: { fields: {...} }
-// The generated TS client translates in both directions so pages see a flat
-// `{{ entity.pascal }}` shape with `id` at the top level.
+// The generated client translates in both directions so pages see a flat
+// entity shape with `id` at the top level.
 
 type EntityEnvelope = {
   id: string
@@ -75,61 +76,88 @@ type ListEnvelope = {
   count: number
 }
 
-function flatten(envelope: EntityEnvelope): {{ entity.pascal }} {
-  return { id: envelope.id, ...envelope.fields } as {{ entity.pascal }}
+function flatten<T>(envelope: EntityEnvelope): T {
+  return { id: envelope.id, ...envelope.fields } as T
 }
 
-function wrap(body: Partial<{{ entity.pascal }}>): { fields: Record<string, unknown> } {
+function wrap(body: Record<string, unknown>): { fields: Record<string, unknown> } {
   // Strip `id` — the server owns it — and pass everything else as `fields`.
-  const { id: _id, ...fields } = body as Record<string, unknown>
+  const { id: _id, ...fields } = body
   void _id
   return { fields }
 }
 
-export async function list{{ entity.pascal }}s(params: ListParams = {}): Promise<ListResponse<{{ entity.pascal }}>> {
+function listQuery(params: ListParams): string {
   const qs = new URLSearchParams()
   if (params.filter !== undefined) qs.set("filter", params.filter)
   if (params.sort !== undefined) qs.set("sort", params.sort)
   if (params.limit !== undefined) qs.set("limit", String(params.limit))
   if (params.offset !== undefined) qs.set("offset", String(params.offset))
-  const suffix = qs.toString() ? `?${qs.toString()}` : ""
+  return qs.toString() ? `?${qs.toString()}` : ""
+}
+
+// ---------------------------------------------------------------------------
+// Generic raw helpers (used by the relation combobox, which doesn't know
+// the target schema's TS type at compile time).
+// ---------------------------------------------------------------------------
+
+export async function rawEntityList(
+  schema: string,
+  params: ListParams = { limit: 200 },
+): Promise<Array<{ id: string } & Record<string, unknown>>> {
   const envelope = await request<ListEnvelope>(
-    `${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities${suffix}`,
+    `${FORGE_API_PREFIX}/schemas/${schema}/entities${listQuery(params)}`,
   )
-  return { items: envelope.entities.map(flatten), total: envelope.count }
+  return envelope.entities.map((e) => flatten(e))
+}
+
+// ---------------------------------------------------------------------------
+// Typed per-schema CRUD
+// ---------------------------------------------------------------------------
+{% for entity in entities %}
+export async function list{{ entity.pascal }}s(params: ListParams = {}): Promise<ListResponse<{{ entity.pascal }}>> {
+  const envelope = await request<ListEnvelope>(
+    `${FORGE_API_PREFIX}/schemas/{{ entity.schema_name }}/entities${listQuery(params)}`,
+  )
+  return { items: envelope.entities.map((e) => flatten<{{ entity.pascal }}>(e)), total: envelope.count }
 }
 
 export async function get{{ entity.pascal }}(id: string): Promise<{{ entity.pascal }}> {
   const envelope = await request<EntityEnvelope>(
-    `${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`,
+    `${FORGE_API_PREFIX}/schemas/{{ entity.schema_name }}/entities/${encodeURIComponent(id)}`,
   )
-  return flatten(envelope)
+  return flatten<{{ entity.pascal }}>(envelope)
 }
 
 export async function create{{ entity.pascal }}(body: Partial<{{ entity.pascal }}>): Promise<{{ entity.pascal }}> {
   const envelope = await request<EntityEnvelope>(
-    `${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities`,
+    `${FORGE_API_PREFIX}/schemas/{{ entity.schema_name }}/entities`,
     {
       method: "POST",
-      body: JSON.stringify(wrap(body)),
+      body: JSON.stringify(wrap(body as Record<string, unknown>)),
     },
   )
-  return flatten(envelope)
+  return flatten<{{ entity.pascal }}>(envelope)
 }
 
-export async function update{{ entity.pascal }}(id: string, body: Partial<{{ entity.pascal }}>): Promise<{{ entity.pascal }}> {
+export async function update{{ entity.pascal }}(
+  id: string,
+  body: Partial<{{ entity.pascal }}>,
+): Promise<{{ entity.pascal }}> {
   const envelope = await request<EntityEnvelope>(
-    `${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`,
+    `${FORGE_API_PREFIX}/schemas/{{ entity.schema_name }}/entities/${encodeURIComponent(id)}`,
     {
       method: "PATCH",
-      body: JSON.stringify(wrap(body)),
+      body: JSON.stringify(wrap(body as Record<string, unknown>)),
     },
   )
-  return flatten(envelope)
+  return flatten<{{ entity.pascal }}>(envelope)
 }
 
 export async function delete{{ entity.pascal }}(id: string): Promise<void> {
-  await request<void>(`${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  })
+  await request<void>(
+    `${FORGE_API_PREFIX}/schemas/{{ entity.schema_name }}/entities/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  )
 }
+{% endfor %}

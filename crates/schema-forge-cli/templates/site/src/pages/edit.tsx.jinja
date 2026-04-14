@@ -30,138 +30,17 @@ import {
   FormMessage,
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
-
-export function {{ entity.pascal }}Edit() {
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
-  const { id } = useParams<{ id: string }>()
-  const isEdit = Boolean(id)
-
-  const { data } = useQuery({
-    queryKey: ["{{ entity.snake }}", "detail", id],
-    queryFn: () => get{{ entity.pascal }}(id!),
-    enabled: isEdit,
-  })
-
-  // Convert server representations into the form-friendly shapes each
-  // `<input>` / `<textarea>` expects for its `value` prop:
-  //   - datetime ISO-8601  -> local-time "YYYY-MM-DDTHH:MM"
-  //   - array / relation[] -> comma-separated string
-  //   - json object        -> pretty-printed JSON text
-  // Without this, edit mode silently drops (or garbles) existing values.
-  const initialValues = useMemo<{{ entity.pascal }}FormValues | undefined>(() => {
-    if (!data) return undefined
-    const v: Record<string, unknown> = { ...(data as unknown as Record<string, unknown>) }
-{%- for f in entity.fields %}
-{%- if f.kind == "datetime" %}
-    if (typeof v["{{ f.name }}"] === "string" && v["{{ f.name }}"]) {
-      const _d = new Date(v["{{ f.name }}"] as string)
-      if (!isNaN(_d.getTime())) {
-        const _pad = (n: number) => n.toString().padStart(2, "0")
-        v["{{ f.name }}"] =
-          `${_d.getFullYear()}-${_pad(_d.getMonth() + 1)}-${_pad(_d.getDate())}` +
-          `T${_pad(_d.getHours())}:${_pad(_d.getMinutes())}`
-      }
-    }
-{%- elif f.kind == "array" or f.kind == "relation_many" %}
-    if (Array.isArray(v["{{ f.name }}"])) {
-      v["{{ f.name }}"] = (v["{{ f.name }}"] as unknown[])
-        .map((x) => (x === null || x === undefined ? "" : String(x)))
-        .join(", ")
-    }
-{%- elif f.kind == "json" %}
-    if (v["{{ f.name }}"] !== null && v["{{ f.name }}"] !== undefined && typeof v["{{ f.name }}"] !== "string") {
-      try {
-        v["{{ f.name }}"] = JSON.stringify(v["{{ f.name }}"], null, 2)
-      } catch {
-        v["{{ f.name }}"] = ""
-      }
-    }
+{%- if entity.has_relation_one %}
+import { RelationSelect } from "@/components/ui/relation-select"
 {%- endif %}
-{%- endfor %}
-    return v as {{ entity.pascal }}FormValues
-  }, [data])
 
-  const form = useForm<{{ entity.pascal }}FormValues>({
-    resolver: zodResolver({{ entity.snake }}Schema),
-    defaultValues: initialValues,
-    values: initialValues,
-  })
-
-  const mutation = useMutation({
-    mutationFn: async (values: {{ entity.pascal }}FormValues) => {
-      // Normalize: convert datetime-local strings ("YYYY-MM-DDTHH:MM") to
-      // full ISO-8601 with timezone, and drop empty optional fields so the
-      // backend doesn't receive blank strings for unset optionals.
-      const payload: Record<string, unknown> = { ...values }
-{%- for f in entity.fields %}
-{%- if f.kind == "datetime" %}
-      if (payload["{{ f.name }}"]) {
-        const _d = new Date(payload["{{ f.name }}"] as string)
-        if (!isNaN(_d.getTime())) payload["{{ f.name }}"] = _d.toISOString()
-      } else {
-        delete payload["{{ f.name }}"]
-      }
-{%- elif f.kind == "array" or f.kind == "relation_many" %}
-      {
-        const _raw = payload["{{ f.name }}"]
-        if (typeof _raw === "string" && _raw.trim() !== "") {
-          const _parts = _raw
-            .split(",")
-            .map((s) => s.trim())
-            .filter((s) => s !== "")
-{%- if f.item_kind == "integer" or f.item_kind == "float" %}
-          payload["{{ f.name }}"] = _parts.map((s) => Number(s))
-{%- elif f.item_kind == "boolean" %}
-          payload["{{ f.name }}"] = _parts.map((s) => s === "true" || s === "1" || s === "yes")
-{%- else %}
-          payload["{{ f.name }}"] = _parts
-{%- endif %}
-        } else {
-          delete payload["{{ f.name }}"]
-        }
-      }
-{%- elif f.kind == "json" %}
-      {
-        const _raw = payload["{{ f.name }}"]
-        if (typeof _raw === "string" && _raw.trim() !== "") {
-          try {
-            payload["{{ f.name }}"] = JSON.parse(_raw)
-          } catch (e) {
-            form.setError("{{ f.name }}", {
-              type: "manual",
-              message: `Invalid JSON: ${(e as Error).message}`,
-            })
-            throw e
-          }
-        } else {
-          delete payload["{{ f.name }}"]
-        }
-      }
-{%- elif not f.required %}
-      if (payload["{{ f.name }}"] === "" || payload["{{ f.name }}"] === undefined || payload["{{ f.name }}"] === null) {
-        delete payload["{{ f.name }}"]
-      }
-{%- endif %}
-{%- endfor %}
-      if (isEdit && id) return update{{ entity.pascal }}(id, payload as Partial<{{ entity.pascal }}>)
-      return create{{ entity.pascal }}(payload as Partial<{{ entity.pascal }}>)
-    },
-    onSuccess: (saved) => {
-      queryClient.invalidateQueries({ queryKey: ["{{ entity.snake }}"] })
-      navigate(`/{{ entity.kebab }}/${saved.id}`)
-    },
-  })
-
-  return (
-    <Card className="max-w-2xl">
-      <CardHeader>
-        <CardTitle>{isEdit ? "Edit" : "New"} {{ entity.title }}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))} className="space-y-4">
-{%- for f in entity.fields %}
+{#-
+  -- Shared macros ----------------------------------------------------------
+  Both top-level fields and composite sub-fields go through the same
+  control-rendering logic, so we factor it into a macro. The macro takes a
+  FieldView and emits a single `<FormField>` element.
+-#}
+{% macro control(f) -%}
             <FormField
               control={form.control}
               name="{{ f.name }}"
@@ -192,8 +71,17 @@ export function {{ entity.pascal }}Edit() {
 {%- elif f.kind == "datetime" %}
                     <Input type="datetime-local" {...field} value={field.value as string | undefined ?? ""} />
 {%- elif f.kind == "relation_one" %}
-                    {/* v0: relation target id as a plain text input — a combobox is a follow-up. */}
-                    <Input placeholder="{{ f.relation_target }} id" {...field} value={field.value as string | undefined ?? ""} />
+                    <RelationSelect
+                      target="{{ f.relation_target }}"
+{%- if f.relation_display_field %}
+                      displayField="{{ f.relation_display_field }}"
+{%- endif %}
+                      value={field.value as string | undefined}
+                      onChange={field.onChange}
+                      onBlur={field.onBlur}
+                      name={field.name}
+                      placeholder="— no {{ f.relation_target }} selected —"
+                    />
 {%- elif f.kind == "relation_many" %}
                     <Input
                       placeholder="comma-separated {{ f.relation_target }} ids"
@@ -229,6 +117,222 @@ export function {{ entity.pascal }}Edit() {
                 </FormItem>
               )}
             />
+{%- endmacro %}
+
+export function {{ entity.pascal }}Edit() {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const { id } = useParams<{ id: string }>()
+  const isEdit = Boolean(id)
+
+  const { data } = useQuery({
+    queryKey: ["{{ entity.snake }}", "detail", id],
+    queryFn: () => get{{ entity.pascal }}(id!),
+    enabled: isEdit,
+  })
+
+  // Convert server representations into the form-friendly shapes each
+  // `<input>` / `<textarea>` expects for its `value` prop:
+  //   - datetime ISO-8601  -> local-time "YYYY-MM-DDTHH:MM"
+  //   - array / relation[] -> comma-separated string
+  //   - json object        -> pretty-printed JSON text
+  //   - composite          -> passthrough (react-hook-form walks dot-paths)
+  // Without this, edit mode silently drops (or garbles) existing values.
+  const initialValues = useMemo<{{ entity.pascal }}FormValues | undefined>(() => {
+    if (!data) return undefined
+    const v: Record<string, unknown> = { ...(data as unknown as Record<string, unknown>) }
+{%- for f in entity.fields %}
+{%- if f.kind == "datetime" %}
+    if (typeof v["{{ f.leaf }}"] === "string" && v["{{ f.leaf }}"]) {
+      const _d = new Date(v["{{ f.leaf }}"] as string)
+      if (!isNaN(_d.getTime())) {
+        const _pad = (n: number) => n.toString().padStart(2, "0")
+        v["{{ f.leaf }}"] =
+          `${_d.getFullYear()}-${_pad(_d.getMonth() + 1)}-${_pad(_d.getDate())}` +
+          `T${_pad(_d.getHours())}:${_pad(_d.getMinutes())}`
+      }
+    }
+{%- elif f.kind == "array" or f.kind == "relation_many" %}
+    if (Array.isArray(v["{{ f.leaf }}"])) {
+      v["{{ f.leaf }}"] = (v["{{ f.leaf }}"] as unknown[])
+        .map((x) => (x === null || x === undefined ? "" : String(x)))
+        .join(", ")
+    }
+{%- elif f.kind == "json" %}
+    if (v["{{ f.leaf }}"] !== null && v["{{ f.leaf }}"] !== undefined && typeof v["{{ f.leaf }}"] !== "string") {
+      try {
+        v["{{ f.leaf }}"] = JSON.stringify(v["{{ f.leaf }}"], null, 2)
+      } catch {
+        v["{{ f.leaf }}"] = ""
+      }
+    }
+{%- elif f.kind == "composite" %}
+    // Composite: walk sub-fields that need per-leaf conversion. Keeps the
+    // parent object intact so react-hook-form can address `parent.child`.
+    {
+      const _cv = v["{{ f.leaf }}"] as Record<string, unknown> | undefined
+      if (_cv && typeof _cv === "object") {
+        const _nested: Record<string, unknown> = { ..._cv }
+{%- for sub in f.sub_fields %}
+{%- if sub.kind == "datetime" %}
+        if (typeof _nested["{{ sub.leaf }}"] === "string" && _nested["{{ sub.leaf }}"]) {
+          const _d = new Date(_nested["{{ sub.leaf }}"] as string)
+          if (!isNaN(_d.getTime())) {
+            const _pad = (n: number) => n.toString().padStart(2, "0")
+            _nested["{{ sub.leaf }}"] =
+              `${_d.getFullYear()}-${_pad(_d.getMonth() + 1)}-${_pad(_d.getDate())}` +
+              `T${_pad(_d.getHours())}:${_pad(_d.getMinutes())}`
+          }
+        }
+{%- elif sub.kind == "array" or sub.kind == "relation_many" %}
+        if (Array.isArray(_nested["{{ sub.leaf }}"])) {
+          _nested["{{ sub.leaf }}"] = (_nested["{{ sub.leaf }}"] as unknown[])
+            .map((x) => (x === null || x === undefined ? "" : String(x)))
+            .join(", ")
+        }
+{%- endif %}
+{%- endfor %}
+        v["{{ f.leaf }}"] = _nested
+      }
+    }
+{%- endif %}
+{%- endfor %}
+    return v as {{ entity.pascal }}FormValues
+  }, [data])
+
+  const form = useForm<{{ entity.pascal }}FormValues>({
+    resolver: zodResolver({{ entity.snake }}Schema),
+    defaultValues: initialValues,
+    values: initialValues,
+  })
+
+  const mutation = useMutation({
+    mutationFn: async (values: {{ entity.pascal }}FormValues) => {
+      // Normalize: convert form-friendly strings back into the shapes the
+      // REST API expects, and drop empty optional fields so the backend
+      // doesn't receive blank strings for unset optionals.
+      const payload: Record<string, unknown> = {
+        ...(values as unknown as Record<string, unknown>),
+      }
+{%- for f in entity.fields %}
+{%- if f.kind == "datetime" %}
+      if (payload["{{ f.leaf }}"]) {
+        const _d = new Date(payload["{{ f.leaf }}"] as string)
+        if (!isNaN(_d.getTime())) payload["{{ f.leaf }}"] = _d.toISOString()
+      } else {
+        delete payload["{{ f.leaf }}"]
+      }
+{%- elif f.kind == "array" or f.kind == "relation_many" %}
+      {
+        const _raw = payload["{{ f.leaf }}"]
+        if (typeof _raw === "string" && _raw.trim() !== "") {
+          const _parts = _raw
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s !== "")
+{%- if f.item_kind == "integer" or f.item_kind == "float" %}
+          payload["{{ f.leaf }}"] = _parts.map((s) => Number(s))
+{%- elif f.item_kind == "boolean" %}
+          payload["{{ f.leaf }}"] = _parts.map((s) => s === "true" || s === "1" || s === "yes")
+{%- else %}
+          payload["{{ f.leaf }}"] = _parts
+{%- endif %}
+        } else {
+          delete payload["{{ f.leaf }}"]
+        }
+      }
+{%- elif f.kind == "json" %}
+      {
+        const _raw = payload["{{ f.leaf }}"]
+        if (typeof _raw === "string" && _raw.trim() !== "") {
+          try {
+            payload["{{ f.leaf }}"] = JSON.parse(_raw)
+          } catch (e) {
+            form.setError("{{ f.leaf }}" as never, {
+              type: "manual",
+              message: `Invalid JSON: ${(e as Error).message}`,
+            })
+            throw e
+          }
+        } else {
+          delete payload["{{ f.leaf }}"]
+        }
+      }
+{%- elif f.kind == "composite" %}
+      // Composite: post-process sub-fields inline. Drops the wrapper
+      // entirely if all sub-fields are empty.
+      {
+        const _cvRaw = payload["{{ f.leaf }}"]
+        if (_cvRaw && typeof _cvRaw === "object") {
+          const _cv: Record<string, unknown> = { ...(_cvRaw as Record<string, unknown>) }
+{%- for sub in f.sub_fields %}
+{%- if sub.kind == "datetime" %}
+          if (_cv["{{ sub.leaf }}"]) {
+            const _d = new Date(_cv["{{ sub.leaf }}"] as string)
+            if (!isNaN(_d.getTime())) _cv["{{ sub.leaf }}"] = _d.toISOString()
+          }
+{%- elif sub.kind == "array" or sub.kind == "relation_many" %}
+          {
+            const _raw = _cv["{{ sub.leaf }}"]
+            if (typeof _raw === "string" && _raw.trim() !== "") {
+              _cv["{{ sub.leaf }}"] = _raw
+                .split(",")
+                .map((s) => s.trim())
+                .filter((s) => s !== "")
+            }
+          }
+{%- endif %}
+{%- if not sub.required %}
+          if (_cv["{{ sub.leaf }}"] === "" || _cv["{{ sub.leaf }}"] === undefined || _cv["{{ sub.leaf }}"] === null) {
+            delete _cv["{{ sub.leaf }}"]
+          }
+{%- endif %}
+{%- endfor %}
+          if (Object.keys(_cv).length === 0) {
+            delete payload["{{ f.leaf }}"]
+          } else {
+            payload["{{ f.leaf }}"] = _cv
+          }
+        } else {
+          delete payload["{{ f.leaf }}"]
+        }
+      }
+{%- elif not f.required %}
+      if (payload["{{ f.leaf }}"] === "" || payload["{{ f.leaf }}"] === undefined || payload["{{ f.leaf }}"] === null) {
+        delete payload["{{ f.leaf }}"]
+      }
+{%- endif %}
+{%- endfor %}
+      if (isEdit && id) return update{{ entity.pascal }}(id, payload as Partial<{{ entity.pascal }}>)
+      return create{{ entity.pascal }}(payload as Partial<{{ entity.pascal }}>)
+    },
+    onSuccess: (saved) => {
+      queryClient.invalidateQueries({ queryKey: ["{{ entity.snake }}"] })
+      navigate(`/{{ entity.kebab }}/${saved.id}`)
+    },
+  })
+
+  return (
+    <Card className="max-w-2xl">
+      <CardHeader>
+        <CardTitle>{isEdit ? "Edit" : "New"} {{ entity.title }}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))} className="space-y-4">
+{%- for f in entity.fields %}
+{%- if f.kind == "composite" %}
+            <fieldset className="rounded-md border p-3 space-y-3">
+              <legend className="text-xs uppercase tracking-wide text-muted-foreground px-1">
+                {{ f.label }}
+              </legend>
+{%- for sub in f.sub_fields %}
+{{ control(sub) }}
+{%- endfor %}
+            </fieldset>
+{%- else %}
+{{ control(f) }}
+{%- endif %}
 {%- endfor %}
             <div className="flex gap-2">
               <Button type="submit" disabled={mutation.isPending}>

@@ -33,11 +33,12 @@ const columns: ColumnDef<{{ entity.pascal }}>[] = [
     ),
   },
 {%- for f in entity.fields %}
+{%- if f.kind != "composite" %}
   {
-    accessorKey: "{{ f.name }}",
+    accessorKey: "{{ f.leaf }}",
     header: "{{ f.label }}",
     cell: ({ row }) =>
-      formatFieldValue(row.original.{{ f.name }}, {
+      formatFieldValue(row.original.{{ f.leaf }}, {
         kind: "{{ f.kind }}",
 {%- if f.widget %}
         widget: "{{ f.widget }}",
@@ -47,6 +48,7 @@ const columns: ColumnDef<{{ entity.pascal }}>[] = [
 {%- endif %}
       }),
   },
+{%- endif %}
 {%- endfor %}
 ]
 

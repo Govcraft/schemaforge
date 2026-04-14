@@ -1,18 +1,35 @@
 // Auto-generated route manifest — consumed by `src/App.tsx`.
 import type { ComponentType } from "react"
-import {{ '{' }} {{ entity.pascal }}List {{ '}' }} from "@/pages/{{ entity.kebab }}/list"
-import {{ '{' }} {{ entity.pascal }}Detail {{ '}' }} from "@/pages/{{ entity.kebab }}/detail"
-import {{ '{' }} {{ entity.pascal }}Edit {{ '}' }} from "@/pages/{{ entity.kebab }}/edit"
+{%- for entity in entities %}
+import { {{ entity.pascal }}List } from "@/pages/{{ entity.kebab }}/list"
+import { {{ entity.pascal }}Detail } from "@/pages/{{ entity.kebab }}/detail"
+import { {{ entity.pascal }}Edit } from "@/pages/{{ entity.kebab }}/edit"
+{%- endfor %}
 
 export type RouteEntry = {
   path: string
   element: ComponentType
   kind: "list" | "detail" | "edit"
+  entity: string
+  title: string
 }
 
 export const routeManifest: RouteEntry[] = [
-  { path: "/{{ entity.kebab }}", element: {{ entity.pascal }}List, kind: "list" },
-  { path: "/{{ entity.kebab }}/new", element: {{ entity.pascal }}Edit, kind: "edit" },
-  { path: "/{{ entity.kebab }}/:id", element: {{ entity.pascal }}Detail, kind: "detail" },
-  { path: "/{{ entity.kebab }}/:id/edit", element: {{ entity.pascal }}Edit, kind: "edit" },
+{%- for entity in entities %}
+  { path: "/{{ entity.kebab }}", element: {{ entity.pascal }}List, kind: "list", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
+  { path: "/{{ entity.kebab }}/new", element: {{ entity.pascal }}Edit, kind: "edit", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
+  { path: "/{{ entity.kebab }}/:id", element: {{ entity.pascal }}Detail, kind: "detail", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
+  { path: "/{{ entity.kebab }}/:id/edit", element: {{ entity.pascal }}Edit, kind: "edit", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
+{%- endfor %}
 ]
+
+/// Deduplicated list of (kebab, title) pairs, in schema-declaration order.
+/// Used by `App.tsx` to render the top nav.
+export const navEntries: Array<{ kebab: string; title: string }> = [
+{%- for entity in entities %}
+  { kebab: "{{ entity.kebab }}", title: "{{ entity.title }}" },
+{%- endfor %}
+]
+
+/// Kebab slug of the first entity — used as the default landing redirect.
+export const defaultEntity = "{{ entities[0].kebab }}"

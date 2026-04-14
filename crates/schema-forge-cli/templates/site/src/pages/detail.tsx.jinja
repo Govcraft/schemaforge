@@ -31,10 +31,39 @@ export function {{ entity.pascal }}Detail() {
       </CardHeader>
       <CardContent className="space-y-3">
 {%- for f in entity.fields %}
+{%- if f.kind == "composite" %}
+        <div className="pt-2">
+          <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+            {{ f.label }}
+          </div>
+          <div className="pl-3 border-l space-y-1">
+{%- for sub in f.sub_fields %}
+            <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
+              <span className="text-muted-foreground">{{ sub.label }}</span>
+              <span>
+                {formatFieldValue(
+                  (data as unknown as Record<string, unknown>)["{{ f.leaf }}"] &&
+                    ((data as unknown as Record<string, unknown>)["{{ f.leaf }}"] as Record<string, unknown>)["{{ sub.leaf }}"],
+                  {
+                    kind: "{{ sub.kind }}",
+{%- if sub.widget %}
+                    widget: "{{ sub.widget }}",
+{%- endif %}
+{%- if sub.format %}
+                    format: "{{ sub.format }}",
+{%- endif %}
+                  },
+                )}
+              </span>
+            </div>
+{%- endfor %}
+          </div>
+        </div>
+{%- else %}
         <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
           <span className="text-muted-foreground">{{ f.label }}</span>
           <span>
-            {formatFieldValue(data.{{ f.name }}, {
+            {formatFieldValue(data.{{ f.leaf }}, {
               kind: "{{ f.kind }}",
 {%- if f.widget %}
               widget: "{{ f.widget }}",
@@ -45,6 +74,7 @@ export function {{ entity.pascal }}Detail() {
             })}
           </span>
         </div>
+{%- endif %}
 {%- endfor %}
         <div className="pt-4">
           <Button asChild>

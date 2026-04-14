@@ -4,6 +4,8 @@
 //! small, serde-serializable structs that minijinja can render against
 //! without the templates ever touching `schema-forge-core` types directly.
 
+use std::collections::BTreeMap;
+
 use heck::{ToKebabCase, ToLowerCamelCase, ToPascalCase, ToSnakeCase, ToTitleCase};
 use serde::Serialize;
 
@@ -14,12 +16,56 @@ use crate::output::OutputContext;
 
 use super::mapping::{field_to_view, FieldMapError};
 
-/// Top-level context rendered against every site-generator template.
+/// Compact metadata about a schema's identity — used to look up relation
+/// targets (their kebab name, display field, etc.) without cloning the
+/// full [`EntityView`].
+#[derive(Debug, Clone, Serialize)]
+pub struct SchemaMeta {
+    /// Original schema name (matches DSL casing, e.g. `Department`).
+    pub schema_name: String,
+    /// PascalCase identifier used as the TS type name.
+    pub pascal: String,
+    /// kebab-case slug used in URL paths.
+    pub kebab: String,
+    /// snake_case slug used in identifiers like React Query keys.
+    pub snake: String,
+    /// The `@display("field")` target, if the schema declares one.
+    pub display_field: Option<String>,
+}
+
+impl SchemaMeta {
+    /// Build a [`SchemaMeta`] from a schema definition. Pure.
+    pub fn from_schema(def: &SchemaDefinition) -> Self {
+        let name = def.name.as_str();
+        Self {
+            schema_name: name.to_string(),
+            pascal: name.to_pascal_case(),
+            kebab: name.to_kebab_case(),
+            snake: name.to_snake_case(),
+            display_field: def.display_field().map(|s| s.to_string()),
+        }
+    }
+}
+
+/// Top-level context rendered against every global site-generator template.
+///
+/// Per-entity templates (`pages/<entity>/list.tsx`, etc.) receive a
+/// [`PageContext`] instead so that they have direct access to their single
+/// `entity` without reaching through the list.
 #[derive(Debug, Clone, Serialize)]
 pub struct SiteContext {
     /// Kebab-cased project name (for `package.json`, `<title>`, etc.).
     pub project_name: String,
-    /// The single entity v0 generates pages for.
+    /// Every non-system schema, projected into a generator-friendly view.
+    pub entities: Vec<EntityView>,
+}
+
+/// Context passed to per-entity page templates. Carries the same
+/// `project_name` as the global context so both kinds of templates see a
+/// consistent variable, plus the single focused [`EntityView`].
+#[derive(Debug, Clone, Serialize)]
+pub struct PageContext {
+    pub project_name: String,
     pub entity: EntityView,
 }
 
@@ -38,16 +84,30 @@ pub struct EntityView {
     pub schema_name: String,
     /// v0-supported fields only. Unsupported fields are dropped with a stderr warning.
     pub fields: Vec<FieldView>,
+    /// The field nominated by `@display("...")`, if any. Used for
+    /// breadcrumbs and list-view "headline" rendering.
+    pub display_field: Option<String>,
+    /// `true` iff any top-level or composite-nested field on this entity
+    /// is a `Relation(One)`. Templates consult this flag so they only
+    /// import the `RelationSelect` component when it will actually be
+    /// referenced.
+    pub has_relation_one: bool,
 }
 
 impl EntityView {
     /// Project a [`SchemaDefinition`] into an [`EntityView`], dropping fields
-    /// whose type is not supported by the v0 generator.
-    pub fn from_schema(def: &SchemaDefinition, output: &OutputContext) -> Result<Self, CliError> {
+    /// whose type is not supported by the v0 generator. `catalog` is the
+    /// map of all known schemas keyed by their canonical name — used so the
+    /// mapper can look up relation targets and fill in their display field.
+    pub fn from_schema(
+        def: &SchemaDefinition,
+        catalog: &BTreeMap<String, SchemaMeta>,
+        output: &OutputContext,
+    ) -> Result<Self, CliError> {
         let name = def.name.as_str();
         let mut fields = Vec::with_capacity(def.fields.len());
         for f in &def.fields {
-            match field_to_view(f) {
+            match field_to_view(f, catalog) {
                 Ok(v) => fields.push(v),
                 Err(FieldMapError::Unsupported { field, reason }) => {
                     output.warn(&format!(
@@ -56,6 +116,7 @@ impl EntityView {
                 }
             }
         }
+        let has_relation_one = fields.iter().any(has_relation_one_field);
         Ok(Self {
             pascal: name.to_pascal_case(),
             snake: name.to_snake_case(),
@@ -63,16 +124,29 @@ impl EntityView {
             title: name.to_title_case(),
             schema_name: name.to_string(),
             fields,
+            display_field: def.display_field().map(|s| s.to_string()),
+            has_relation_one,
         })
     }
+}
+
+/// Recursive check: does this field or any nested composite sub-field
+/// contain a `relation_one`?
+fn has_relation_one_field(f: &FieldView) -> bool {
+    f.kind == "relation_one" || f.sub_fields.iter().any(has_relation_one_field)
 }
 
 /// One schema field projected into a TS/Zod-aware view model.
 #[derive(Debug, Clone, Serialize)]
 pub struct FieldView {
-    /// Original DSL name (`full_name`).
+    /// Original DSL name (`full_name`). For nested composite sub-fields,
+    /// this is the dot-path from the top-level entity field
+    /// (`emergency_contact.phone`). React Hook Form consumes dot-paths
+    /// natively for nested object state.
     pub name: String,
-    /// lowerCamelCase JS property name (`fullName`).
+    /// Leaf name (no dot-path) — used for labels and grouping.
+    pub leaf: String,
+    /// lowerCamelCase JS property name for the leaf (`fullName`).
     pub camel: String,
     /// Human-readable label (`Full Name`).
     pub label: String,
@@ -82,10 +156,15 @@ pub struct FieldView {
     pub ts_type: String,
     /// Zod schema expression — `z.string().max(255).optional()`.
     pub zod: String,
-    /// `true` if this field is a `Relation(One)`.
+    /// `true` if this field is a `Relation(One)` or `Relation(Many)`.
     pub is_relation: bool,
     /// Target schema name for a relation field.
     pub relation_target: Option<String>,
+    /// kebab-case slug of the relation target (for URL composition).
+    pub relation_target_kebab: Option<String>,
+    /// The relation target's `@display("...")` field, if any — lets the
+    /// edit template render `"{display}: {id}"` option labels.
+    pub relation_display_field: Option<String>,
     /// Enum variants in declaration order (empty for non-enums).
     pub enum_variants: Vec<String>,
     /// High-level kind used by page templates for UI branching.
@@ -99,6 +178,9 @@ pub struct FieldView {
     pub item_kind: Option<String>,
     /// For `kind == "array"` whose elements are enums: the variant list.
     pub item_enum_variants: Vec<String>,
+    /// For `kind == "composite"`: the flattened sub-fields, each with
+    /// `name` set to its dot-path. Empty for non-composite fields.
+    pub sub_fields: Vec<FieldView>,
 }
 
 /// Derive the canonical lowerCamelCase JS property name for a DSL field name.
@@ -112,7 +194,9 @@ pub fn label_of(name: &str) -> String {
 }
 
 /// Helper used by [`field_to_view`] to build a `FieldView` without touching
-/// heck again at every call site.
+/// heck again at every call site. The caller supplies the leaf name and
+/// optional dot-path prefix; the returned view's `name` will be
+/// `prefix.leaf` (or just `leaf` if prefix is empty).
 pub fn make_field_view(
     field: &FieldDefinition,
     ts_type: String,
@@ -122,20 +206,25 @@ pub fn make_field_view(
     relation_target: Option<String>,
     enum_variants: Vec<String>,
 ) -> FieldView {
+    let leaf = field.name.as_str().to_string();
     FieldView {
-        name: field.name.as_str().to_string(),
-        camel: camel_of(field.name.as_str()),
-        label: label_of(field.name.as_str()),
+        name: leaf.clone(),
+        leaf: leaf.clone(),
+        camel: camel_of(&leaf),
+        label: label_of(&leaf),
         required: field.is_required(),
         ts_type,
         zod,
         is_relation,
         relation_target,
+        relation_target_kebab: None,
+        relation_display_field: None,
         enum_variants,
         kind: kind.to_string(),
         widget: field.widget_type_hint().map(|w| w.as_str().to_string()),
         format: field.format_type_hint().map(|fmt| fmt.as_str().to_string()),
         item_kind: None,
         item_enum_variants: Vec::new(),
+        sub_fields: Vec::new(),
     }
 }

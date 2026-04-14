@@ -1,10 +1,11 @@
-// Auto-generated Zod validators for schema `{{ entity.schema_name }}`.
+// Auto-generated Zod validators. One schema + FormValues type per entity.
 import { z } from "zod"
 
+{% for entity in entities %}
 export const {{ entity.snake }}Schema = z.object({
 {%- for f in entity.fields %}
-  {{ f.name }}: {{ f.zod }},
+  {{ f.leaf }}: {{ f.zod }},
 {%- endfor %}
 })
-
 export type {{ entity.pascal }}FormValues = z.infer<typeof {{ entity.snake }}Schema>
+{% endfor %}

@@ -32,12 +32,12 @@ schema Department {
 "#;
 
 /// Schema with an only-unsupported field — used to assert the clean error path.
+// A schema tagged @system is always excluded from the site generator.
+// Used as a "nothing to generate" fixture.
 const UNSUPPORTED_SCHEMA: &str = r#"
+@system
 schema Bad {
-    address: composite {
-        street: text
-        city:   text required
-    }
+    name: text required
 }
 "#;
 
@@ -125,10 +125,9 @@ fn fresh_generate_emits_expected_tree() {
     // Spot-check template substitutions
     let api = fs::read_to_string(out_dir.join("src/generated/api-client.ts")).unwrap();
     assert!(api.contains("listEmployees"));
-    assert!(api.contains("const SCHEMA = \"Employee\""));
     // Task 4: client hits the versioned forge API prefix.
     assert!(api.contains("FORGE_API_PREFIX = \"/api/v1/forge\""));
-    assert!(api.contains("${FORGE_API_PREFIX}/schemas/${SCHEMA}/entities"));
+    assert!(api.contains("${FORGE_API_PREFIX}/schemas/Employee/entities"));
     // Task 4: updates go through PATCH, not PUT.
     assert!(api.contains("method: \"PATCH\""));
     assert!(!api.contains("method: \"PUT\""));
@@ -275,7 +274,7 @@ fn schema_with_only_unsupported_fields_errors_clearly() {
         .failure();
     let err = String::from_utf8_lossy(&output.get_output().stderr).to_string();
     assert!(
-        err.contains("v0-supported fields") || err.contains("not yet supported"),
+        err.contains("@system") || err.contains("system schema"),
         "stderr: {err}"
     );
 }

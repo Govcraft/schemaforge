@@ -1,11 +1,13 @@
-// Auto-generated TypeScript interfaces for schema `{{ entity.schema_name }}`.
-// Widget / format annotations from the DSL are ignored in v0.
+// Auto-generated TypeScript interfaces. One interface per schema.
+// Widget / format hints affect rendering, not the underlying type.
 
+{% for entity in entities %}
 export interface {{ entity.pascal }} {
   /** Server-assigned entity id. */
   id: string
 {%- for f in entity.fields %}
-  /** {{ f.label }}{% if f.is_relation %} — relation to `{{ f.relation_target }}` (stored as entity id in v0){% endif %} */
-  {{ f.name }}{% if not f.required %}?{% endif %}: {{ f.ts_type }}
+  /** {{ f.label }}{% if f.is_relation %} — relation to `{{ f.relation_target }}` (stored as entity id{% if f.kind == "relation_many" %}s{% endif %}){% endif %} */
+  {{ f.leaf }}{% if not f.required %}?{% endif %}: {{ f.ts_type }}
 {%- endfor %}
 }
+{% endfor %}

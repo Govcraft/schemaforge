@@ -80,6 +80,17 @@ impl SchemaDefinition {
             .any(|a| matches!(a, Annotation::System))
     }
 
+    /// Returns the name of the field nominated by `@display("...")`, if any.
+    ///
+    /// This is the field clients should render in a UI to represent a row
+    /// compactly (e.g. the label in a relation combobox).
+    pub fn display_field(&self) -> Option<&str> {
+        self.annotations.iter().find_map(|a| match a {
+            Annotation::Display { field } => Some(field.as_str()),
+            _ => None,
+        })
+    }
+
     /// Returns the `@webhook` annotation if present.
     pub fn webhook_annotation(&self) -> Option<&Annotation> {
         self.annotations

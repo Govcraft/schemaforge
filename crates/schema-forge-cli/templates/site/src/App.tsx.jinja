@@ -1,5 +1,5 @@
 import { Link, Navigate, Route, Routes } from "react-router-dom"
-import { routeManifest } from "@/generated/route-manifest"
+import { routeManifest, navEntries, defaultEntity } from "@/generated/route-manifest"
 import { LoginPage } from "@/pages/login"
 import { RequireAuth } from "@/lib/require-auth"
 import { isAuthenticated, logout } from "@/lib/auth"
@@ -10,7 +10,11 @@ export default function App() {
       <header className="border-b px-6 py-4 flex items-center gap-6">
         <Link to="/" className="font-semibold">{{ project_name }}</Link>
         <nav className="flex gap-4 text-sm text-muted-foreground">
-          <Link to="/{{ entity.kebab }}">{{ entity.title }}</Link>
+          {navEntries.map((n) => (
+            <Link key={n.kebab} to={`/${n.kebab}`}>
+              {n.title}
+            </Link>
+          ))}
         </nav>
         <div className="ml-auto">
           {isAuthenticated() ? (
@@ -30,16 +34,12 @@ export default function App() {
       </header>
       <main className="flex-1 p-6">
         <Routes>
-          {/* Public routes */}
           <Route path="/login" element={<LoginPage />} />
-
-          {/* Protected routes — wrapped in RequireAuth. The route manifest
-              only carries per-entity routes; /login stays top-level. */}
           <Route
             path="/"
             element={
               <RequireAuth>
-                <Navigate to="/{{ entity.kebab }}" replace />
+                <Navigate to={`/${defaultEntity}`} replace />
               </RequireAuth>
             }
           />
