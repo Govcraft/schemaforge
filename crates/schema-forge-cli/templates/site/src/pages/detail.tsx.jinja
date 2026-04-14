@@ -2,6 +2,7 @@
 import { Link, useParams } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { get{{ entity.pascal }} } from "@/generated/api-client"
+import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -32,7 +33,17 @@ export function {{ entity.pascal }}Detail() {
 {%- for f in entity.fields %}
         <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
           <span className="text-muted-foreground">{{ f.label }}</span>
-          <span>{String(data.{{ f.name }} ?? "—")}</span>
+          <span>
+            {formatFieldValue(data.{{ f.name }}, {
+              kind: "{{ f.kind }}",
+{%- if f.widget %}
+              widget: "{{ f.widget }}",
+{%- endif %}
+{%- if f.format %}
+              format: "{{ f.format }}",
+{%- endif %}
+            })}
+          </span>
         </div>
 {%- endfor %}
         <div className="pt-4">

@@ -11,6 +11,7 @@ import {
 } from "@tanstack/react-table"
 import { list{{ entity.pascal }}s } from "@/generated/api-client"
 import type { {{ entity.pascal }} } from "@/generated/entity-types"
+import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
 import {
   Table,
@@ -32,7 +33,20 @@ const columns: ColumnDef<{{ entity.pascal }}>[] = [
     ),
   },
 {%- for f in entity.fields %}
-  { accessorKey: "{{ f.name }}", header: "{{ f.label }}" },
+  {
+    accessorKey: "{{ f.name }}",
+    header: "{{ f.label }}",
+    cell: ({ row }) =>
+      formatFieldValue(row.original.{{ f.name }}, {
+        kind: "{{ f.kind }}",
+{%- if f.widget %}
+        widget: "{{ f.widget }}",
+{%- endif %}
+{%- if f.format %}
+        format: "{{ f.format }}",
+{%- endif %}
+      }),
+  },
 {%- endfor %}
 ]
 

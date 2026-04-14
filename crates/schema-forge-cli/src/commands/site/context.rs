@@ -90,6 +90,10 @@ pub struct FieldView {
     pub enum_variants: Vec<String>,
     /// High-level kind used by page templates for UI branching.
     pub kind: String,
+    /// `@widget("...")` hint as the canonical snake_case token, if present.
+    pub widget: Option<String>,
+    /// `@format("...")` hint as the canonical snake_case token, if present.
+    pub format: Option<String>,
 }
 
 /// Derive the canonical lowerCamelCase JS property name for a DSL field name.
@@ -124,5 +128,7 @@ pub fn make_field_view(
         relation_target,
         enum_variants,
         kind: kind.to_string(),
+        widget: field.widget_type_hint().map(|w| w.as_str().to_string()),
+        format: field.format_type_hint().map(|fmt| fmt.as_str().to_string()),
     }
 }

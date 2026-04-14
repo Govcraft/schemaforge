@@ -213,6 +213,10 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         "src/generated/route-manifest.ts",
         renderer.render("src/generated/route-manifest.ts", ctx)?,
     ));
+    plan.push(owned(
+        "src/generated/formatters.ts",
+        renderer.render("src/generated/formatters.ts", ctx)?,
+    ));
 
     // ---- Top-level login page (Preserve: users restyle freely) ----
     plan.push(preserve(

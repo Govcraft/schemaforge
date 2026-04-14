@@ -1,4 +1,5 @@
 // Scaffolded once by `schema-forge site generate` — edit freely.
+import { useMemo } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -42,10 +43,32 @@ export function {{ entity.pascal }}Edit() {
     enabled: isEdit,
   })
 
+  // Convert server ISO-8601 timestamps to the `YYYY-MM-DDTHH:MM` local-time
+  // shape `<input type="datetime-local">` accepts for its `value` prop.
+  // Without this, edit mode silently drops existing datetime values.
+  const initialValues = useMemo<{{ entity.pascal }}FormValues | undefined>(() => {
+    if (!data) return undefined
+    const v: Record<string, unknown> = { ...(data as unknown as Record<string, unknown>) }
+{%- for f in entity.fields %}
+{%- if f.kind == "datetime" %}
+    if (typeof v["{{ f.name }}"] === "string" && v["{{ f.name }}"]) {
+      const _d = new Date(v["{{ f.name }}"] as string)
+      if (!isNaN(_d.getTime())) {
+        const _pad = (n: number) => n.toString().padStart(2, "0")
+        v["{{ f.name }}"] =
+          `${_d.getFullYear()}-${_pad(_d.getMonth() + 1)}-${_pad(_d.getDate())}` +
+          `T${_pad(_d.getHours())}:${_pad(_d.getMinutes())}`
+      }
+    }
+{%- endif %}
+{%- endfor %}
+    return v as {{ entity.pascal }}FormValues
+  }, [data])
+
   const form = useForm<{{ entity.pascal }}FormValues>({
     resolver: zodResolver({{ entity.snake }}Schema),
-    defaultValues: data as {{ entity.pascal }}FormValues | undefined,
-    values: data as {{ entity.pascal }}FormValues | undefined,
+    defaultValues: initialValues,
+    values: initialValues,
   })
 
   const mutation = useMutation({

@@ -255,7 +255,43 @@ mod tests {
     fn datetime_optional() {
         let v = field_to_view(&field("created_at", FieldType::DateTime, false)).unwrap();
         assert_eq!(v.ts_type, "string");
-        assert!(v.zod.contains("datetime"));
+        assert_eq!(v.kind, "datetime");
+        assert_eq!(v.zod, "z.string().optional()");
+    }
+
+    #[test]
+    fn datetime_required() {
+        let v = field_to_view(&field("created_at", FieldType::DateTime, true)).unwrap();
+        assert_eq!(v.zod, "z.string().min(1, \"Required\")");
+    }
+
+    #[test]
+    fn widget_and_format_hints_propagate() {
+        use schema_forge_core::types::{FieldAnnotation, FormatType, WidgetType};
+
+        let fd = FieldDefinition::with_annotations(
+            FieldName::new("amount").unwrap(),
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+            vec![],
+            vec![
+                FieldAnnotation::Widget {
+                    widget_type: WidgetType::Progress,
+                },
+                FieldAnnotation::Format {
+                    format_type: FormatType::Currency,
+                },
+            ],
+        );
+        let v = field_to_view(&fd).unwrap();
+        assert_eq!(v.widget.as_deref(), Some("progress"));
+        assert_eq!(v.format.as_deref(), Some("currency"));
+    }
+
+    #[test]
+    fn no_annotations_yields_none_hints() {
+        let v = field_to_view(&field("x", FieldType::Boolean, false)).unwrap();
+        assert!(v.widget.is_none());
+        assert!(v.format.is_none());
     }
 
     #[test]

@@ -1,0 +1,169 @@
+// Auto-generated display formatters for schema `{{ entity.schema_name }}`.
+// Pure functions — safe to import from any page. Regenerated on every
+// `schema-forge site generate` run.
+
+type Kind =
+  | "text"
+  | "integer"
+  | "float"
+  | "boolean"
+  | "datetime"
+  | "enum"
+  | "relation_one"
+
+export type FieldDisplayHints = {
+  kind: Kind
+  widget?: string | null
+  format?: string | null
+}
+
+const EMPTY = "—"
+
+const dateFmt = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+})
+const dateTimeFmt = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+})
+const relativeFmt =
+  typeof Intl !== "undefined" && "RelativeTimeFormat" in Intl
+    ? new Intl.RelativeTimeFormat(undefined, { numeric: "auto" })
+    : null
+
+function parseDate(value: unknown): Date | null {
+  if (value instanceof Date) return isNaN(value.getTime()) ? null : value
+  if (typeof value !== "string" || value === "") return null
+  const d = new Date(value)
+  return isNaN(d.getTime()) ? null : d
+}
+
+function formatRelative(value: unknown): string {
+  const d = parseDate(value)
+  if (!d) return EMPTY
+  if (!relativeFmt) return dateTimeFmt.format(d)
+  const diffMs = d.getTime() - Date.now()
+  const abs = Math.abs(diffMs)
+  const minute = 60_000
+  const hour = 60 * minute
+  const day = 24 * hour
+  const week = 7 * day
+  const month = 30 * day
+  const year = 365 * day
+  if (abs < minute) return relativeFmt.format(Math.round(diffMs / 1000), "second")
+  if (abs < hour) return relativeFmt.format(Math.round(diffMs / minute), "minute")
+  if (abs < day) return relativeFmt.format(Math.round(diffMs / hour), "hour")
+  if (abs < week) return relativeFmt.format(Math.round(diffMs / day), "day")
+  if (abs < month) return relativeFmt.format(Math.round(diffMs / week), "week")
+  if (abs < year) return relativeFmt.format(Math.round(diffMs / month), "month")
+  return relativeFmt.format(Math.round(diffMs / year), "year")
+}
+
+function formatBytes(value: unknown): string {
+  const n = typeof value === "number" ? value : Number(value)
+  if (!Number.isFinite(n)) return EMPTY
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"]
+  let v = Math.abs(n)
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i += 1
+  }
+  const sign = n < 0 ? "-" : ""
+  return `${sign}${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+function formatDuration(value: unknown): string {
+  const n = typeof value === "number" ? value : Number(value)
+  if (!Number.isFinite(n)) return EMPTY
+  const total = Math.round(Math.abs(n))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const sign = n < 0 ? "-" : ""
+  const pad = (x: number) => x.toString().padStart(2, "0")
+  return h > 0 ? `${sign}${h}:${pad(m)}:${pad(s)}` : `${sign}${m}:${pad(s)}`
+}
+
+function formatCurrency(value: unknown): string {
+  const n = typeof value === "number" ? value : Number(value)
+  if (!Number.isFinite(n)) return EMPTY
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+  }).format(n)
+}
+
+function formatPercent(value: unknown): string {
+  const n = typeof value === "number" ? value : Number(value)
+  if (!Number.isFinite(n)) return EMPTY
+  // Heuristic: values in [-1, 1] are treated as fractions; others as
+  // pre-scaled percentages.
+  const scaled = Math.abs(n) <= 1 ? n : n / 100
+  return new Intl.NumberFormat(undefined, {
+    style: "percent",
+    maximumFractionDigits: 2,
+  }).format(scaled)
+}
+
+/// Produce a plain display string for a field value.
+///
+/// Honors `@format(...)` first (explicit wins), then `@widget(...)`, then
+/// falls back to the field's native kind. Returns `—` for nullish values.
+export function formatFieldValue(value: unknown, hints: FieldDisplayHints): string {
+  if (value === null || value === undefined || value === "") return EMPTY
+
+  // 1. Explicit @format wins.
+  switch (hints.format) {
+    case "currency":
+      return formatCurrency(value)
+    case "percent":
+      return formatPercent(value)
+    case "bytes":
+      return formatBytes(value)
+    case "duration":
+      return formatDuration(value)
+    case "relative":
+      return formatRelative(value)
+    case "date": {
+      const d = parseDate(value)
+      return d ? dateFmt.format(d) : String(value)
+    }
+    case "datetime": {
+      const d = parseDate(value)
+      return d ? dateTimeFmt.format(d) : String(value)
+    }
+  }
+
+  // 2. Widget hints that affect display (most widgets are edit-only; the
+  // ones listed here change how a read-only value should look).
+  switch (hints.widget) {
+    case "email": {
+      const s = String(value)
+      return s
+    }
+    case "url": {
+      return String(value)
+    }
+  }
+
+  // 3. Native kind fallback.
+  switch (hints.kind) {
+    case "boolean":
+      return value ? "Yes" : "No"
+    case "datetime": {
+      const d = parseDate(value)
+      return d ? dateTimeFmt.format(d) : String(value)
+    }
+    case "integer":
+    case "float":
+      return new Intl.NumberFormat().format(Number(value))
+    default:
+      return String(value)
+  }
+}

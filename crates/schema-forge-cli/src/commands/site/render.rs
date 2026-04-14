@@ -55,6 +55,10 @@ impl SiteRenderer {
             "../../../templates/site/src/generated/route-manifest.ts.jinja"
         );
         add!(
+            "src/generated/formatters.ts",
+            "../../../templates/site/src/generated/formatters.ts.jinja"
+        );
+        add!(
             "src/lib/auth.ts",
             "../../../templates/site/src/lib/auth.ts.jinja"
         );
