@@ -8,6 +8,7 @@ import {
   get{{ entity.pascal }},
   update{{ entity.pascal }},
 } from "@/generated/api-client"
+import type { {{ entity.pascal }} } from "@/generated/entity-types"
 import {
   {{ entity.snake }}Schema,
   type {{ entity.pascal }}FormValues,
@@ -49,8 +50,26 @@ export function {{ entity.pascal }}Edit() {
 
   const mutation = useMutation({
     mutationFn: async (values: {{ entity.pascal }}FormValues) => {
-      if (isEdit && id) return update{{ entity.pascal }}(id, values)
-      return create{{ entity.pascal }}(values)
+      // Normalize: convert datetime-local strings ("YYYY-MM-DDTHH:MM") to
+      // full ISO-8601 with timezone, and drop empty optional fields so the
+      // backend doesn't receive blank strings for unset optionals.
+      const payload: Record<string, unknown> = { ...values }
+{%- for f in entity.fields %}
+{%- if f.kind == "datetime" %}
+      if (payload["{{ f.name }}"]) {
+        const _d = new Date(payload["{{ f.name }}"] as string)
+        if (!isNaN(_d.getTime())) payload["{{ f.name }}"] = _d.toISOString()
+      } else {
+        delete payload["{{ f.name }}"]
+      }
+{%- elif not f.required %}
+      if (payload["{{ f.name }}"] === "" || payload["{{ f.name }}"] === undefined || payload["{{ f.name }}"] === null) {
+        delete payload["{{ f.name }}"]
+      }
+{%- endif %}
+{%- endfor %}
+      if (isEdit && id) return update{{ entity.pascal }}(id, payload as Partial<{{ entity.pascal }}>)
+      return create{{ entity.pascal }}(payload as Partial<{{ entity.pascal }}>)
     },
     onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ["{{ entity.snake }}"] })

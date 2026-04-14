@@ -89,10 +89,15 @@ pub fn field_to_view(field: &FieldDefinition) -> Result<FieldView, FieldMapError
             ))
         }
         FieldType::DateTime => {
-            let mut zod = "z.string().datetime({ offset: true })".to_string();
-            if !required {
-                zod.push_str(".optional()");
-            }
+            // The companion <input type="datetime-local"> emits `YYYY-MM-DDTHH:MM`
+            // (no seconds, no timezone), which fails every strict `.datetime()` check.
+            // We accept the loose local string here and convert to ISO-8601 with
+            // timezone in the edit template's onSubmit handler before calling the API.
+            let zod = if required {
+                "z.string().min(1, \"Required\")".to_string()
+            } else {
+                "z.string().optional()".to_string()
+            };
             Ok(make_field_view(
                 field,
                 "string".to_string(),
