@@ -1,0 +1,113 @@
+// Admin users list. Mirrors `entity-list.tsx` but against the dedicated
+// `/api/v1/forge/users` endpoint instead of generic entity CRUD, because
+// users live in the `_forge_users` system table and do not share the
+// field-rendering machinery.
+import { Link, useNavigate } from "react-router-dom"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { deleteUser, listUsers, type UserRow } from "@/admin/api-client"
+import { Button } from "@/components/ui/button"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+
+export function UsersList() {
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+
+  const users = useQuery({
+    queryKey: ["admin", "users"],
+    queryFn: listUsers,
+  })
+
+  const remove = useMutation({
+    mutationFn: (username: string) => deleteUser(username),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "users"] }),
+  })
+
+  if (users.isLoading) return <p>Loading…</p>
+  if (users.error) {
+    return (
+      <p className="text-destructive">
+        Failed to load users: {String(users.error)}
+      </p>
+    )
+  }
+
+  const rows = users.data ?? []
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Users</h1>
+          <p className="text-sm text-muted-foreground">{rows.length} total</p>
+        </div>
+        <Button onClick={() => navigate("/admin/users/new")}>New User</Button>
+      </div>
+
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>username</TableHead>
+            <TableHead>roles</TableHead>
+            <TableHead>active</TableHead>
+            <TableHead className="w-[160px] text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((u: UserRow) => (
+            <TableRow key={u.username}>
+              <TableCell>
+                <Link
+                  className="underline"
+                  to={`/admin/users/${encodeURIComponent(u.username)}/edit`}
+                >
+                  {u.username}
+                </Link>
+              </TableCell>
+              <TableCell>{u.roles.join(", ")}</TableCell>
+              <TableCell>{u.active ? "yes" : "no"}</TableCell>
+              <TableCell className="text-right space-x-2">
+                <Button variant="outline" size="sm" asChild>
+                  <Link to={`/admin/users/${encodeURIComponent(u.username)}/edit`}>
+                    Edit
+                  </Link>
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    if (window.confirm(`Delete user '${u.username}'?`)) {
+                      remove.mutate(u.username)
+                    }
+                  }}
+                >
+                  Delete
+                </Button>
+              </TableCell>
+            </TableRow>
+          ))}
+          {rows.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={4} className="text-center text-muted-foreground">
+                No users yet.
+              </TableCell>
+            </TableRow>
+          ) : null}
+        </TableBody>
+      </Table>
+
+      {remove.error ? (
+        <p className="text-destructive text-sm">
+          Delete failed: {String(remove.error)}
+        </p>
+      ) : null}
+    </div>
+  )
+}

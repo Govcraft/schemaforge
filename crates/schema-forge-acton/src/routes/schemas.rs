@@ -112,6 +112,10 @@ pub struct FieldResponse {
     pub field_type: serde_json::Value,
     /// The modifiers.
     pub modifiers: Vec<String>,
+    /// The field-level annotations (`@widget`, `@format`, `@field_access`,
+    /// `@owner`, `@kanban_column`), serialized as the same tagged-enum shape
+    /// emitted by `FieldAnnotation`'s derived `Serialize`.
+    pub annotations: Vec<serde_json::Value>,
 }
 
 /// Response for list operations.
@@ -215,16 +219,54 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
     })
 }
 
+/// Project a `FieldDefinition` to a `FieldResponse`, walking `Composite`
+/// and `Array` recursively so every level uses the same string-modifier
+/// projection as the top level.
+fn field_definition_to_response(field: &FieldDefinition) -> FieldResponse {
+    FieldResponse {
+        name: field.name.as_str().to_string(),
+        field_type: field_type_to_json(&field.field_type),
+        modifiers: field.modifiers.iter().map(|m| m.to_string()).collect(),
+        annotations: field
+            .annotations
+            .iter()
+            .map(|a| serde_json::to_value(a).unwrap_or_default())
+            .collect(),
+    }
+}
+
+/// Serialize a `FieldType` to JSON while re-walking `Composite` and `Array`
+/// so nested `FieldDefinition`s get the same string-modifier projection as
+/// top-level fields. All non-recursive variants pass through the derived
+/// serde impl (which uses `#[serde(tag = "type", content = "data")]`).
+fn field_type_to_json(field_type: &FieldType) -> serde_json::Value {
+    match field_type {
+        FieldType::Composite(sub_fields) => {
+            let sub_responses: Vec<FieldResponse> = sub_fields
+                .iter()
+                .map(field_definition_to_response)
+                .collect();
+            serde_json::json!({
+                "type": "Composite",
+                "data": sub_responses,
+            })
+        }
+        FieldType::Array(inner) => {
+            serde_json::json!({
+                "type": "Array",
+                "data": field_type_to_json(inner),
+            })
+        }
+        other => serde_json::to_value(other).unwrap_or_default(),
+    }
+}
+
 /// Convert a `SchemaDefinition` to a `SchemaResponse`.
 fn schema_to_response(schema: &SchemaDefinition) -> SchemaResponse {
     let fields = schema
         .fields
         .iter()
-        .map(|f| FieldResponse {
-            name: f.name.as_str().to_string(),
-            field_type: serde_json::to_value(&f.field_type).unwrap_or_default(),
-            modifiers: f.modifiers.iter().map(|m| m.to_string()).collect(),
-        })
+        .map(field_definition_to_response)
         .collect();
 
     let annotations = schema
@@ -757,5 +799,256 @@ mod tests {
         assert!(response.fields[1]
             .modifiers
             .contains(&"required".to_string()));
+    }
+
+    #[test]
+    fn schema_to_response_top_level_required_is_string_modifiers() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Contact").unwrap(),
+            vec![FieldDefinition::with_modifiers(
+                FieldName::new("email").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+            )],
+            vec![],
+        )
+        .unwrap();
+
+        let response = schema_to_response(&schema);
+        assert_eq!(response.fields[0].modifiers, vec!["required".to_string()]);
+        // field_type is the derived tagged shape for primitives
+        assert_eq!(
+            response.fields[0]
+                .field_type
+                .get("type")
+                .and_then(|v| v.as_str()),
+            Some("Text")
+        );
+    }
+
+    #[test]
+    fn schema_to_response_composite_sub_field_modifiers_are_strings() {
+        let composite = FieldType::Composite(vec![
+            FieldDefinition::new(
+                FieldName::new("street").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::with_modifiers(
+                FieldName::new("city").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+            ),
+        ]);
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Company").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("headquarters").unwrap(),
+                composite,
+            )],
+            vec![],
+        )
+        .unwrap();
+
+        let response = schema_to_response(&schema);
+        let hq = &response.fields[0];
+        assert_eq!(
+            hq.field_type.get("type").and_then(|v| v.as_str()),
+            Some("Composite")
+        );
+        let sub_fields = hq
+            .field_type
+            .get("data")
+            .and_then(|v| v.as_array())
+            .expect("composite data must be an array");
+        assert_eq!(sub_fields.len(), 2);
+
+        // street: empty modifiers as []
+        let street_mods = sub_fields[0]
+            .get("modifiers")
+            .and_then(|v| v.as_array())
+            .expect("modifiers must be an array");
+        assert!(street_mods.is_empty());
+
+        // city: must be ["required"] (string), never [{"modifier": "Required"}]
+        let city_mods = sub_fields[1]
+            .get("modifiers")
+            .and_then(|v| v.as_array())
+            .expect("modifiers must be an array");
+        assert_eq!(city_mods.len(), 1);
+        assert_eq!(
+            city_mods[0].as_str(),
+            Some("required"),
+            "composite sub-field modifiers must be lowercase strings, not tagged objects; got {city_mods:?}"
+        );
+
+        // and sub_fields[1] keys are the same as top-level FieldResponse
+        assert_eq!(
+            sub_fields[1].get("name").and_then(|v| v.as_str()),
+            Some("city")
+        );
+        assert!(sub_fields[1].get("field_type").is_some());
+    }
+
+    #[test]
+    fn schema_to_response_array_of_text_walks_through_helper() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Post").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("tags").unwrap(),
+                FieldType::Array(Box::new(FieldType::Text(TextConstraints::unconstrained()))),
+            )],
+            vec![],
+        )
+        .unwrap();
+
+        let response = schema_to_response(&schema);
+        let tags = &response.fields[0];
+        assert_eq!(
+            tags.field_type.get("type").and_then(|v| v.as_str()),
+            Some("Array")
+        );
+        let inner = tags
+            .field_type
+            .get("data")
+            .expect("array data must be present");
+        assert_eq!(inner.get("type").and_then(|v| v.as_str()), Some("Text"));
+    }
+
+    #[test]
+    fn field_definition_to_response_serializes_widget_and_format_annotations() {
+        use schema_forge_core::types::{FieldAnnotation, FormatType, WidgetType};
+
+        let field = FieldDefinition::with_annotations(
+            FieldName::new("salary").unwrap(),
+            FieldType::Float(schema_forge_core::types::FloatConstraints::unconstrained()),
+            vec![],
+            vec![
+                FieldAnnotation::Widget {
+                    widget_type: WidgetType::Progress,
+                },
+                FieldAnnotation::Format {
+                    format_type: FormatType::Currency,
+                },
+            ],
+        );
+
+        let response = field_definition_to_response(&field);
+        assert_eq!(response.annotations.len(), 2);
+
+        let widget = response
+            .annotations
+            .iter()
+            .find(|v| v.get("annotation").and_then(|t| t.as_str()) == Some("Widget"))
+            .expect("widget annotation must be present");
+        assert_eq!(
+            widget.get("widget_type").and_then(|v| v.as_str()),
+            Some("progress"),
+        );
+
+        let format = response
+            .annotations
+            .iter()
+            .find(|v| v.get("annotation").and_then(|t| t.as_str()) == Some("Format"))
+            .expect("format annotation must be present");
+        assert_eq!(
+            format.get("format_type").and_then(|v| v.as_str()),
+            Some("currency"),
+        );
+    }
+
+    #[test]
+    fn schema_to_response_composite_sub_field_annotations_walk_through_helper() {
+        use schema_forge_core::types::{FieldAnnotation, WidgetType};
+
+        let composite = FieldType::Composite(vec![
+            FieldDefinition::new(
+                FieldName::new("street").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::with_annotations(
+                FieldName::new("country").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Widget {
+                    widget_type: WidgetType::Tags,
+                }],
+            ),
+        ]);
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Company").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("headquarters").unwrap(),
+                composite,
+            )],
+            vec![],
+        )
+        .unwrap();
+
+        let response = schema_to_response(&schema);
+        let hq = &response.fields[0];
+        let sub_fields = hq
+            .field_type
+            .get("data")
+            .and_then(|v| v.as_array())
+            .expect("composite data must be an array");
+
+        // street has no annotations
+        let street_anns = sub_fields[0]
+            .get("annotations")
+            .and_then(|v| v.as_array())
+            .expect("annotations must be present (even if empty) on composite sub-fields");
+        assert!(street_anns.is_empty());
+
+        // country carries its widget annotation through the recursive walker
+        let country_anns = sub_fields[1]
+            .get("annotations")
+            .and_then(|v| v.as_array())
+            .expect("annotations must be present on composite sub-fields");
+        assert_eq!(country_anns.len(), 1);
+        assert_eq!(
+            country_anns[0].get("annotation").and_then(|v| v.as_str()),
+            Some("Widget"),
+        );
+        assert_eq!(
+            country_anns[0].get("widget_type").and_then(|v| v.as_str()),
+            Some("tags"),
+        );
+    }
+
+    #[test]
+    fn schema_to_response_array_of_composite_recurses_modifiers_to_strings() {
+        let inner_composite = FieldType::Composite(vec![FieldDefinition::with_modifiers(
+            FieldName::new("label").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+            vec![FieldModifier::Required],
+        )]);
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Post").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("categories").unwrap(),
+                FieldType::Array(Box::new(inner_composite)),
+            )],
+            vec![],
+        )
+        .unwrap();
+
+        let response = schema_to_response(&schema);
+        let cats = &response.fields[0];
+        let inner = cats.field_type.get("data").unwrap();
+        assert_eq!(
+            inner.get("type").and_then(|v| v.as_str()),
+            Some("Composite")
+        );
+        let sub = inner.get("data").and_then(|v| v.as_array()).unwrap();
+        let mods = sub[0].get("modifiers").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(mods[0].as_str(), Some("required"));
     }
 }

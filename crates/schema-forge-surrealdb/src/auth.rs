@@ -162,6 +162,39 @@ impl AuthStore for SurrealBackend {
         Ok(())
     }
 
+    async fn delete_user(&self, username: &str) -> Result<(), BackendError> {
+        self.client()
+            .query("DELETE _forge_users WHERE username = $username")
+            .bind(("username", username.to_string()))
+            .await
+            .map_err(|e| BackendError::QueryError {
+                message: format!("user delete failed: {e}"),
+            })?;
+
+        Ok(())
+    }
+
+    async fn change_password(
+        &self,
+        username: &str,
+        new_password: &str,
+    ) -> Result<(), BackendError> {
+        self.client()
+            .query(
+                "UPDATE _forge_users SET \
+                 password_hash = crypto::argon2::generate($password) \
+                 WHERE username = $username",
+            )
+            .bind(("username", username.to_string()))
+            .bind(("password", new_password.to_string()))
+            .await
+            .map_err(|e| BackendError::QueryError {
+                message: format!("user change_password failed: {e}"),
+            })?;
+
+        Ok(())
+    }
+
     async fn count_users(&self) -> Result<usize, BackendError> {
         let mut response = self
             .client()

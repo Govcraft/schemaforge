@@ -275,6 +275,19 @@ pub trait DynAuthStore: Send + Sync {
     /// Count the total number of users.
     fn count_users(&self)
         -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + '_>>;
+
+    /// Delete a user by username. Idempotent.
+    fn delete_user<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
+
+    /// Replace a user's password (plaintext; implementation hashes it).
+    fn change_password<'a>(
+        &'a self,
+        username: &'a str,
+        new_password: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
 }
 
 /// Blanket impl: any concrete `AuthStore` automatically implements `DynAuthStore`.
@@ -336,6 +349,21 @@ impl<T: AuthStore + 'static> DynAuthStore for T {
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + '_>> {
         Box::pin(AuthStore::count_users(self))
+    }
+
+    fn delete_user<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::delete_user(self, username))
+    }
+
+    fn change_password<'a>(
+        &'a self,
+        username: &'a str,
+        new_password: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::change_password(self, username, new_password))
     }
 }
 
@@ -428,10 +456,8 @@ pub struct ForgeState {
     /// Dynamic GraphQL schema, atomically swappable on schema changes.
     #[cfg(feature = "graphql")]
     pub graphql_schema: Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>>,
-    /// Auth store for user authentication and management (admin/widget UI).
+    /// Auth store for user authentication and management.
     pub auth_store: Option<Arc<dyn DynAuthStore>>,
-    /// MiniJinja template engine for UI rendering (admin, widget).
-    pub template_engine: std::sync::Arc<crate::template_engine::TemplateEngine>,
     /// Optional webhook dispatcher for outbound event notifications.
     pub webhook_dispatcher: Option<Arc<crate::webhook::WebhookDispatcher>>,
 }

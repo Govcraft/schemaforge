@@ -66,6 +66,17 @@ pub trait AuthStore: Send + Sync {
 
     /// Count the total number of users.
     fn count_users(&self) -> impl Future<Output = Result<usize, BackendError>> + Send;
+
+    /// Delete a user by username. Idempotent: no error if the row is absent.
+    fn delete_user(&self, username: &str) -> impl Future<Output = Result<(), BackendError>> + Send;
+
+    /// Replace a user's password hash. The implementation is responsible
+    /// for hashing the plaintext. No-op if the username does not exist.
+    fn change_password(
+        &self,
+        username: &str,
+        new_password: &str,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send;
 }
 
 #[cfg(test)]

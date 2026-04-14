@@ -228,6 +228,47 @@ impl AuthStore for PgBackend {
         Ok(())
     }
 
+    async fn delete_user(&self, username: &str) -> Result<(), BackendError> {
+        self.ensure_auth_table().await?;
+
+        sqlx::query("DELETE FROM \"_forge_users\" WHERE username = $1")
+            .bind(username)
+            .execute(self.pool())
+            .await
+            .map_err(|e| BackendError::QueryError {
+                message: format!("user delete failed: {e}"),
+            })?;
+
+        Ok(())
+    }
+
+    async fn change_password(
+        &self,
+        username: &str,
+        new_password: &str,
+    ) -> Result<(), BackendError> {
+        self.ensure_auth_table().await?;
+
+        let salt = SaltString::generate(&mut OsRng);
+        let password_hash = Argon2::default()
+            .hash_password(new_password.as_bytes(), &salt)
+            .map_err(|e| BackendError::Internal {
+                message: format!("password hashing failed: {e}"),
+            })?
+            .to_string();
+
+        sqlx::query("UPDATE \"_forge_users\" SET password_hash = $1 WHERE username = $2")
+            .bind(&password_hash)
+            .bind(username)
+            .execute(self.pool())
+            .await
+            .map_err(|e| BackendError::QueryError {
+                message: format!("user change_password failed: {e}"),
+            })?;
+
+        Ok(())
+    }
+
     async fn count_users(&self) -> Result<usize, BackendError> {
         self.ensure_auth_table().await?;
 

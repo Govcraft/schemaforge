@@ -2,10 +2,11 @@ pub mod auth;
 pub mod entities;
 pub mod query_params;
 pub mod schemas;
+pub mod users;
 
 pub use auth::auth_routes;
 
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 
 use acton_service::state::AppState;
@@ -49,4 +50,8 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
                 .patch(entities::patch_entity)
                 .delete(entities::delete_entity),
         )
+        // User management
+        .route("/users", post(users::create_user).get(users::list_users))
+        .route("/users/{username}", delete(users::delete_user))
+        .route("/users/{username}/password", post(users::change_password))
 }
