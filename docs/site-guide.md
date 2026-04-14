@@ -92,7 +92,8 @@ pnpm preview        # local sanity check of the production build
 | `enum("a", "b")` | `<select>` | Variants are frozen at codegen time; regenerate after schema edits. |
 | `json` | `<textarea>` | Form state is a JSON string; edit handler runs `JSON.parse` before submit. |
 | `relation One` | `<RelationSelect>` | Combobox that fetches the target schema's entities and labels them by the `@display("...")` annotation. |
-| `relation Many` | CSV `<Input>` | Comma-separated id list; future work: multi-select combobox. |
+| `relation Many` (stored) | CSV `<Input>` | Comma-separated id list; future work: multi-select combobox. |
+| `relation Many` (derived inverse, issue #34) | *rendered as a read-only list on the detail page* | The backend rejects writes on derived collections, so the generator should skip the edit input entirely. As of the commit that landed inverse resolution, the generator does **not** yet detect `derived_from` on a field — until the mapping is taught to recognize it, generated edit forms for a paired parent will render a CSV input that the API will reject. Workaround: override the field template under `site-templates/`, or manage the relationship exclusively from the child side. |
 | `composite { ... }` | Recursive fieldset | Sub-fields are addressed via dot-paths in react-hook-form. |
 | `composite[]`, `text[][]` | `<textarea>` (JSON) | Array-of-composite and nested arrays fall back to a JSON textarea (see #18). |
 
