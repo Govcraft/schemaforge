@@ -333,10 +333,10 @@ fn regenerate_errors_when_owned_file_hand_edited() {
     let out_dir = workdir.path().join("hooks-service");
     run_generate(&schema_dir, &out_dir);
 
-    // Strip the marker from Cargo.toml.
+    // Strip the marker from an owned file (src/hooks/mod.rs).
     fs::write(
-        out_dir.join("Cargo.toml"),
-        "[package]\nname = \"hand-edited\"\n",
+        out_dir.join("src/hooks/mod.rs"),
+        "// hand-edited, marker stripped\n",
     )
     .unwrap();
 
@@ -347,7 +347,7 @@ fn regenerate_errors_when_owned_file_hand_edited() {
         .arg(&out_dir)
         .assert()
         .failure()
-        .stderr(predicates::str::contains("Cargo.toml"));
+        .stderr(predicates::str::contains("hooks/mod.rs"));
 }
 
 #[test]
@@ -380,9 +380,9 @@ fn check_flag_exits_nonzero_on_drift() {
     run_generate(&schema_dir, &out_dir);
 
     // Mutate an owned file (keeping the marker so it's legal to overwrite).
-    let main_path = out_dir.join("src/main.rs");
-    let original = fs::read_to_string(&main_path).unwrap();
-    fs::write(&main_path, format!("{original}\n// drift\n")).unwrap();
+    let mod_path = out_dir.join("src/hooks/mod.rs");
+    let original = fs::read_to_string(&mod_path).unwrap();
+    fs::write(&mod_path, format!("{original}\n// drift\n")).unwrap();
 
     schema_forge()
         .args(["hooks", "generate", "--all", "--check", "--schema-dir"])
@@ -391,7 +391,7 @@ fn check_flag_exits_nonzero_on_drift() {
         .arg(&out_dir)
         .assert()
         .failure()
-        .stderr(predicates::str::contains("src/main.rs"));
+        .stderr(predicates::str::contains("hooks/mod.rs"));
 }
 
 #[test]

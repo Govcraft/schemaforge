@@ -8,13 +8,13 @@
 //! <out-dir>/
 //!   .schemaforge-hooks                 # sentinel (zero-byte)
 //!   .schemaforge-manifest.toml         # file ownership manifest
-//!   Cargo.toml                         # Owned, always rewritten
+//!   Cargo.toml                         # Preserve — scaffolded once, user edits
 //!   build.rs                           # Owned; copies descriptor to project root
 //!   hooks_descriptor.bin               # Build artifact (stable path for runtime)
 //!   proto/
 //!     <schema>_hooks.proto             # Owned, one per annotated schema
 //!   src/
-//!     main.rs                          # Owned
+//!     main.rs                          # Preserve — scaffolded once, user edits
 //!     hooks/
 //!       mod.rs                         # Owned
 //!       <schema>.rs                    # Preserve — scaffold once, user edits
@@ -193,10 +193,15 @@ fn generate(
 /// Build the flat [`FilePlan`] list describing every file the hooks
 /// generator wants to produce. Pure function — no I/O, no mutation.
 fn build_plan(project_name: &str, hooked: &[SchemaHooks]) -> Result<Vec<FilePlan>, CliError> {
+    // Cargo.toml and src/main.rs are `Preserve`: scaffolded once, then
+    // user-owned. Users accumulate dependencies (chrono, acton-service, ...)
+    // and bootstrap logic (env vars, tracing, custom Service::new wiring)
+    // in these files, and regenerate runs must not clobber them. See #16.
+    // Re-scaffold with `--force-user-files` to reset them.
     let mut plan: Vec<FilePlan> = vec![
-        owned("Cargo.toml", render_cargo_toml(project_name)),
+        preserve("Cargo.toml", render_cargo_toml(project_name)),
         owned("build.rs", BUILD_RS.to_string()),
-        owned("src/main.rs", render_main_rs(hooked)),
+        preserve("src/main.rs", render_main_rs(hooked)),
         owned("src/hooks/mod.rs", render_hooks_mod(hooked)),
     ];
 
