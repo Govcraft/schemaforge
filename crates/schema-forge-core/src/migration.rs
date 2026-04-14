@@ -481,11 +481,20 @@ impl DiffEngine {
     }
 
     /// Create a migration plan for a brand new schema (no old version).
+    ///
+    /// Derived fields (paired inverse collections) are excluded from the
+    /// emitted `CreateSchema` step — they have no physical column.
     #[instrument(skip(schema), fields(schema = %schema.name.as_str()))]
     pub fn create_new(schema: &crate::types::SchemaDefinition) -> MigrationPlan {
+        let fields: Vec<FieldDefinition> = schema
+            .fields
+            .iter()
+            .filter(|f| !f.is_derived())
+            .cloned()
+            .collect();
         let steps = vec![MigrationStep::CreateSchema {
             name: schema.name.clone(),
-            fields: schema.fields.clone(),
+            fields,
         }];
         MigrationPlan::new(schema.id.clone(), schema.name.clone(), steps)
     }
@@ -605,6 +614,12 @@ impl DiffEngine {
             .collect();
 
         for new_field in &new.fields {
+            // Derived inverse collections have no physical column, so
+            // none of the modifier changes (required/indexed/default)
+            // apply at the DDL layer.
+            if new_field.is_derived() {
+                continue;
+            }
             // Find the corresponding old field: either by same name, or via rename
             let old_field = if let Some(old_name) = rename_new_to_old.get(new_field.name.as_str()) {
                 old.field(old_name.as_str())
@@ -693,6 +708,11 @@ impl DiffEngine {
     }
 
     fn emit_remove_field(field: &FieldDefinition, steps: &mut Vec<MigrationStep>) {
+        // Derived inverse collections never had a physical column, so
+        // removing them from the schema is a no-op at the DDL layer.
+        if field.is_derived() {
+            return;
+        }
         if matches!(field.field_type, FieldType::Relation { .. }) {
             steps.push(MigrationStep::RemoveRelation {
                 name: field.name.clone(),
@@ -705,6 +725,11 @@ impl DiffEngine {
     }
 
     fn emit_add_field(field: &FieldDefinition, steps: &mut Vec<MigrationStep>) {
+        // Derived inverse collections are resolved at read time — no
+        // column is created, so we emit no migration step.
+        if field.is_derived() {
+            return;
+        }
         if let FieldType::Relation {
             target,
             cardinality,
@@ -1595,6 +1620,62 @@ mod tests {
         );
         let result = DiffEngine::validate_system_schema_protection(&schema, &plan);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn derived_fields_are_excluded_from_create_new() {
+        use crate::types::Cardinality;
+
+        let mut parent_field = FieldDefinition::new(
+            FieldName::new("documents").unwrap(),
+            FieldType::Relation {
+                target: SchemaName::new("Document").unwrap(),
+                cardinality: Cardinality::Many,
+            },
+        );
+        // Simulate pair_inverse_relations having marked this as derived.
+        parent_field.derived_from = Some(FieldName::new("opportunity").unwrap());
+
+        let schema = make_schema(
+            "Opportunity",
+            vec![make_field("title"), parent_field],
+        );
+        let plan = DiffEngine::create_new(&schema);
+        match &plan.steps[..] {
+            [MigrationStep::CreateSchema { fields, .. }] => {
+                assert_eq!(
+                    fields.len(),
+                    1,
+                    "only the non-derived field should remain"
+                );
+                assert_eq!(fields[0].name.as_str(), "title");
+            }
+            other => panic!("expected CreateSchema step, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn derived_fields_are_excluded_from_diff_add() {
+        use crate::types::Cardinality;
+
+        let old = make_schema("Opportunity", vec![make_field("title")]);
+
+        let mut parent_field = FieldDefinition::new(
+            FieldName::new("documents").unwrap(),
+            FieldType::Relation {
+                target: SchemaName::new("Document").unwrap(),
+                cardinality: Cardinality::Many,
+            },
+        );
+        parent_field.derived_from = Some(FieldName::new("opportunity").unwrap());
+
+        let new = make_schema("Opportunity", vec![make_field("title"), parent_field]);
+        let plan = DiffEngine::diff(&old, &new);
+        assert!(
+            plan.steps.is_empty(),
+            "adding a derived field should produce no migration steps, got {:?}",
+            plan.steps
+        );
     }
 
     #[test]

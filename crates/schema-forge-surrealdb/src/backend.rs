@@ -15,7 +15,7 @@ use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
 
 use crate::codegen::migration_step_to_surql;
-use crate::query::query_to_surql;
+use crate::query::{count_to_surql_with_schema, query_to_surql_with_schema};
 use crate::value::{entity_to_surreal_map, surreal_to_dynamic};
 
 /// The schema metadata table name used to store `SchemaDefinition` records.
@@ -420,7 +420,7 @@ impl EntityStore for SurrealBackend {
             })?;
 
         let table = schema_def.name.as_str();
-        let sql = query_to_surql(query, table);
+        let sql = query_to_surql_with_schema(query, table, Some(schema_def));
         let rows = self.execute_and_take_rows(&sql).await?;
 
         let schema_name = schema_def.name.clone();
@@ -445,7 +445,7 @@ impl EntityStore for SurrealBackend {
             })?;
 
         let table = schema_def.name.as_str();
-        let sql = crate::query::count_to_surql(query, table);
+        let sql = count_to_surql_with_schema(query, table, Some(schema_def));
         let rows = self.execute_and_take_rows(&sql).await?;
 
         // SurrealDB returns [{ "count": N }] for GROUP ALL, or [] if no rows.

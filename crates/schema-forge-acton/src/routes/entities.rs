@@ -503,6 +503,19 @@ pub fn json_to_entity_fields_with_mode(
         // Look up the field type in the schema for guidance
         let field_def = schema.field(key);
 
+        // Reject writes to derived inverse collection fields. They have
+        // no physical column and are resolved at read time by querying
+        // the child table filtered by its FK pointing back at us.
+        if let Some(def) = field_def {
+            if def.is_derived() {
+                errors.push(format!(
+                    "field '{key}': is a derived inverse collection — write to \
+                     the child schema's foreign-key field instead"
+                ));
+                continue;
+            }
+        }
+
         let dynamic_value = if let Some(def) = field_def {
             convert_json_with_type_hint(value, &def.field_type)
         } else {
@@ -521,9 +534,13 @@ pub fn json_to_entity_fields_with_mode(
     }
 
     // Check for required fields that are missing — only in Replace mode.
-    // PATCH explicitly tolerates partial payloads.
+    // PATCH explicitly tolerates partial payloads. Derived fields are
+    // virtual and are never a legitimate source of "missing required".
     if mode == ConversionMode::Replace {
         for field_def in &schema.fields {
+            if field_def.is_derived() {
+                continue;
+            }
             if field_def.is_required() && !json_fields.contains_key(field_def.name.as_str()) {
                 errors.push(format!(
                     "required field '{}' is missing (PUT requires a complete entity; \
@@ -961,11 +978,27 @@ async fn execute_entity_query(
         .await;
     let record_access_policy = ask_forge(rx).await?;
 
-    let visible_entities = if let (Some(ref policy), Some(c)) = (&record_access_policy, claims) {
+    let mut visible_entities = if let (Some(ref policy), Some(c)) = (&record_access_policy, claims)
+    {
         policy.filter_visible(schema_def, c, result.entities).await
     } else {
         result.entities
     };
+
+    // Populate derived inverse collection fields (issue #34). Each derived
+    // field is resolved by one batched child-table query keyed on the FK,
+    // then the resulting child IDs are written into the parent's field
+    // map. This happens BEFORE display resolution so the existing
+    // relation-display machinery treats derived fields identically to
+    // stored RefArrays.
+    populate_derived_collections(
+        forge,
+        schema_def,
+        &mut visible_entities,
+        claims,
+        &tenant_config,
+    )
+    .await?;
 
     // Resolve relation display fields in one batched IN-query per target
     // schema. Happens before filter_entity_fields so a read-restricted
@@ -1133,6 +1166,149 @@ fn collect_relation_ids(value: &DynamicValue, out: &mut HashSet<String>) {
         }
         _ => {}
     }
+}
+
+/// Extract the parent-id string from a child entity's foreign-key field
+/// value. The backend may decode the FK column as `Text`, `Ref`, or (for
+/// an unusual NULL edge case) `Null`; all variants normalize to the same
+/// parent-id string we keyed parents by.
+fn parent_id_from_fk(value: &DynamicValue) -> Option<String> {
+    match value {
+        DynamicValue::Text(s) if !s.is_empty() => Some(s.clone()),
+        DynamicValue::Ref(id) => Some(id.as_str().to_string()),
+        _ => None,
+    }
+}
+
+/// For every derived inverse collection field on `parent_schema`, query the
+/// child table in one batched IN-query per target and mutate each parent
+/// entity's field map to insert a `RefArray` of matching child IDs.
+///
+/// The mutation happens before `resolve_relation_displays` / serialization,
+/// which lets the existing relation-display machinery treat the derived
+/// field identically to a stored `RefArray` — no special-case plumbing on
+/// the serialization side.
+///
+/// Derived collections are unbounded: every matching child row is returned.
+/// If a parent has thousands of children this walks the full set. A
+/// pagination story for derived collections is a follow-up.
+async fn populate_derived_collections(
+    forge: &acton_service::prelude::ActorHandle,
+    parent_schema: &SchemaDefinition,
+    entities: &mut [Entity],
+    claims: Option<&Claims>,
+    tenant_config: &Option<schema_forge_backend::tenant::TenantConfig>,
+) -> Result<(), ForgeError> {
+    if entities.is_empty() {
+        return Ok(());
+    }
+
+    // Collect (parent_field_name, target_schema_name, child_fk_field_name)
+    // for every derived inverse collection field on this schema.
+    let derived: Vec<(String, String, String)> = parent_schema
+        .fields
+        .iter()
+        .filter_map(|f| {
+            let FieldType::Relation { target, .. } = &f.field_type else {
+                return None;
+            };
+            let fk = f.derived_from.as_ref()?;
+            Some((
+                f.name.as_str().to_string(),
+                target.as_str().to_string(),
+                fk.as_str().to_string(),
+            ))
+        })
+        .collect();
+
+    if derived.is_empty() {
+        return Ok(());
+    }
+
+    // Parent IDs we need to fan out across. Typed as DynamicValue::Text to
+    // match how Filter::In bindings are emitted by the Postgres backend.
+    let parent_id_values: Vec<DynamicValue> = entities
+        .iter()
+        .map(|e| DynamicValue::Text(e.id.as_str().to_string()))
+        .collect();
+
+    for (parent_field_name, target_name, fk_field_name) in derived {
+        // Look up the target schema to get its SchemaId (needed to build
+        // a Query against the child table). A missing target leaves the
+        // derived field unpopulated — the parent still gets an empty
+        // array so clients never see `null`.
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetSchema {
+                name: target_name.clone(),
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let Some(target_def) = ask_forge(rx).await? else {
+            for entity in entities.iter_mut() {
+                entity
+                    .fields
+                    .insert(parent_field_name.clone(), DynamicValue::RefArray(vec![]));
+            }
+            continue;
+        };
+
+        // Query: SELECT id, <fk_field> FROM <target> WHERE <fk_field> IN (parent_ids)
+        let mut child_query = schema_forge_core::query::Query::new(target_def.id.clone());
+        child_query = child_query.with_filter(Filter::In {
+            path: FieldPath::single(&fk_field_name),
+            values: parent_id_values.clone(),
+        });
+        child_query.projection = Some(vec!["id".to_string(), fk_field_name.clone()]);
+        inject_tenant_scope(&mut child_query, claims, tenant_config);
+
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(QueryEntities {
+                query: child_query,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let child_result = match ask_forge(rx).await? {
+            Ok(r) => r,
+            Err(_) => {
+                // Backend error on the derived query — fall through with
+                // empty arrays rather than failing the whole read path.
+                for entity in entities.iter_mut() {
+                    entity
+                        .fields
+                        .insert(parent_field_name.clone(), DynamicValue::RefArray(vec![]));
+                }
+                continue;
+            }
+        };
+
+        // Group child IDs by parent ID. Children with a NULL or unrecognized
+        // FK value are silently skipped — they couldn't be attributed to
+        // any of the parents in `entities` anyway.
+        let mut groups: HashMap<String, Vec<schema_forge_core::types::EntityId>> = HashMap::new();
+        for child in child_result.entities {
+            let Some(fk_value) = child.field(&fk_field_name) else {
+                continue;
+            };
+            let Some(parent_id) = parent_id_from_fk(fk_value) else {
+                continue;
+            };
+            groups.entry(parent_id).or_default().push(child.id);
+        }
+
+        // Write the child-id array into each parent. Parents with no
+        // matching children get an empty array (never null).
+        for entity in entities.iter_mut() {
+            let parent_id = entity.id.as_str().to_string();
+            let children = groups.remove(&parent_id).unwrap_or_default();
+            entity
+                .fields
+                .insert(parent_field_name.clone(), DynamicValue::RefArray(children));
+        }
+    }
+
+    Ok(())
 }
 
 /// Stringify a display-field value for the `__display` envelope key. Only
@@ -1788,6 +1964,30 @@ pub async fn get_entity(
         .await?;
     }
 
+    // Always fetch tenant config — both derived-collection population and
+    // relation-display resolution need it, and the call is cheap.
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetTenantConfig {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let tenant_config = ask_forge(rx).await?;
+
+    // Populate derived inverse collection fields before serialization
+    // (issue #34). Wrapped in a single-element slice so the shared
+    // helper handles one or many entities the same way.
+    let mut single = [entity];
+    populate_derived_collections(
+        forge,
+        &schema_def,
+        &mut single,
+        claims.as_ref(),
+        &tenant_config,
+    )
+    .await?;
+    let [entity] = single;
+
     let mut response = entity_to_response(&entity);
 
     // Resolve relation display fields unless the caller opted out with
@@ -1795,13 +1995,6 @@ pub async fn get_entity(
     // endpoint uses — with a single source entity it's still one query
     // per target schema, which is cheap.
     if parse_resolve_param(&params) {
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(GetTenantConfig {
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        let tenant_config = ask_forge(rx).await?;
         let entities_slice = std::slice::from_ref(&entity);
         let display_map = resolve_relation_displays(
             forge,

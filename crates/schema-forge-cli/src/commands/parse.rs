@@ -157,6 +157,8 @@ fn discover_schema_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
 /// Parse all schema files and return the parsed definitions.
 ///
 /// Shared helper used by `apply`, `migrate`, `export`, and `policies` commands.
+/// Runs the inverse-relation pairing pass across the full batch so parent
+/// `-> X[]` fields paired with a child `-> Parent` FK are marked as derived.
 pub fn parse_all_schemas(
     paths: &[PathBuf],
 ) -> Result<Vec<schema_forge_core::types::SchemaDefinition>, CliError> {
@@ -182,6 +184,9 @@ pub fn parse_all_schemas(
             }
         }
     }
+
+    schema_forge_core::inverse_relations::pair_inverse_relations(&mut all_schemas)
+        .map_err(|e| CliError::Other(e.to_string()))?;
 
     Ok(all_schemas)
 }

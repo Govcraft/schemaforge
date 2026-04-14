@@ -16,6 +16,13 @@ pub struct FieldDefinition {
     pub modifiers: Vec<FieldModifier>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<FieldAnnotation>,
+    /// When set, this is a derived inverse relation collection. The value is
+    /// the name of the child-side FK field that points back at this schema.
+    /// Derived fields have no physical column — they are resolved at read
+    /// time by querying the child table filtered by the FK, and writes to
+    /// them are rejected by the API layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_from: Option<FieldName>,
 }
 
 impl FieldDefinition {
@@ -26,6 +33,7 @@ impl FieldDefinition {
             field_type,
             modifiers: Vec::new(),
             annotations: Vec::new(),
+            derived_from: None,
         }
     }
 
@@ -40,6 +48,7 @@ impl FieldDefinition {
             field_type,
             modifiers,
             annotations: Vec::new(),
+            derived_from: None,
         }
     }
 
@@ -55,7 +64,14 @@ impl FieldDefinition {
             field_type,
             modifiers,
             annotations,
+            derived_from: None,
         }
+    }
+
+    /// Returns true if this field is a derived inverse relation collection
+    /// (resolved at read time, no physical column).
+    pub fn is_derived(&self) -> bool {
+        self.derived_from.is_some()
     }
 
     /// Returns true if this field has the `Required` modifier.

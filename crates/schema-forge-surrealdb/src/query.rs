@@ -4,12 +4,24 @@
 //! No I/O. No side effects.
 
 use schema_forge_core::query::{AggregateOp, AggregateQuery, FieldPath, Filter, Query, SortOrder};
-use schema_forge_core::types::DynamicValue;
+use schema_forge_core::types::{DynamicValue, FieldType, SchemaDefinition};
 
 /// Compile a `Query` to a complete SurrealQL SELECT statement.
 ///
 /// The `table` argument is the SurrealDB table name (derived from `SchemaName`).
 pub fn query_to_surql(query: &Query, table: &str) -> String {
+    query_to_surql_with_schema(query, table, None)
+}
+
+/// Like [`query_to_surql`] but carries a schema definition so filters on
+/// relation fields can emit record-link literals (e.g. `Opportunity:⟨id⟩`)
+/// instead of plain strings. Plain strings compare against the stored
+/// `record<Target>` column as if they were unrelated types and never match.
+pub fn query_to_surql_with_schema(
+    query: &Query,
+    table: &str,
+    schema: Option<&SchemaDefinition>,
+) -> String {
     let select_clause = match &query.projection {
         None => "*".to_string(),
         Some(fields) => {
@@ -25,7 +37,7 @@ pub fn query_to_surql(query: &Query, table: &str) -> String {
     let mut sql = format!("SELECT {select_clause} FROM {table}");
 
     if let Some(filter) = &query.filter {
-        sql.push_str(&format!(" WHERE {}", filter_to_surql(filter)));
+        sql.push_str(&format!(" WHERE {}", filter_to_surql_with_schema(filter, schema)));
     }
 
     if !query.sort.is_empty() {
@@ -60,10 +72,19 @@ pub fn query_to_surql(query: &Query, table: &str) -> String {
 ///
 /// Ignores limit, offset, and sort — only applies the filter.
 pub fn count_to_surql(query: &Query, table: &str) -> String {
+    count_to_surql_with_schema(query, table, None)
+}
+
+/// Schema-aware variant of [`count_to_surql`].
+pub fn count_to_surql_with_schema(
+    query: &Query,
+    table: &str,
+    schema: Option<&SchemaDefinition>,
+) -> String {
     let mut sql = format!("SELECT count() FROM {table}");
 
     if let Some(filter) = &query.filter {
-        sql.push_str(&format!(" WHERE {}", filter_to_surql(filter)));
+        sql.push_str(&format!(" WHERE {}", filter_to_surql_with_schema(filter, schema)));
     }
 
     sql.push_str(" GROUP ALL;");
@@ -72,19 +93,31 @@ pub fn count_to_surql(query: &Query, table: &str) -> String {
 
 /// Compile a `Filter` to a SurrealQL WHERE clause fragment (no leading WHERE).
 pub fn filter_to_surql(filter: &Filter) -> String {
+    filter_to_surql_with_schema(filter, None)
+}
+
+/// Schema-aware variant of [`filter_to_surql`]. When a filter path is a
+/// single segment that matches a `Relation` field on `schema`, values are
+/// emitted as record-link literals (`Target:⟨id⟩`) so the comparison
+/// matches the stored `record<Target>` column instead of always being
+/// false.
+pub fn filter_to_surql_with_schema(
+    filter: &Filter,
+    schema: Option<&SchemaDefinition>,
+) -> String {
     match filter {
         Filter::Eq { path, value } => {
             format!(
                 "{} = {}",
                 field_path_to_surql(path),
-                dynamic_value_to_surql_literal(value)
+                value_for_path(value, path, schema),
             )
         }
         Filter::Ne { path, value } => {
             format!(
                 "{} != {}",
                 field_path_to_surql(path),
-                dynamic_value_to_surql_literal(value)
+                value_for_path(value, path, schema),
             )
         }
         Filter::Gt { path, value } => {
@@ -130,31 +163,77 @@ pub fn filter_to_surql(filter: &Filter) -> String {
             )
         }
         Filter::In { path, values } => {
-            let literals: Vec<String> = values.iter().map(dynamic_value_to_surql_literal).collect();
+            let literals: Vec<String> = values
+                .iter()
+                .map(|v| value_for_path(v, path, schema))
+                .collect();
             format!("{} IN [{}]", field_path_to_surql(path), literals.join(", "))
         }
         Filter::And { filters } => {
             if filters.is_empty() {
                 return "true".to_string();
             }
-            let parts: Vec<String> = filters.iter().map(filter_to_surql).collect();
+            let parts: Vec<String> = filters
+                .iter()
+                .map(|f| filter_to_surql_with_schema(f, schema))
+                .collect();
             format!("({})", parts.join(" AND "))
         }
         Filter::Or { filters } => {
             if filters.is_empty() {
                 return "false".to_string();
             }
-            let parts: Vec<String> = filters.iter().map(filter_to_surql).collect();
+            let parts: Vec<String> = filters
+                .iter()
+                .map(|f| filter_to_surql_with_schema(f, schema))
+                .collect();
             format!("({})", parts.join(" OR "))
         }
         Filter::Not { filter } => {
-            format!("!({})", filter_to_surql(filter))
+            format!("!({})", filter_to_surql_with_schema(filter, schema))
         }
         _ => {
             // Future Filter variants -- produce a true literal so queries still run.
             "true".to_string()
         }
     }
+}
+
+/// If `path` is a single-segment field on `schema` typed as a relation,
+/// emit the value as a record-link literal. Otherwise fall back to the
+/// generic literal renderer.
+fn value_for_path(
+    value: &DynamicValue,
+    path: &FieldPath,
+    schema: Option<&SchemaDefinition>,
+) -> String {
+    if let Some(schema) = schema {
+        let segments: Vec<&str> = path.segments().iter().map(|s| s.as_str()).collect();
+        if segments.len() == 1 {
+            if let Some(field) = schema.field(segments[0]) {
+                if let FieldType::Relation { target, .. } = &field.field_type {
+                    return relation_value_literal(value, target.as_str());
+                }
+            }
+        }
+    }
+    dynamic_value_to_surql_literal(value)
+}
+
+/// Render a `DynamicValue` as a SurrealDB record-link literal for the
+/// given target table. Accepts `Text`, `Ref`, and passes `Null` through as
+/// `NONE`. Other variants fall back to the scalar literal renderer.
+fn relation_value_literal(value: &DynamicValue, target: &str) -> String {
+    let id_str = match value {
+        DynamicValue::Text(s) => s.clone(),
+        DynamicValue::Ref(id) => id.as_str().to_string(),
+        DynamicValue::Null => return "NONE".to_string(),
+        other => return dynamic_value_to_surql_literal(other),
+    };
+    // Wrap the id in backticks so TypeID delimiters like `_` don't need
+    // special escaping. The literal lands as e.g. `Opportunity:⟨id⟩` but
+    // backticks are the more portable form here.
+    format!("{target}:`{}`", escape_surql_string(&id_str))
 }
 
 /// Convert a `DynamicValue` to a SurrealQL literal string.

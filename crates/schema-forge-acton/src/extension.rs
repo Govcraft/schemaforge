@@ -259,6 +259,20 @@ impl SchemaForgeExtension {
         // Seed system schemas (idempotent)
         crate::system::seed_system_schemas_into_map(&mut registry, backend.as_ref()).await?;
 
+        // Run the inverse-relation pairing pass now that we have every
+        // schema visible in one batch. Stored metadata from pre-#34 DBs
+        // won't have `derived_from` set, so this pass recomputes it on
+        // every daemon start — cheap and idempotent.
+        let mut paired: Vec<SchemaDefinition> = registry.values().cloned().collect();
+        schema_forge_core::inverse_relations::pair_inverse_relations(&mut paired).map_err(
+            |e| ForgeError::Internal {
+                message: format!("invalid inverse relation: {e}"),
+            },
+        )?;
+        for schema in paired {
+            registry.insert(schema.name.as_str().to_string(), schema);
+        }
+
         // Build tenant config from all registered schemas
         let all_schemas: Vec<SchemaDefinition> = registry.values().cloned().collect();
         let tenant_config =

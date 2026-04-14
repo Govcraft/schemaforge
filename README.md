@@ -298,10 +298,48 @@ The embedded SurrealDB mode (`kv-mem`) enables development and testing without r
 | DateTime | `datetime` | None |
 | Enum | `enum("a", "b", "c")` | At least 1 variant, no duplicates |
 | Relation (one) | `-> SchemaName` | Target must be PascalCase |
-| Relation (many) | `-> SchemaName[]` | Target must be PascalCase |
+| Relation (many) | `-> SchemaName[]` | Target must be PascalCase. See *Inverse collections* below. |
 | Array | `text[]`, `integer[]`, etc. | Suffix `[]` on any field type |
 | Composite | `composite { field: type ... }` | Nested field definitions |
 | JSON | `json` | Arbitrary unstructured data |
+
+### Inverse Collections (`-> X[]`)
+
+A collection relation on a parent (`documents: -> Document[]`) is resolved
+as an **inverse view** when the target schema declares a foreign-key
+relation pointing back:
+
+```
+schema Opportunity {
+    title:     text required
+    documents: -> Document[]       // derived — no physical column
+}
+
+schema Document {
+    title:        text required
+    opportunity:  -> Opportunity   // FK on the child side
+}
+```
+
+- Reads of `Opportunity.documents` query `Document` filtered by the
+  `opportunity` FK and return the matching child IDs (plus `__display`
+  entries via the usual display-field machinery). Parents with no
+  children get an empty array — never `null`.
+- Writes to `Opportunity.documents` are rejected with `422`. Persist
+  the relationship by setting `Document.opportunity` on the child.
+- Migrations for a paired field emit **no** column: nothing to backfill,
+  nothing to drop, no drift.
+
+If the target schema has **no** FK pointing back, `-> X[]` keeps its
+older behavior as a stored `TEXT[]` / `array<record<X>>` column — use
+that for many-to-many / tag-style lists where both sides are
+independent.
+
+Exactly one FK back is required. Two FKs from the same child pointing at
+the same parent is rejected at schema-load time with an *ambiguous
+inverse* error — disambiguate by removing the duplicate FK (SchemaForge
+does not currently support `@inverse(field: "...")` to pick between
+competing FKs).
 
 ### Modifiers
 

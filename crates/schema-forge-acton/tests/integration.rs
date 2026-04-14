@@ -1301,3 +1301,260 @@ async fn put_missing_required_field_suggests_patch() {
         "error message should name the missing field, got: {message}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Derived inverse relation tests (issue #34)
+// ---------------------------------------------------------------------------
+
+/// Builds a (paired) pair of schemas: `Opportunity` with a parent collection
+/// `documents: -> Document[]` and `Document` with `opportunity: -> Opportunity`.
+/// Applies migrations and stores metadata so the backend has live tables.
+async fn setup_paired_schemas() -> (AppState<SchemaForgeConfig>, Router) {
+    use schema_forge_core::types::{
+        Cardinality, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaDefinition,
+        SchemaId, SchemaName, TextConstraints,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+    let backend = Arc::new(backend);
+
+    let mut opportunity = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Opportunity").unwrap(),
+        vec![
+            FieldDefinition::with_modifiers(
+                FieldName::new("title").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+            ),
+            FieldDefinition::new(
+                FieldName::new("documents").unwrap(),
+                FieldType::Relation {
+                    target: SchemaName::new("Document").unwrap(),
+                    cardinality: Cardinality::Many,
+                },
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+
+    let mut document = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Document").unwrap(),
+        vec![
+            FieldDefinition::with_modifiers(
+                FieldName::new("title").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+            ),
+            FieldDefinition::new(
+                FieldName::new("opportunity").unwrap(),
+                FieldType::Relation {
+                    target: SchemaName::new("Opportunity").unwrap(),
+                    cardinality: Cardinality::One,
+                },
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+
+    // Run the inverse pairing pass to mark Opportunity.documents as derived.
+    let mut batch = vec![opportunity.clone(), document.clone()];
+    schema_forge_core::inverse_relations::pair_inverse_relations(&mut batch).unwrap();
+    opportunity = batch[0].clone();
+    document = batch[1].clone();
+
+    assert!(
+        opportunity.field("documents").unwrap().is_derived(),
+        "pairing should have marked Opportunity.documents as derived"
+    );
+
+    // Apply migrations & store metadata for both schemas. The migration
+    // plan for Opportunity should NOT create a documents column.
+    for schema in &[&opportunity, &document] {
+        let plan = schema_forge_core::migration::DiffEngine::create_new(schema);
+        backend
+            .apply_migration(&schema.name, &plan.steps)
+            .await
+            .expect("apply migration");
+        backend
+            .store_schema_metadata(schema)
+            .await
+            .expect("store metadata");
+    }
+
+    let mut registry = HashMap::new();
+    registry.insert("Opportunity".to_string(), opportunity);
+    registry.insert("Document".to_string(), document);
+
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry,
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    let app = test_app_with_claims_state(state.clone(), make_test_claims(&["admin"]));
+    (state, app)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn derived_collection_populated_on_single_get() {
+    let (_state, app) = setup_paired_schemas().await;
+
+    // Create an opportunity.
+    let (status, opp) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Opportunity/entities",
+        Some(serde_json::json!({ "fields": { "title": "Deal A" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let opp_id = opp["id"].as_str().unwrap().to_string();
+
+    // Create three documents referencing the opportunity.
+    let mut doc_ids = Vec::new();
+    for title in &["Doc 1", "Doc 2", "Doc 3"] {
+        let (status, doc) = json_request(
+            &app,
+            Method::POST,
+            "/schemas/Document/entities",
+            Some(serde_json::json!({
+                "fields": { "title": title, "opportunity": opp_id }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        doc_ids.push(doc["id"].as_str().unwrap().to_string());
+    }
+
+    // GET the opportunity and verify the derived collection is populated.
+    let (status, body) = json_request(
+        &app,
+        Method::GET,
+        &format!("/schemas/Opportunity/entities/{opp_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let documents = body["fields"]["documents"]
+        .as_array()
+        .expect("documents should be an array, not null");
+    let returned: Vec<String> = documents
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(returned.len(), 3, "expected three child document IDs");
+    for id in &doc_ids {
+        assert!(
+            returned.contains(id),
+            "missing child id {id} in {returned:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn derived_collection_populated_on_list() {
+    let (_state, app) = setup_paired_schemas().await;
+
+    // Two parents, two children each.
+    let mut parent_ids = Vec::new();
+    for title in &["Deal A", "Deal B"] {
+        let (_status, opp) = json_request(
+            &app,
+            Method::POST,
+            "/schemas/Opportunity/entities",
+            Some(serde_json::json!({ "fields": { "title": title } })),
+        )
+        .await;
+        parent_ids.push(opp["id"].as_str().unwrap().to_string());
+    }
+    for (i, pid) in parent_ids.iter().enumerate() {
+        for n in 0..2 {
+            json_request(
+                &app,
+                Method::POST,
+                "/schemas/Document/entities",
+                Some(serde_json::json!({
+                    "fields": { "title": format!("p{i}-doc{n}"), "opportunity": pid }
+                })),
+            )
+            .await;
+        }
+    }
+
+    let (status, body) =
+        json_request(&app, Method::GET, "/schemas/Opportunity/entities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let entities = body["entities"].as_array().unwrap();
+    assert_eq!(entities.len(), 2);
+    for entity in entities {
+        let docs = entity["fields"]["documents"].as_array().unwrap();
+        assert_eq!(docs.len(), 2, "each parent should see its two children");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_to_derived_field_is_rejected() {
+    let (_state, app) = setup_paired_schemas().await;
+
+    // Attempt to create an Opportunity with a value in the derived field.
+    let (status, body) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Opportunity/entities",
+        Some(serde_json::json!({
+            "fields": {
+                "title": "Deal A",
+                "documents": ["entity_01foo"]
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let message = body["message"]
+        .as_str()
+        .or_else(|| body["error"].as_str())
+        .unwrap_or("");
+    assert!(
+        message.to_lowercase().contains("derived")
+            || body.to_string().to_lowercase().contains("derived"),
+        "error should mention 'derived': {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parent_with_no_children_gets_empty_array_not_null() {
+    let (_state, app) = setup_paired_schemas().await;
+
+    let (_status, opp) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Opportunity/entities",
+        Some(serde_json::json!({ "fields": { "title": "Lonely Deal" } })),
+    )
+    .await;
+    let opp_id = opp["id"].as_str().unwrap().to_string();
+
+    let (status, body) = json_request(
+        &app,
+        Method::GET,
+        &format!("/schemas/Opportunity/entities/{opp_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let documents = &body["fields"]["documents"];
+    assert!(
+        documents.is_array(),
+        "documents should always be an array, got {documents}"
+    );
+    assert_eq!(documents.as_array().unwrap().len(), 0);
+}

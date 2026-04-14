@@ -32,6 +32,46 @@ use crate::messages::{
 /// Timeout for actor request-response round-trips.
 const ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Re-run the inverse-relation pairing pass over the full registry with a
+/// new or updated schema definition, writing the paired version back into
+/// `target`. Isolated in its own function so both `create_schema` and
+/// `update_schema` share the exact same logic.
+///
+/// Note: this only updates `target`. If adding/updating `target` would
+/// cause an *existing* schema's stored `-> X[]` field to become derived
+/// (because the new schema provides the inverse FK), that existing schema
+/// is not rewritten here — the change takes effect on the next daemon
+/// restart, which re-pairs the entire registry in `build_init`.
+async fn pair_with_registry(
+    forge: &acton_service::prelude::ActorHandle,
+    target: &mut SchemaDefinition,
+) -> Result<(), ForgeError> {
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(ListSchemas {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let mut batch = ask_forge(rx).await?;
+
+    // Replace any existing entry with the same name so we pair against
+    // the incoming definition — not the stale one.
+    batch.retain(|s| s.name.as_str() != target.name.as_str());
+    batch.push(target.clone());
+
+    schema_forge_core::inverse_relations::pair_inverse_relations(&mut batch).map_err(|e| {
+        ForgeError::ValidationFailed {
+            details: vec![e.to_string()],
+        }
+    })?;
+
+    // The target is always the last element we pushed.
+    if let Some(paired) = batch.pop() {
+        *target = paired;
+    }
+    Ok(())
+}
+
 /// Await an actor response with a timeout.
 async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
     tokio::time::timeout(ACTOR_TIMEOUT, rx)
@@ -349,7 +389,7 @@ pub async fn create_schema(
 
     // 4. Build SchemaDefinition
     let schema_id = SchemaId::new();
-    let definition = SchemaDefinition::new(
+    let mut definition = SchemaDefinition::new(
         schema_id,
         schema_name.clone(),
         fields,
@@ -358,6 +398,11 @@ pub async fn create_schema(
     .map_err(|e| ForgeError::ValidationFailed {
         details: vec![e.to_string()],
     })?;
+
+    // 4a. Run the inverse-relation pairing pass across the full registry so
+    // any `-> X[]` field paired with an FK from an existing schema is marked
+    // as derived before the migration plan is generated.
+    pair_with_registry(forge, &mut definition).await?;
 
     // 5. Generate migration plan
     let plan = DiffEngine::create_new(&definition);
@@ -538,7 +583,7 @@ pub async fn update_schema(
         .collect::<Result<Vec<_>, _>>()?;
 
     // 4. Build new SchemaDefinition (preserving the original ID)
-    let new_definition = SchemaDefinition::new(
+    let mut new_definition = SchemaDefinition::new(
         old_schema.id.clone(),
         schema_name.clone(),
         fields,
@@ -547,6 +592,11 @@ pub async fn update_schema(
     .map_err(|e| ForgeError::ValidationFailed {
         details: vec![e.to_string()],
     })?;
+
+    // 4a. Run the inverse-relation pairing pass before diffing, so newly
+    // added `-> X[]` fields are classified as derived (and therefore
+    // produce no AddRelation step for a physical column).
+    pair_with_registry(forge, &mut new_definition).await?;
 
     // 5. Compute diff and generate migration plan
     let plan = DiffEngine::diff(&old_schema, &new_definition);
