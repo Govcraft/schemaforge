@@ -92,14 +92,42 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
         }
         MigrationStep::ChangeType {
             name,
-            old_type: _,
+            old_type,
             new_type,
             transform: _,
         } => {
-            let pg_type = field_type_to_pg(new_type);
-            vec![format!(
-                "ALTER TABLE \"{table}\" ALTER COLUMN \"{name}\" TYPE {pg_type} USING \"{name}\"::{pg_type};"
-            )]
+            let old_is_enum = matches!(old_type, FieldType::Enum(_));
+            let new_is_enum = matches!(new_type, FieldType::Enum(_));
+            let constraint_name = format!("chk_{table}_{name}_enum");
+            let mut stmts = Vec::new();
+
+            if old_is_enum {
+                stmts.push(format!(
+                    "ALTER TABLE \"{table}\" DROP CONSTRAINT IF EXISTS \"{constraint_name}\";"
+                ));
+            }
+
+            let old_pg = field_type_to_pg(old_type);
+            let new_pg = field_type_to_pg(new_type);
+            if old_pg != new_pg {
+                stmts.push(format!(
+                    "ALTER TABLE \"{table}\" ALTER COLUMN \"{name}\" TYPE {new_pg} USING \"{name}\"::{new_pg};"
+                ));
+            }
+
+            if new_is_enum {
+                for clause in field_check_constraints(table, name.as_ref(), new_type) {
+                    stmts.push(format!("ALTER TABLE \"{table}\" ADD {clause};"));
+                }
+            }
+
+            if stmts.is_empty() {
+                stmts.push(format!(
+                    "ALTER TABLE \"{table}\" ALTER COLUMN \"{name}\" TYPE {new_pg} USING \"{name}\"::{new_pg};"
+                ));
+            }
+
+            stmts
         }
         MigrationStep::AddIndex { field } => {
             let idx_name = format!("idx_{table}_{field}");
@@ -656,6 +684,77 @@ mod tests {
             stmts,
             vec!["ALTER TABLE \"Contact\" ALTER COLUMN \"status\" DROP DEFAULT;"]
         );
+    }
+
+    #[test]
+    fn change_type_enum_to_enum_regenerates_check_constraint() {
+        let old_type = FieldType::Enum(EnumVariants::new(vec!["a".into(), "b".into()]).unwrap());
+        let new_type = FieldType::Enum(
+            EnumVariants::new(vec!["a".into(), "b".into(), "c".into()]).unwrap(),
+        );
+        let step = MigrationStep::ChangeType {
+            name: FieldName::new("status").unwrap(),
+            old_type,
+            new_type,
+            transform: schema_forge_core::migration::ValueTransform::Identity,
+        };
+        let stmts = migration_step_to_sql("Thing", &step);
+        assert_eq!(stmts.len(), 2);
+        assert_eq!(
+            stmts[0],
+            "ALTER TABLE \"Thing\" DROP CONSTRAINT IF EXISTS \"chk_Thing_status_enum\";"
+        );
+        assert!(stmts[1].starts_with("ALTER TABLE \"Thing\" ADD CONSTRAINT \"chk_Thing_status_enum\""));
+        assert!(stmts[1].contains("'a'"));
+        assert!(stmts[1].contains("'b'"));
+        assert!(stmts[1].contains("'c'"));
+        assert!(!stmts.iter().any(|s| s.contains("ALTER COLUMN")));
+    }
+
+    #[test]
+    fn change_type_enum_to_non_enum_drops_check_constraint() {
+        let old_type = FieldType::Enum(EnumVariants::new(vec!["a".into(), "b".into()]).unwrap());
+        let new_type = FieldType::Text(TextConstraints::unconstrained());
+        let step = MigrationStep::ChangeType {
+            name: FieldName::new("status").unwrap(),
+            old_type,
+            new_type,
+            transform: schema_forge_core::migration::ValueTransform::Identity,
+        };
+        let stmts = migration_step_to_sql("Thing", &step);
+        assert_eq!(
+            stmts[0],
+            "ALTER TABLE \"Thing\" DROP CONSTRAINT IF EXISTS \"chk_Thing_status_enum\";"
+        );
+        assert!(!stmts.iter().any(|s| s.contains("ADD CONSTRAINT")));
+    }
+
+    #[test]
+    fn change_type_non_enum_to_enum_adds_check_constraint() {
+        let old_type = FieldType::Text(TextConstraints::unconstrained());
+        let new_type = FieldType::Enum(EnumVariants::new(vec!["a".into(), "b".into()]).unwrap());
+        let step = MigrationStep::ChangeType {
+            name: FieldName::new("status").unwrap(),
+            old_type,
+            new_type,
+            transform: schema_forge_core::migration::ValueTransform::Identity,
+        };
+        let stmts = migration_step_to_sql("Thing", &step);
+        assert!(stmts.iter().any(|s| s.contains("ADD CONSTRAINT \"chk_Thing_status_enum\"")));
+        assert!(!stmts.iter().any(|s| s.contains("DROP CONSTRAINT")));
+    }
+
+    #[test]
+    fn change_type_text_to_integer_still_alters_column() {
+        let step = MigrationStep::ChangeType {
+            name: FieldName::new("count").unwrap(),
+            old_type: FieldType::Text(TextConstraints::unconstrained()),
+            new_type: FieldType::Integer(IntegerConstraints::unconstrained()),
+            transform: schema_forge_core::migration::ValueTransform::Identity,
+        };
+        let stmts = migration_step_to_sql("Thing", &step);
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].contains("ALTER COLUMN \"count\" TYPE BIGINT"));
     }
 
     #[test]
