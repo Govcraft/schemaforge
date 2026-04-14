@@ -3,7 +3,9 @@
 //! Supported: Text, RichText, Integer, Float, Boolean, DateTime, Enum,
 //! Json, Relation(One|Many), Array(scalar|enum), and Composite (recursive,
 //! flattened into dot-path sub-fields). Array-of-array and
-//! array-of-composite are still rejected with [`FieldMapError::Unsupported`].
+//! array-of-composite fall back to a JSON textarea: the field is projected
+//! as `kind = "json"` with a best-effort TS type, and the edit form
+//! round-trips it through `JSON.parse`/`JSON.stringify`. See issue #18.
 
 use std::collections::BTreeMap;
 
@@ -189,30 +191,45 @@ fn field_to_view_with_prefix(
             Ok(with_relation_metadata(base, target.as_str(), catalog))
         }
         FieldType::Array(inner) => {
-            let (inner_kind, inner_ts, inner_variants) =
-                describe_array_element(inner).map_err(|reason| FieldMapError::Unsupported {
-                    field: field.name.as_str().to_string(),
-                    reason,
-                })?;
             let zod = if required {
                 "z.string().min(1, \"Required\")".to_string()
             } else {
                 "z.string().optional()".to_string()
             };
-            let base = make_field_view(
-                field,
-                format!("{inner_ts}[]"),
-                zod,
-                "array",
-                false,
-                None,
-                Vec::new(),
-            );
-            Ok(FieldView {
-                item_kind: Some(inner_kind.to_string()),
-                item_enum_variants: inner_variants,
-                ..base
-            })
+            match describe_array_element(inner) {
+                Ok((inner_kind, inner_ts, inner_variants)) => {
+                    let base = make_field_view(
+                        field,
+                        format!("{inner_ts}[]"),
+                        zod,
+                        "array",
+                        false,
+                        None,
+                        Vec::new(),
+                    );
+                    Ok(FieldView {
+                        item_kind: Some(inner_kind.to_string()),
+                        item_enum_variants: inner_variants,
+                        ..base
+                    })
+                }
+                Err(_) => {
+                    // Array-of-array and array-of-composite fall back to the
+                    // JSON textarea path: the form renders a `<textarea>` and
+                    // the edit handler runs JSON.parse before submit. The TS
+                    // type still captures the real shape for type-safe reads.
+                    let ts_type = format!("{}[]", ts_type_for_field_type(inner));
+                    Ok(make_field_view(
+                        field,
+                        ts_type,
+                        zod,
+                        "json",
+                        false,
+                        None,
+                        Vec::new(),
+                    ))
+                }
+            }
         }
         FieldType::RichText => {
             let zod = if required {
@@ -319,6 +336,39 @@ fn with_relation_metadata(
         view.relation_display_field = meta.display_field.clone();
     }
     view
+}
+
+/// Best-effort TypeScript type for a raw [`FieldType`], used by the
+/// array-of-array / array-of-composite fallback paths. Scalars and enums
+/// are captured precisely; relations, richtext, and json fall back to
+/// `unknown` since the JSON wire shape is opaque to the generator.
+fn ts_type_for_field_type(ft: &FieldType) -> String {
+    match ft {
+        FieldType::Text(_) | FieldType::RichText | FieldType::DateTime => "string".to_string(),
+        FieldType::Integer(_) | FieldType::Float(_) => "number".to_string(),
+        FieldType::Boolean => "boolean".to_string(),
+        FieldType::Enum(v) => {
+            let parts: Vec<String> =
+                v.as_slice().iter().map(|s| format!("\"{s}\"")).collect();
+            format!("({})", parts.join(" | "))
+        }
+        FieldType::Json => "unknown".to_string(),
+        FieldType::Relation { .. } => "string".to_string(),
+        FieldType::Array(inner) => format!("{}[]", ts_type_for_field_type(inner)),
+        FieldType::Composite(sub_defs) => {
+            let mut parts = Vec::with_capacity(sub_defs.len());
+            for sub in sub_defs {
+                let opt = if sub.is_required() { "" } else { "?" };
+                parts.push(format!(
+                    "{}{opt}: {}",
+                    sub.name.as_str(),
+                    ts_type_for_field_type(&sub.field_type)
+                ));
+            }
+            format!("{{ {} }}", parts.join(", "))
+        }
+        _ => "unknown".to_string(),
+    }
 }
 
 /// Describe the element type of an array for projection into a [`FieldView`].
@@ -583,15 +633,40 @@ mod tests {
     }
 
     #[test]
-    fn array_of_array_is_unsupported() {
-        let err = project(&field(
+    fn array_of_array_falls_back_to_json_textarea() {
+        let v = project(&field(
             "matrix",
             FieldType::Array(Box::new(FieldType::Array(Box::new(FieldType::Boolean)))),
             false,
         ))
-        .unwrap_err();
-        let FieldMapError::Unsupported { reason, .. } = err;
-        assert!(reason.contains("nested arrays"));
+        .unwrap();
+        assert_eq!(v.kind, "json");
+        assert_eq!(v.ts_type, "boolean[][]");
+        assert_eq!(v.zod, "z.string().optional()");
+    }
+
+    #[test]
+    fn array_of_composite_falls_back_to_json_textarea() {
+        let inner = FieldDefinition::with_modifiers(
+            FieldName::new("base_months").unwrap(),
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+            vec![FieldModifier::Required],
+        );
+        let extra = FieldDefinition::new(
+            FieldName::new("option_months").unwrap(),
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+        );
+        let v = project(&field(
+            "rows",
+            FieldType::Array(Box::new(FieldType::Composite(vec![inner, extra]))),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(v.kind, "json");
+        assert!(v.ts_type.contains("base_months: number"));
+        assert!(v.ts_type.contains("option_months?: number"));
+        assert!(v.ts_type.ends_with("[]"));
+        assert_eq!(v.zod, "z.string().min(1, \"Required\")");
     }
 
     #[test]
@@ -644,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn composite_with_unsupported_inner_fails() {
+    fn composite_containing_nested_array_falls_back_to_json_leaf() {
         let fd = FieldDefinition::new(
             FieldName::new("address").unwrap(),
             FieldType::Composite(vec![FieldDefinition::new(
@@ -652,12 +727,14 @@ mod tests {
                 FieldType::Array(Box::new(FieldType::Array(Box::new(FieldType::Boolean)))),
             )]),
         );
-        let err = project(&fd).unwrap_err();
-        let FieldMapError::Unsupported { reason, .. } = err;
-        assert!(reason.contains("composite sub-field"));
+        let v = project(&fd).unwrap();
+        assert_eq!(v.kind, "composite");
+        assert_eq!(v.sub_fields.len(), 1);
+        assert_eq!(v.sub_fields[0].kind, "json");
+        assert_eq!(v.sub_fields[0].ts_type, "boolean[][]");
     }
 
-    #[test]
+#[test]
     fn relation_one_picks_up_target_metadata_from_catalog() {
         let mut catalog = BTreeMap::new();
         catalog.insert(
