@@ -86,11 +86,10 @@ impl Manifest {
             path: path.clone(),
             source,
         })?;
-        let manifest: Self =
-            toml::from_str(&text).map_err(|e| CodegenError::ManifestParse {
-                path: path.clone(),
-                message: e.to_string(),
-            })?;
+        let manifest: Self = toml::from_str(&text).map_err(|e| CodegenError::ManifestParse {
+            path: path.clone(),
+            message: e.to_string(),
+        })?;
         if manifest.version > MANIFEST_VERSION {
             return Err(CodegenError::ManifestVersionUnsupported {
                 path,
@@ -197,11 +196,7 @@ mod tests {
     fn load_rejects_unsupported_version() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join(MANIFEST_FILENAME);
-        fs::write(
-            &path,
-            "version = 999\ngenerator = \"hooks\"\nowned = []\n",
-        )
-        .unwrap();
+        fs::write(&path, "version = 999\ngenerator = \"hooks\"\nowned = []\n").unwrap();
         let err = Manifest::load(tmp.path(), "hooks").unwrap_err();
         assert!(matches!(
             err,

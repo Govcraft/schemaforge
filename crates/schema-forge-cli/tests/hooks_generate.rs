@@ -306,11 +306,9 @@ fn regenerate_prunes_orphans_when_schema_deleted() {
     // Both schemas produced their proto files and prompt dirs.
     assert!(out_dir.join("proto/alpha_hooks.proto").exists());
     assert!(out_dir.join("proto/beta_hooks.proto").exists());
-    assert!(
-        out_dir
-            .join("src/hooks/beta/before_change.prompt.md")
-            .exists()
-    );
+    assert!(out_dir
+        .join("src/hooks/beta/before_change.prompt.md")
+        .exists());
 
     // Delete the beta schema and regenerate.
     fs::remove_file(schema_dir.join("beta.schema")).unwrap();
@@ -336,7 +334,11 @@ fn regenerate_errors_when_owned_file_hand_edited() {
     run_generate(&schema_dir, &out_dir);
 
     // Strip the marker from Cargo.toml.
-    fs::write(out_dir.join("Cargo.toml"), "[package]\nname = \"hand-edited\"\n").unwrap();
+    fs::write(
+        out_dir.join("Cargo.toml"),
+        "[package]\nname = \"hand-edited\"\n",
+    )
+    .unwrap();
 
     schema_forge()
         .args(["hooks", "generate", "--all", "--schema-dir"])
@@ -430,13 +432,7 @@ fn force_init_overrides_foreign_dir_check() {
     fs::write(out_dir.join("unrelated.txt"), "keep me").unwrap();
 
     schema_forge()
-        .args([
-            "hooks",
-            "generate",
-            "--all",
-            "--force-init",
-            "--schema-dir",
-        ])
+        .args(["hooks", "generate", "--all", "--force-init", "--schema-dir"])
         .arg(&schema_dir)
         .arg("--out-dir")
         .arg(&out_dir)

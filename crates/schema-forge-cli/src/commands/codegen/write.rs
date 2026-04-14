@@ -228,37 +228,27 @@ fn write_one(
     match entry.mode {
         WriteMode::Owned => {
             if full.exists() {
-                let existing =
-                    fs::read_to_string(&full).map_err(|source| CodegenError::Io {
-                        path: full.clone(),
-                        source,
-                    })?;
+                let existing = fs::read_to_string(&full).map_err(|source| CodegenError::Io {
+                    path: full.clone(),
+                    source,
+                })?;
                 marker.verify(&entry.relative_path, &existing)?;
             }
             let body = marker.prepend(&entry.relative_path, &entry.contents);
-            fs::write(&full, body).map_err(|source| CodegenError::Io {
-                path: full,
-                source,
-            })?;
+            fs::write(&full, body).map_err(|source| CodegenError::Io { path: full, source })?;
         }
         WriteMode::Preserve => {
             if full.exists() && !force_user_files {
                 return Ok(());
             }
-            fs::write(&full, &entry.contents).map_err(|source| CodegenError::Io {
-                path: full,
-                source,
-            })?;
+            fs::write(&full, &entry.contents)
+                .map_err(|source| CodegenError::Io { path: full, source })?;
         }
     }
     Ok(())
 }
 
-fn prune_orphans(
-    out_dir: &Path,
-    orphans: &[PathBuf],
-    marker: &Marker,
-) -> Result<(), CodegenError> {
+fn prune_orphans(out_dir: &Path, orphans: &[PathBuf], marker: &Marker) -> Result<(), CodegenError> {
     for relative in orphans {
         let full = out_dir.join(relative);
         if !full.exists() {
@@ -407,7 +397,11 @@ mod tests {
         let plan = vec![plan_owned("src/main.rs", "fn main() {}\n")];
         write_plan(tmp.path(), &plan, options()).unwrap();
         // Corrupt the file: strip marker.
-        fs::write(tmp.path().join("src/main.rs"), "fn main() { /* no marker */ }\n").unwrap();
+        fs::write(
+            tmp.path().join("src/main.rs"),
+            "fn main() { /* no marker */ }\n",
+        )
+        .unwrap();
         let err = write_plan(tmp.path(), &plan, options()).unwrap_err();
         assert!(matches!(err, CodegenError::MarkerMissing { .. }));
     }
@@ -446,7 +440,10 @@ mod tests {
     #[test]
     fn write_plan_prune_collapses_empty_dirs() {
         let tmp = TempDir::new().unwrap();
-        let plan_v1 = vec![plan_owned("proto/nested/x/file.proto", "syntax = \"proto3\";\n")];
+        let plan_v1 = vec![plan_owned(
+            "proto/nested/x/file.proto",
+            "syntax = \"proto3\";\n",
+        )];
         write_plan(tmp.path(), &plan_v1, options()).unwrap();
         let plan_v2: Vec<FilePlan> = vec![];
         write_plan(tmp.path(), &plan_v2, options()).unwrap();

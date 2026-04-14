@@ -53,9 +53,7 @@ pub enum CodegenError {
 
     /// An existing manifest declares a different generator than the one
     /// currently running.
-    #[error(
-        "manifest at {path} declares generator `{found}`, expected `{expected}`"
-    )]
+    #[error("manifest at {path} declares generator `{found}`, expected `{expected}`")]
     ManifestGeneratorMismatch {
         path: PathBuf,
         found: String,

@@ -50,10 +50,13 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         } => {
             let surql_type = field_type_to_surql(new_type);
             let assertions = field_assertions(new_type);
-            let flex_prefix = if needs_flexible(new_type) { "FLEXIBLE " } else { "" };
-            let mut stmt = format!(
-                "DEFINE FIELD OVERWRITE {name} ON {table} {flex_prefix}TYPE {surql_type}"
-            );
+            let flex_prefix = if needs_flexible(new_type) {
+                "FLEXIBLE "
+            } else {
+                ""
+            };
+            let mut stmt =
+                format!("DEFINE FIELD OVERWRITE {name} ON {table} {flex_prefix}TYPE {surql_type}");
             if !assertions.is_empty() {
                 stmt.push_str(&format!(" ASSERT {}", assertions.join(" AND ")));
             }
@@ -276,9 +279,8 @@ fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
             } else {
                 ""
             };
-            let mut nested_stmt = format!(
-                "DEFINE FIELD {nested_name} ON {table} {nested_flex}TYPE {nested_type}"
-            );
+            let mut nested_stmt =
+                format!("DEFINE FIELD {nested_name} ON {table} {nested_flex}TYPE {nested_type}");
 
             let mut nested_assertions = field_assertions(&sub.field_type);
             if sub.is_required() {
@@ -587,10 +589,7 @@ mod tests {
     #[test]
     fn json_field_emits_flexible_object() {
         let step = MigrationStep::AddField {
-            field: FieldDefinition::new(
-                FieldName::new("metadata").unwrap(),
-                FieldType::Json,
-            ),
+            field: FieldDefinition::new(FieldName::new("metadata").unwrap(), FieldType::Json),
         };
         let stmts = migration_step_to_surql("Employee", &step);
         assert_eq!(stmts.len(), 1);

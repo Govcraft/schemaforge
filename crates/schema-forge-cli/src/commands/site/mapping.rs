@@ -144,13 +144,7 @@ fn field_to_view_with_prefix(
                 zod.push_str(".optional()");
             }
             Ok(make_field_view(
-                field,
-                ts_type,
-                zod,
-                "enum",
-                false,
-                None,
-                variants,
+                field, ts_type, zod, "enum", false, None, variants,
             ))
         }
         FieldType::Relation {
@@ -195,8 +189,8 @@ fn field_to_view_with_prefix(
             Ok(with_relation_metadata(base, target.as_str(), catalog))
         }
         FieldType::Array(inner) => {
-            let (inner_kind, inner_ts, inner_variants) = describe_array_element(inner)
-                .map_err(|reason| FieldMapError::Unsupported {
+            let (inner_kind, inner_ts, inner_variants) =
+                describe_array_element(inner).map_err(|reason| FieldMapError::Unsupported {
                     field: field.name.as_str().to_string(),
                     reason,
                 })?;
@@ -271,9 +265,7 @@ fn field_to_view_with_prefix(
                     Err(FieldMapError::Unsupported { field: f, reason }) => {
                         return Err(FieldMapError::Unsupported {
                             field: field.name.as_str().to_string(),
-                            reason: format!(
-                                "composite sub-field `{f}`: {reason}"
-                            ),
+                            reason: format!("composite sub-field `{f}`: {reason}"),
                         });
                     }
                 }
@@ -293,15 +285,8 @@ fn field_to_view_with_prefix(
             if !required {
                 zod.push_str(".optional()");
             }
-            let mut view = make_field_view(
-                field,
-                ts_type,
-                zod,
-                "composite",
-                false,
-                None,
-                Vec::new(),
-            );
+            let mut view =
+                make_field_view(field, ts_type, zod, "composite", false, None, Vec::new());
             // Overwrite `name` with the dot-path so templates render the
             // correct nested FormField path.
             view.name = my_path;
@@ -369,10 +354,10 @@ fn describe_array_element(
         FieldType::RichText => {
             Err("arrays of rich text are not supported in v0 site generator".into())
         }
-        FieldType::Json => {
-            Err("arrays of json are not supported in v0 site generator".into())
-        }
-        other => Err(format!("array element type `{other}` is not supported in v0 site generator")),
+        FieldType::Json => Err("arrays of json are not supported in v0 site generator".into()),
+        other => Err(format!(
+            "array element type `{other}` is not supported in v0 site generator"
+        )),
     }
 }
 
@@ -405,9 +390,12 @@ mod tests {
 
     #[test]
     fn text_with_max_required() {
-        let v =
-            project(&field("name", FieldType::Text(TextConstraints::with_max_length(120)), true))
-                .unwrap();
+        let v = project(&field(
+            "name",
+            FieldType::Text(TextConstraints::with_max_length(120)),
+            true,
+        ))
+        .unwrap();
         assert_eq!(v.ts_type, "string");
         assert_eq!(v.zod, "z.string().max(120)");
         assert!(v.required);
@@ -563,7 +551,9 @@ mod tests {
     fn array_of_integer_required() {
         let v = project(&field(
             "scores",
-            FieldType::Array(Box::new(FieldType::Integer(IntegerConstraints::unconstrained()))),
+            FieldType::Array(Box::new(FieldType::Integer(
+                IntegerConstraints::unconstrained(),
+            ))),
             true,
         ))
         .unwrap();
@@ -586,7 +576,10 @@ mod tests {
         assert_eq!(v.kind, "array");
         assert_eq!(v.ts_type, "(\"bug\" | \"feature\")[]");
         assert_eq!(v.item_kind.as_deref(), Some("enum"));
-        assert_eq!(v.item_enum_variants, vec!["bug".to_string(), "feature".to_string()]);
+        assert_eq!(
+            v.item_enum_variants,
+            vec!["bug".to_string(), "feature".to_string()]
+        );
     }
 
     #[test]

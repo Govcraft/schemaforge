@@ -33,9 +33,15 @@ async fn seeded_auth_store() -> Arc<dyn DynAuthStore> {
     let backend = SurrealBackend::connect_memory("test", "auth_login_test")
         .await
         .expect("connect in-memory surreal");
-    AuthStore::create_user(&backend, "admin", "dev", &["admin".to_string()], "Administrator")
-        .await
-        .expect("seed admin user");
+    AuthStore::create_user(
+        &backend,
+        "admin",
+        "dev",
+        &["admin".to_string()],
+        "Administrator",
+    )
+    .await
+    .expect("seed admin user");
     Arc::new(backend)
 }
 
@@ -87,16 +93,14 @@ async fn post_login(app: Router, body: &str) -> (StatusCode, serde_json::Value) 
     let res = app.oneshot(req).await.unwrap();
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let body: serde_json::Value =
-        serde_json::from_slice(&bytes).expect("response body is JSON");
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("response body is JSON");
     (status, body)
 }
 
 #[tokio::test]
 async fn login_with_correct_credentials_returns_token() {
     let (app, _key) = login_app().await;
-    let (status, body) =
-        post_login(app, r#"{"username":"admin","password":"dev"}"#).await;
+    let (status, body) = post_login(app, r#"{"username":"admin","password":"dev"}"#).await;
 
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let token = body["token"].as_str().expect("token field is a string");
@@ -107,8 +111,8 @@ async fn login_with_correct_credentials_returns_token() {
     let expires_at = body["expires_at"]
         .as_str()
         .expect("expires_at field is a string");
-    let parsed = chrono::DateTime::parse_from_rfc3339(expires_at)
-        .expect("expires_at parses as RFC3339");
+    let parsed =
+        chrono::DateTime::parse_from_rfc3339(expires_at).expect("expires_at parses as RFC3339");
     assert!(
         parsed > chrono::Utc::now(),
         "expires_at {expires_at} should be in the future"
@@ -118,8 +122,7 @@ async fn login_with_correct_credentials_returns_token() {
 #[tokio::test]
 async fn login_with_wrong_password_returns_401_envelope() {
     let (app, _key) = login_app().await;
-    let (status, body) =
-        post_login(app, r#"{"username":"admin","password":"wrong"}"#).await;
+    let (status, body) = post_login(app, r#"{"username":"admin","password":"wrong"}"#).await;
 
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"], "invalid credentials");
@@ -130,8 +133,7 @@ async fn login_with_wrong_password_returns_401_envelope() {
 #[tokio::test]
 async fn login_with_unknown_user_returns_401_envelope() {
     let (app, _key) = login_app().await;
-    let (status, body) =
-        post_login(app, r#"{"username":"ghost","password":"dev"}"#).await;
+    let (status, body) = post_login(app, r#"{"username":"ghost","password":"dev"}"#).await;
 
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"], "invalid credentials");

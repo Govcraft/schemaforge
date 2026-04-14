@@ -123,10 +123,7 @@ pub async fn login(
 ///
 /// Pure function: no I/O, no state. Used by the handler and by the unit
 /// tests that exercise the claim shape without needing a live generator.
-pub(crate) fn build_login_claims(
-    username: &str,
-    roles: &[String],
-) -> Result<Claims, ActonError> {
+pub(crate) fn build_login_claims(username: &str, roles: &[String]) -> Result<Claims, ActonError> {
     let mut builder = ClaimsBuilder::new().user(username).username(username);
     for role in roles {
         builder = builder.role(role);
@@ -161,8 +158,8 @@ fn internal_error_response(message: String) -> Response {
 ///
 /// Nested alongside the rest of the forge routes (schemas, entities) under
 /// `/api/v1/forge/` by `SchemaForgeExtension::versioned_forge_routes`.
-pub fn auth_routes() -> axum::Router<acton_service::state::AppState<crate::config::SchemaForgeConfig>>
-{
+pub fn auth_routes(
+) -> axum::Router<acton_service::state::AppState<crate::config::SchemaForgeConfig>> {
     use axum::routing::post;
     axum::Router::new().route("/auth/login", post(login))
 }
