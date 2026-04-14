@@ -466,6 +466,10 @@ fn field_type_to_proto(
         FieldType::DateTime => Ok(("string", false)),
         FieldType::Enum(_) => Ok(("string", false)),
         FieldType::Json => Ok(("string", false)),
+        // Composites are projected as JSON-stringified `optional string` on the
+        // wire. Hook services receive the raw JSON and must parse it themselves.
+        // Matches the legacy generator's behavior (see issue #14).
+        FieldType::Composite(_) => Ok(("string", false)),
         FieldType::Relation { cardinality, .. } => {
             Ok(("string", matches!(cardinality, Cardinality::Many)))
         }
@@ -484,12 +488,6 @@ fn field_type_to_proto(
             }
             Ok((inner_type, true))
         }
-        FieldType::Composite(_) => Err(CliError::Config {
-            message: format!(
-                "schema `{schema_name}` field `{field_name}`: composite fields cannot \
-                 yet be projected into hook proto messages",
-            ),
-        }),
         // `FieldType` is `#[non_exhaustive]`. Future variants must be
         // explicitly added to the proto generator.
         other => Err(CliError::Config {
@@ -819,6 +817,38 @@ mod tests {
         );
         let fields = scalar_proto_fields(&s).unwrap();
         assert!(!fields[0].repeated);
+    }
+
+    #[test]
+    fn composite_field_maps_to_scalar_string() {
+        let inner = field(
+            "base_months",
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+        );
+        let s = schema(
+            "Opportunity",
+            vec![field("period_of_performance", FieldType::Composite(vec![inner]))],
+        );
+        let fields = scalar_proto_fields(&s).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "period_of_performance");
+        assert_eq!(fields[0].proto_type, "string");
+        assert!(!fields[0].repeated);
+    }
+
+    #[test]
+    fn array_of_composite_maps_to_repeated_string() {
+        let inner = field("k", FieldType::Text(TextConstraints::unconstrained()));
+        let s = schema(
+            "Thing",
+            vec![field(
+                "rows",
+                FieldType::Array(Box::new(FieldType::Composite(vec![inner]))),
+            )],
+        );
+        let fields = scalar_proto_fields(&s).unwrap();
+        assert_eq!(fields[0].proto_type, "string");
+        assert!(fields[0].repeated);
     }
 
     #[test]
