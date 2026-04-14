@@ -359,6 +359,71 @@ fn templates_dir_override_wins_over_embedded() {
     );
 }
 
+/// Issue #35: a `-> X[]` field paired against a child FK is a derived
+/// inverse collection. The backend rejects writes with 422, so the site
+/// generator must omit derived fields from the create/edit form and its
+/// zod schema. The detail view keeps rendering them as a linked list via
+/// the existing relation-display path.
+const DERIVED_PAIR: &str = r#"
+@display("title")
+schema Opportunity {
+    title: text(max: 255) required
+    documents: -> Document[]
+}
+
+@display("name")
+schema Document {
+    name: text(max: 255) required
+    opportunity: -> Opportunity
+}
+"#;
+
+#[test]
+fn derived_inverse_collection_skipped_in_forms() {
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+    write_schemas(&schema_dir, DERIVED_PAIR);
+
+    run_generate(&schema_dir, &out_dir, "Opportunity", &[])
+        .assert()
+        .success();
+
+    // Zod schema for Opportunity must NOT include the derived `documents`
+    // field — typing into it on the form would 422 at submit.
+    let zod = fs::read_to_string(out_dir.join("src/generated/zod-schemas.ts")).unwrap();
+    let opp_block_start = zod
+        .find("opportunitySchema")
+        .expect("opportunitySchema must be generated");
+    let opp_block_end = zod[opp_block_start..]
+        .find("})")
+        .map(|i| opp_block_start + i)
+        .unwrap_or(zod.len());
+    let opp_block = &zod[opp_block_start..opp_block_end];
+    assert!(
+        !opp_block.contains("documents:"),
+        "derived field `documents` must not appear in opportunitySchema:\n{opp_block}"
+    );
+
+    // Edit template must not render a FormField for `documents`.
+    let edit = fs::read_to_string(out_dir.join("src/app/pages/opportunity/edit.tsx")).unwrap();
+    assert!(
+        !edit.contains("name=\"documents\""),
+        "edit form should not render a control for derived field `documents`"
+    );
+    // The non-derived child-side FK on Document still wires up its edit
+    // control — sanity check that we didn't over-filter.
+    run_generate(&schema_dir, &out_dir, "Document", &[])
+        .assert()
+        .success();
+    let doc_edit =
+        fs::read_to_string(out_dir.join("src/app/pages/document/edit.tsx")).unwrap();
+    assert!(
+        doc_edit.contains("name=\"opportunity\""),
+        "child-side FK should still render as an editable relation_one control"
+    );
+}
+
 #[test]
 fn missing_schema_name_errors_clearly() {
     let tmp = TempDir::new().unwrap();

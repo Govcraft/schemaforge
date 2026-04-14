@@ -257,6 +257,13 @@ pub struct FieldView {
     ///    `relation_one`, `relation_many`, or `json` default to `hidden`.
     /// 4. Everything else defaults to `column`.
     pub list_placement: String,
+    /// `true` if this field is a derived inverse collection (`-> X[]`
+    /// paired against a child FK). Derived fields are read-only: writes
+    /// are rejected by the backend, so the generator must skip them on
+    /// create/edit forms and render them as a read-only linked list on
+    /// the detail view. Reads already flow through the standard relation
+    /// envelope, populated by the backend's inverse-collection pass.
+    pub derived: bool,
 }
 
 /// Derive the canonical lowerCamelCase JS property name for a DSL field name.
@@ -317,6 +324,7 @@ pub fn make_field_view(
             Some(h) => h.as_str().to_string(),
             None => default_list_placement(kind).to_string(),
         },
+        derived: field.is_derived(),
     }
 }
 

@@ -735,6 +735,36 @@ mod tests {
     }
 
 #[test]
+    fn derived_relation_many_marks_view_as_derived() {
+        let mut fd = field(
+            "documents",
+            FieldType::Relation {
+                target: SchemaName::new("Document").unwrap(),
+                cardinality: Cardinality::Many,
+            },
+            false,
+        );
+        fd.derived_from = Some(FieldName::new("opportunity").unwrap());
+        let v = project(&fd).unwrap();
+        assert!(v.derived, "derived fields must flag through to FieldView");
+        assert_eq!(v.kind, "relation_many");
+    }
+
+    #[test]
+    fn non_derived_relation_many_is_not_flagged() {
+        let v = project(&field(
+            "projects",
+            FieldType::Relation {
+                target: SchemaName::new("Project").unwrap(),
+                cardinality: Cardinality::Many,
+            },
+            false,
+        ))
+        .unwrap();
+        assert!(!v.derived);
+    }
+
+    #[test]
     fn relation_one_picks_up_target_metadata_from_catalog() {
         let mut catalog = BTreeMap::new();
         catalog.insert(

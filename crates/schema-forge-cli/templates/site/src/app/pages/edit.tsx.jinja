@@ -143,7 +143,11 @@ export function {{ entity.pascal }}Edit() {
     if (!data) return undefined
     const v: Record<string, unknown> = { ...(data as unknown as Record<string, unknown>) }
 {%- for f in entity.fields %}
-{%- if f.kind == "datetime" %}
+{%- if f.derived %}
+    // Derived inverse collection — read-only, strip before seeding the form.
+    delete v["{{ f.leaf }}"]
+    delete v["{{ f.leaf }}__display"]
+{%- elif f.kind == "datetime" %}
     if (typeof v["{{ f.leaf }}"] === "string" && v["{{ f.leaf }}"]) {
       const _d = new Date(v["{{ f.leaf }}"] as string)
       if (!isNaN(_d.getTime())) {
@@ -216,7 +220,10 @@ export function {{ entity.pascal }}Edit() {
         ...(values as unknown as Record<string, unknown>),
       }
 {%- for f in entity.fields %}
-{%- if f.kind == "datetime" %}
+{%- if f.derived %}
+      // Derived inverse collection — never writable.
+      delete payload["{{ f.leaf }}"]
+{%- elif f.kind == "datetime" %}
       if (payload["{{ f.leaf }}"]) {
         const _d = new Date(payload["{{ f.leaf }}"] as string)
         if (!isNaN(_d.getTime())) payload["{{ f.leaf }}"] = _d.toISOString()
@@ -323,7 +330,9 @@ export function {{ entity.pascal }}Edit() {
         <Form {...form}>
           <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))} className="space-y-4">
 {%- for f in entity.fields %}
-{%- if f.kind == "composite" %}
+{%- if f.derived %}
+{#- Derived inverse collections are read-only — surfaced on the detail view only. #}
+{%- elif f.kind == "composite" %}
             <fieldset className="rounded-md border p-3 space-y-3">
               <legend className="text-xs uppercase tracking-wide text-muted-foreground px-1">
                 {{ f.label }}
