@@ -294,7 +294,13 @@ export type ListEntitiesParams = {
   limit?: number
   offset?: number
   sort?: string
-  filter?: string
+  /**
+   * Per-field filter pairs. Keys use the backend's `<field>__<op>` syntax
+   * (e.g. `name__contains`, `status__eq`, `age__gte`). Values are sent
+   * verbatim as URL query parameters. Each entry becomes one filter
+   * clause; multiple entries are AND-combined by the backend.
+   */
+  filters?: Record<string, string>
 }
 
 export type EntityRow = Record<string, unknown> & { id: string }
@@ -307,7 +313,11 @@ export async function listEntities(
   if (params.limit !== undefined) qs.set("limit", String(params.limit))
   if (params.offset !== undefined) qs.set("offset", String(params.offset))
   if (params.sort) qs.set("sort", params.sort)
-  if (params.filter) qs.set("filter", params.filter)
+  if (params.filters) {
+    for (const [key, value] of Object.entries(params.filters)) {
+      if (value !== "") qs.set(key, value)
+    }
+  }
   const suffix = qs.toString() ? `?${qs.toString()}` : ""
   const env = await request<ListEntitiesEnvelope>(
     `${FORGE_API_PREFIX}/schemas/${encodeURIComponent(schema)}/entities${suffix}`,

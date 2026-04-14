@@ -13,10 +13,16 @@ const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
 const FORGE_API_PREFIX = "/api/v1/forge"
 
 export type ListParams = {
-  filter?: string
   sort?: string
   limit?: number
   offset?: number
+  /**
+   * Per-field filter pairs. Keys use the backend's `<field>__<op>` syntax
+   * (e.g. `name__contains`, `status__eq`, `age__gte`). Values are sent
+   * verbatim as URL query parameters. Multiple entries AND-combine
+   * server-side.
+   */
+  filters?: Record<string, string>
 }
 
 export type ListResponse<T> = {
@@ -89,10 +95,14 @@ function wrap(body: Record<string, unknown>): { fields: Record<string, unknown> 
 
 function listQuery(params: ListParams): string {
   const qs = new URLSearchParams()
-  if (params.filter !== undefined) qs.set("filter", params.filter)
   if (params.sort !== undefined) qs.set("sort", params.sort)
   if (params.limit !== undefined) qs.set("limit", String(params.limit))
   if (params.offset !== undefined) qs.set("offset", String(params.offset))
+  if (params.filters !== undefined) {
+    for (const [key, value] of Object.entries(params.filters)) {
+      if (value !== "") qs.set(key, value)
+    }
+  }
   return qs.toString() ? `?${qs.toString()}` : ""
 }
 

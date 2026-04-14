@@ -1,8 +1,8 @@
 // Scaffolded once by `schema-forge site generate` — edit freely.
 // Subsequent runs will NOT overwrite this file unless --force-user-files is passed.
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
-import { useQuery } from "@tanstack/react-query"
+import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import {
   useReactTable,
   getCoreRowModel,
@@ -13,6 +13,7 @@ import { list{{ entity.pascal }}s } from "@/generated/api-client"
 import type { {{ entity.pascal }} } from "@/generated/entity-types"
 import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Table,
   TableBody,
@@ -21,6 +22,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+
+const PAGE_SIZES = [25, 50, 100, 200] as const
+type SortDir = "asc" | "desc"
 
 const columns: ColumnDef<{{ entity.pascal }}>[] = [
   {
@@ -52,37 +56,172 @@ const columns: ColumnDef<{{ entity.pascal }}>[] = [
 {%- endfor %}
 ]
 
+// Fields (excluding `id`) that correspond to real columns — used as the
+// whitelist for click-to-sort.
+const SORTABLE_FIELDS: readonly string[] = [
+{%- for f in entity.fields %}
+{%- if f.kind != "composite" %}
+  "{{ f.leaf }}",
+{%- endif %}
+{%- endfor %}
+]
+
+// Text-like fields eligible for the contains filter.
+const FILTERABLE_FIELDS: readonly string[] = [
+{%- for f in entity.fields %}
+{%- if f.kind == "text" or f.kind == "enum" %}
+  "{{ f.leaf }}",
+{%- endif %}
+{%- endfor %}
+]
+
 export function {{ entity.pascal }}List() {
+  const [limit, setLimit] = useState<number>(50)
+  const [offset, setOffset] = useState<number>(0)
+  const [sortField, setSortField] = useState<string | null>(null)
+  const [sortDir, setSortDir] = useState<SortDir>("asc")
+  const [filterField, setFilterField] = useState<string>(
+    FILTERABLE_FIELDS[0] ?? "",
+  )
+  const [filterInput, setFilterInput] = useState<string>("")
+  const [filterValue, setFilterValue] = useState<string>("")
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setFilterValue(filterInput)
+      setOffset(0)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [filterInput])
+
+  const sortParam = sortField
+    ? sortDir === "desc"
+      ? `-${sortField}`
+      : sortField
+    : undefined
+
+  const filters =
+    filterField && filterValue
+      ? { [`${filterField}__contains`]: filterValue }
+      : undefined
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ["{{ entity.snake }}", "list"],
-    queryFn: () => list{{ entity.pascal }}s({ limit: 50 }),
+    queryKey: [
+      "{{ entity.snake }}",
+      "list",
+      { limit, offset, sort: sortParam, filters },
+    ],
+    queryFn: () =>
+      list{{ entity.pascal }}s({
+        limit,
+        offset,
+        sort: sortParam,
+        filters,
+      }),
+    placeholderData: keepPreviousData,
   })
 
   const rows = useMemo(() => data?.items ?? [], [data])
-  const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() })
+  const total = data?.total ?? 0
+  const pageStart = total === 0 ? 0 : offset + 1
+  const pageEnd = Math.min(offset + rows.length, total)
 
-  if (isLoading) return <p>Loading…</p>
-  if (error) return <p className="text-destructive">Failed to load: {String(error)}</p>
+  const table = useReactTable({
+    data: rows,
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+  })
+
+  function toggleSort(fieldName: string) {
+    if (!SORTABLE_FIELDS.includes(fieldName)) return
+    if (sortField !== fieldName) {
+      setSortField(fieldName)
+      setSortDir("asc")
+    } else if (sortDir === "asc") {
+      setSortDir("desc")
+    } else {
+      setSortField(null)
+      setSortDir("asc")
+    }
+    setOffset(0)
+  }
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center gap-4">
         <h1 className="text-2xl font-semibold">{{ entity.title }}</h1>
-        <Button asChild><Link to="/{{ entity.kebab }}/new">New {{ entity.title }}</Link></Button>
+        <div className="flex items-center gap-2">
+          {FILTERABLE_FIELDS.length > 0 ? (
+            <>
+              <select
+                className="rounded border bg-background px-2 py-1 text-sm"
+                value={filterField}
+                onChange={(e) => setFilterField(e.target.value)}
+              >
+                {FILTERABLE_FIELDS.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+              <Input
+                placeholder="Contains…"
+                className="w-56"
+                value={filterInput}
+                onChange={(e) => setFilterInput(e.target.value)}
+              />
+            </>
+          ) : null}
+          <Button asChild>
+            <Link to="/{{ entity.kebab }}/new">New {{ entity.title }}</Link>
+          </Button>
+        </div>
       </div>
+
       <Table>
         <TableHeader>
           {table.getHeaderGroups().map((hg) => (
             <TableRow key={hg.id}>
-              {hg.headers.map((h) => (
-                <TableHead key={h.id}>
-                  {flexRender(h.column.columnDef.header, h.getContext())}
-                </TableHead>
-              ))}
+              {hg.headers.map((h) => {
+                const field = h.column.id
+                const sortable = SORTABLE_FIELDS.includes(field)
+                const active = sortField === field
+                const arrow = active ? (sortDir === "asc" ? " ▲" : " ▼") : ""
+                return (
+                  <TableHead key={h.id}>
+                    {sortable ? (
+                      <button
+                        type="button"
+                        className="font-medium hover:underline"
+                        onClick={() => toggleSort(field)}
+                      >
+                        {flexRender(h.column.columnDef.header, h.getContext())}
+                        {arrow}
+                      </button>
+                    ) : (
+                      flexRender(h.column.columnDef.header, h.getContext())
+                    )}
+                  </TableHead>
+                )
+              })}
             </TableRow>
           ))}
         </TableHeader>
         <TableBody>
+          {isLoading && rows.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
+                Loading…
+              </TableCell>
+            </TableRow>
+          ) : null}
+          {error && rows.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={columns.length} className="text-center text-destructive">
+                Failed to load: {String(error)}
+              </TableCell>
+            </TableRow>
+          ) : null}
           {table.getRowModel().rows.map((row) => (
             <TableRow key={row.id}>
               {row.getVisibleCells().map((cell) => (
@@ -94,8 +233,56 @@ export function {{ entity.pascal }}List() {
               ))}
             </TableRow>
           ))}
+          {!isLoading && !error && rows.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
+                No {{ entity.title }}s match.
+              </TableCell>
+            </TableRow>
+          ) : null}
         </TableBody>
       </Table>
+
+      <div className="flex items-center justify-between text-sm">
+        <div className="flex items-center gap-2">
+          <label className="text-muted-foreground">Rows per page</label>
+          <select
+            className="rounded border bg-background px-2 py-1"
+            value={limit}
+            onChange={(e) => {
+              setLimit(Number(e.target.value))
+              setOffset(0)
+            }}
+          >
+            {PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="text-muted-foreground">
+          {total === 0 ? "0 of 0" : `${pageStart}–${pageEnd} of ${total}`}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={offset === 0}
+            onClick={() => setOffset(Math.max(0, offset - limit))}
+          >
+            Prev
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pageEnd >= total}
+            onClick={() => setOffset(offset + limit)}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }

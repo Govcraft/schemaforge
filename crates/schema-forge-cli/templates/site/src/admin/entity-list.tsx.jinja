@@ -1,7 +1,10 @@
 // Generic entity browser. Fetches the target schema's metadata + a page
 // of rows and renders them as a shadcn table. Row actions: View, Edit,
-// Delete (native confirm).
-import type { ReactNode } from "react"
+// Delete (native confirm). Supports page-size, offset pagination,
+// single-column sort, and a column-targeted `contains` filter. The
+// filter is wired to the backend's `<field>__contains=<value>` query
+// param — extend to other operators as needed.
+import { useEffect, useState, type ReactNode } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -12,6 +15,7 @@ import {
 } from "@/admin/api-client"
 import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Table,
   TableBody,
@@ -21,22 +25,72 @@ import {
   TableRow,
 } from "@/components/ui/table"
 
-const PAGE_SIZE = 50
+const PAGE_SIZES = [25, 50, 100, 200] as const
+type SortDir = "asc" | "desc"
 
 export function AdminEntityList() {
   const { schema } = useParams<{ schema: string }>()
   const navigate = useNavigate()
   const qc = useQueryClient()
 
+  const [limit, setLimit] = useState<number>(50)
+  const [offset, setOffset] = useState<number>(0)
+  const [sortField, setSortField] = useState<string | null>(null)
+  const [sortDir, setSortDir] = useState<SortDir>("asc")
+  const [filterField, setFilterField] = useState<string>("")
+  const [filterInput, setFilterInput] = useState<string>("")
+  const [filterValue, setFilterValue] = useState<string>("")
+
+  // Debounce the filter input so keystrokes don't stampede the backend.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setFilterValue(filterInput)
+      setOffset(0)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [filterInput])
+
+  const sortParam = sortField
+    ? sortDir === "desc"
+      ? `-${sortField}`
+      : sortField
+    : undefined
+
   const meta = useQuery({
     queryKey: ["admin", "schema", schema],
     queryFn: () => describeSchema(schema!),
     enabled: Boolean(schema),
   })
+
+  // Text-like columns that can back the contains filter.
+  const filterableFields = (meta.data?.fields ?? []).filter(
+    (f) => f.kind === "text" || f.kind === "enum",
+  )
+  const effectiveFilterField =
+    filterField || filterableFields[0]?.name || ""
+  const filters =
+    effectiveFilterField && filterValue
+      ? { [`${effectiveFilterField}__contains`]: filterValue }
+      : undefined
+
   const rows = useQuery({
-    queryKey: ["admin", "entities", schema],
-    queryFn: () => listEntities(schema!, { limit: PAGE_SIZE }),
+    queryKey: [
+      "admin",
+      "entities",
+      schema,
+      { limit, offset, sort: sortParam, filters },
+    ],
+    queryFn: () =>
+      listEntities(schema!, {
+        limit,
+        offset,
+        sort: sortParam,
+        filters,
+      }),
     enabled: Boolean(schema),
+    // Keep the previous page visible while the next one loads so the
+    // table doesn't flash empty on pager clicks.
+    placeholderData: (previous) => previous,
   })
 
   const remove = useMutation({
@@ -46,12 +100,11 @@ export function AdminEntityList() {
   })
 
   if (!schema) return null
-  if (meta.isLoading || rows.isLoading) return <p>Loading…</p>
-  if (meta.error || rows.error) {
+  if (meta.isLoading) return <p>Loading…</p>
+  if (meta.error) {
     return (
       <p className="text-destructive">
-        Failed to load {schema}:{" "}
-        {String(meta.error ?? rows.error)}
+        Failed to load {schema}: {String(meta.error)}
       </p>
     )
   }
@@ -61,31 +114,102 @@ export function AdminEntityList() {
     (f) => f.kind !== "composite",
   )
 
+  const total = rows.data?.count ?? 0
+  const pageStart = total === 0 ? 0 : offset + 1
+  const pageEnd = Math.min(offset + (rows.data?.rows.length ?? 0), total)
+
+  function toggleSort(fieldName: string) {
+    if (sortField !== fieldName) {
+      setSortField(fieldName)
+      setSortDir("asc")
+    } else if (sortDir === "asc") {
+      setSortDir("desc")
+    } else {
+      setSortField(null)
+      setSortDir("asc")
+    }
+    setOffset(0)
+  }
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">{schema}</h1>
-          <p className="text-sm text-muted-foreground">
-            {rows.data?.count ?? 0} total
-          </p>
+          <p className="text-sm text-muted-foreground">{total} total</p>
         </div>
-        <Button onClick={() => navigate(`/admin/${schema}/new`)}>
-          New {schema}
-        </Button>
+        <div className="flex items-center gap-2">
+          {filterableFields.length > 0 ? (
+            <>
+              <select
+                className="rounded border bg-background px-2 py-1 text-sm"
+                value={effectiveFilterField}
+                onChange={(e) => setFilterField(e.target.value)}
+              >
+                {filterableFields.map((f) => (
+                  <option key={f.name} value={f.name}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+              <Input
+                placeholder="Contains…"
+                className="w-56"
+                value={filterInput}
+                onChange={(e) => setFilterInput(e.target.value)}
+              />
+            </>
+          ) : null}
+          <Button onClick={() => navigate(`/admin/${schema}/new`)}>
+            New {schema}
+          </Button>
+        </div>
       </div>
 
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>id</TableHead>
-            {fields.map((f) => (
-              <TableHead key={f.name}>{f.name}</TableHead>
-            ))}
+            {fields.map((f) => {
+              const active = sortField === f.name
+              const arrow = active ? (sortDir === "asc" ? " ▲" : " ▼") : ""
+              return (
+                <TableHead key={f.name}>
+                  <button
+                    type="button"
+                    className="font-medium hover:underline"
+                    onClick={() => toggleSort(f.name)}
+                  >
+                    {f.name}
+                    {arrow}
+                  </button>
+                </TableHead>
+              )
+            })}
             <TableHead className="w-[160px] text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
+          {rows.isLoading && !rows.data ? (
+            <TableRow>
+              <TableCell
+                colSpan={fields.length + 2}
+                className="text-center text-muted-foreground"
+              >
+                Loading…
+              </TableCell>
+            </TableRow>
+          ) : null}
+          {rows.error && !rows.data ? (
+            <TableRow>
+              <TableCell
+                colSpan={fields.length + 2}
+                className="text-center text-destructive"
+              >
+                Failed to load: {String(rows.error)}
+              </TableCell>
+            </TableRow>
+          ) : null}
           {(rows.data?.rows ?? []).map((row) => (
             <TableRow key={row.id}>
               <TableCell>
@@ -115,15 +239,61 @@ export function AdminEntityList() {
               </TableCell>
             </TableRow>
           ))}
-          {(rows.data?.rows ?? []).length === 0 ? (
+          {!rows.isLoading &&
+          !rows.error &&
+          (rows.data?.rows ?? []).length === 0 ? (
             <TableRow>
-              <TableCell colSpan={fields.length + 2} className="text-center text-muted-foreground">
-                No entities yet.
+              <TableCell
+                colSpan={fields.length + 2}
+                className="text-center text-muted-foreground"
+              >
+                No entities match.
               </TableCell>
             </TableRow>
           ) : null}
         </TableBody>
       </Table>
+
+      <div className="flex items-center justify-between text-sm">
+        <div className="flex items-center gap-2">
+          <label className="text-muted-foreground">Rows per page</label>
+          <select
+            className="rounded border bg-background px-2 py-1"
+            value={limit}
+            onChange={(e) => {
+              setLimit(Number(e.target.value))
+              setOffset(0)
+            }}
+          >
+            {PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="text-muted-foreground">
+          {total === 0 ? "0 of 0" : `${pageStart}–${pageEnd} of ${total}`}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={offset === 0}
+            onClick={() => setOffset(Math.max(0, offset - limit))}
+          >
+            Prev
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pageEnd >= total}
+            onClick={() => setOffset(offset + limit)}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
 
       {remove.error ? (
         <p className="text-destructive text-sm">
