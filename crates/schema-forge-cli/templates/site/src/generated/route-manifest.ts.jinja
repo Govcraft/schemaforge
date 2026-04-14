@@ -1,12 +1,17 @@
 // Auto-generated route manifest — consumed by `src/App.tsx`.
+//
+// Paths are relative to the `/app` mount, not absolute site paths, so the
+// `App.tsx` `<Route path="/app/*">` subtree can nest these directly. The
+// admin shell lives at `/admin/*` and is registered separately.
 import type { ComponentType } from "react"
 {%- for entity in entities %}
-import { {{ entity.pascal }}List } from "@/pages/{{ entity.kebab }}/list"
-import { {{ entity.pascal }}Detail } from "@/pages/{{ entity.kebab }}/detail"
-import { {{ entity.pascal }}Edit } from "@/pages/{{ entity.kebab }}/edit"
+import { {{ entity.pascal }}List } from "@/app/pages/{{ entity.kebab }}/list"
+import { {{ entity.pascal }}Detail } from "@/app/pages/{{ entity.kebab }}/detail"
+import { {{ entity.pascal }}Edit } from "@/app/pages/{{ entity.kebab }}/edit"
 {%- endfor %}
 
 export type RouteEntry = {
+  /** Path relative to the `/app` mount (no leading `/app`). */
   path: string
   element: ComponentType
   kind: "list" | "detail" | "edit"
@@ -16,10 +21,10 @@ export type RouteEntry = {
 
 export const routeManifest: RouteEntry[] = [
 {%- for entity in entities %}
-  { path: "/{{ entity.kebab }}", element: {{ entity.pascal }}List, kind: "list", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
-  { path: "/{{ entity.kebab }}/new", element: {{ entity.pascal }}Edit, kind: "edit", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
-  { path: "/{{ entity.kebab }}/:id", element: {{ entity.pascal }}Detail, kind: "detail", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
-  { path: "/{{ entity.kebab }}/:id/edit", element: {{ entity.pascal }}Edit, kind: "edit", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
+  { path: "{{ entity.kebab }}", element: {{ entity.pascal }}List, kind: "list", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
+  { path: "{{ entity.kebab }}/new", element: {{ entity.pascal }}Edit, kind: "edit", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
+  { path: "{{ entity.kebab }}/:id", element: {{ entity.pascal }}Detail, kind: "detail", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
+  { path: "{{ entity.kebab }}/:id/edit", element: {{ entity.pascal }}Edit, kind: "edit", entity: "{{ entity.kebab }}", title: "{{ entity.title }}" },
 {%- endfor %}
 ]
 

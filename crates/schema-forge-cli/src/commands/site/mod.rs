@@ -101,12 +101,11 @@ fn generate(
 
     if entities.is_empty() {
         return Err(CliError::Config {
-            message:
-                "no schemas have any v0-supported fields — everything was \
+            message: "no schemas have any v0-supported fields — everything was \
                  skipped. v1 supports: Text, RichText, Integer, Float, \
                  Boolean, DateTime, Enum, Json, Relation(One|Many), \
                  Array(scalar|enum), Composite."
-                    .to_string(),
+                .to_string(),
         });
     }
 
@@ -115,7 +114,14 @@ fn generate(
         entities,
     };
 
-    let renderer = SiteRenderer::new()?;
+    let templates_dir = args.templates_dir.clone().or_else(|| {
+        let default = PathBuf::from("site-templates");
+        default.is_dir().then_some(default)
+    });
+    if let Some(ref dir) = templates_dir {
+        output.status(&format!("Using template overrides from {}", dir.display()));
+    }
+    let renderer = SiteRenderer::new(templates_dir)?;
     let plan = build_plan(&ctx, &renderer)?;
 
     let options = WriteOptions {
@@ -204,8 +210,7 @@ fn pick_target_schemas<'a>(
             Ok(vec![found])
         }
         None => {
-            let all: Vec<&SchemaDefinition> =
-                schemas.iter().filter(|s| !s.is_system()).collect();
+            let all: Vec<&SchemaDefinition> = schemas.iter().filter(|s| !s.is_system()).collect();
             if all.is_empty() {
                 return Err(CliError::Config {
                     message: "every schema in the directory is @system; \
@@ -229,19 +234,34 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
     // marker to protect against user edits. Preserve mode scaffolds it
     // once and then lets the user run `pnpm add` freely without the
     // generator clobbering them on regen.
-    plan.push(preserve("package.json", renderer.render("package.json", ctx)?));
-    plan.push(owned("vite.config.ts", renderer.render("vite.config.ts", ctx)?));
+    plan.push(preserve(
+        "package.json",
+        renderer.render("package.json", ctx)?,
+    ));
+    plan.push(owned(
+        "vite.config.ts",
+        renderer.render("vite.config.ts", ctx)?,
+    ));
     plan.push(owned("index.html", renderer.render("index.html", ctx)?));
-    plan.push(owned("tailwind.config.ts", renderer.render("tailwind.config.ts", ctx)?));
+    plan.push(owned(
+        "tailwind.config.ts",
+        renderer.render("tailwind.config.ts", ctx)?,
+    ));
     plan.push(owned("tsconfig.json", vendor::TSCONFIG_JSON.to_string()));
-    plan.push(owned("tsconfig.node.json", vendor::TSCONFIG_NODE_JSON.to_string()));
+    plan.push(owned(
+        "tsconfig.node.json",
+        vendor::TSCONFIG_NODE_JSON.to_string(),
+    ));
     plan.push(owned(".gitignore", vendor::GITIGNORE.to_string()));
 
     // ---- src/ scaffolding ----
     plan.push(owned("src/main.tsx", renderer.render("src/main.tsx", ctx)?));
     plan.push(owned("src/App.tsx", renderer.render("src/App.tsx", ctx)?));
     plan.push(owned("src/index.css", vendor::INDEX_CSS.to_string()));
-    plan.push(owned("src/lib/utils.ts", vendor::SHADCN_UTILS_TS.to_string()));
+    plan.push(owned(
+        "src/lib/utils.ts",
+        vendor::SHADCN_UTILS_TS.to_string(),
+    ));
     plan.push(owned(
         "src/lib/auth.ts",
         renderer.render("src/lib/auth.ts", ctx)?,
@@ -252,12 +272,30 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
     ));
 
     // ---- shadcn primitives (vendored, owned, unmodified) ----
-    plan.push(owned("src/components/ui/button.tsx", vendor::SHADCN_BUTTON.to_string()));
-    plan.push(owned("src/components/ui/input.tsx", vendor::SHADCN_INPUT.to_string()));
-    plan.push(owned("src/components/ui/label.tsx", vendor::SHADCN_LABEL.to_string()));
-    plan.push(owned("src/components/ui/card.tsx", vendor::SHADCN_CARD.to_string()));
-    plan.push(owned("src/components/ui/form.tsx", vendor::SHADCN_FORM.to_string()));
-    plan.push(owned("src/components/ui/table.tsx", vendor::SHADCN_TABLE.to_string()));
+    plan.push(owned(
+        "src/components/ui/button.tsx",
+        vendor::SHADCN_BUTTON.to_string(),
+    ));
+    plan.push(owned(
+        "src/components/ui/input.tsx",
+        vendor::SHADCN_INPUT.to_string(),
+    ));
+    plan.push(owned(
+        "src/components/ui/label.tsx",
+        vendor::SHADCN_LABEL.to_string(),
+    ));
+    plan.push(owned(
+        "src/components/ui/card.tsx",
+        vendor::SHADCN_CARD.to_string(),
+    ));
+    plan.push(owned(
+        "src/components/ui/form.tsx",
+        vendor::SHADCN_FORM.to_string(),
+    ));
+    plan.push(owned(
+        "src/components/ui/table.tsx",
+        vendor::SHADCN_TABLE.to_string(),
+    ));
     plan.push(owned(
         "src/components/ui/relation-select.tsx",
         vendor::RELATION_SELECT.to_string(),
@@ -286,34 +324,72 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
     ));
 
     // ---- Top-level login page (Preserve: users restyle freely) ----
+    //
+    // Login is mounted at `/login`, outside both the `/app` and `/admin`
+    // subtrees, because both need to fall through to it on auth failure.
     plan.push(preserve(
         "src/pages/login.tsx",
         renderer.render("src/pages/login.tsx", ctx)?,
     ));
 
-    // ---- Per-entity pages (Preserve) ----
+    // ---- `/app/*`: per-entity user-facing pages (Preserve) ----
+    //
+    // Lives under `src/app/pages/<kebab>/` so the path mirrors the route
+    // tree (`/app/<kebab>`). Users are free to restyle these — subsequent
+    // generator runs leave them alone unless `--force-user-files` is set.
     for entity in &ctx.entities {
         let page_ctx = PageContext {
             project_name: ctx.project_name.clone(),
             entity: entity.clone(),
         };
-        let page_dir = format!("src/pages/{}", entity.kebab);
+        let page_dir = format!("src/app/pages/{}", entity.kebab);
         plan.push(preserve(
             &format!("{page_dir}/list.tsx"),
-            renderer.render("src/pages/list.tsx", &page_ctx)?,
+            renderer.render("src/app/pages/list.tsx", &page_ctx)?,
         ));
         plan.push(preserve(
             &format!("{page_dir}/detail.tsx"),
-            renderer.render("src/pages/detail.tsx", &page_ctx)?,
+            renderer.render("src/app/pages/detail.tsx", &page_ctx)?,
         ));
         plan.push(preserve(
             &format!("{page_dir}/edit.tsx"),
-            renderer.render("src/pages/edit.tsx", &page_ctx)?,
+            renderer.render("src/app/pages/edit.tsx", &page_ctx)?,
         ));
+    }
+
+    // ---- `/admin/*`: generic schema-aware admin shell (Owned) ----
+    //
+    // The admin UI is schema-agnostic: it fetches `/api/v1/forge/schemas`
+    // at runtime and renders generic CRUD for every schema the authenticated
+    // user has permission to see. Because it's not per-user content, these
+    // files are Owned — users customize the admin by overriding the templates
+    // via `--templates-dir`, not by hand-editing the generated .tsx.
+    //
+    // Phase 2 ships these as placeholder scaffolds; Phase 3 fills them in.
+    for (rel, logical) in ADMIN_TEMPLATES {
+        plan.push(owned(rel, renderer.render(logical, ctx)?));
     }
 
     Ok(plan)
 }
+
+/// Generic admin shell files. Each tuple is `(output path, template name)`.
+/// Templates live under `templates/site/src/admin/` and are schema-agnostic
+/// (rendered once against the top-level `SiteContext`, not per-entity).
+const ADMIN_TEMPLATES: &[(&str, &str)] = &[
+    ("src/admin/layout.tsx", "src/admin/layout.tsx"),
+    ("src/admin/schemas-index.tsx", "src/admin/schemas-index.tsx"),
+    ("src/admin/entity-list.tsx", "src/admin/entity-list.tsx"),
+    ("src/admin/entity-detail.tsx", "src/admin/entity-detail.tsx"),
+    ("src/admin/entity-edit.tsx", "src/admin/entity-edit.tsx"),
+    ("src/admin/api-client.ts", "src/admin/api-client.ts"),
+    (
+        "src/admin/field-renderer.tsx",
+        "src/admin/field-renderer.tsx",
+    ),
+    ("src/admin/users-list.tsx", "src/admin/users-list.tsx"),
+    ("src/admin/users-edit.tsx", "src/admin/users-edit.tsx"),
+];
 
 fn owned(path: &str, contents: String) -> FilePlan {
     FilePlan {

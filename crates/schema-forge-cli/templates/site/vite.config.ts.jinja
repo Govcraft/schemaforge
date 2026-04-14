@@ -4,11 +4,27 @@ import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 
 // Generated for {{ project_name }}.
+//
+// The dev server proxies `/api/v1/forge` to the schemaforge backend so the
+// browser sees a single origin and never hits CORS. Override the upstream
+// with `VITE_FORGE_UPSTREAM` at `pnpm dev` time if your backend isn't on
+// the default localhost:3000.
+const FORGE_UPSTREAM =
+  process.env.VITE_FORGE_UPSTREAM ?? "http://localhost:3000"
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+    },
+  },
+  server: {
+    proxy: {
+      "/api/v1/forge": {
+        target: FORGE_UPSTREAM,
+        changeOrigin: true,
+      },
     },
   },
 })

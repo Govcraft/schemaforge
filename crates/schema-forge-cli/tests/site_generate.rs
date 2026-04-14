@@ -112,14 +112,29 @@ fn fresh_generate_emits_expected_tree() {
         assert!(out_dir.join(f).exists(), "missing {f}");
     }
 
-    // Preserve pages
+    // Preserve pages — per-entity pages now live under src/app/pages/.
     for f in [
         "src/pages/login.tsx",
-        "src/pages/employee/list.tsx",
-        "src/pages/employee/detail.tsx",
-        "src/pages/employee/edit.tsx",
+        "src/app/pages/employee/list.tsx",
+        "src/app/pages/employee/detail.tsx",
+        "src/app/pages/employee/edit.tsx",
     ] {
         assert!(out_dir.join(f).exists(), "missing {f}");
+    }
+
+    // Phase 2: admin shell scaffolds are emitted as Owned placeholders.
+    for f in [
+        "src/admin/layout.tsx",
+        "src/admin/schemas-index.tsx",
+        "src/admin/entity-list.tsx",
+        "src/admin/entity-detail.tsx",
+        "src/admin/entity-edit.tsx",
+        "src/admin/api-client.ts",
+        "src/admin/field-renderer.tsx",
+        "src/admin/users-list.tsx",
+        "src/admin/users-edit.tsx",
+    ] {
+        assert!(out_dir.join(f).exists(), "missing admin scaffold {f}");
     }
 
     // Spot-check template substitutions
@@ -141,10 +156,21 @@ fn fresh_generate_emits_expected_tree() {
     assert!(auth_ts.contains("export const tokenStore"));
     assert!(auth_ts.contains("export function isAuthenticated"));
 
-    // Task 4: App.tsx wires RequireAuth and /login.
+    // Task 4 + Phase 2: App.tsx wires RequireAuth, /login, and /app + /admin
+    // subtrees.
     let app_tsx = fs::read_to_string(out_dir.join("src/App.tsx")).unwrap();
     assert!(app_tsx.contains("<RequireAuth>"));
     assert!(app_tsx.contains("path=\"/login\""));
+    assert!(app_tsx.contains("/app/${r.path}"));
+    assert!(app_tsx.contains("path=\"/admin/*\""));
+    assert!(app_tsx.contains("AdminLayout"));
+
+    // Phase 2: route-manifest imports from @/app/pages and emits mount-relative
+    // paths (no leading /app — that is added by App.tsx).
+    let manifest = fs::read_to_string(out_dir.join("src/generated/route-manifest.ts")).unwrap();
+    assert!(manifest.contains("@/app/pages/employee/list"));
+    assert!(manifest.contains("path: \"employee\""));
+    assert!(!manifest.contains("path: \"/employee\""));
 }
 
 #[test]
@@ -211,7 +237,7 @@ fn preserve_pages_survive_rerun() {
         .assert()
         .success();
 
-    let list_path = out_dir.join("src/pages/employee/list.tsx");
+    let list_path = out_dir.join("src/app/pages/employee/list.tsx");
     fs::write(&list_path, "// user edit\n").unwrap();
 
     run_generate(&schema_dir, &out_dir, "Employee", &[])
@@ -276,6 +302,60 @@ fn schema_with_only_unsupported_fields_errors_clearly() {
     assert!(
         err.contains("@system") || err.contains("system schema"),
         "stderr: {err}"
+    );
+}
+
+#[test]
+fn templates_dir_override_wins_over_embedded() {
+    // --templates-dir lets users iterate on generator output without a CLI
+    // rebuild. Override files shadow embedded templates one-for-one; any
+    // template not present in the override dir still comes from the binary,
+    // so a one-file override must not break the rest of the tree.
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+    let overrides = tmp.path().join("tpl-overrides");
+    write_schemas(&schema_dir, V0_EMPLOYEE);
+
+    // Override a single leaf template with a trivial marker payload. index.html
+    // is Owned mode, so the generator will write it verbatim and we can read
+    // it back to prove the override path fired.
+    let sentinel = "<!-- OVERRIDE-SENTINEL-7f3a -->";
+    fs::create_dir_all(&overrides).unwrap();
+    fs::write(
+        overrides.join("index.html.jinja"),
+        format!("<!doctype html>\n{sentinel}\n<html><body></body></html>\n"),
+    )
+    .unwrap();
+
+    run_generate(
+        &schema_dir,
+        &out_dir,
+        "Employee",
+        &["--templates-dir", overrides.to_str().unwrap()],
+    )
+    .assert()
+    .success();
+
+    let index = fs::read_to_string(out_dir.join("index.html")).unwrap();
+    assert!(
+        index.contains(sentinel),
+        "override index.html should include sentinel, got:\n{index}"
+    );
+
+    // Non-overridden templates still come from the embedded defaults — the
+    // package.json should be untouched.
+    let pkg = fs::read_to_string(out_dir.join("package.json")).unwrap();
+    assert!(
+        pkg.contains("\"react\""),
+        "embedded package.json still applies"
+    );
+
+    // And a Rust-side App.tsx should still contain the generated nav wiring.
+    let app = fs::read_to_string(out_dir.join("src/App.tsx")).unwrap();
+    assert!(
+        app.contains("routeManifest"),
+        "embedded App.tsx should still be rendered"
     );
 }
 

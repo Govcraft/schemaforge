@@ -1,6 +1,7 @@
 import { Link, Navigate, Route, Routes } from "react-router-dom"
 import { routeManifest, navEntries, defaultEntity } from "@/generated/route-manifest"
 import { LoginPage } from "@/pages/login"
+import { AdminLayout } from "@/admin/layout"
 import { RequireAuth } from "@/lib/require-auth"
 import { isAuthenticated, logout } from "@/lib/auth"
 
@@ -11,10 +12,13 @@ export default function App() {
         <Link to="/" className="font-semibold">{{ project_name }}</Link>
         <nav className="flex gap-4 text-sm text-muted-foreground">
           {navEntries.map((n) => (
-            <Link key={n.kebab} to={`/${n.kebab}`}>
+            <Link key={n.kebab} to={`/app/${n.kebab}`}>
               {n.title}
             </Link>
           ))}
+          <Link to="/admin" className="font-medium">
+            Admin
+          </Link>
         </nav>
         <div className="ml-auto">
           {isAuthenticated() ? (
@@ -35,18 +39,22 @@ export default function App() {
       <main className="flex-1 p-6">
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+
+          {/* Landing: bounce into /app/<first entity> by default. */}
           <Route
             path="/"
             element={
               <RequireAuth>
-                <Navigate to={`/${defaultEntity}`} replace />
+                <Navigate to={`/app/${defaultEntity}`} replace />
               </RequireAuth>
             }
           />
+
+          {/* /app/*  — codegen'd per-entity pages. */}
           {routeManifest.map((r) => (
             <Route
               key={r.path}
-              path={r.path}
+              path={`/app/${r.path}`}
               element={
                 <RequireAuth>
                   <r.element />
@@ -54,6 +62,16 @@ export default function App() {
               }
             />
           ))}
+
+          {/* /admin/* — generic schema-aware admin shell (runtime-dynamic). */}
+          <Route
+            path="/admin/*"
+            element={
+              <RequireAuth>
+                <AdminLayout />
+              </RequireAuth>
+            }
+          />
         </Routes>
       </main>
     </div>
