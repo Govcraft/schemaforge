@@ -20,9 +20,9 @@ use schema_forge_core::types::SchemaDefinition;
 use crate::hooks::HookDispatcher;
 use crate::messages::{
     AggregateEntities, ApplyMigration, CountEntities, CreateEntity, DeleteEntity, GetEntity,
-    GetHookDispatcher, GetRecordAccessPolicy, GetSchema, GetTenantConfig, InitForge, InsertSchema,
-    ListSchemas, LoadSchemaMetadata, QueryEntities, RemoveSchema, StoreSchemaMetadata,
-    UpdateEntity, UpdateTenantConfig,
+    GetHookDispatcher, GetRecordAccessPolicy, GetSchema, GetSchemasBatch, GetTenantConfig,
+    InitForge, InsertSchema, ListSchemas, LoadSchemaMetadata, QueryEntities, RemoveSchema,
+    StoreSchemaMetadata, UpdateEntity, UpdateTenantConfig,
 };
 use crate::state::DynForgeBackend;
 
@@ -128,6 +128,20 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             reply.send(schemas).await;
+        })
+    });
+
+    actor.act_on::<GetSchemasBatch>(|actor, ctx| {
+        let msg = ctx.message();
+        let mut found: HashMap<String, SchemaDefinition> = HashMap::new();
+        for name in &msg.names {
+            if let Some(def) = actor.model.registry.get(name) {
+                found.insert(name.clone(), def.clone());
+            }
+        }
+        let reply = msg.reply.clone();
+        Reply::pending(async move {
+            reply.send(found).await;
         })
     });
 

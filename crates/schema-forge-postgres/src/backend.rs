@@ -3,6 +3,9 @@
 //! This is the I/O boundary: all database communication happens here.
 //! Pure logic lives in `codegen`, `query`, and `value` modules.
 
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
 use schema_forge_backend::entity::{Entity, QueryResult};
 use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
@@ -48,8 +51,20 @@ fn log_widget_repairs(schema: &str, repairs: Vec<WidgetRepair>) {
 ///
 /// Wraps a `PgPool` and implements both `SchemaBackend` (DDL/metadata)
 /// and `EntityStore` (CRUD/query).
+///
+/// Holds an in-memory cache of the `_schema_metadata` table so that the
+/// hot `query()` / `count()` / `aggregate()` paths can resolve a schema
+/// by id without hitting the database on every call. The cache is
+/// populated lazily on first read and invalidated whenever this backend
+/// mutates the metadata table (store/delete/apply_migration).
+///
+/// The cache is a single-writer cache: it only reflects mutations made
+/// through this backend instance. External writers to `_schema_metadata`
+/// are not observed — but SchemaForge is a single-writer service, so
+/// this is not a concern in practice.
 pub struct PgBackend {
     pool: PgPool,
+    schema_cache: ArcSwap<Option<Arc<Vec<SchemaDefinition>>>>,
 }
 
 impl PgBackend {
@@ -66,7 +81,7 @@ impl PgBackend {
                 message: format!("failed to connect to PostgreSQL at {url}: {e}"),
             })?;
 
-        let backend = Self { pool };
+        let backend = Self::from_parts(pool);
         backend.ensure_metadata_table().await?;
         Ok(backend)
     }
@@ -84,16 +99,30 @@ impl PgBackend {
                 message: format!("failed to connect to PostgreSQL at {url}: {e}"),
             })?;
 
-        let backend = Self { pool };
+        let backend = Self::from_parts(pool);
         backend.ensure_metadata_table().await?;
         Ok(backend)
     }
 
     /// Create a backend from an existing connection pool.
     pub async fn from_pool(pool: PgPool) -> Result<Self, BackendError> {
-        let backend = Self { pool };
+        let backend = Self::from_parts(pool);
         backend.ensure_metadata_table().await?;
         Ok(backend)
+    }
+
+    fn from_parts(pool: PgPool) -> Self {
+        Self {
+            pool,
+            schema_cache: ArcSwap::new(Arc::new(None)),
+        }
+    }
+
+    /// Drop the cached schema metadata so the next read refetches from
+    /// the database. Called from every mutation path that changes the
+    /// `_schema_metadata` table.
+    fn invalidate_schema_cache(&self) {
+        self.schema_cache.store(Arc::new(None));
     }
 
     /// Get a reference to the underlying connection pool.
@@ -195,13 +224,71 @@ impl PgBackend {
         &self,
         schema_id: &schema_forge_core::types::SchemaId,
     ) -> Result<SchemaDefinition, BackendError> {
-        let all_schemas = self.list_schema_metadata().await?;
-        all_schemas
-            .into_iter()
+        // Hot path: read the cached schema list (populated lazily by
+        // cached_schema_list) and clone out the single matching entry.
+        // Falls through to a fresh DB read on cache miss.
+        let cached = self.cached_schema_list().await?;
+        cached
+            .iter()
             .find(|s| s.id == *schema_id)
+            .cloned()
             .ok_or_else(|| BackendError::QueryError {
                 message: format!("no schema found for id '{}'", schema_id.as_str()),
             })
+    }
+
+    /// Return the cached `_schema_metadata` snapshot, fetching from the
+    /// database on the first call after startup or after any invalidation.
+    /// The returned `Arc<Vec<...>>` can be shared cheaply across tasks.
+    async fn cached_schema_list(&self) -> Result<Arc<Vec<SchemaDefinition>>, BackendError> {
+        let current = self.schema_cache.load_full();
+        if let Some(list) = current.as_ref() {
+            return Ok(list.clone());
+        }
+        // Cache miss — hit the DB, build the Arc, install it, return it.
+        // It's fine if two concurrent cache misses both do this; the
+        // store() resolves to whichever lands last, and both callers see
+        // consistent data.
+        let fresh = self.fetch_schema_metadata_from_db().await?;
+        let shared = Arc::new(fresh);
+        self.schema_cache.store(Arc::new(Some(shared.clone())));
+        Ok(shared)
+    }
+
+    async fn fetch_schema_metadata_from_db(&self) -> Result<Vec<SchemaDefinition>, BackendError> {
+        let rows: Vec<PgRow> = sqlx::query(&format!(
+            "SELECT \"definition\" FROM \"{SCHEMA_META_TABLE}\";"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| BackendError::QueryError {
+            message: format!("failed to list schema metadata: {e}"),
+        })?;
+
+        let mut definitions = Vec::new();
+        for row in &rows {
+            let mut json: serde_json::Value =
+                row.try_get("definition")
+                    .map_err(|e| BackendError::Internal {
+                        message: format!("failed to read definition column: {e}"),
+                    })?;
+            let schema_label = json
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>")
+                .to_string();
+            log_widget_repairs(
+                &schema_label,
+                schema_forge_core::types::sanitize_schema_metadata_json(&mut json),
+            );
+            let definition: SchemaDefinition =
+                serde_json::from_value(json).map_err(|e| BackendError::Internal {
+                    message: format!("failed to deserialize schema metadata: {e}"),
+                })?;
+            definitions.push(definition);
+        }
+
+        Ok(definitions)
     }
 
     /// Bind compiled query parameters into PgArguments.
@@ -257,6 +344,12 @@ impl SchemaBackend for PgBackend {
                 reason: e.to_string(),
             })?;
 
+        // Migrations rewrite entity-table DDL; they don't directly touch
+        // `_schema_metadata`, but the schema metadata usually gets
+        // store()'d right after. Drop the cache now so the next reader
+        // sees fresh data even if only a migration ran.
+        self.invalidate_schema_cache();
+
         Ok(())
     }
 
@@ -281,6 +374,8 @@ impl SchemaBackend for PgBackend {
         .map_err(|e| BackendError::QueryError {
             message: format!("failed to store schema metadata: {e}"),
         })?;
+
+        self.invalidate_schema_cache();
 
         Ok(())
     }
@@ -322,39 +417,12 @@ impl SchemaBackend for PgBackend {
     }
 
     async fn list_schema_metadata(&self) -> Result<Vec<SchemaDefinition>, BackendError> {
-        let rows: Vec<PgRow> = sqlx::query(&format!(
-            "SELECT \"definition\" FROM \"{SCHEMA_META_TABLE}\";"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| BackendError::QueryError {
-            message: format!("failed to list schema metadata: {e}"),
-        })?;
-
-        let mut definitions = Vec::new();
-        for row in &rows {
-            let mut json: serde_json::Value =
-                row.try_get("definition")
-                    .map_err(|e| BackendError::Internal {
-                        message: format!("failed to read definition column: {e}"),
-                    })?;
-            let schema_label = json
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("<unknown>")
-                .to_string();
-            log_widget_repairs(
-                &schema_label,
-                schema_forge_core::types::sanitize_schema_metadata_json(&mut json),
-            );
-            let definition: SchemaDefinition =
-                serde_json::from_value(json).map_err(|e| BackendError::Internal {
-                    message: format!("failed to deserialize schema metadata: {e}"),
-                })?;
-            definitions.push(definition);
-        }
-
-        Ok(definitions)
+        // Reads go through the in-memory cache. The trait returns an owned
+        // Vec, so we clone the cached Arc<Vec> contents once here; hot paths
+        // that can tolerate a shared Arc should call `cached_schema_list`
+        // directly to avoid this copy.
+        let cached = self.cached_schema_list().await?;
+        Ok((*cached).clone())
     }
 }
 
@@ -453,24 +521,49 @@ impl EntityStore for PgBackend {
         let compiled = query_to_sql(query, table);
         let args = Self::bind_params(&compiled.params)?;
 
-        let rows: Vec<PgRow> = sqlx::query_with(&compiled.sql, args)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| BackendError::QueryError {
+        // When `include_total` is set, compute the SELECT and the COUNT(*)
+        // in parallel on two pool connections instead of sequentially.
+        // Each sqlx round-trip costs ~2 * network RTT (Parse/Execute), so
+        // running them concurrently halves wall-clock DB time for list
+        // endpoints that need a `total_count`.
+        let main_fut = sqlx::query_with(&compiled.sql, args).fetch_all(&self.pool);
+
+        let rows: Vec<PgRow> = if query.include_total {
+            let count_compiled = count_to_sql(query, table);
+            let count_args = Self::bind_params(&count_compiled.params)?;
+            let count_fut = sqlx::query_with(&count_compiled.sql, count_args)
+                .fetch_one(&self.pool);
+
+            let (rows_res, count_res) = tokio::join!(main_fut, count_fut);
+            let rows = rows_res.map_err(|e| BackendError::QueryError {
                 message: format!("failed to execute query: {e}"),
             })?;
+            let count_row = count_res.map_err(|e| BackendError::QueryError {
+                message: format!("failed to execute count query: {e}"),
+            })?;
+            let total: i64 = count_row
+                .try_get("count")
+                .map_err(|e| BackendError::Internal {
+                    message: format!("failed to read count: {e}"),
+                })?;
+            let schema_name = schema_def.name.clone();
+            let mut entities = Vec::new();
+            for row in &rows {
+                entities.push(row_to_entity(row, &schema_name, Some(&schema_def))?);
+            }
+            return Ok(QueryResult::new(entities, Some(total as usize)));
+        } else {
+            main_fut.await.map_err(|e| BackendError::QueryError {
+                message: format!("failed to execute query: {e}"),
+            })?
+        };
 
         let schema_name = schema_def.name.clone();
         let mut entities = Vec::new();
         for row in &rows {
             entities.push(row_to_entity(row, &schema_name, Some(&schema_def))?);
         }
-
-        // Also compute the total matching rows (ignoring limit/offset) so
-        // paginated list envelopes can report an accurate total. count_to_sql
-        // reuses the same WHERE clause and skips limit/offset/sort.
-        let total = self.count(query).await?;
-        Ok(QueryResult::new(entities, Some(total)))
+        Ok(QueryResult::new(entities, None))
     }
 
     async fn count(&self, query: &Query) -> Result<usize, BackendError> {

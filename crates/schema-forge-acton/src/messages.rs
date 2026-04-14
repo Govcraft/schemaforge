@@ -74,6 +74,18 @@ pub struct ListSchemas {
     pub reply: ReplyChannel<Vec<SchemaDefinition>>,
 }
 
+/// Retrieve several schema definitions by name in a single actor round-trip.
+///
+/// Missing names are simply absent from the returned map — callers must
+/// treat a missing entry as "schema not registered" and handle the fall-back.
+/// Used by list-entity handlers to avoid sending N separate `GetSchema`
+/// messages when resolving relation displays and derived collections.
+#[derive(Clone, Debug)]
+pub struct GetSchemasBatch {
+    pub names: Vec<String>,
+    pub reply: ReplyChannel<HashMap<String, SchemaDefinition>>,
+}
+
 /// Retrieve the current tenant configuration.
 #[derive(Clone, Debug)]
 pub struct GetTenantConfig {

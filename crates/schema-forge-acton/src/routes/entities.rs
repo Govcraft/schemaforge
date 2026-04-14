@@ -30,7 +30,7 @@ use crate::hooks::{
 };
 use crate::messages::{
     CreateEntity, DeleteEntity, GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema,
-    GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
+    GetSchemasBatch, GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
 };
 use schema_forge_core::types::HookEvent;
 use std::sync::Arc;
@@ -431,11 +431,16 @@ pub struct EntityQueryBody {
     /// generated site gets human-readable relation labels without
     /// extra client-side fetches; set to `false` to skip the batched
     /// IN-query for API-only consumers that don't need the labels.
-    #[serde(default = "default_resolve_relations")]
+    #[serde(default = "default_true_bool")]
     pub resolve: bool,
+    /// Whether to compute `total_count`. Defaults to `true` for backward
+    /// compatibility with paginating UIs. Set to `false` to skip the
+    /// extra COUNT(*) round-trip when the caller doesn't need it.
+    #[serde(default = "default_true_bool")]
+    pub count: bool,
 }
 
-const fn default_resolve_relations() -> bool {
+const fn default_true_bool() -> bool {
     true
 }
 
@@ -939,7 +944,9 @@ async fn execute_entity_query(
     query: &mut schema_forge_core::query::Query,
     projection: Option<&HashSet<String>>,
     resolve_relations: bool,
+    include_total: bool,
 ) -> Result<ListEntitiesResponse, ForgeError> {
+    query.include_total = include_total;
     let forge = state
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered");
@@ -1063,19 +1070,21 @@ async fn resolve_relation_displays(
         return Ok(HashMap::new());
     }
 
-    let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
+    // Resolve every target schema in a single batched actor round-trip
+    // rather than sending one GetSchema per target.
+    let target_names: Vec<String> = targets.keys().cloned().collect();
+    let target_defs = fetch_schemas_batch(forge, target_names).await?;
+
+    // Build per-target query jobs, skipping targets with no display field,
+    // no registered schema, or no referenced IDs.
+    let mut jobs: Vec<(
+        Vec<String>,    // source field names sharing this target
+        String,         // display_field
+        schema_forge_core::query::Query,
+    )> = Vec::with_capacity(targets.len());
 
     for (target_name, fields_pointing_at_target) in targets {
-        // Fetch the target schema definition so we can (a) build a query
-        // against its SchemaId and (b) learn its display field.
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(GetSchema {
-                name: target_name.clone(),
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        let Some(target_def) = ask_forge(rx).await? else {
+        let Some(target_def) = target_defs.get(&target_name) else {
             continue;
         };
         let Some(display_field) = target_def.display_field().map(|s| s.to_string()) else {
@@ -1097,49 +1106,93 @@ async fn resolve_relation_displays(
             continue;
         }
 
-        // Batched IN query for just the display field.
-        let mut display_query = schema_forge_core::query::Query::new(target_def.id.clone());
+        // Batched IN query for just the display field. No total_count —
+        // internal lookup, never paginated.
         let id_values: Vec<DynamicValue> = distinct_ids
-            .iter()
-            .map(|s| DynamicValue::Text(s.clone()))
+            .into_iter()
+            .map(DynamicValue::Text)
             .collect();
-        display_query = display_query.with_filter(Filter::In {
-            path: FieldPath::single("id"),
-            values: id_values,
-        });
+        let mut display_query = schema_forge_core::query::Query::new(target_def.id.clone())
+            .with_filter(Filter::In {
+                path: FieldPath::single("id"),
+                values: id_values,
+            })
+            .without_total_count();
         display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
         // Apply tenant scope so we never leak rows the caller couldn't
         // otherwise see through a direct list call.
         inject_tenant_scope(&mut display_query, claims, tenant_config);
 
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(QueryEntities {
-                query: display_query,
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        let Ok(Ok(target_result)) = ask_forge(rx).await else {
-            continue;
-        };
+        let source_fields: Vec<String> = fields_pointing_at_target
+            .iter()
+            .map(|f| f.name.as_str().to_string())
+            .collect();
+        jobs.push((source_fields, display_field, display_query));
+    }
 
-        // Build id -> display lookup.
-        let mut id_to_display: HashMap<String, String> = HashMap::new();
-        for target_entity in target_result.entities {
-            if let Some(display_value) = target_entity.field(&display_field) {
-                let rendered = display_value_to_string(display_value);
-                id_to_display.insert(target_entity.id.as_str().to_string(), rendered);
+    if jobs.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Fire all per-target queries concurrently. The Postgres pool has
+    // multiple connections so these genuinely run in parallel instead of
+    // serializing one-by-one on the actor mailbox.
+    let futures_iter = jobs
+        .into_iter()
+        .map(|(source_fields, display_field, query)| async move {
+            let (tx, rx) = oneshot::channel();
+            forge
+                .send(QueryEntities {
+                    query,
+                    reply: ReplyChannel::new(tx),
+                })
+                .await;
+            let target_result = match ask_forge(rx).await {
+                Ok(Ok(r)) => r,
+                _ => return (source_fields, HashMap::new()),
+            };
+            let mut id_to_display: HashMap<String, String> = HashMap::new();
+            for target_entity in target_result.entities {
+                if let Some(display_value) = target_entity.field(&display_field) {
+                    let rendered = display_value_to_string(display_value);
+                    id_to_display.insert(target_entity.id.as_str().to_string(), rendered);
+                }
             }
-        }
+            (source_fields, id_to_display)
+        });
+    let completed = futures::future::join_all(futures_iter).await;
 
-        // Fan the same lookup out across every source field pointing at
-        // this target. Clone is cheap — just a small HashMap.
-        for field in &fields_pointing_at_target {
-            result.insert(field.name.as_str().to_string(), id_to_display.clone());
+    let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
+    for (source_fields, id_to_display) in completed {
+        if id_to_display.is_empty() {
+            continue;
+        }
+        for field_name in source_fields {
+            result.insert(field_name, id_to_display.clone());
         }
     }
 
     Ok(result)
+}
+
+/// Fetch several schema definitions in a single `GetSchemasBatch` actor
+/// round-trip. Returns an owned `HashMap<name, definition>`; missing
+/// names are simply absent from the map.
+async fn fetch_schemas_batch(
+    forge: &acton_service::prelude::ActorHandle,
+    names: Vec<String>,
+) -> Result<HashMap<String, SchemaDefinition>, ForgeError> {
+    if names.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchemasBatch {
+            names,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await
 }
 
 /// Walk a `DynamicValue` that came from a relation field and push every
@@ -1232,19 +1285,23 @@ async fn populate_derived_collections(
         .map(|e| DynamicValue::Text(e.id.as_str().to_string()))
         .collect();
 
+    // Resolve every distinct target schema in one batched actor round-trip.
+    let target_names: Vec<String> = derived
+        .iter()
+        .map(|(_, target, _)| target.clone())
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .collect();
+    let target_defs = fetch_schemas_batch(forge, target_names).await?;
+
+    // Build query jobs for every derived field whose target schema resolved
+    // and whose parents have IDs to match against. Fields whose target
+    // didn't resolve get an empty array right here so parents still see a
+    // `RefArray(vec![])` instead of `null`.
+    let mut jobs: Vec<(String, String, schema_forge_core::query::Query)> =
+        Vec::with_capacity(derived.len());
     for (parent_field_name, target_name, fk_field_name) in derived {
-        // Look up the target schema to get its SchemaId (needed to build
-        // a Query against the child table). A missing target leaves the
-        // derived field unpopulated — the parent still gets an empty
-        // array so clients never see `null`.
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(GetSchema {
-                name: target_name.clone(),
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        let Some(target_def) = ask_forge(rx).await? else {
+        let Some(target_def) = target_defs.get(&target_name) else {
             for entity in entities.iter_mut() {
                 entity
                     .fields
@@ -1253,41 +1310,61 @@ async fn populate_derived_collections(
             continue;
         };
 
-        // Query: SELECT id, <fk_field> FROM <target> WHERE <fk_field> IN (parent_ids)
-        let mut child_query = schema_forge_core::query::Query::new(target_def.id.clone());
-        child_query = child_query.with_filter(Filter::In {
-            path: FieldPath::single(&fk_field_name),
-            values: parent_id_values.clone(),
-        });
+        // Query: SELECT id, <fk_field> FROM <target> WHERE <fk_field> IN
+        // (parent_ids). Internal lookup — no total_count needed.
+        let mut child_query = schema_forge_core::query::Query::new(target_def.id.clone())
+            .with_filter(Filter::In {
+                path: FieldPath::single(&fk_field_name),
+                values: parent_id_values.clone(),
+            })
+            .without_total_count();
         child_query.projection = Some(vec!["id".to_string(), fk_field_name.clone()]);
         inject_tenant_scope(&mut child_query, claims, tenant_config);
 
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(QueryEntities {
-                query: child_query,
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        let child_result = match ask_forge(rx).await? {
-            Ok(r) => r,
-            Err(_) => {
-                // Backend error on the derived query — fall through with
-                // empty arrays rather than failing the whole read path.
-                for entity in entities.iter_mut() {
-                    entity
-                        .fields
-                        .insert(parent_field_name.clone(), DynamicValue::RefArray(vec![]));
-                }
-                continue;
+        jobs.push((parent_field_name, fk_field_name, child_query));
+    }
+
+    if jobs.is_empty() {
+        return Ok(());
+    }
+
+    // Fire all child-table queries concurrently so derived-field latency
+    // is one wall-clock round-trip instead of N serial ones.
+    let futures_iter =
+        jobs.into_iter()
+            .map(|(parent_field_name, fk_field_name, query)| async move {
+                let (tx, rx) = oneshot::channel();
+                forge
+                    .send(QueryEntities {
+                        query,
+                        reply: ReplyChannel::new(tx),
+                    })
+                    .await;
+                let entities_opt = match ask_forge(rx).await {
+                    Ok(Ok(r)) => Some(r.entities),
+                    _ => None,
+                };
+                (parent_field_name, fk_field_name, entities_opt)
+            });
+    let completed = futures::future::join_all(futures_iter).await;
+
+    for (parent_field_name, fk_field_name, child_entities_opt) in completed {
+        let Some(child_entities) = child_entities_opt else {
+            // Backend error on the derived query — fall through with
+            // empty arrays rather than failing the whole read path.
+            for entity in entities.iter_mut() {
+                entity
+                    .fields
+                    .insert(parent_field_name.clone(), DynamicValue::RefArray(vec![]));
             }
+            continue;
         };
 
         // Group child IDs by parent ID. Children with a NULL or unrecognized
         // FK value are silently skipped — they couldn't be attributed to
         // any of the parents in `entities` anyway.
         let mut groups: HashMap<String, Vec<schema_forge_core::types::EntityId>> = HashMap::new();
-        for child in child_result.entities {
+        for child in child_entities {
             let Some(fk_value) = child.field(&fk_field_name) else {
                 continue;
             };
@@ -1687,7 +1764,9 @@ pub async fn list_entities(
     };
 
     // ?resolve=false opts out of the default-on relation display join.
-    let resolve_relations = parse_resolve_param(&params);
+    let resolve_relations = parse_truthy_flag(&params, "resolve");
+    // ?count=false opts out of the default-on total_count computation.
+    let include_total = parse_truthy_flag(&params, "count");
 
     let response = execute_entity_query(
         &state,
@@ -1696,18 +1775,19 @@ pub async fn list_entities(
         &mut query,
         projection.as_ref(),
         resolve_relations,
+        include_total,
     )
     .await?;
     Ok(Json(response))
 }
 
-/// Parse the `resolve` query-string flag. Any truthy value keeps the
-/// default-on behavior; `false`/`0`/`no`/`off` opts out. Unknown values
-/// are treated as "leave default on" — we never 400 for an unrecognized
-/// query param the client doesn't control precisely.
-fn parse_resolve_param(params: &HashMap<String, String>) -> bool {
+/// Parse a query-string boolean flag with default-on semantics. Any truthy
+/// or unknown value keeps default-on; `false`/`0`/`no`/`off` opts out. We
+/// never 400 on unrecognized values — the client doesn't always control
+/// the exact spelling.
+fn parse_truthy_flag(params: &HashMap<String, String>, key: &str) -> bool {
     !matches!(
-        params.get("resolve").map(|s| s.as_str()),
+        params.get(key).map(|s| s.as_str()),
         Some("false") | Some("0") | Some("no") | Some("off")
     )
 }
@@ -1839,6 +1919,7 @@ pub async fn query_entities(
         &mut query,
         projection.as_ref(),
         body.resolve,
+        body.count,
     )
     .await?;
     Ok(Json(response))
@@ -1994,7 +2075,7 @@ pub async fn get_entity(
     // `?resolve=false`. Reuses the same batched IN-query path the list
     // endpoint uses — with a single source entity it's still one query
     // per target schema, which is cheap.
-    if parse_resolve_param(&params) {
+    if parse_truthy_flag(&params, "resolve") {
         let entities_slice = std::slice::from_ref(&entity);
         let display_map = resolve_relation_displays(
             forge,
@@ -2702,9 +2783,9 @@ mod tests {
     #[test]
     fn parse_resolve_param_defaults_to_true() {
         let mut params = HashMap::new();
-        assert!(parse_resolve_param(&params));
+        assert!(parse_truthy_flag(&params, "resolve"));
         params.insert("resolve".to_string(), "true".to_string());
-        assert!(parse_resolve_param(&params));
+        assert!(parse_truthy_flag(&params, "resolve"));
     }
 
     #[test]
@@ -2713,7 +2794,7 @@ mod tests {
             let mut params = HashMap::new();
             params.insert("resolve".to_string(), falsy.to_string());
             assert!(
-                !parse_resolve_param(&params),
+                !parse_truthy_flag(&params, "resolve"),
                 "{falsy} should opt out of relation resolution"
             );
         }

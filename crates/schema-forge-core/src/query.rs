@@ -311,6 +311,22 @@ pub struct Query {
     /// included by the SQL backend regardless of whether it appears here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection: Option<Vec<String>>,
+    /// Whether the backend should compute `total_count` (an extra COUNT(*)
+    /// over the same WHERE clause). Defaults to `true` for backward
+    /// compatibility with callers that read `QueryResult::total_count`.
+    /// Set to `false` on internal lookups (relation-display resolution,
+    /// derived-collection population) that never paginate — this halves
+    /// the per-list DB round-trips.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub include_total: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl Query {
@@ -323,7 +339,22 @@ impl Query {
             limit: None,
             offset: None,
             projection: None,
+            include_total: true,
         }
+    }
+
+    /// Opt the query out of computing `total_count`. Use this on internal
+    /// lookups that will never paginate so the backend can skip the
+    /// redundant second COUNT(*) round-trip.
+    pub fn without_total_count(mut self) -> Self {
+        self.include_total = false;
+        self
+    }
+
+    /// Explicitly set whether `total_count` should be computed.
+    pub fn with_total_count(mut self, include_total: bool) -> Self {
+        self.include_total = include_total;
+        self
     }
 
     /// Set the filter.

@@ -430,9 +430,14 @@ impl EntityStore for SurrealBackend {
         }
 
         // Also compute the total matching rows (ignoring limit/offset) so
-        // paginated list envelopes can report an accurate total.
-        let total = self.count(query).await?;
-        Ok(QueryResult::new(entities, Some(total)))
+        // paginated list envelopes can report an accurate total. Skipped
+        // on internal lookups that set `include_total = false`.
+        let total = if query.include_total {
+            Some(self.count(query).await?)
+        } else {
+            None
+        };
+        Ok(QueryResult::new(entities, total))
     }
 
     async fn count(&self, query: &Query) -> Result<usize, BackendError> {
