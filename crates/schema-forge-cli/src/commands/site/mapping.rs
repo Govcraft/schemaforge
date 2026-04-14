@@ -742,6 +742,7 @@ mod tests {
             SchemaMeta {
                 schema_name: "Department".to_string(),
                 pascal: "Department".to_string(),
+                pascal_plural: "Departments".to_string(),
                 kebab: "department".to_string(),
                 snake: "department".to_string(),
                 display_field: Some("name".to_string()),

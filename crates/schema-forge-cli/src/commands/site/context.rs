@@ -25,6 +25,8 @@ pub struct SchemaMeta {
     pub schema_name: String,
     /// PascalCase identifier used as the TS type name.
     pub pascal: String,
+    /// English plural of `pascal` used for list helpers (`listOpportunities`).
+    pub pascal_plural: String,
     /// kebab-case slug used in URL paths.
     pub kebab: String,
     /// snake_case slug used in identifiers like React Query keys.
@@ -37,14 +39,53 @@ impl SchemaMeta {
     /// Build a [`SchemaMeta`] from a schema definition. Pure.
     pub fn from_schema(def: &SchemaDefinition) -> Self {
         let name = def.name.as_str();
+        let pascal = name.to_pascal_case();
         Self {
             schema_name: name.to_string(),
-            pascal: name.to_pascal_case(),
+            pascal_plural: pluralize(&pascal),
+            pascal,
             kebab: name.to_kebab_case(),
             snake: name.to_snake_case(),
             display_field: def.display_field().map(|s| s.to_string()),
         }
     }
+}
+
+/// English pluralizer for the site generator. Handles the three rules that
+/// actually come up in SchemaForge schema names:
+///
+/// 1. A consonant followed by `y` → drop `y`, append `ies` (`Opportunity` → `Opportunities`).
+/// 2. Ends in a sibilant (`s`, `x`, `z`, `ch`, `sh`) → append `es` (`Box` → `Boxes`, `Address` → `Addresses`).
+/// 3. Everything else → append `s`.
+///
+/// This is intentionally narrow. It's enough to stop emitting `listOpportunitys`
+/// and `listForecastEntrys`, and it has no foreign irregulars (matrices, indices,
+/// criteria) — those need a real inflector library and don't appear in any
+/// production SchemaForge schema today.
+pub fn pluralize(word: &str) -> String {
+    if word.is_empty() {
+        return String::new();
+    }
+    let lower = word.to_ascii_lowercase();
+    if lower.ends_with("ch") || lower.ends_with("sh") {
+        return format!("{word}es");
+    }
+    if let Some(last) = lower.chars().last() {
+        if matches!(last, 's' | 'x' | 'z') {
+            return format!("{word}es");
+        }
+        if last == 'y' {
+            let prev = lower.chars().rev().nth(1);
+            if let Some(c) = prev {
+                if !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u') {
+                    let mut out = word[..word.len() - 1].to_string();
+                    out.push_str("ies");
+                    return out;
+                }
+            }
+        }
+    }
+    format!("{word}s")
 }
 
 /// Top-level context rendered against every global site-generator template.
@@ -74,6 +115,8 @@ pub struct PageContext {
 pub struct EntityView {
     /// PascalCase name — `Employee`.
     pub pascal: String,
+    /// English plural of `pascal` — `Employees`, `Opportunities`, `Addresses`.
+    pub pascal_plural: String,
     /// snake_case name — `employee`.
     pub snake: String,
     /// kebab-case name — `employee`.
@@ -117,8 +160,10 @@ impl EntityView {
             }
         }
         let has_relation_one = fields.iter().any(has_relation_one_field);
+        let pascal = name.to_pascal_case();
         Ok(Self {
-            pascal: name.to_pascal_case(),
+            pascal_plural: pluralize(&pascal),
+            pascal,
             snake: name.to_snake_case(),
             kebab: name.to_kebab_case(),
             title: name.to_title_case(),
@@ -226,5 +271,43 @@ pub fn make_field_view(
         item_kind: None,
         item_enum_variants: Vec::new(),
         sub_fields: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pluralize;
+
+    #[test]
+    fn consonant_y_becomes_ies() {
+        assert_eq!(pluralize("Opportunity"), "Opportunities");
+        assert_eq!(pluralize("ForecastEntry"), "ForecastEntries");
+        assert_eq!(pluralize("Category"), "Categories");
+    }
+
+    #[test]
+    fn vowel_y_just_appends_s() {
+        assert_eq!(pluralize("Day"), "Days");
+        assert_eq!(pluralize("Survey"), "Surveys");
+    }
+
+    #[test]
+    fn sibilants_get_es() {
+        assert_eq!(pluralize("Box"), "Boxes");
+        assert_eq!(pluralize("Dish"), "Dishes");
+        assert_eq!(pluralize("Watch"), "Watches");
+        assert_eq!(pluralize("Address"), "Addresses");
+    }
+
+    #[test]
+    fn defaults_to_s() {
+        assert_eq!(pluralize("Employee"), "Employees");
+        assert_eq!(pluralize("Task"), "Tasks");
+        assert_eq!(pluralize("Certification"), "Certifications");
+    }
+
+    #[test]
+    fn empty_stays_empty() {
+        assert_eq!(pluralize(""), "");
     }
 }

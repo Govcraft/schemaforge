@@ -9,7 +9,7 @@ import {
   flexRender,
   type ColumnDef,
 } from "@tanstack/react-table"
-import { list{{ entity.pascal }}s } from "@/generated/api-client"
+import { list{{ entity.pascal_plural }} } from "@/generated/api-client"
 import type { {{ entity.pascal }} } from "@/generated/entity-types"
 import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
@@ -113,7 +113,7 @@ export function {{ entity.pascal }}List() {
       { limit, offset, sort: sortParam, filters },
     ],
     queryFn: () =>
-      list{{ entity.pascal }}s({
+      list{{ entity.pascal_plural }}({
         limit,
         offset,
         sort: sortParam,
