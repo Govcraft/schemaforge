@@ -159,6 +159,13 @@ pub struct SiteGenerateArgs {
     /// Exits non-zero if anything would change. Intended for CI determinism checks.
     #[arg(long)]
     pub check: bool,
+
+    /// Directory of override `.jinja` templates. Files present here shadow
+    /// the ones baked into the binary, so you can iterate on generator
+    /// output without recompiling the CLI. If omitted, `./site-templates`
+    /// is auto-detected relative to the current working directory.
+    #[arg(long = "templates-dir")]
+    pub templates_dir: Option<PathBuf>,
 }
 
 /// Hook scaffolding subcommands.
@@ -375,30 +382,13 @@ pub struct ServeArgs {
     #[arg(long = "log-level")]
     pub log_level: Option<String>,
 
-    /// Admin username for the admin/widget UI (bootstraps on first run)
+    /// Admin username used to bootstrap the initial user on first run.
     #[arg(long = "admin-user", env = "FORGE_ADMIN_USER", default_value = "admin")]
     pub admin_user: String,
 
-    /// Admin password for the admin/widget UI (bootstraps on first run)
+    /// Admin password used to bootstrap the initial user on first run.
     #[arg(long = "admin-password", env = "FORGE_ADMIN_PASSWORD")]
     pub admin_password: Option<String>,
-
-    /// Directory for admin UI MiniJinja templates
-    #[arg(long = "template-dir", env = "FORGE_TEMPLATE_DIR")]
-    pub template_dir: Option<PathBuf>,
-
-    /// Disable admin UI routes (overrides config.toml)
-    #[arg(long = "no-admin-ui")]
-    pub no_admin_ui: bool,
-
-    /// Disable widget UI routes (overrides config.toml)
-    #[arg(long = "no-widget-ui")]
-    pub no_widget_ui: bool,
-
-    /// Enable the HTMX site UI at /site/ with login/logout and schema browsing.
-    /// Scaffolds starter templates into site/templates/ on first run.
-    #[arg(long = "with-htmx")]
-    pub with_htmx: bool,
 
     /// Enable permissive CORS for local development.
     ///

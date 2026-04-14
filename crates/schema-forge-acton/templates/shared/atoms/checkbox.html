@@ -1,9 +1,0 @@
-<div data-sf="field" data-field-name="{{ field.name }}" data-input-type="checkbox">
-    <input type="hidden" name="{{ field.name }}" value="false">
-    <label for="field-{{ field.name }}" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-        <input type="checkbox" id="field-{{ field.name }}" name="{{ field.name }}" value="true"
-            {% if field.current_value %}{% if field.current_value == "true" %}checked{% endif %}{% endif %}
-        >
-        {{ field.label }}{% if field.required %} *{% endif %}
-    </label>
-</div>

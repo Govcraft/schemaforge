@@ -1,7 +1,0 @@
-<div data-sf="field" data-field-name="{{ field.name }}" data-input-type="fallback">
-    <label for="field-{{ field.name }}">{{ field.label }}{% if field.required %} *{% endif %}</label>
-    <input type="text" id="field-{{ field.name }}" name="{{ field.name }}"
-        {% if field.current_value %}value="{{ field.current_value }}"{% endif %}
-        {% if field.required %}required{% endif %}
-    >
-</div>

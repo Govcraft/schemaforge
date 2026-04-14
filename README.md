@@ -231,7 +231,7 @@ SchemaForge is a Cargo workspace of seven composable crates. Each layer depends 
 | `schema-forge-backend` | `SchemaBackend` and `EntityStore` trait definitions. Storage-agnostic interface. |
 | `schema-forge-surrealdb` | SurrealDB implementation: MigrationStep to SurrealQL compilation, entity CRUD, query translation. |
 | `schema-forge-postgres` | PostgreSQL implementation: DDL codegen, entity CRUD, query translation via SQLx. |
-| `schema-forge-acton` | Axum-based HTTP layer: dynamic CRUD routes, admin UI, HTMX widget UI, Cedar policies, OpenAPI spec, schema registry. |
+| `schema-forge-acton` | Axum-based JSON API layer: dynamic CRUD routes, auth/login, Cedar policies, OpenAPI spec, schema registry. |
 | `schema-forge-cli` | Command-line interface: `init`, `parse`, `apply`, `migrate`, `generate`, `serve`, `inspect`, `export`, `policies`. |
 
 ### Core Type System
@@ -484,12 +484,10 @@ let extension = SchemaForgeExtension::builder()
     .build()
     .await?;
 
-// Register forge routes under /forge on any axum Router
-// Admin and widget routes share a session layer — log in once at /admin/login,
-// access both /admin/* and /forge/* widget routes with the same session cookie.
+// Register JSON forge routes under /forge on any axum Router.
+// The UI is generated separately with `schemaforge site generate`, which
+// writes a React + Vite project that talks to this API.
 let app = extension.register_routes(axum::Router::new());
-let app = extension.register_admin_routes(app);
-let app = extension.register_widget_routes(app);
 ```
 
 ### Computing Migrations
@@ -533,9 +531,9 @@ SchemaForge is under active development. All seven crates compile and pass 1123 
 - Storage-agnostic query IR with relation traversal
 - SurrealDB backend: DDL codegen, entity CRUD, query translation
 - PostgreSQL backend: DDL codegen, entity CRUD, query translation
-- Axum HTTP layer with dynamic CRUD routes and schema management
-- Admin UI with session-based authentication and user management
-- HTMX widget UI with shared session auth (login once, access both admin and widgets)
+- Axum JSON API with dynamic CRUD routes and schema management
+- React site generator (`schemaforge site generate`) producing a Vite + Tailwind + shadcn app against the JSON API
+- Token-based authentication (PASETO) with an auth-store-backed login endpoint
 - Cedar authorization policy generation
 - Schema-level and field-level access control via `@access` and `@field_access` annotations
 - Record-level ownership-based access control

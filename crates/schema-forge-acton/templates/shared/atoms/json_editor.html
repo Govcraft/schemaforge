@@ -1,7 +1,0 @@
-<div data-sf="field" data-field-name="{{ field.name }}" data-input-type="json">
-    <label for="field-{{ field.name }}">{{ field.label }}{% if field.required %} *{% endif %}</label>
-    <textarea id="field-{{ field.name }}" name="{{ field.name }}" style="font-family: monospace;"
-        {% for attr_name, attr_val in field.attrs %}{{ attr_name }}="{{ attr_val }}" {% endfor %}
-        {% if field.required %}required{% endif %}
-    >{% if field.current_value %}{{ field.current_value }}{% endif %}</textarea>
-</div>

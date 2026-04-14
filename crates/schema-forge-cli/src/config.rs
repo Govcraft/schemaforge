@@ -12,32 +12,6 @@ pub struct CliConfig {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub cli: CliSettings,
-    #[serde(default)]
-    pub server: ServerConfig,
-}
-
-/// Server configuration for the `serve` command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerConfig {
-    /// Enable admin UI routes at `/admin/`.
-    #[serde(default = "default_true")]
-    pub admin_ui: bool,
-    /// Enable widget UI routes at `/forge/{schema}/entities`.
-    #[serde(default = "default_true")]
-    pub widget_ui: bool,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            admin_ui: true,
-            widget_ui: true,
-        }
-    }
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Database connection configuration.

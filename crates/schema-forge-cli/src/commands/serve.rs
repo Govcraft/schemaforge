@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -129,38 +128,22 @@ pub async fn run(
         output.warn("--watch is not yet implemented; schemas will not auto-reload.");
     }
 
-    // Resolve runtime UI toggles: config.toml defaults, CLI flags override
-    let enable_admin = config.server.admin_ui && !args.no_admin_ui;
-    let enable_widget = config.server.widget_ui && !args.no_widget_ui;
-    let enable_site = args.with_htmx;
-
-    // Scaffold site templates and static assets when --with-htmx is active
-    if enable_site {
-        scaffold_site_assets(Path::new("."), output)?;
-    }
-
-    // 7. Build SchemaForgeExtension for admin/widget/site UI routes (shared session layer)
-    let extension = if enable_admin || enable_widget || enable_site {
-        let mut builder = SchemaForgeExtension::builder()
+    // 7. Build SchemaForgeExtension solely to bootstrap the initial admin user
+    //    and (indirectly) seed demo users via the auth store. The extension no
+    //    longer mounts any routes — the JSON forge router is mounted directly
+    //    by `build_versioned_routes()` below.
+    if args.admin_password.is_some() {
+        let builder = SchemaForgeExtension::builder()
             .with_backend_arc(init_data.backend.clone())
-            .with_auth_store_arc(auth_store.clone());
-        if let Some(ref password) = args.admin_password {
-            builder = builder.with_admin_credentials(args.admin_user.clone(), password.clone());
-        }
-        if let Some(ref dir) = args.template_dir {
-            builder = builder.with_template_dir(dir.clone());
-        }
-        if enable_site {
-            builder = builder
-                .with_site_template_dir(std::path::PathBuf::from("site/templates"))
-                .with_site_static_dir(std::path::PathBuf::from("site/static"));
-        }
-        Some(builder.build().await.map_err(|e| CliError::Server {
+            .with_auth_store_arc(auth_store.clone())
+            .with_admin_credentials(
+                args.admin_user.clone(),
+                args.admin_password.clone().unwrap_or_default(),
+            );
+        builder.build().await.map_err(|e| CliError::Server {
             message: format!("failed to build SchemaForgeExtension: {e}"),
-        })?)
-    } else {
-        None
-    };
+        })?;
+    }
 
     // Configure acton-service before building routes so we can read the token
     // config, mint a PasetoGenerator, and wire the login endpoint's Extension
@@ -178,20 +161,10 @@ pub async fn run(
         svc_config.surrealdb = Some(build_surrealdb_config(&db_params));
     }
 
-    // Token auth public paths: frontend prefixes (when their UI is enabled)
-    // plus the JSON login endpoint, which must always be reachable without
-    // a bearer token so clients can obtain one.
+    // Token auth public path: the JSON login endpoint must be reachable
+    // without a bearer token so clients can obtain one.
     if let Some(acton_service::config::TokenConfig::Paseto(ref mut pc)) = svc_config.token {
         pc.public_paths.push("/api/v1/forge/auth/login".to_string());
-        if enable_admin {
-            pc.public_paths.push("/admin".to_string());
-        }
-        if enable_widget {
-            pc.public_paths.push("/forge".to_string());
-        }
-        if enable_site {
-            pc.public_paths.push("/site".to_string());
-        }
     }
 
     // Opt-in permissive CORS for local development. Warns loudly in logs.
@@ -212,16 +185,9 @@ pub async fn run(
     // auto-created on first boot when missing so `serve` is self-bootstrapping.
     let paseto_generator = build_paseto_generator(&svc_config, output)?;
 
-    // 8. Build versioned routes via acton-service, with optional frontend routes.
+    // 8. Build versioned routes via acton-service for the JSON forge API.
     let login_auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = auth_store.clone();
-    let routes = build_versioned_routes(
-        extension.as_ref(),
-        enable_admin,
-        enable_widget,
-        enable_site,
-        login_auth_store,
-        paseto_generator,
-    );
+    let routes = build_versioned_routes(login_auth_store, paseto_generator);
 
     let bind_addr = format!("{}:{}", args.host, args.port);
     output.success(&format!(
@@ -240,15 +206,6 @@ pub async fn run(
     output.status("    GET  /api/v1/forge/schemas/:schema/entities/:id");
     output.status("    PUT  /api/v1/forge/schemas/:schema/entities/:id");
     output.status("    DEL  /api/v1/forge/schemas/:schema/entities/:id");
-    if enable_admin {
-        output.status("    GET  /admin/");
-    }
-    if enable_widget {
-        output.status("    GET  /forge/{schema}/entities");
-    }
-    if enable_site {
-        output.status("    GET  /site/");
-    }
     output.status("  Press Ctrl+C to stop.");
 
     // Build service with ForgeActor registered as an actor extension
@@ -480,10 +437,11 @@ fn build_paseto_generator(
         include_jti: true,
     };
 
-    let generator =
-        PasetoGenerator::new(&paseto_gen_config, &token_gen_config).map_err(|e| CliError::Config {
+    let generator = PasetoGenerator::new(&paseto_gen_config, &token_gen_config).map_err(|e| {
+        CliError::Config {
             message: format!("failed to build PASETO generator: {e}"),
-        })?;
+        }
+    })?;
     Ok(Arc::new(generator))
 }
 
@@ -511,15 +469,10 @@ fn build_surrealdb_config(db_params: &DbParams) -> acton_service::config::Surrea
 
 /// Build versioned routes using acton-service's VersionedApiBuilder.
 ///
-/// Nests SchemaForge's API routes under `/api/v1/forge/`. When a
-/// `SchemaForgeExtension` is provided, admin and/or widget frontend routes
-/// are mounted alongside the API routes via `with_frontend_routes()`,
-/// sharing a single session layer for browser-based authentication.
+/// Nests SchemaForge's JSON API routes under `/api/v1/forge/`. All UI
+/// surfaces are generated client-side by `schemaforge site generate`; this
+/// server only serves the JSON API plus the login endpoint.
 fn build_versioned_routes(
-    extension: Option<&SchemaForgeExtension>,
-    enable_admin: bool,
-    enable_widget: bool,
-    enable_site: bool,
     auth_store: Arc<dyn schema_forge_acton::DynAuthStore>,
     paseto_generator: Arc<PasetoGenerator>,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
@@ -527,131 +480,15 @@ fn build_versioned_routes(
     // extract them via axum::Extension.
     let auth_store_layer = auth_store;
     let generator_layer = paseto_generator;
-    let mut builder = VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
+    VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
         .with_base_path("/api")
         .add_version(ApiVersion::V1, move |router| {
             use axum::Extension;
             SchemaForgeExtension::versioned_forge_routes(router)
                 .layer(Extension(auth_store_layer))
                 .layer(Extension(generator_layer))
-        });
-
-    if let Some(ext) = extension {
-        let ext_admin = if enable_admin {
-            Some(ext.admin_frontend_router())
-        } else {
-            None
-        };
-        let ext_widget = if enable_widget {
-            Some(ext.widget_frontend_router())
-        } else {
-            None
-        };
-        let ext_site = if enable_site {
-            Some(ext.site_frontend_router())
-        } else {
-            None
-        };
-        let session_layer = ext.session_layer();
-        builder = builder.with_frontend_routes(move |router| {
-            let mut r = router;
-            if let Some(admin_router) = ext_admin {
-                use axum::response::Redirect;
-                use axum::routing::get;
-                r = r
-                    .nest_service("/admin/", admin_router)
-                    .route("/admin", get(|| async { Redirect::permanent("/admin/") }));
-            }
-            if let Some(widget_router) = ext_widget {
-                r = r.nest_service("/forge", widget_router);
-            }
-            if let Some(site_router) = ext_site {
-                use axum::response::Redirect;
-                use axum::routing::get;
-                r = r
-                    .nest_service("/site/", site_router)
-                    .route("/site", get(|| async { Redirect::permanent("/site/") }));
-            }
-            r.layer(session_layer)
-        });
-    }
-
-    builder.build_routes()
-}
-
-/// Scaffold starter HTMX site templates and static assets.
-///
-/// Creates `{project_dir}/site/templates/` and `{project_dir}/site/static/`
-/// with embedded defaults. Each directory is only scaffolded if it does not
-/// already exist, so user customizations are never overwritten.
-fn scaffold_site_assets(project_dir: &Path, output: &OutputContext) -> Result<(), CliError> {
-    // Scaffold templates
-    let template_dir = project_dir.join("site/templates");
-    if !template_dir.exists() {
-        std::fs::create_dir_all(&template_dir).map_err(|e| CliError::Io {
-            path: template_dir.clone(),
-            source: e,
-        })?;
-        let templates: &[(&str, &str)] = &[
-            (
-                "base.html",
-                include_str!("../../../schema-forge-acton/templates/site/base.html"),
-            ),
-            (
-                "index.html",
-                include_str!("../../../schema-forge-acton/templates/site/index.html"),
-            ),
-            (
-                "login.html",
-                include_str!("../../../schema-forge-acton/templates/site/login.html"),
-            ),
-            (
-                "login_card.html",
-                include_str!("../../../schema-forge-acton/templates/site/login_card.html"),
-            ),
-            (
-                "entities.html",
-                include_str!("../../../schema-forge-acton/templates/site/entities.html"),
-            ),
-            (
-                "entity_detail.html",
-                include_str!("../../../schema-forge-acton/templates/site/entity_detail.html"),
-            ),
-            (
-                "entity_form.html",
-                include_str!("../../../schema-forge-acton/templates/site/entity_form.html"),
-            ),
-        ];
-        for (name, content) in templates {
-            std::fs::write(template_dir.join(name), content).map_err(|e| CliError::Io {
-                path: template_dir.join(name),
-                source: e,
-            })?;
-        }
-        output.status("  Scaffolded site templates into site/templates/");
-    }
-
-    // Scaffold static assets
-    let static_dir = project_dir.join("site/static");
-    if !static_dir.exists() {
-        std::fs::create_dir_all(&static_dir).map_err(|e| CliError::Io {
-            path: static_dir.clone(),
-            source: e,
-        })?;
-        let assets: &[(&str, &str)] = &[(
-            "site.css",
-            include_str!("../../../schema-forge-acton/static/css/site.css"),
-        )];
-        for (name, content) in assets {
-            std::fs::write(static_dir.join(name), content).map_err(|e| CliError::Io {
-                path: static_dir.join(name),
-                source: e,
-            })?;
-        }
-        output.status("  Scaffolded site static assets into site/static/");
-    }
-
-    Ok(())
+        })
+        .build_routes()
 }
 
 #[cfg(test)]
@@ -677,17 +514,12 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let backend = rt
             .block_on(SurrealBackend::connect_with_auth(
-                "mem://",
-                "test",
-                "test",
-                None,
-                None,
+                "mem://", "test", "test", None, None,
             ))
             .unwrap();
         let auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = Arc::new(backend);
 
-        let _routes =
-            build_versioned_routes(None, false, false, false, auth_store, generator);
+        let _routes = build_versioned_routes(auth_store, generator);
     }
 
     #[cfg(feature = "surrealdb")]
@@ -714,45 +546,6 @@ mod tests {
         assert_eq!(config.retry_delay_secs, CONNECT_BASE_DELAY_SECS);
         assert!(!config.optional);
         assert!(!config.lazy_init);
-    }
-
-    fn test_output() -> OutputContext {
-        OutputContext {
-            mode: crate::output::OutputMode::Plain,
-            verbose: 0,
-            quiet: true,
-            use_color: false,
-        }
-    }
-
-    #[test]
-    fn scaffold_creates_site_templates_and_static() {
-        let dir = tempfile::tempdir().unwrap();
-        scaffold_site_assets(dir.path(), &test_output()).unwrap();
-        assert!(dir.path().join("site/templates/base.html").exists());
-        assert!(dir.path().join("site/templates/index.html").exists());
-        assert!(dir.path().join("site/templates/login.html").exists());
-        assert!(dir.path().join("site/static/site.css").exists());
-    }
-
-    #[test]
-    fn scaffold_skips_if_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        // Pre-create both directories with custom content
-        let template_dir = dir.path().join("site/templates");
-        std::fs::create_dir_all(&template_dir).unwrap();
-        std::fs::write(template_dir.join("base.html"), "custom").unwrap();
-        let static_dir = dir.path().join("site/static");
-        std::fs::create_dir_all(&static_dir).unwrap();
-        std::fs::write(static_dir.join("site.css"), "/* custom */").unwrap();
-
-        scaffold_site_assets(dir.path(), &test_output()).unwrap();
-
-        // Should not overwrite either directory
-        let content = std::fs::read_to_string(template_dir.join("base.html")).unwrap();
-        assert_eq!(content, "custom");
-        let css = std::fs::read_to_string(static_dir.join("site.css")).unwrap();
-        assert_eq!(css, "/* custom */");
     }
 
     #[cfg(feature = "surrealdb")]

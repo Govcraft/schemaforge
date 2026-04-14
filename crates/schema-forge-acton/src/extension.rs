@@ -10,7 +10,6 @@ use crate::state::{
 };
 
 use crate::config::SchemaForgeConfig;
-use acton_service::session::{MemoryStore, SessionManagerLayer};
 use acton_service::state::AppState;
 use schema_forge_backend::auth::RecordAccessPolicy;
 use schema_forge_backend::tenant::TenantConfig;
@@ -43,25 +42,12 @@ pub struct InitForgeData {
 
 /// Builder for SchemaForge's acton-service integration.
 ///
-/// Usage:
-/// ```rust,ignore
-/// let extension = SchemaForgeExtension::builder()
-///     .with_backend(surreal_backend)
-///     .build()
-///     .await?;
-///
-/// // Then in VersionedApiBuilder:
-/// let routes = VersionedApiBuilder::<SchemaForgeConfig>::with_config()
-///     .with_base_path("/api")
-///     .add_version(ApiVersion::V1, |router| {
-///         extension.register_routes(router)
-///     })
-///     .build_routes();
-/// ```
+/// The extension is now only responsible for bootstrapping the shared
+/// [`ForgeState`] and (optionally) seeding an initial admin user into the
+/// auth store. All UI surfaces are generated client-side by the
+/// `schemaforge site generate` command; this crate only hosts the JSON API.
 pub struct SchemaForgeExtension {
     state: ForgeState,
-    session_layer: SessionManagerLayer<MemoryStore>,
-    site_static_dir: Option<std::path::PathBuf>,
 }
 
 /// Builder for `SchemaForgeExtension`.
@@ -70,9 +56,6 @@ pub struct SchemaForgeExtensionBuilder {
     record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
     auth_store: Option<Arc<dyn DynAuthStore>>,
     admin_credentials: Option<(String, String)>,
-    template_dir: Option<std::path::PathBuf>,
-    site_template_dir: Option<std::path::PathBuf>,
-    site_static_dir: Option<std::path::PathBuf>,
     webhook_config: crate::webhook::WebhookConfig,
 }
 
@@ -84,9 +67,6 @@ impl SchemaForgeExtensionBuilder {
             record_access_policy: None,
             auth_store: None,
             admin_credentials: None,
-            template_dir: None,
-            site_template_dir: None,
-            site_static_dir: None,
             webhook_config: crate::webhook::WebhookConfig::default(),
         }
     }
@@ -155,34 +135,6 @@ impl SchemaForgeExtensionBuilder {
         self
     }
 
-    /// Set the directory for admin MiniJinja templates.
-    ///
-    /// Admin templates are loaded from this directory.
-    /// Widget/forge templates are always embedded in the binary.
-    pub fn with_template_dir(mut self, dir: std::path::PathBuf) -> Self {
-        self.template_dir = Some(dir);
-        self
-    }
-
-    /// Set the directory for user-customizable site templates.
-    ///
-    /// Site templates are loaded from this directory first. If a template
-    /// is not found on the filesystem, the embedded default is used.
-    pub fn with_site_template_dir(mut self, dir: std::path::PathBuf) -> Self {
-        self.site_template_dir = Some(dir);
-        self
-    }
-
-    /// Set the directory for site static assets (CSS, JS, images).
-    ///
-    /// When configured, a `tower_http::services::ServeDir` is mounted at
-    /// `/static` within the site router, serving files from this directory.
-    /// When not set, the embedded default CSS is served instead.
-    pub fn with_site_static_dir(mut self, dir: std::path::PathBuf) -> Self {
-        self.site_static_dir = Some(dir);
-        self
-    }
-
     /// Set the webhook configuration.
     pub fn with_webhook_config(mut self, config: crate::webhook::WebhookConfig) -> Self {
         self.webhook_config = config;
@@ -245,14 +197,6 @@ impl SchemaForgeExtensionBuilder {
             Arc::new(arc_swap::ArcSwap::new(Arc::new(gql_schema)))
         };
 
-        // Construct MiniJinja template engine.
-        // Widget/forge/shared templates are always embedded in the binary.
-        // Admin templates are loaded from the filesystem when a template dir is provided.
-        let template_engine = Arc::new(crate::template_engine::TemplateEngine::new(
-            self.template_dir,
-            self.site_template_dir,
-        ));
-
         // Initialize webhook dispatcher if enabled
         let webhook_dispatcher = if self.webhook_config.enabled {
             tracing::info!("webhook system enabled");
@@ -271,22 +215,10 @@ impl SchemaForgeExtensionBuilder {
             #[cfg(feature = "graphql")]
             graphql_schema,
             auth_store: self.auth_store,
-            template_engine,
             webhook_dispatcher,
         };
 
-        let session_config = acton_service::session::SessionConfig {
-            secure: false,
-            cookie_name: "forge_session".to_string(),
-            ..Default::default()
-        };
-        let session_layer = acton_service::session::create_memory_session_layer(&session_config);
-
-        Ok(SchemaForgeExtension {
-            state,
-            session_layer,
-            site_static_dir: self.site_static_dir,
-        })
+        Ok(SchemaForgeExtension { state })
     }
 }
 
@@ -367,15 +299,6 @@ impl SchemaForgeExtension {
     /// Nests forge routes (schemas + entities CRUD) under `/forge` within the
     /// specified API version. Route handlers access the `ForgeActor` via
     /// `state.actor::<ForgeActor>()` from `AppState`.
-    ///
-    /// ```rust,ignore
-    /// let routes = VersionedApiBuilder::new()
-    ///     .with_base_path("/api")
-    ///     .add_version(ApiVersion::V1, |router| {
-    ///         extension.register_versioned_routes(router)
-    ///     })
-    ///     .build_routes();
-    /// ```
     pub fn register_versioned_routes<T>(
         &self,
         router: Router<acton_service::state::AppState<T>>,
@@ -399,29 +322,6 @@ impl SchemaForgeExtension {
         router.nest("/forge", forge_routes().merge(auth_routes()))
     }
 
-    /// Register admin UI routes onto an existing Router.
-    ///
-    /// Nests admin routes under `/admin/`, with a redirect from `/admin` to `/admin/`
-    /// so both URL forms work correctly in browsers.
-    ///
-    /// Applies an in-memory session layer for session-based authentication.
-    /// Protected routes require authentication; unauthenticated requests are
-    /// redirected to `/admin/login`.
-    pub fn register_admin_routes<S>(&self, router: Router<S>) -> Router<S>
-    where
-        S: Clone + Send + Sync + 'static,
-    {
-        use axum::response::Redirect;
-        use axum::routing::get;
-
-        let admin_router = crate::admin::routes::admin_routes()
-            .layer(self.session_layer.clone())
-            .with_state(self.state.clone());
-        router
-            .nest("/admin/", admin_router)
-            .route("/admin", get(|| async { Redirect::permanent("/admin/") }))
-    }
-
     /// Register GraphQL routes onto an existing Router.
     ///
     /// Only available when the `graphql` feature is enabled.
@@ -440,62 +340,6 @@ impl SchemaForgeExtension {
             )
             .with_state(self.state.clone());
         router.nest("/forge", gql_router)
-    }
-
-    /// Register widget routes onto an existing Router.
-    ///
-    /// Nests widget routes under `/forge/`, serving bare HTMX fragments
-    /// for entity CRUD operations that can be embedded in any HTMX application.
-    ///
-    /// Claims are extracted from request extensions so widget requests respect
-    /// schema `@access` annotations and field-level filtering.
-    pub fn register_widget_routes<S>(&self, router: Router<S>) -> Router<S>
-    where
-        S: Clone + Send + Sync + 'static,
-    {
-        let widget_router = crate::widget::routes::widget_routes()
-            .layer(self.session_layer.clone())
-            .with_state(self.state.clone());
-        router.nest("/forge", widget_router)
-    }
-
-    /// Build admin UI routes as a standalone `Router<()>` (state pre-applied).
-    ///
-    /// Use this to nest admin routes into an `AppState`-based router
-    /// (e.g. via `VersionedApiBuilder::with_frontend_routes`). The session
-    /// layer is **not** included — apply it externally so admin and widget
-    /// routes share the same layer.
-    pub fn admin_frontend_router(&self) -> axum::Router {
-        crate::admin::routes::admin_routes().with_state(self.state.clone())
-    }
-
-    /// Build site UI routes as a standalone `Router<()>` (state pre-applied).
-    ///
-    /// Includes login/logout and a home page listing available schemas.
-    /// When a `site_static_dir` is configured, static assets are served from
-    /// the filesystem via `ServeDir`; otherwise the embedded default CSS is used.
-    /// The session layer is **not** included — apply it externally so admin,
-    /// widget, and site routes share the same layer.
-    pub fn site_frontend_router(&self) -> axum::Router {
-        crate::site::routes::site_routes(self.site_static_dir.clone())
-            .with_state(self.state.clone())
-    }
-
-    /// Build widget UI routes as a standalone `Router<()>` (state pre-applied).
-    ///
-    /// Includes the `session_to_claims` middleware so browser sessions are
-    /// automatically bridged to `Claims` in request extensions. The session
-    /// layer is **not** included — apply it externally.
-    pub fn widget_frontend_router(&self) -> axum::Router {
-        crate::widget::routes::widget_routes().with_state(self.state.clone())
-    }
-
-    /// Get a clone of the shared session layer.
-    ///
-    /// Apply this to a router that contains both admin and widget routes
-    /// so they share a single in-memory session store.
-    pub fn session_layer(&self) -> SessionManagerLayer<MemoryStore> {
-        self.session_layer.clone()
     }
 
     /// Get a reference to the schema registry.

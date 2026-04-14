@@ -575,10 +575,7 @@ async fn extension_builder_with_backend_loads_schemas() {
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
-    let mut builder = SchemaForgeExtension::builder();
-    builder = builder.with_backend(backend);
-    builder = builder
-        .with_template_dir(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates"));
+    let builder = SchemaForgeExtension::builder().with_backend(backend);
     let extension = builder.build().await.expect("failed to build extension");
 
     // Registry should contain exactly the 5 system schemas after seeding
