@@ -23,6 +23,7 @@ use axum::{Extension, Json};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::access::OptionalClaims;
 use crate::state::DynAuthStore;
 
 /// Default expiry for tokens minted by this endpoint (1 hour).
@@ -115,6 +116,46 @@ pub async fn login(
     (StatusCode::OK, Json(body)).into_response()
 }
 
+/// `POST /auth/refresh` — exchange a still-valid bearer token for a fresh
+/// one with a new 1-hour expiry.
+///
+/// The acton-service auth middleware already validates the incoming bearer
+/// and makes it available as an `Extension<Claims>`; we only have to mint a
+/// replacement token carrying the same identity and roles. Callers with an
+/// expired or missing token get a clean 401 — the client can then show the
+/// login screen without hitting a ginned-up internal error.
+pub async fn refresh(
+    OptionalClaims(claims): OptionalClaims,
+    Extension(generator): Extension<Arc<PasetoGenerator>>,
+) -> Response {
+    let Some(claims) = claims else {
+        return unauthorized_response();
+    };
+
+    let username = claims
+        .username
+        .clone()
+        .unwrap_or_else(|| claims.sub.trim_start_matches("user:").to_string());
+
+    let next_claims = match build_login_claims(&username, &claims.roles) {
+        Ok(c) => c,
+        Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
+    };
+
+    let token = match generator.generate_token_with_expiry(&next_claims, LOGIN_TOKEN_LIFETIME) {
+        Ok(t) => t,
+        Err(e) => return internal_error_response(format!("failed to generate token: {e}")),
+    };
+
+    let expires_at = Utc::now() + chrono::Duration::seconds(LOGIN_TOKEN_LIFETIME.as_secs() as i64);
+
+    let body = LoginResponse {
+        token,
+        expires_at: expires_at.to_rfc3339(),
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-testable)
 // ---------------------------------------------------------------------------
@@ -161,7 +202,9 @@ fn internal_error_response(message: String) -> Response {
 pub fn auth_routes(
 ) -> axum::Router<acton_service::state::AppState<crate::config::SchemaForgeConfig>> {
     use axum::routing::post;
-    axum::Router::new().route("/auth/login", post(login))
+    axum::Router::new()
+        .route("/auth/login", post(login))
+        .route("/auth/refresh", post(refresh))
 }
 
 // ---------------------------------------------------------------------------

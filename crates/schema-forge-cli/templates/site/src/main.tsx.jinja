@@ -3,7 +3,12 @@ import ReactDOM from "react-dom/client"
 import { BrowserRouter } from "react-router-dom"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import App from "./App"
+import { ensureRefreshScheduled } from "./lib/auth"
 import "./index.css"
+
+// Re-arm the PASETO refresh timer for any token that survived a full
+// page reload. No-op when no token is stored.
+ensureRefreshScheduled()
 
 const queryClient = new QueryClient()
 

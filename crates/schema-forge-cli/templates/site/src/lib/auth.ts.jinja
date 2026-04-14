@@ -2,51 +2,95 @@
 //
 // Client-side auth plumbing:
 // - `tokenStore`: sessionStorage-backed PASETO token holder (SSR-safe).
-// - `login(...)`: POSTs credentials to /api/v1/forge/auth/login and stores the
-//   returned token. Does NOT go through the api-client `request()` helper to
-//   avoid the 401 redirect loop when the store is empty.
+// - `login(...)`: POSTs credentials to /api/v1/forge/auth/login, stores
+//   the returned token + expiry, and schedules a silent refresh ~5 min
+//   before expiry. Does NOT go through the api-client `request()` helper
+//   to avoid the 401 redirect loop when the store is empty.
+// - `refreshToken()`: POSTs the current token to /api/v1/forge/auth/refresh
+//   and returns a new one. Called both by the background scheduler and by
+//   the api-clients' 401 retry path.
 // - `logout()`: clears the token and navigates to /login.
 // - `isAuthenticated()`: cheap presence check used by the route guard.
+//
+// Token expiry is persisted alongside the token so the refresh timer
+// survives full-page reloads.
 
-const STORAGE_KEY = "schemaforge.token"
+const TOKEN_KEY = "schemaforge.token"
+const EXPIRES_KEY = "schemaforge.token_expires_at"
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
 const LOGIN_PATH = "/api/v1/forge/auth/login"
+const REFRESH_PATH = "/api/v1/forge/auth/refresh"
+
+// Fire the background refresh this many ms before the token's stated
+// `expires_at`. Five minutes gives the network and the refresh handler
+// plenty of slack even on a flaky link.
+const REFRESH_LEAD_MS = 5 * 60 * 1000
+
+// Never schedule less than this many ms in the future. Guards against
+// accidental tight loops when the clock is skewed or the lead time is
+// longer than the token's remaining lifetime.
+const MIN_SCHEDULE_MS = 10 * 1000
 
 export type LoginResponse = {
   token: string
   expires_at: string
 }
 
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+
 export const tokenStore = {
   get(): string | null {
     if (typeof window === "undefined") return null
     try {
-      return window.sessionStorage.getItem(STORAGE_KEY)
+      return window.sessionStorage.getItem(TOKEN_KEY)
     } catch {
       return null
     }
   },
-  set(token: string): void {
+  set(token: string, expiresAt: string): void {
     if (typeof window === "undefined") return
     try {
-      window.sessionStorage.setItem(STORAGE_KEY, token)
+      window.sessionStorage.setItem(TOKEN_KEY, token)
+      window.sessionStorage.setItem(EXPIRES_KEY, expiresAt)
     } catch {
-      // sessionStorage quota / private mode: silently drop. The next request
-      // will get a 401 and the guard will send the user to /login again.
+      // sessionStorage quota / private mode: silently drop. The next
+      // request will get a 401 and the guard will send the user to /login.
+    }
+  },
+  getExpiresAt(): string | null {
+    if (typeof window === "undefined") return null
+    try {
+      return window.sessionStorage.getItem(EXPIRES_KEY)
+    } catch {
+      return null
     }
   },
   clear(): void {
     if (typeof window === "undefined") return
     try {
-      window.sessionStorage.removeItem(STORAGE_KEY)
+      window.sessionStorage.removeItem(TOKEN_KEY)
+      window.sessionStorage.removeItem(EXPIRES_KEY)
     } catch {
       // Ignore — clear is best-effort.
+    }
+    if (refreshTimer !== null) {
+      clearTimeout(refreshTimer)
+      refreshTimer = null
     }
   },
 }
 
-export async function login(username: string, password: string): Promise<LoginResponse> {
+function storeAndSchedule(body: LoginResponse): LoginResponse {
+  tokenStore.set(body.token, body.expires_at)
+  scheduleRefresh(body.expires_at)
+  return body
+}
+
+export async function login(
+  username: string,
+  password: string,
+): Promise<LoginResponse> {
   const res = await fetch(`${API_BASE}${LOGIN_PATH}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -59,8 +103,67 @@ export async function login(username: string, password: string): Promise<LoginRe
     throw new Error(`Login failed: ${res.status}`)
   }
   const body = (await res.json()) as LoginResponse
-  tokenStore.set(body.token)
-  return body
+  return storeAndSchedule(body)
+}
+
+/**
+ * Exchange the currently-held token for a fresh one. Throws if no token
+ * is stored, the refresh endpoint rejects the token (401), or the
+ * network call fails outright. Callers should clear the token and
+ * redirect to /login on failure.
+ */
+export async function refreshToken(): Promise<LoginResponse> {
+  const current = tokenStore.get()
+  if (!current) {
+    throw new Error("no stored token")
+  }
+  const res = await fetch(`${API_BASE}${REFRESH_PATH}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${current}`,
+    },
+  })
+  if (!res.ok) {
+    if (res.status === 401) {
+      tokenStore.clear()
+    }
+    throw new Error(`refresh failed: ${res.status}`)
+  }
+  const body = (await res.json()) as LoginResponse
+  return storeAndSchedule(body)
+}
+
+/**
+ * Schedule a background refresh relative to the supplied `expires_at`
+ * ISO-8601 timestamp. Replaces any existing timer. Silently becomes a
+ * no-op outside the browser (SSR) and when the computed delay would be
+ * too small to be useful.
+ */
+function scheduleRefresh(expiresAt: string): void {
+  if (typeof window === "undefined") return
+  if (refreshTimer !== null) {
+    clearTimeout(refreshTimer)
+    refreshTimer = null
+  }
+  const expiryMs = Date.parse(expiresAt)
+  if (Number.isNaN(expiryMs)) return
+  const delay = Math.max(expiryMs - Date.now() - REFRESH_LEAD_MS, MIN_SCHEDULE_MS)
+  refreshTimer = setTimeout(() => {
+    refreshToken().catch(() => {
+      // Silent: the next API call's 401 path will drive the user to /login.
+    })
+  }, delay)
+}
+
+/**
+ * Re-arm the refresh timer on full-page load. Called from the app
+ * entrypoint so a reloaded tab that still holds a valid token keeps
+ * its silent refresh cadence.
+ */
+export function ensureRefreshScheduled(): void {
+  const expiresAt = tokenStore.getExpiresAt()
+  if (expiresAt) scheduleRefresh(expiresAt)
 }
 
 export function logout(): void {

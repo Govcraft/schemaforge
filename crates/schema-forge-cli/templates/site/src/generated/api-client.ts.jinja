@@ -1,7 +1,7 @@
 // Auto-generated typed REST client.
 // One set of CRUD functions per schema. Regenerated on every
 // `schema-forge site generate` run.
-import { tokenStore } from "@/lib/auth"
+import { refreshToken, tokenStore } from "@/lib/auth"
 {%- for entity in entities %}
 import type { {{ entity.pascal }} } from "./entity-types"
 {%- endfor %}
@@ -31,18 +31,18 @@ export type ListResponse<T> = {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = tokenStore.get()
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  let res = await sendRequest(path, init)
+  if (res.status === 401) {
+    // Try to silently refresh the token once before giving up. If
+    // refresh succeeds, replay the original request with the new
+    // bearer; otherwise fall through to the login redirect.
+    try {
+      await refreshToken()
+      res = await sendRequest(path, init)
+    } catch {
+      // Refresh failed — fall through to the 401 handler below.
+    }
   }
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`
-  }
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers,
-  })
   if (res.status === 401) {
     tokenStore.clear()
     if (typeof window !== "undefined") {
@@ -59,6 +59,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return undefined as T
   }
   return res.json() as Promise<T>
+}
+
+async function sendRequest(path: string, init?: RequestInit): Promise<Response> {
+  const token = tokenStore.get()
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  }
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`
+  }
+  return fetch(`${API_BASE}${path}`, { ...init, headers })
 }
 
 // ---------------------------------------------------------------------------

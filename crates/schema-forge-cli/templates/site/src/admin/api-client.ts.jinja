@@ -8,7 +8,7 @@
 // and `FieldResponse`. Keep them in sync with that file when the backend
 // changes — TODO(Phase 4) is to have the backend expose a pre-digested
 // "view" shape so we don't parse the raw `FieldType` enum on the client.
-import { tokenStore } from "@/lib/auth"
+import { refreshToken, tokenStore } from "@/lib/auth"
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
 const FORGE_API_PREFIX = "/api/v1/forge"
@@ -223,15 +223,16 @@ export function getFieldFormat(annotations: unknown[]): string | undefined {
 // ---------------------------------------------------------------------------
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = tokenStore.get()
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  let res = await sendRequest(path, init)
+  if (res.status === 401) {
+    // Silent-refresh-and-retry once before bouncing to /login.
+    try {
+      await refreshToken()
+      res = await sendRequest(path, init)
+    } catch {
+      // Refresh failed — fall through to the login redirect below.
+    }
   }
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`
-  }
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
   if (res.status === 401) {
     tokenStore.clear()
     if (typeof window !== "undefined") {
@@ -247,6 +248,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return undefined as T
   }
   return res.json() as Promise<T>
+}
+
+async function sendRequest(path: string, init?: RequestInit): Promise<Response> {
+  const token = tokenStore.get()
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  }
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`
+  }
+  return fetch(`${API_BASE}${path}`, { ...init, headers })
 }
 
 function flatten(env: EntityEnvelope): Record<string, unknown> {
