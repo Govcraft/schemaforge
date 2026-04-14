@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::field_annotation::FieldAnnotation;
+use super::field_annotation::{FieldAnnotation, FormatType, WidgetType};
 use super::field_modifier::FieldModifier;
 use super::field_name::FieldName;
 use super::field_type::FieldType;
@@ -78,9 +78,18 @@ impl FieldDefinition {
     }
 
     /// Returns the format hint string if this field has a `@format` annotation.
+    ///
+    /// Prefer [`FieldDefinition::format_type_hint`] for new code that needs
+    /// to branch on format semantics; this string accessor remains for
+    /// template engines that take a `&str`.
     pub fn format_hint(&self) -> Option<&str> {
+        self.format_type_hint().map(FormatType::as_str)
+    }
+
+    /// Returns the typed format hint if this field has a `@format` annotation.
+    pub fn format_type_hint(&self) -> Option<FormatType> {
         self.annotations.iter().find_map(|a| match a {
-            FieldAnnotation::Format { format_type } => Some(format_type.as_str()),
+            FieldAnnotation::Format { format_type } => Some(*format_type),
             _ => None,
         })
     }
@@ -92,10 +101,19 @@ impl FieldDefinition {
             .find(|a| matches!(a, FieldAnnotation::FieldAccess { .. }))
     }
 
-    /// Returns the widget type string if this field has a `@widget` annotation.
+    /// Returns the widget hint string if this field has a `@widget` annotation.
+    ///
+    /// Prefer [`FieldDefinition::widget_type_hint`] for new code that needs
+    /// to branch on widget semantics; this string accessor remains for
+    /// template engines that take a `&str`.
     pub fn widget_hint(&self) -> Option<&str> {
+        self.widget_type_hint().map(WidgetType::as_str)
+    }
+
+    /// Returns the typed widget hint if this field has a `@widget` annotation.
+    pub fn widget_type_hint(&self) -> Option<WidgetType> {
         self.annotations.iter().find_map(|a| match a {
-            FieldAnnotation::Widget { widget_type } => Some(widget_type.as_str()),
+            FieldAnnotation::Widget { widget_type } => Some(*widget_type),
             _ => None,
         })
     }
@@ -272,10 +290,11 @@ mod tests {
             FieldType::Float(crate::types::float_constraints::FloatConstraints::unconstrained()),
             vec![],
             vec![FieldAnnotation::Format {
-                format_type: "currency".into(),
+                format_type: FormatType::Currency,
             }],
         );
         assert_eq!(fd.format_hint(), Some("currency"));
+        assert_eq!(fd.format_type_hint(), Some(FormatType::Currency));
     }
 
     #[test]
@@ -301,10 +320,11 @@ mod tests {
             FieldType::Text(TextConstraints::unconstrained()),
             vec![],
             vec![FieldAnnotation::Widget {
-                widget_type: "status_badge".into(),
+                widget_type: WidgetType::StatusBadge,
             }],
         );
         assert_eq!(fd.widget_hint(), Some("status_badge"));
+        assert_eq!(fd.widget_type_hint(), Some(WidgetType::StatusBadge));
     }
 
     #[test]

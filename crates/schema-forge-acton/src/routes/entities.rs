@@ -1789,12 +1789,9 @@ pub async fn patch_entity(
 
     // Convert only the fields supplied by the client. Merge mode skips
     // the required-field check so partial payloads are valid.
-    let patch_fields = json_to_entity_fields_with_mode(
-        &schema_def,
-        &body.fields,
-        ConversionMode::Merge,
-    )
-    .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
+    let patch_fields =
+        json_to_entity_fields_with_mode(&schema_def, &body.fields, ConversionMode::Merge)
+            .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
     // Merge the patch onto the existing entity's field map so hooks see
     // the post-patch view of the entity. The merged map is only used to

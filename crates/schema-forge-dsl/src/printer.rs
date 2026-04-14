@@ -2,6 +2,8 @@ use schema_forge_core::types::{
     Annotation, Cardinality, DefaultValue, FieldAnnotation, FieldDefinition, FieldModifier,
     FieldType, SchemaDefinition, TenantKind,
 };
+#[cfg(test)]
+use schema_forge_core::types::{FormatType, WidgetType};
 
 /// Print a single schema definition to DSL text.
 ///
@@ -322,13 +324,13 @@ fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
         }
         FieldAnnotation::Widget { widget_type } => {
             output.push_str("@widget(\"");
-            output.push_str(widget_type);
+            output.push_str(widget_type.as_str());
             output.push_str("\")");
         }
         FieldAnnotation::KanbanColumn => output.push_str("@kanban_column"),
         FieldAnnotation::Format { format_type } => {
             output.push_str("@format(\"");
-            output.push_str(format_type);
+            output.push_str(format_type.as_str());
             output.push_str("\")");
         }
         _ => {
@@ -820,7 +822,7 @@ mod tests {
                 FieldType::Text(TextConstraints::unconstrained()),
                 vec![],
                 vec![FieldAnnotation::Widget {
-                    widget_type: "status_badge".into(),
+                    widget_type: WidgetType::StatusBadge,
                 }],
             )],
             vec![],
@@ -894,7 +896,7 @@ mod tests {
                 FieldType::Text(TextConstraints::unconstrained()),
                 vec![FieldModifier::Required],
                 vec![FieldAnnotation::Widget {
-                    widget_type: "status_badge".into(),
+                    widget_type: WidgetType::StatusBadge,
                 }],
             )],
             vec![],
@@ -912,7 +914,7 @@ mod tests {
                 FieldType::Float(FloatConstraints::unconstrained()),
                 vec![],
                 vec![FieldAnnotation::Format {
-                    format_type: "currency".into(),
+                    format_type: FormatType::Currency,
                 }],
             )],
             vec![],

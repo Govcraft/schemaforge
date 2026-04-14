@@ -76,6 +76,22 @@ pub enum DslError {
 
     /// An unknown annotation name was encountered.
     UnknownAnnotation { name: String, span: Span },
+
+    /// An `@widget("...")` annotation used a value that is not in the
+    /// canonical widget vocabulary.
+    UnknownWidgetType {
+        value: String,
+        valid: &'static [&'static str],
+        span: Span,
+    },
+
+    /// An `@format("...")` annotation used a value that is not in the
+    /// canonical format vocabulary.
+    UnknownFormatType {
+        value: String,
+        valid: &'static [&'static str],
+        span: Span,
+    },
 }
 
 impl fmt::Display for DslError {
@@ -153,6 +169,20 @@ impl fmt::Display for DslError {
             }
             Self::UnknownAnnotation { name, span } => {
                 write!(f, "unknown annotation '@{name}' at {span}")
+            }
+            Self::UnknownWidgetType { value, valid, span } => {
+                write!(
+                    f,
+                    "unknown widget type \"{value}\" at {span}\n  valid widget types: {}",
+                    valid.join(", "),
+                )
+            }
+            Self::UnknownFormatType { value, valid, span } => {
+                write!(
+                    f,
+                    "unknown format type \"{value}\" at {span}\n  valid format types: {}",
+                    valid.join(", "),
+                )
             }
         }
     }

@@ -1,6 +1,7 @@
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::{
-    Annotation, Cardinality, DynamicValue, FieldDefinition, FieldType, SchemaDefinition,
+    Annotation, Cardinality, DynamicValue, FieldDefinition, FieldType, FormatType,
+    SchemaDefinition, WidgetType,
 };
 
 /// Template-friendly representation of a field definition.
@@ -402,12 +403,17 @@ impl EntityView {
                 let formatted = dv
                     .map(|v| format_with_refs(v, f, ref_display))
                     .unwrap_or_default();
-                let widget_type = f.widget_hint().map(|s| s.to_string());
+                let widget_type_enum = f.widget_type_hint();
+                let widget_type = widget_type_enum.map(|w| w.as_str().to_string());
+                let format_type_enum = f.format_type_hint();
                 let ft_name = field_type_name(&f.field_type).to_string();
                 let is_empty = formatted.is_empty();
 
-                // For relative_time widget on datetime fields, compute human-readable display
-                let value = if widget_type.as_deref() == Some("relative_time")
+                // `@format("relative")` on a datetime field renders as a
+                // human-readable relative time (e.g. "3 days ago"). This
+                // replaces the legacy `@widget("relative_time")` behavior
+                // now that "relative" belongs to FormatType.
+                let value = if format_type_enum == Some(FormatType::Relative)
                     && ft_name == "datetime"
                     && !is_empty
                 {
@@ -417,7 +423,8 @@ impl EntityView {
                 };
 
                 // For status_badge widget, compute badge class from raw value
-                let badge_class = if widget_type.as_deref() == Some("status_badge") && !is_empty {
+                let badge_class = if widget_type_enum == Some(WidgetType::StatusBadge) && !is_empty
+                {
                     Some(badge_color_class(&raw_value).to_string())
                 } else {
                     None
@@ -459,7 +466,7 @@ impl EntityView {
 
 /// Format a DynamicValue for display, applying @format annotation if present.
 pub fn format_value(value: &DynamicValue, field: &FieldDefinition) -> String {
-    if let Some(hint) = field.format_hint() {
+    if let Some(hint) = field.format_type_hint() {
         if let Some(formatted) = apply_format_hint(hint, value) {
             return formatted;
         }
@@ -467,20 +474,19 @@ pub fn format_value(value: &DynamicValue, field: &FieldDefinition) -> String {
     dynamic_value_display(value)
 }
 
-fn apply_format_hint(hint: &str, value: &DynamicValue) -> Option<String> {
+fn apply_format_hint(hint: FormatType, value: &DynamicValue) -> Option<String> {
     let n = match value {
         DynamicValue::Float(f) => *f,
         DynamicValue::Integer(i) => *i as f64,
         _ => return None,
     };
-    // Parse "type:symbol" — e.g. "currency:$", "currency:€", or just "currency"
-    let (fmt_type, symbol) = match hint.split_once(':') {
-        Some((t, s)) => (t, s),
-        None => (hint, ""),
-    };
-    match fmt_type {
-        "currency" => Some(format!("{}{}", symbol, format_number_with_commas(n, 2))),
-        "percent" => Some(format!("{}%", format_number_with_commas(n, 1))),
+    match hint {
+        FormatType::Currency => Some(format_number_with_commas(n, 2)),
+        FormatType::Percent => Some(format!("{}%", format_number_with_commas(n, 1))),
+        // Remaining FormatType variants (date, datetime, relative, bytes,
+        // duration) do not currently have numeric renderings here; they
+        // either do not apply or are handled elsewhere (e.g. `relative`
+        // for datetime fields is handled in EntityView::from_entity).
         _ => None,
     }
 }
@@ -522,7 +528,7 @@ fn format_with_refs(
     field: &FieldDefinition,
     ref_display: &std::collections::HashMap<String, String>,
 ) -> String {
-    if field.format_hint().is_some() {
+    if field.format_type_hint().is_some() {
         return format_value(value, field);
     }
     display_with_refs(value, ref_display)
@@ -1245,7 +1251,7 @@ mod tests {
             FieldType::Float(FloatConstraints::unconstrained()),
             vec![],
             vec![FieldAnnotation::Format {
-                format_type: "currency".into(),
+                format_type: FormatType::Currency,
             }],
         );
         let value = DynamicValue::Float(1234567.0);
@@ -1259,39 +1265,11 @@ mod tests {
             FieldType::Integer(IntegerConstraints::unconstrained()),
             vec![],
             vec![FieldAnnotation::Format {
-                format_type: "currency".into(),
+                format_type: FormatType::Currency,
             }],
         );
         let value = DynamicValue::Integer(50000);
         assert_eq!(format_value(&value, &field), "50,000.00");
-    }
-
-    #[test]
-    fn format_value_currency_with_symbol() {
-        let field = FieldDefinition::with_annotations(
-            FieldName::new("price").unwrap(),
-            FieldType::Float(FloatConstraints::unconstrained()),
-            vec![],
-            vec![FieldAnnotation::Format {
-                format_type: "currency:$".into(),
-            }],
-        );
-        let value = DynamicValue::Float(1234567.0);
-        assert_eq!(format_value(&value, &field), "$1,234,567.00");
-    }
-
-    #[test]
-    fn format_value_currency_with_euro_symbol() {
-        let field = FieldDefinition::with_annotations(
-            FieldName::new("price").unwrap(),
-            FieldType::Float(FloatConstraints::unconstrained()),
-            vec![],
-            vec![FieldAnnotation::Format {
-                format_type: "currency:€".into(),
-            }],
-        );
-        let value = DynamicValue::Float(999.99);
-        assert_eq!(format_value(&value, &field), "€999.99");
     }
 
     #[test]
@@ -1301,7 +1279,7 @@ mod tests {
             FieldType::Float(FloatConstraints::unconstrained()),
             vec![],
             vec![FieldAnnotation::Format {
-                format_type: "percent".into(),
+                format_type: FormatType::Percent,
             }],
         );
         let value = DynamicValue::Float(85.5);
@@ -1322,7 +1300,7 @@ mod tests {
             FieldType::Text(TextConstraints::unconstrained()),
             vec![],
             vec![FieldAnnotation::Format {
-                format_type: "currency".into(),
+                format_type: FormatType::Currency,
             }],
         );
         let value = DynamicValue::Text("not a number".into());
@@ -1507,7 +1485,7 @@ mod tests {
                 FieldType::Enum(EnumVariants::new(vec!["active".into(), "done".into()]).unwrap()),
                 vec![],
                 vec![schema_forge_core::types::FieldAnnotation::Widget {
-                    widget_type: "status_badge".into(),
+                    widget_type: schema_forge_core::types::WidgetType::StatusBadge,
                 }],
             )],
             vec![],
@@ -1594,7 +1572,7 @@ mod tests {
                     FieldType::Enum(EnumVariants::new(vec!["active".into()]).unwrap()),
                     vec![],
                     vec![schema_forge_core::types::FieldAnnotation::Widget {
-                        widget_type: "status_badge".into(),
+                        widget_type: schema_forge_core::types::WidgetType::StatusBadge,
                     }],
                 ),
                 make_field("notes", FieldType::Text(TextConstraints::unconstrained())),

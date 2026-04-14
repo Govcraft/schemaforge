@@ -1,38 +1,18 @@
 use std::collections::HashSet;
+use std::str::FromStr;
 
 use tracing::instrument;
 
 use schema_forge_core::types::{
     Annotation, Cardinality, DefaultValue, EnumVariants, FieldAnnotation, FieldDefinition,
-    FieldModifier, FieldName, FieldType, FloatConstraints, HookEvent, IntegerConstraints,
-    SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind, TextConstraints,
+    FieldModifier, FieldName, FieldType, FloatConstraints, FormatType, HookEvent,
+    IntegerConstraints, SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind,
+    TextConstraints, WidgetType,
 };
 
 use crate::error::{DslError, Span};
 use crate::lexer::SpannedToken;
 use crate::token::Token;
-
-/// Known format type identifiers for `@format("...")` validation.
-const KNOWN_FORMAT_TYPES: &[&str] = &["currency", "percent"];
-
-/// Known widget type identifiers for `@widget("...")` validation.
-const KNOWN_WIDGET_TYPES: &[&str] = &[
-    "status_badge",
-    "progress",
-    "currency",
-    "avatar",
-    "link",
-    "relative_time",
-    "count_badge",
-    "color",
-    "email",
-    "phone",
-    "rating",
-    "tags",
-    "image",
-    "code",
-    "markdown",
-];
 
 /// Parsed result of mixed named parameters (lists + scalar strings).
 struct MixedParams {
@@ -493,13 +473,14 @@ impl Parser {
             "widget" => {
                 self.expect(&Token::LParen)?;
                 let value_tok = self.expect_string_literal()?;
-                let widget_type = unquote_string(&value_tok.text);
-                if !KNOWN_WIDGET_TYPES.contains(&widget_type.as_str()) {
-                    return Err(DslError::UnknownAnnotation {
-                        name: format!("widget type '{widget_type}'"),
-                        span: value_tok.span,
-                    });
-                }
+                let widget_text = unquote_string(&value_tok.text);
+                let widget_type = WidgetType::from_str(&widget_text).map_err(|err| {
+                    DslError::UnknownWidgetType {
+                        value: err.value,
+                        valid: err.valid,
+                        span: value_tok.span.clone(),
+                    }
+                })?;
                 self.expect(&Token::RParen)?;
                 Ok(FieldAnnotation::Widget { widget_type })
             }
@@ -507,15 +488,14 @@ impl Parser {
             "format" => {
                 self.expect(&Token::LParen)?;
                 let value_tok = self.expect_string_literal()?;
-                let format_type = unquote_string(&value_tok.text);
-                // Validate the base type (before optional `:symbol` suffix)
-                let base_type = format_type.split(':').next().unwrap_or(&format_type);
-                if !KNOWN_FORMAT_TYPES.contains(&base_type) {
-                    return Err(DslError::UnknownAnnotation {
-                        name: format!("format type '{format_type}'"),
-                        span: value_tok.span,
-                    });
-                }
+                let format_text = unquote_string(&value_tok.text);
+                let format_type = FormatType::from_str(&format_text).map_err(|err| {
+                    DslError::UnknownFormatType {
+                        value: err.value,
+                        valid: err.valid,
+                        span: value_tok.span.clone(),
+                    }
+                })?;
                 self.expect(&Token::RParen)?;
                 Ok(FieldAnnotation::Format { format_type })
             }
@@ -1706,7 +1686,7 @@ mod tests {
         assert_eq!(schema.fields[0].annotations.len(), 1);
         match &schema.fields[0].annotations[0] {
             FieldAnnotation::Widget { widget_type } => {
-                assert_eq!(widget_type, "status_badge");
+                assert_eq!(*widget_type, WidgetType::StatusBadge);
             }
             other => panic!("expected Widget, got {other:?}"),
         }
@@ -1717,9 +1697,29 @@ mod tests {
         let schema = parse_one(r#"schema S { completion: float @widget("progress") }"#);
         match &schema.fields[0].annotations[0] {
             FieldAnnotation::Widget { widget_type } => {
-                assert_eq!(widget_type, "progress");
+                assert_eq!(*widget_type, WidgetType::Progress);
             }
             other => panic!("expected Widget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_widget_annotation_all_canonical_variants() {
+        // Every variant of WidgetType must parse successfully.
+        for variant in WidgetType::VARIANTS {
+            let source = format!(r#"schema S {{ f: text @widget("{}") }}"#, variant.as_str());
+            let schema = parse_one(&source);
+            match &schema.fields[0].annotations[0] {
+                FieldAnnotation::Widget { widget_type } => {
+                    assert_eq!(
+                        *widget_type,
+                        *variant,
+                        "variant {} did not round-trip",
+                        variant.as_str()
+                    );
+                }
+                other => panic!("expected Widget for {}, got {other:?}", variant.as_str()),
+            }
         }
     }
 
@@ -1739,7 +1739,7 @@ mod tests {
         assert!(schema.fields[0].is_required());
         match &schema.fields[0].annotations[0] {
             FieldAnnotation::Widget { widget_type } => {
-                assert_eq!(widget_type, "status_badge");
+                assert_eq!(*widget_type, WidgetType::StatusBadge);
             }
             other => panic!("expected Widget, got {other:?}"),
         }
@@ -1768,7 +1768,7 @@ mod tests {
         assert_eq!(schema.fields[0].annotations.len(), 1);
         match &schema.fields[0].annotations[0] {
             FieldAnnotation::Format { format_type } => {
-                assert_eq!(format_type, "currency");
+                assert_eq!(*format_type, FormatType::Currency);
             }
             other => panic!("expected Format, got {other:?}"),
         }
@@ -1779,43 +1779,73 @@ mod tests {
         let schema = parse_one(r#"schema S { rate: float @format("percent") }"#);
         match &schema.fields[0].annotations[0] {
             FieldAnnotation::Format { format_type } => {
-                assert_eq!(format_type, "percent");
+                assert_eq!(*format_type, FormatType::Percent);
             }
             other => panic!("expected Format, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_format_currency_with_symbol() {
-        let schema = parse_one(r#"schema S { price: float @format("currency:$") }"#);
-        match &schema.fields[0].annotations[0] {
-            FieldAnnotation::Format { format_type } => {
-                assert_eq!(format_type, "currency:$");
+    fn parse_format_annotation_all_canonical_variants() {
+        // Every variant of FormatType must parse successfully.
+        for variant in FormatType::VARIANTS {
+            let source = format!(r#"schema S {{ f: float @format("{}") }}"#, variant.as_str());
+            let schema = parse_one(&source);
+            match &schema.fields[0].annotations[0] {
+                FieldAnnotation::Format { format_type } => {
+                    assert_eq!(
+                        *format_type,
+                        *variant,
+                        "variant {} did not round-trip",
+                        variant.as_str()
+                    );
+                }
+                other => panic!("expected Format for {}, got {other:?}", variant.as_str()),
             }
-            other => panic!("expected Format, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_format_currency_with_euro() {
-        let schema = parse_one(r#"schema S { price: float @format("currency:€") }"#);
-        match &schema.fields[0].annotations[0] {
-            FieldAnnotation::Format { format_type } => {
-                assert_eq!(format_type, "currency:€");
+    fn error_format_colon_suffix_rejected() {
+        // Colon-suffix currency symbol support (e.g. `currency:$`) was
+        // removed in favor of a closed FormatType vocabulary.
+        let result = parse(r#"schema S { price: float @format("currency:$") }"#);
+        let errors = result.expect_err("colon suffix must be rejected");
+        match &errors[0] {
+            DslError::UnknownFormatType { value, valid, .. } => {
+                assert_eq!(value, "currency:$");
+                assert!(valid.contains(&"currency"));
             }
-            other => panic!("expected Format, got {other:?}"),
+            other => panic!("expected UnknownFormatType, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn error_format_euro_colon_suffix_rejected() {
+        let result = parse(r#"schema S { price: float @format("currency:€") }"#);
+        let errors = result.expect_err("colon suffix must be rejected");
+        assert!(matches!(
+            &errors[0],
+            DslError::UnknownFormatType { value, .. } if value == "currency:€"
+        ));
     }
 
     #[test]
     fn error_unknown_format_type() {
         let result = parse(r#"schema S { x: float @format("bogus") }"#);
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(matches!(
-            &errors[0],
-            DslError::UnknownAnnotation { name, .. } if name.contains("bogus")
-        ));
+        let errors = result.expect_err("bogus format type must be rejected");
+        match &errors[0] {
+            DslError::UnknownFormatType { value, valid, .. } => {
+                assert_eq!(value, "bogus");
+                assert_eq!(valid.len(), 7);
+                let msg = errors[0].to_string();
+                assert!(msg.contains("unknown format type"));
+                assert!(msg.contains("bogus"));
+                assert!(msg.contains("valid format types"));
+                assert!(msg.contains("currency"));
+            }
+            other => panic!("expected UnknownFormatType, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1823,17 +1853,46 @@ mod tests {
         let schema = parse_one(r#"schema S { price: float required @format("currency") }"#);
         assert!(schema.fields[0].is_required());
         assert_eq!(schema.fields[0].format_hint(), Some("currency"));
+        assert_eq!(
+            schema.fields[0].format_type_hint(),
+            Some(FormatType::Currency)
+        );
     }
 
     #[test]
     fn error_unknown_widget_type() {
         let result = parse(r#"schema S { x: text @widget("nonexistent") }"#);
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(matches!(
-            &errors[0],
-            DslError::UnknownAnnotation { name, .. } if name.contains("nonexistent")
-        ));
+        let errors = result.expect_err("unknown widget type must be rejected");
+        match &errors[0] {
+            DslError::UnknownWidgetType { value, valid, span } => {
+                assert_eq!(value, "nonexistent");
+                assert_eq!(valid.len(), 17);
+                // Span should point at the quoted literal, not the whole line.
+                assert!(span.end > span.start);
+                let msg = errors[0].to_string();
+                assert!(msg.contains("unknown widget type"));
+                assert!(msg.contains("nonexistent"));
+                assert!(msg.contains("valid widget types"));
+                assert!(msg.contains("status_badge"));
+            }
+            other => panic!("expected UnknownWidgetType, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_legacy_widget_tokens_rejected() {
+        // Tokens the old ad-hoc allow list accepted must now be rejected:
+        // `relative_time`, `link`, and `currency` are no longer widget types
+        // (`currency` moved to FormatType, `relative_time` -> `@format("relative")`,
+        // `link` -> `url`).
+        for legacy in ["relative_time", "link", "currency"] {
+            let source = format!(r#"schema S {{ f: text @widget("{legacy}") }}"#);
+            let result = parse(&source);
+            assert!(
+                result.is_err(),
+                "legacy widget token '{legacy}' must be rejected"
+            );
+        }
     }
 
     // -- @dashboard annotation --

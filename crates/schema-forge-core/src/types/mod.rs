@@ -25,7 +25,9 @@ pub use default_value::DefaultValue;
 pub use dynamic_value::DynamicValue;
 pub use entity_id::EntityId;
 pub use enum_variants::EnumVariants;
-pub use field_annotation::FieldAnnotation;
+pub use field_annotation::{
+    FieldAnnotation, FormatType, UnknownFormatType, UnknownWidgetType, WidgetType,
+};
 pub use field_definition::FieldDefinition;
 pub use field_modifier::FieldModifier;
 pub use field_name::FieldName;

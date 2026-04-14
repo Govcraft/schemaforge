@@ -1123,8 +1123,7 @@ async fn patch_entity_merges_partial_fields() {
 
     // Patch only the notes field.
     let patch_body = serde_json::json!({ "fields": { "notes": "patched" } });
-    let (patch_status, patched) =
-        json_request(&app, Method::PATCH, &path, Some(patch_body)).await;
+    let (patch_status, patched) = json_request(&app, Method::PATCH, &path, Some(patch_body)).await;
     assert_eq!(
         patch_status,
         StatusCode::OK,
@@ -1198,8 +1197,7 @@ async fn patch_entity_narrow_update_preserves_untouched_nullable_fields() {
     // the delta fix, the backend only ever sees `duration_days` in the
     // UPDATE.
     let patch_body = serde_json::json!({ "fields": { "duration_days": 7.5 } });
-    let (patch_status, patched) =
-        json_request(&app, Method::PATCH, &path, Some(patch_body)).await;
+    let (patch_status, patched) = json_request(&app, Method::PATCH, &path, Some(patch_body)).await;
     assert_eq!(
         patch_status,
         StatusCode::OK,

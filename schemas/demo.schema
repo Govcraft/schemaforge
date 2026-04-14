@@ -37,7 +37,7 @@ schema Organization {
     max_seats:        integer(min: 1) default(5)
     logo_url:         text @widget("image")
     settings:         json
-    founded:          datetime @widget("relative_time")
+    founded:          datetime @format("relative")
     active:           boolean default(true)
     owner_id:         text required @owner
 }
@@ -54,7 +54,7 @@ schema Department {
     description:      text
     head:             -> Employee
     parent_org:       -> Organization required
-    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"]) @format("currency:$")
+    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"]) @format("currency")
     headcount_limit:  integer(min: 0) default(50)
     active:           boolean default(true)
 }
@@ -78,9 +78,9 @@ schema Employee {
     title:            text(max: 255)
     department:       -> Department
     manager:          -> Employee
-    hire_date:        datetime required @widget("relative_time")
-    termination_date: datetime @widget("relative_time")
-    salary:           float(precision: 2) @field_access(read: ["hr", "admin"], write: ["hr", "admin"]) @widget("currency") @format("currency:$")
+    hire_date:        datetime required @format("relative")
+    termination_date: datetime @format("relative")
+    salary:           float(precision: 2) @field_access(read: ["hr", "admin"], write: ["hr", "admin"]) @format("currency")
     ssn_last_four:    text(max: 4) @field_access(read: ["hr", "admin"], write: ["hr"])
     employment_type:  enum("full_time", "part_time", "contractor", "intern") default("full_time") @widget("status_badge")
     status:           enum("active", "on_leave", "terminated") default("active") @widget("status_badge")
@@ -118,7 +118,7 @@ schema Contact {
     source:           enum("inbound", "outbound", "referral", "event", "website", "other") default("other") @widget("status_badge")
     lead_score:       integer(min: 0, max: 100) default(0) @widget("progress")
     lifecycle_stage:  enum("subscriber", "lead", "mql", "sql", "opportunity", "customer", "evangelist") default("lead") @widget("status_badge") @kanban_column
-    last_contacted:   datetime @widget("relative_time")
+    last_contacted:   datetime @format("relative")
     preferred_channel: enum("email", "phone", "linkedin", "other") default("email")
     tags:             text[] @widget("tags")
     social_profiles:  composite {
@@ -143,12 +143,12 @@ schema Contact {
 @access(read: ["sales", "marketing", "finance", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
 schema Company {
     name:             text(max: 255) required indexed
-    domain:           text(max: 255) indexed @widget("link")
+    domain:           text(max: 255) indexed @widget("url")
     industry:         enum("technology", "finance", "healthcare", "education", "retail", "manufacturing", "consulting", "other") @widget("status_badge")
     size:             enum("startup", "smb", "mid_market", "enterprise") @widget("status_badge")
     employee_count:   integer(min: 0)
-    annual_revenue:   float(precision: 2) @field_access(read: ["finance", "sales", "admin"], write: ["finance"]) @widget("currency") @format("currency:$")
-    website:          text @widget("link")
+    annual_revenue:   float(precision: 2) @field_access(read: ["finance", "sales", "admin"], write: ["finance"]) @format("currency")
+    website:          text @widget("url")
     description:      richtext
     founded_year:     integer(min: 1800, max: 2100)
     headquarters:     composite {
@@ -177,12 +177,12 @@ schema Company {
 @access(read: ["sales", "finance", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
 schema Deal {
     name:             text(max: 255) required indexed
-    value:            float(precision: 2) required @field_access(read: ["sales", "finance", "admin"], write: ["sales"]) @widget("currency") @format("currency:$")
+    value:            float(precision: 2) required @field_access(read: ["sales", "finance", "admin"], write: ["sales"]) @format("currency")
     currency:         text(max: 3) default("USD")
     stage:            enum("prospecting", "qualification", "proposal", "negotiation", "closed_won", "closed_lost") default("prospecting") @widget("status_badge") @kanban_column
     probability:      integer(min: 0, max: 100) default(10) @widget("progress") @format("percent")
-    expected_close:   datetime @widget("relative_time")
-    actual_close:     datetime @widget("relative_time")
+    expected_close:   datetime @format("relative")
+    actual_close:     datetime @format("relative")
     contact:          -> Contact required
     company:          -> Company
     assigned_to:      -> Employee
@@ -202,7 +202,7 @@ schema Activity {
     subject:          text(max: 500) required
     activity_type:    enum("call", "email", "meeting", "note", "task", "demo", "follow_up") required @widget("status_badge")
     description:      richtext
-    occurred_at:      datetime required @widget("relative_time")
+    occurred_at:      datetime required @format("relative")
     duration_minutes: integer(min: 0)
     outcome:          enum("completed", "no_answer", "rescheduled", "cancelled") @widget("status_badge")
     contact:          -> Contact
@@ -230,11 +230,11 @@ schema Project {
     description:      richtext
     status:           enum("planning", "active", "on_hold", "completed", "cancelled") default("planning") @widget("status_badge") @kanban_column
     priority:         enum("critical", "high", "medium", "low") default("medium") @widget("status_badge")
-    start_date:       datetime @widget("relative_time")
-    target_end_date:  datetime @widget("relative_time")
-    actual_end_date:  datetime @widget("relative_time")
-    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"]) @widget("currency") @format("currency:$")
-    spent:            float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance"]) @widget("currency") @format("currency:$")
+    start_date:       datetime @format("relative")
+    target_end_date:  datetime @format("relative")
+    actual_end_date:  datetime @format("relative")
+    budget:           float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance", "admin"]) @format("currency")
+    spent:            float(precision: 2) @field_access(read: ["finance", "manager", "admin"], write: ["finance"]) @format("currency")
     department:       -> Department
     lead:             -> Employee
     members:          -> Employee[]
@@ -257,8 +257,8 @@ schema Task {
     status:           enum("backlog", "todo", "in_progress", "in_review", "done", "cancelled") default("backlog") @widget("status_badge") @kanban_column
     priority:         enum("critical", "high", "medium", "low") default("medium") @widget("status_badge")
     story_points:     integer(min: 0, max: 100) @widget("count_badge")
-    due_date:         datetime @widget("relative_time")
-    completed_at:     datetime @widget("relative_time")
+    due_date:         datetime @format("relative")
+    completed_at:     datetime @format("relative")
     estimated_hours:  float(precision: 1)
     actual_hours:     float(precision: 1)
     project:          -> Project required
@@ -278,8 +278,8 @@ schema Task {
 schema Milestone {
     name:             text(max: 255) required
     description:      text
-    due_date:         datetime required @widget("relative_time")
-    completed_at:     datetime @widget("relative_time")
+    due_date:         datetime required @format("relative")
+    completed_at:     datetime @format("relative")
     status:           enum("upcoming", "in_progress", "completed", "missed") default("upcoming") @widget("status_badge")
     project:          -> Project required
     tasks:            -> Task[]
