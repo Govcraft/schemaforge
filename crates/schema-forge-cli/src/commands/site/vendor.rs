@@ -652,6 +652,7 @@ pub const GITIGNORE: &str = r#"node_modules
 dist
 .vite
 *.log
+*.tsbuildinfo
 .DS_Store
 "#;
 
