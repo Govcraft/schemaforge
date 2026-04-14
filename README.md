@@ -486,9 +486,12 @@ let extension = SchemaForgeExtension::builder()
 
 // Register JSON forge routes under /forge on any axum Router.
 // The UI is generated separately with `schemaforge site generate`, which
-// writes a React + Vite project that talks to this API.
+// writes a React + Vite project that talks to this API. See
+// docs/site-guide.md for the end-to-end workflow.
 let app = extension.register_routes(axum::Router::new());
 ```
+
+See [`docs/site-guide.md`](docs/site-guide.md) for the React site generator workflow, including the `/app/*` vs `/admin/*` route trees, template override loader, auth bootstrap, and field-type widget reference.
 
 ### Computing Migrations
 
