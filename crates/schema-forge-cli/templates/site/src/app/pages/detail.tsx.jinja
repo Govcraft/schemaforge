@@ -88,7 +88,7 @@ export function {{ entity.pascal }}Detail() {
 {%- endfor %}
         <div className="pt-4">
           <Button asChild>
-            <Link to={`/{{ entity.kebab }}/${data.id}/edit`}>Edit</Link>
+            <Link to={`/app/{{ entity.kebab }}/${data.id}/edit`}>Edit</Link>
           </Button>
         </div>
       </CardContent>

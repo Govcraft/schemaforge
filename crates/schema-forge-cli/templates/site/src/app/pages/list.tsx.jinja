@@ -32,7 +32,7 @@ const columns: ColumnDef<{{ entity.pascal }}>[] = [
     accessorKey: "id",
     header: "ID",
     cell: ({ row }) => (
-      <Link className="underline" to={`/{{ entity.kebab }}/${row.original.id}`}>
+      <Link className="underline" to={`/app/{{ entity.kebab }}/${row.original.id}`}>
         {row.original.id}
       </Link>
     ),
