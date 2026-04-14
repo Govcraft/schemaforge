@@ -1,0 +1,417 @@
+// Admin API client — schema-agnostic counterpart to `src/generated/api-client.ts`.
+//
+// The admin UI talks to the backend generically: it fetches the schema
+// catalog at runtime and issues entity CRUD against whatever schema the
+// user is browsing, rather than relying on codegen'd per-entity functions.
+//
+// Wire shapes mirror `schema-forge-acton::routes::schemas::SchemaResponse`
+// and `FieldResponse`. Keep them in sync with that file when the backend
+// changes — TODO(Phase 4) is to have the backend expose a pre-digested
+// "view" shape so we don't parse the raw `FieldType` enum on the client.
+import { tokenStore } from "@/lib/auth"
+
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
+const FORGE_API_PREFIX = "/api/v1/forge"
+
+// ---------------------------------------------------------------------------
+// Wire shapes (mirror of SchemaResponse / FieldResponse in Rust)
+// ---------------------------------------------------------------------------
+
+/** Raw `FieldType` enum as serialized by serde — `{type, data?}`. */
+export type RawFieldType = {
+  type: string
+  data?: unknown
+}
+
+export type FieldResponse = {
+  name: string
+  field_type: RawFieldType
+  modifiers: string[]
+  /** Field-level annotations (`@widget`, `@format`, `@field_access`, etc.).
+   *  Tagged-enum shape: `{annotation: "Widget", widget_type: "..."}`. */
+  annotations?: unknown[]
+}
+
+export type SchemaResponse = {
+  id: string
+  name: string
+  fields: FieldResponse[]
+  annotations: unknown[]
+}
+
+export type ListSchemasResponse = {
+  schemas: SchemaResponse[]
+  count: number
+}
+
+type EntityEnvelope = {
+  id: string
+  schema: string
+  fields: Record<string, unknown>
+}
+
+type ListEntitiesEnvelope = {
+  entities: EntityEnvelope[]
+  count: number
+}
+
+// ---------------------------------------------------------------------------
+// Normalized view model
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalized field descriptor the admin UI consumes. Flattens the raw
+ * `field_type.type` + `field_type.data` shape into a single `kind` plus
+ * kind-specific data.
+ */
+export type FieldMeta = {
+  name: string
+  kind:
+    | "text"
+    | "rich_text"
+    | "integer"
+    | "float"
+    | "boolean"
+    | "datetime"
+    | "enum"
+    | "json"
+    | "relation_one"
+    | "relation_many"
+    | "array"
+    | "composite"
+    | "unknown"
+  required: boolean
+  /** Enum variants, when `kind === "enum"`. */
+  enumVariants?: string[]
+  /** Relation target schema name, when `kind` starts with `relation_`. */
+  relationTarget?: string
+  /** Array element kind, when `kind === "array"`. */
+  arrayElement?: FieldMeta
+  /** Composite sub-fields, when `kind === "composite"`. */
+  subFields?: FieldMeta[]
+  /** `@widget(...)` hint as a snake_case token (e.g. `"status_badge"`). */
+  widget?: string
+  /** `@format(...)` hint as a snake_case token (e.g. `"currency"`). */
+  format?: string
+}
+
+/** Project a wire `FieldResponse` into the admin's normalized `FieldMeta`. */
+export function toFieldMeta(f: FieldResponse): FieldMeta {
+  // Backend emits string modifiers uniformly for top-level and composite
+  // sub-fields (see `schema_to_response` in schema-forge-acton). The `?? []`
+  // defense covers the case where the field has zero modifiers and the key
+  // is absent from the wire payload.
+  const annotations = f.annotations ?? []
+  const base = {
+    name: f.name,
+    required: (f.modifiers ?? []).includes("required"),
+    widget: getFieldWidget(annotations),
+    format: getFieldFormat(annotations),
+  }
+  const raw = f.field_type
+  switch (raw.type) {
+    case "Text":
+      return { ...base, kind: "text" }
+    case "RichText":
+      return { ...base, kind: "rich_text" }
+    case "Integer":
+      return { ...base, kind: "integer" }
+    case "Float":
+      return { ...base, kind: "float" }
+    case "Boolean":
+      return { ...base, kind: "boolean" }
+    case "DateTime":
+      return { ...base, kind: "datetime" }
+    case "Json":
+      return { ...base, kind: "json" }
+    case "Enum": {
+      // `EnumVariants` serializes as a bare `string[]` — not `{variants: [...]}`.
+      const variants = Array.isArray(raw.data) ? (raw.data as string[]) : []
+      return { ...base, kind: "enum", enumVariants: variants }
+    }
+    case "Relation": {
+      const data = raw.data as
+        | { target: string; cardinality: "One" | "Many" }
+        | undefined
+      const kind = data?.cardinality === "Many" ? "relation_many" : "relation_one"
+      return { ...base, kind, relationTarget: data?.target }
+    }
+    case "Array": {
+      // Array is a boxed inner FieldType — reuse toFieldMeta on a synthetic
+      // FieldResponse so we get the same normalization logic for free.
+      const inner = raw.data as RawFieldType | undefined
+      const element = inner
+        ? toFieldMeta({ name: `${f.name}[]`, field_type: inner, modifiers: [] })
+        : undefined
+      return { ...base, kind: "array", arrayElement: element }
+    }
+    case "Composite": {
+      const inner = raw.data as FieldResponse[] | undefined
+      return {
+        ...base,
+        kind: "composite",
+        subFields: (inner ?? []).map(toFieldMeta),
+      }
+    }
+    default:
+      return { ...base, kind: "unknown" }
+  }
+}
+
+/**
+ * Extract the `@display("field")` annotation value from a schema's top-level
+ * annotation list, if present. Used to label relation options without the
+ * admin client knowing the target schema's structure.
+ *
+ * The wire shape is the tagged-enum form `{annotation: "Display", field: ...}`
+ * with the annotation tag in PascalCase — match case-insensitively to be
+ * resilient to the ongoing backend serialization cleanup.
+ */
+export function getDisplayField(annotations: unknown[]): string | undefined {
+  for (const a of annotations) {
+    if (a && typeof a === "object") {
+      const tag = (a as { annotation?: string }).annotation
+      if (typeof tag === "string" && tag.toLowerCase() === "display") {
+        const field = (a as { field?: string }).field
+        if (typeof field === "string") return field
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Extract the `@widget("...")` hint from a field's annotation list.
+ *
+ * Wire shape: `{annotation: "Widget", widget_type: "<snake_case>"}`. Tag
+ * matched case-insensitively, same as `getDisplayField`.
+ */
+export function getFieldWidget(annotations: unknown[]): string | undefined {
+  for (const a of annotations) {
+    if (a && typeof a === "object") {
+      const tag = (a as { annotation?: string }).annotation
+      if (typeof tag === "string" && tag.toLowerCase() === "widget") {
+        const widget = (a as { widget_type?: string }).widget_type
+        if (typeof widget === "string") return widget
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Extract the `@format("...")` hint from a field's annotation list.
+ *
+ * Wire shape: `{annotation: "Format", format_type: "<snake_case>"}`. Tag
+ * matched case-insensitively, same as `getDisplayField`.
+ */
+export function getFieldFormat(annotations: unknown[]): string | undefined {
+  for (const a of annotations) {
+    if (a && typeof a === "object") {
+      const tag = (a as { annotation?: string }).annotation
+      if (typeof tag === "string" && tag.toLowerCase() === "format") {
+        const format = (a as { format_type?: string }).format_type
+        if (typeof format === "string") return format
+      }
+    }
+  }
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
+// HTTP plumbing (shared token store + 401 redirect with the app client)
+// ---------------------------------------------------------------------------
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = tokenStore.get()
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  }
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`
+  }
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
+  if (res.status === 401) {
+    tokenStore.clear()
+    if (typeof window !== "undefined") {
+      const next = encodeURIComponent(window.location.pathname + window.location.search)
+      window.location.replace(`/login?next=${next}`)
+    }
+    throw new Error("API 401: unauthorized")
+  }
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: ${await res.text()}`)
+  }
+  if (res.status === 204) {
+    return undefined as T
+  }
+  return res.json() as Promise<T>
+}
+
+function flatten(env: EntityEnvelope): Record<string, unknown> {
+  return { id: env.id, ...env.fields }
+}
+
+function wrap(body: Record<string, unknown>): { fields: Record<string, unknown> } {
+  const { id: _id, ...fields } = body
+  void _id
+  return { fields }
+}
+
+// ---------------------------------------------------------------------------
+// Schema introspection
+// ---------------------------------------------------------------------------
+
+/** List every schema the caller has permission to see. */
+export async function listSchemas(): Promise<SchemaResponse[]> {
+  const res = await request<ListSchemasResponse>(`${FORGE_API_PREFIX}/schemas`)
+  return res.schemas
+}
+
+/** Describe a single schema. Returns both the raw response and the
+ *  normalized field metadata used by the admin renderer. */
+export async function describeSchema(name: string): Promise<{
+  schema: SchemaResponse
+  fields: FieldMeta[]
+  displayField?: string
+}> {
+  const schema = await request<SchemaResponse>(
+    `${FORGE_API_PREFIX}/schemas/${encodeURIComponent(name)}`,
+  )
+  return {
+    schema,
+    fields: schema.fields.map(toFieldMeta),
+    displayField: getDisplayField(schema.annotations),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Generic entity CRUD
+// ---------------------------------------------------------------------------
+
+export type ListEntitiesParams = {
+  limit?: number
+  offset?: number
+  sort?: string
+  filter?: string
+}
+
+export type EntityRow = Record<string, unknown> & { id: string }
+
+export async function listEntities(
+  schema: string,
+  params: ListEntitiesParams = { limit: 100 },
+): Promise<{ rows: EntityRow[]; count: number }> {
+  const qs = new URLSearchParams()
+  if (params.limit !== undefined) qs.set("limit", String(params.limit))
+  if (params.offset !== undefined) qs.set("offset", String(params.offset))
+  if (params.sort) qs.set("sort", params.sort)
+  if (params.filter) qs.set("filter", params.filter)
+  const suffix = qs.toString() ? `?${qs.toString()}` : ""
+  const env = await request<ListEntitiesEnvelope>(
+    `${FORGE_API_PREFIX}/schemas/${encodeURIComponent(schema)}/entities${suffix}`,
+  )
+  return {
+    rows: env.entities.map((e) => flatten(e) as EntityRow),
+    count: env.count,
+  }
+}
+
+export async function getEntity(
+  schema: string,
+  id: string,
+): Promise<EntityRow> {
+  const env = await request<EntityEnvelope>(
+    `${FORGE_API_PREFIX}/schemas/${encodeURIComponent(schema)}/entities/${encodeURIComponent(id)}`,
+  )
+  return flatten(env) as EntityRow
+}
+
+export async function createEntity(
+  schema: string,
+  body: Record<string, unknown>,
+): Promise<EntityRow> {
+  const env = await request<EntityEnvelope>(
+    `${FORGE_API_PREFIX}/schemas/${encodeURIComponent(schema)}/entities`,
+    { method: "POST", body: JSON.stringify(wrap(body)) },
+  )
+  return flatten(env) as EntityRow
+}
+
+export async function updateEntity(
+  schema: string,
+  id: string,
+  body: Record<string, unknown>,
+): Promise<EntityRow> {
+  const env = await request<EntityEnvelope>(
+    `${FORGE_API_PREFIX}/schemas/${encodeURIComponent(schema)}/entities/${encodeURIComponent(id)}`,
+    { method: "PATCH", body: JSON.stringify(wrap(body)) },
+  )
+  return flatten(env) as EntityRow
+}
+
+export async function deleteEntity(schema: string, id: string): Promise<void> {
+  await request<void>(
+    `${FORGE_API_PREFIX}/schemas/${encodeURIComponent(schema)}/entities/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  )
+}
+
+// ---------------------------------------------------------------------------
+// User management (mirrors `schema-forge-acton::routes::users`)
+// ---------------------------------------------------------------------------
+
+/** A user row as returned by `GET /users`. */
+export type UserRow = {
+  username: string
+  roles: string[]
+  display_name: string | null
+  active: boolean
+}
+
+type ListUsersEnvelope = {
+  users: UserRow[]
+  count: number
+}
+
+/** Request body for `POST /users`. */
+export type CreateUserBody = {
+  username: string
+  password: string
+  roles: string[]
+  display_name?: string | null
+}
+
+/** List every user (admin only). */
+export async function listUsers(): Promise<UserRow[]> {
+  const env = await request<ListUsersEnvelope>(`${FORGE_API_PREFIX}/users`)
+  return env.users
+}
+
+/** Create a new user (admin only). */
+export async function createUser(body: CreateUserBody): Promise<UserRow> {
+  return request<UserRow>(`${FORGE_API_PREFIX}/users`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  })
+}
+
+/** Delete a user by username (admin only). */
+export async function deleteUser(username: string): Promise<void> {
+  await request<void>(
+    `${FORGE_API_PREFIX}/users/${encodeURIComponent(username)}`,
+    { method: "DELETE" },
+  )
+}
+
+/** Change a user's password. Allowed when the caller is admin or self. */
+export async function changePassword(
+  username: string,
+  password: string,
+): Promise<void> {
+  await request<void>(
+    `${FORGE_API_PREFIX}/users/${encodeURIComponent(username)}/password`,
+    { method: "POST", body: JSON.stringify({ password }) },
+  )
+}

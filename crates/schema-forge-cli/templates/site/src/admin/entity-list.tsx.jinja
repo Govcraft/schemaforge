@@ -1,0 +1,142 @@
+// Generic entity browser. Fetches the target schema's metadata + a page
+// of rows and renders them as a shadcn table. Row actions: View, Edit,
+// Delete (native confirm).
+import type { ReactNode } from "react"
+import { Link, useNavigate, useParams } from "react-router-dom"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  deleteEntity,
+  describeSchema,
+  listEntities,
+  type FieldMeta,
+} from "@/admin/api-client"
+import { formatFieldValue } from "@/generated/formatters"
+import { Button } from "@/components/ui/button"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+
+const PAGE_SIZE = 50
+
+export function AdminEntityList() {
+  const { schema } = useParams<{ schema: string }>()
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+
+  const meta = useQuery({
+    queryKey: ["admin", "schema", schema],
+    queryFn: () => describeSchema(schema!),
+    enabled: Boolean(schema),
+  })
+  const rows = useQuery({
+    queryKey: ["admin", "entities", schema],
+    queryFn: () => listEntities(schema!, { limit: PAGE_SIZE }),
+    enabled: Boolean(schema),
+  })
+
+  const remove = useMutation({
+    mutationFn: (id: string) => deleteEntity(schema!, id),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["admin", "entities", schema] }),
+  })
+
+  if (!schema) return null
+  if (meta.isLoading || rows.isLoading) return <p>Loading…</p>
+  if (meta.error || rows.error) {
+    return (
+      <p className="text-destructive">
+        Failed to load {schema}:{" "}
+        {String(meta.error ?? rows.error)}
+      </p>
+    )
+  }
+
+  // Columns: every non-composite field plus an implicit id.
+  const fields = (meta.data?.fields ?? []).filter(
+    (f) => f.kind !== "composite",
+  )
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">{schema}</h1>
+          <p className="text-sm text-muted-foreground">
+            {rows.data?.count ?? 0} total
+          </p>
+        </div>
+        <Button onClick={() => navigate(`/admin/${schema}/new`)}>
+          New {schema}
+        </Button>
+      </div>
+
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>id</TableHead>
+            {fields.map((f) => (
+              <TableHead key={f.name}>{f.name}</TableHead>
+            ))}
+            <TableHead className="w-[160px] text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {(rows.data?.rows ?? []).map((row) => (
+            <TableRow key={row.id}>
+              <TableCell>
+                <Link className="underline" to={`/admin/${schema}/${row.id}`}>
+                  {row.id}
+                </Link>
+              </TableCell>
+              {fields.map((f) => (
+                <TableCell key={f.name}>{renderCell(f, row[f.name])}</TableCell>
+              ))}
+              <TableCell className="text-right space-x-2">
+                <Button variant="outline" size="sm" asChild>
+                  <Link to={`/admin/${schema}/${row.id}/edit`}>Edit</Link>
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    if (window.confirm(`Delete ${schema} ${row.id}?`)) {
+                      remove.mutate(row.id)
+                    }
+                  }}
+                >
+                  Delete
+                </Button>
+              </TableCell>
+            </TableRow>
+          ))}
+          {(rows.data?.rows ?? []).length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={fields.length + 2} className="text-center text-muted-foreground">
+                No entities yet.
+              </TableCell>
+            </TableRow>
+          ) : null}
+        </TableBody>
+      </Table>
+
+      {remove.error ? (
+        <p className="text-destructive text-sm">
+          Delete failed: {String(remove.error)}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function renderCell(field: FieldMeta, value: unknown): ReactNode {
+  // Keep list cells terse — use the formatter's narrower kind vocabulary.
+  const kind =
+    field.kind === "unknown" || field.kind === "composite" ? "text" : field.kind
+  return formatFieldValue(value, { kind: kind as never })
+}

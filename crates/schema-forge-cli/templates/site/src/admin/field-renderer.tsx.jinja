@@ -1,0 +1,293 @@
+// Generic field renderer shared across admin detail / edit / list views.
+//
+// Dispatches on `FieldMeta.kind` to the appropriate shadcn primitive. The
+// read-only mode reuses the codegen'd `formatFieldValue`; the edit mode
+// renders a controlled input that calls `onChange(next)` with the next
+// value. Each kind is kept intentionally simple — fancier widgets
+// (markdown preview, JSON linter, etc.) are a later polish pass.
+import type { ReactNode } from "react"
+import { Input } from "@/components/ui/input"
+import { RelationSelect } from "@/components/ui/relation-select"
+import { formatFieldValue, type FieldDisplayHints } from "@/generated/formatters"
+import type { FieldMeta } from "@/admin/api-client"
+
+export type FieldRendererProps = {
+  field: FieldMeta
+  value: unknown
+  onChange?: (next: unknown) => void
+  readOnly?: boolean
+}
+
+/** Read-only display: reuse the codegen'd formatter. */
+function renderReadOnly(field: FieldMeta, value: unknown): ReactNode {
+  if (field.kind === "composite" && field.subFields) {
+    const obj = (value ?? {}) as Record<string, unknown>
+    return (
+      <div className="pl-3 border-l space-y-1">
+        {field.subFields.map((sub) => (
+          <div key={sub.name} className="grid grid-cols-[160px_1fr] gap-2 text-sm">
+            <span className="text-muted-foreground">{sub.name}</span>
+            <span>{renderReadOnly(sub, obj[sub.name])}</span>
+          </div>
+        ))}
+      </div>
+    )
+  }
+  // Map the admin's `kind` onto the formatter's narrower vocabulary, then
+  // forward the field's `@widget` / `@format` hints so the formatter can
+  // honor things like `currency`, `relative`, `progress`, etc.
+  const hints: FieldDisplayHints = {
+    kind: toFormatterKind(field.kind),
+    widget: field.widget,
+    format: field.format,
+  }
+  return <>{formatFieldValue(value, hints)}</>
+}
+
+/** Edit mode: controlled input keyed on kind. */
+function renderEditor(
+  field: FieldMeta,
+  value: unknown,
+  onChange: (next: unknown) => void,
+): ReactNode {
+  // Widget hints get first crack at dispatch so a `text` field annotated
+  // with `@widget("richtext")` gets the textarea path instead of a single-
+  // line input. Only the textarea-flavored hints are honored here; richer
+  // widgets (markdown editor, WYSIWYG, etc.) are intentionally a later pass.
+  if (field.widget === "richtext" || field.widget === "rich_text" || field.widget === "textarea") {
+    if (field.kind === "text" || field.kind === "rich_text") {
+      return (
+        <textarea
+          className="min-h-[120px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+          value={(value as string) ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )
+    }
+  }
+
+  switch (field.kind) {
+    case "text":
+      return (
+        <Input
+          value={(value as string) ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )
+
+    case "rich_text":
+      return (
+        <textarea
+          className="min-h-[120px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+          value={(value as string) ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )
+
+    case "integer":
+      return (
+        <Input
+          type="number"
+          step={1}
+          value={(value as number | undefined) ?? ""}
+          onChange={(e) => {
+            const raw = e.target.value
+            onChange(raw === "" ? null : Number.parseInt(raw, 10))
+          }}
+        />
+      )
+
+    case "float":
+      return (
+        <Input
+          type="number"
+          step="any"
+          value={(value as number | undefined) ?? ""}
+          onChange={(e) => {
+            const raw = e.target.value
+            onChange(raw === "" ? null : Number.parseFloat(raw))
+          }}
+        />
+      )
+
+    case "boolean":
+      return (
+        <input
+          type="checkbox"
+          className="h-4 w-4"
+          checked={Boolean(value)}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+      )
+
+    case "datetime": {
+      const iso = typeof value === "string" ? value : ""
+      // datetime-local wants `YYYY-MM-DDTHH:MM` (local tz, no seconds).
+      const local = iso ? iso.slice(0, 16) : ""
+      return (
+        <Input
+          type="datetime-local"
+          value={local}
+          onChange={(e) => {
+            const raw = e.target.value
+            if (!raw) {
+              onChange(null)
+              return
+            }
+            // Round-trip through Date so we emit a proper RFC 3339 string.
+            const d = new Date(raw)
+            onChange(isNaN(d.getTime()) ? null : d.toISOString())
+          }}
+        />
+      )
+    }
+
+    case "enum":
+      return (
+        <select
+          className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+          value={(value as string) ?? ""}
+          onChange={(e) => onChange(e.target.value || null)}
+        >
+          <option value="">— none —</option>
+          {(field.enumVariants ?? []).map((v) => (
+            <option key={v} value={v}>
+              {v}
+            </option>
+          ))}
+        </select>
+      )
+
+    case "relation_one":
+      return field.relationTarget ? (
+        <RelationSelect
+          target={field.relationTarget}
+          value={(value as string) ?? ""}
+          onChange={(next) => onChange(next || null)}
+        />
+      ) : (
+        <Input value="(missing relation target)" disabled />
+      )
+
+    case "relation_many": {
+      // v1: comma-separated ids. A proper tag input is a later polish pass.
+      const ids = Array.isArray(value) ? (value as string[]).join(", ") : ""
+      return (
+        <Input
+          placeholder="id1, id2, id3"
+          value={ids}
+          onChange={(e) =>
+            onChange(
+              e.target.value
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean),
+            )
+          }
+        />
+      )
+    }
+
+    case "json": {
+      const pretty =
+        value === undefined || value === null
+          ? ""
+          : JSON.stringify(value, null, 2)
+      return (
+        <textarea
+          className="min-h-[140px] w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs"
+          value={pretty}
+          onChange={(e) => {
+            const raw = e.target.value
+            if (raw.trim() === "") {
+              onChange(null)
+              return
+            }
+            try {
+              onChange(JSON.parse(raw))
+            } catch {
+              // Keep the raw text around so the user can fix it; the submit
+              // handler will re-parse and surface any residual error.
+              onChange(raw)
+            }
+          }}
+        />
+      )
+    }
+
+    case "array": {
+      // v1: JSON-array editor. Good enough for scalars and enum lists.
+      const pretty = Array.isArray(value) ? JSON.stringify(value) : ""
+      return (
+        <Input
+          placeholder='["a", "b", "c"]'
+          value={pretty}
+          onChange={(e) => {
+            const raw = e.target.value
+            try {
+              onChange(raw.trim() === "" ? [] : JSON.parse(raw))
+            } catch {
+              onChange(raw)
+            }
+          }}
+        />
+      )
+    }
+
+    case "composite": {
+      const obj = (value ?? {}) as Record<string, unknown>
+      return (
+        <fieldset className="border rounded p-3 space-y-2">
+          {(field.subFields ?? []).map((sub) => (
+            <div key={sub.name} className="grid grid-cols-[160px_1fr] gap-2 items-center">
+              <label className="text-xs text-muted-foreground">
+                {sub.name}
+                {sub.required ? " *" : ""}
+              </label>
+              {renderEditor(sub, obj[sub.name], (next) =>
+                onChange({ ...obj, [sub.name]: next }),
+              )}
+            </div>
+          ))}
+        </fieldset>
+      )
+    }
+
+    default:
+      return <Input value={String(value ?? "")} disabled />
+  }
+}
+
+function toFormatterKind(kind: FieldMeta["kind"]) {
+  switch (kind) {
+    case "relation_one":
+      return "relation_one" as const
+    case "relation_many":
+      return "relation_many" as const
+    case "rich_text":
+      return "rich_text" as const
+    case "text":
+    case "integer":
+    case "float":
+    case "boolean":
+    case "datetime":
+    case "enum":
+    case "json":
+    case "array":
+      return kind
+    default:
+      return "text" as const
+  }
+}
+
+export function FieldRenderer({
+  field,
+  value,
+  onChange,
+  readOnly,
+}: FieldRendererProps) {
+  if (readOnly || !onChange) {
+    return <>{renderReadOnly(field, value)}</>
+  }
+  return <>{renderEditor(field, value, onChange)}</>
+}

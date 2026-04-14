@@ -1,0 +1,190 @@
+// Generic create / edit form. Same component backs both `/admin/:schema/new`
+// and `/admin/:schema/:id/edit`: when `:id` is present we prefill the form
+// from the server; otherwise we start empty and POST on submit.
+//
+// State is kept in a plain `Record<string, unknown>` driven by the field
+// renderer's `onChange` callbacks. React Hook Form isn't pulling its weight
+// here since every field is dynamic, so a controlled state dict keeps the
+// template tight.
+import { FormEvent, useEffect, useState } from "react"
+import { Link, useNavigate, useParams } from "react-router-dom"
+import { useMutation, useQuery } from "@tanstack/react-query"
+import {
+  createEntity,
+  describeSchema,
+  getEntity,
+  updateEntity,
+  type FieldMeta,
+} from "@/admin/api-client"
+import { FieldRenderer } from "@/admin/field-renderer"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+
+export function AdminEntityEdit() {
+  const { schema, id } = useParams<{ schema: string; id?: string }>()
+  const navigate = useNavigate()
+  const isNew = !id
+
+  const meta = useQuery({
+    queryKey: ["admin", "schema", schema],
+    queryFn: () => describeSchema(schema!),
+    enabled: Boolean(schema),
+  })
+  const existing = useQuery({
+    queryKey: ["admin", "entity", schema, id],
+    queryFn: () => getEntity(schema!, id!),
+    enabled: Boolean(schema && id),
+  })
+
+  const [values, setValues] = useState<Record<string, unknown>>({})
+  const [formError, setFormError] = useState<string | null>(null)
+
+  // Seed the form once schema + existing entity have loaded.
+  useEffect(() => {
+    if (!meta.data) return
+    if (isNew) {
+      setValues(defaultValuesFor(meta.data.fields))
+      return
+    }
+    if (existing.data) {
+      setValues(pickKnownFields(existing.data, meta.data.fields))
+    }
+  }, [meta.data, existing.data, isNew])
+
+  const save = useMutation({
+    mutationFn: async (body: Record<string, unknown>) => {
+      if (isNew) return createEntity(schema!, body)
+      return updateEntity(schema!, id!, body)
+    },
+    onSuccess: (entity) => navigate(`/admin/${schema}/${entity.id}`),
+  })
+
+  if (!schema) return null
+  if (meta.isLoading || (!isNew && existing.isLoading)) return <p>Loading…</p>
+  if (meta.error) {
+    return <p className="text-destructive">Failed to load schema.</p>
+  }
+
+  const fields = meta.data?.fields ?? []
+
+  function onSubmit(ev: FormEvent) {
+    ev.preventDefault()
+    setFormError(null)
+    // Validate required fields client-side. Anything past that is the
+    // server's call — we forward the 4xx body verbatim.
+    for (const f of fields) {
+      if (f.required && isBlank(values[f.name])) {
+        setFormError(`Field "${f.name}" is required`)
+        return
+      }
+    }
+    save.mutate(values)
+  }
+
+  return (
+    <Card className="max-w-2xl">
+      <CardHeader>
+        <CardTitle>
+          {isNew ? `New ${schema}` : `Edit ${schema} ${id}`}
+        </CardTitle>
+        <CardDescription>
+          Generic admin form. Fields marked * are required.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={onSubmit} className="space-y-4">
+          {fields.map((f) => (
+            <div
+              key={f.name}
+              className="grid grid-cols-[160px_1fr] gap-2 items-start"
+            >
+              <label className="text-sm pt-2">
+                {f.name}
+                {f.required ? <span className="text-destructive"> *</span> : null}
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                  {f.kind}
+                </div>
+              </label>
+              <div>
+                <FieldRenderer
+                  field={f}
+                  value={values[f.name]}
+                  onChange={(next) =>
+                    setValues((prev) => ({ ...prev, [f.name]: next }))
+                  }
+                />
+              </div>
+            </div>
+          ))}
+
+          {formError ? (
+            <p className="text-destructive text-sm">{formError}</p>
+          ) : null}
+          {save.error ? (
+            <p className="text-destructive text-sm">
+              Save failed: {String(save.error)}
+            </p>
+          ) : null}
+
+          <div className="flex gap-2 pt-2">
+            <Button type="submit" disabled={save.isPending}>
+              {save.isPending ? "Saving…" : isNew ? "Create" : "Save"}
+            </Button>
+            <Button variant="outline" asChild>
+              <Link to={`/admin/${schema}`}>Cancel</Link>
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function defaultValuesFor(fields: FieldMeta[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const f of fields) {
+    switch (f.kind) {
+      case "boolean":
+        out[f.name] = false
+        break
+      case "array":
+      case "relation_many":
+        out[f.name] = []
+        break
+      case "composite":
+        out[f.name] = f.subFields ? defaultValuesFor(f.subFields) : {}
+        break
+      default:
+        out[f.name] = null
+    }
+  }
+  return out
+}
+
+function pickKnownFields(
+  entity: Record<string, unknown>,
+  fields: FieldMeta[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const f of fields) {
+    out[f.name] = entity[f.name]
+  }
+  return out
+}
+
+function isBlank(v: unknown): boolean {
+  if (v === null || v === undefined) return true
+  if (typeof v === "string") return v.trim() === ""
+  if (Array.isArray(v)) return v.length === 0
+  return false
+}

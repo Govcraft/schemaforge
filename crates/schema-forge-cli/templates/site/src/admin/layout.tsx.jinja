@@ -1,0 +1,76 @@
+// Admin shell: sidebar of every visible schema + nested route outlet.
+//
+// The sidebar is driven by `listSchemas()` so it always reflects the live
+// catalog — no codegen. Nested routes cover the full CRUD surface for any
+// schema (browse, create, view, edit) plus the landing index.
+import { Link, Route, Routes, useLocation } from "react-router-dom"
+import { useQuery } from "@tanstack/react-query"
+import { listSchemas } from "@/admin/api-client"
+import { SchemasIndex } from "@/admin/schemas-index"
+import { AdminEntityList } from "@/admin/entity-list"
+import { AdminEntityDetail } from "@/admin/entity-detail"
+import { AdminEntityEdit } from "@/admin/entity-edit"
+import { UsersList } from "@/admin/users-list"
+import { UsersEdit } from "@/admin/users-edit"
+
+export function AdminLayout() {
+  const location = useLocation()
+  const { data: schemas } = useQuery({
+    queryKey: ["admin", "schemas"],
+    queryFn: () => listSchemas(),
+  })
+
+  const active = (path: string) =>
+    location.pathname === path ? "font-semibold text-foreground" : ""
+
+  return (
+    <div className="grid grid-cols-[220px_1fr] gap-6">
+      <aside className="border-r pr-4 text-sm space-y-3">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+            Admin
+          </div>
+          <nav className="flex flex-col gap-1">
+            <Link to="/admin" className={active("/admin")}>
+              Schemas
+            </Link>
+            <Link to="/admin/users" className={active("/admin/users")}>
+              Users
+            </Link>
+          </nav>
+        </div>
+        <div className="pt-2 border-t">
+          <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+            Entities
+          </div>
+          <nav className="flex flex-col gap-1">
+            {(schemas ?? []).map((s) => (
+              <Link
+                key={s.name}
+                to={`/admin/${s.name}`}
+                className={active(`/admin/${s.name}`)}
+              >
+                {s.name}
+                <span className="ml-2 text-xs text-muted-foreground">
+                  ({s.fields.length})
+                </span>
+              </Link>
+            ))}
+          </nav>
+        </div>
+      </aside>
+      <section>
+        <Routes>
+          <Route index element={<SchemasIndex />} />
+          <Route path="users" element={<UsersList />} />
+          <Route path="users/new" element={<UsersEdit />} />
+          <Route path="users/:username/edit" element={<UsersEdit />} />
+          <Route path=":schema" element={<AdminEntityList />} />
+          <Route path=":schema/new" element={<AdminEntityEdit />} />
+          <Route path=":schema/:id" element={<AdminEntityDetail />} />
+          <Route path=":schema/:id/edit" element={<AdminEntityEdit />} />
+        </Routes>
+      </section>
+    </div>
+  )
+}

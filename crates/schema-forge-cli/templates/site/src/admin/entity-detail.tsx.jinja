@@ -1,0 +1,105 @@
+// Read-only entity detail. Fetches the schema metadata + the record and
+// renders each field via `FieldRenderer` in read-only mode. Edit / Delete
+// actions live in the header.
+import { Link, useNavigate, useParams } from "react-router-dom"
+import { useMutation, useQuery } from "@tanstack/react-query"
+import {
+  deleteEntity,
+  describeSchema,
+  getEntity,
+} from "@/admin/api-client"
+import { FieldRenderer } from "@/admin/field-renderer"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+
+export function AdminEntityDetail() {
+  const { schema, id } = useParams<{ schema: string; id: string }>()
+  const navigate = useNavigate()
+
+  const meta = useQuery({
+    queryKey: ["admin", "schema", schema],
+    queryFn: () => describeSchema(schema!),
+    enabled: Boolean(schema),
+  })
+  const entity = useQuery({
+    queryKey: ["admin", "entity", schema, id],
+    queryFn: () => getEntity(schema!, id!),
+    enabled: Boolean(schema && id),
+  })
+
+  const remove = useMutation({
+    mutationFn: () => deleteEntity(schema!, id!),
+    onSuccess: () => navigate(`/admin/${schema}`),
+  })
+
+  if (!schema || !id) return null
+  if (meta.isLoading || entity.isLoading) return <p>Loading…</p>
+  if (meta.error || entity.error || !entity.data) {
+    return (
+      <p className="text-destructive">
+        Failed to load record: {String(meta.error ?? entity.error)}
+      </p>
+    )
+  }
+
+  const fields = meta.data?.fields ?? []
+  const data = entity.data
+
+  return (
+    <Card className="max-w-2xl">
+      <CardHeader>
+        <CardTitle>
+          {schema} — {data.id}
+        </CardTitle>
+        <CardDescription>
+          Read-only view. Use Edit to modify, Delete to remove.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {fields.map((f) => (
+          <div
+            key={f.name}
+            className="grid grid-cols-[160px_1fr] gap-2 text-sm items-start"
+          >
+            <span className="text-muted-foreground">{f.name}</span>
+            <span>
+              <FieldRenderer field={f} value={data[f.name]} readOnly />
+            </span>
+          </div>
+        ))}
+
+        <div className="pt-4 flex gap-2">
+          <Button asChild>
+            <Link to={`/admin/${schema}/${data.id}/edit`}>Edit</Link>
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={remove.isPending}
+            onClick={() => {
+              if (window.confirm(`Delete ${schema} ${data.id}?`)) {
+                remove.mutate()
+              }
+            }}
+          >
+            Delete
+          </Button>
+          <Button variant="outline" asChild>
+            <Link to={`/admin/${schema}`}>Back</Link>
+          </Button>
+        </div>
+
+        {remove.error ? (
+          <p className="text-destructive text-sm">
+            Delete failed: {String(remove.error)}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}

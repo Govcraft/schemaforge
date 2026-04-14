@@ -1,0 +1,80 @@
+// Admin landing page: grid of every schema the authenticated user can see,
+// with a field count and a link into its generic CRUD surface.
+import { Link } from "react-router-dom"
+import { useQuery } from "@tanstack/react-query"
+import { listSchemas } from "@/admin/api-client"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+
+export function SchemasIndex() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["admin", "schemas"],
+    queryFn: () => listSchemas(),
+  })
+
+  if (isLoading) return <p>Loading schemas…</p>
+  if (error) {
+    return (
+      <p className="text-destructive">
+        Failed to load schemas: {String(error)}
+      </p>
+    )
+  }
+
+  const schemas = data ?? []
+  if (schemas.length === 0) {
+    return (
+      <div className="space-y-2">
+        <h1 className="text-2xl font-semibold">Schemas</h1>
+        <p className="text-muted-foreground">
+          No schemas visible. Either the catalog is empty or your account
+          lacks read permission.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h1 className="text-2xl font-semibold">Schemas</h1>
+        <p className="text-sm text-muted-foreground">
+          Every schema visible to your account. Click one to browse and edit
+          its entities.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {schemas.map((s) => (
+          <Link key={s.name} to={`/admin/${s.name}`} className="block">
+            <Card className="hover:border-primary transition-colors">
+              <CardHeader>
+                <CardTitle>{s.name}</CardTitle>
+                <CardDescription>
+                  {s.fields.length} field{s.fields.length === 1 ? "" : "s"}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ul className="text-xs text-muted-foreground space-y-0.5">
+                  {s.fields.slice(0, 5).map((f) => (
+                    <li key={f.name}>
+                      <span className="font-mono">{f.name}</span>
+                      <span className="ml-2">{f.field_type.type}</span>
+                    </li>
+                  ))}
+                  {s.fields.length > 5 ? (
+                    <li>… and {s.fields.length - 5} more</li>
+                  ) : null}
+                </ul>
+              </CardContent>
+            </Card>
+          </Link>
+        ))}
+      </div>
+    </div>
+  )
+}
