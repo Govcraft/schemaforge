@@ -5454,6 +5454,7 @@ dependencies = [
  "serde_json",
  "surrealdb",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -321,6 +321,95 @@ impl fmt::Display for FieldAnnotation {
     }
 }
 
+/// A single repair performed by [`sanitize_schema_metadata_json`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WidgetRepair {
+    /// A legacy widget token was rewritten to its modern equivalent
+    /// (e.g. `"link"` → `"url"`).
+    Remapped { from: String, to: String },
+    /// A widget annotation using a removed/unknown token was stripped
+    /// from the annotation list. The field retains the rest of its
+    /// annotations.
+    Dropped { token: String },
+}
+
+/// Walk a JSON-serialized [`SchemaDefinition`] and migrate any legacy
+/// `@widget("...")` annotations that would otherwise fail strict
+/// deserialization.
+///
+/// SchemaForge stores full [`SchemaDefinition`]s as JSONB in the
+/// `_schema_metadata` table. When a widget variant is removed from the core
+/// enum, the live DB can still carry annotations serialized under the old
+/// vocabulary, and `serde_json::from_value::<SchemaDefinition>` will hard-fail
+/// on startup. This helper preprocesses the JSON value before that call so
+/// the server can recover gracefully:
+///
+/// 1. Known-valid widget tokens are left untouched.
+/// 2. The legacy alias `"link"` is remapped to `"url"`.
+/// 3. Any other unrecognized token causes the whole `@widget` annotation to
+///    be dropped from the field's annotation list.
+///
+/// Returns the list of repairs performed so the caller can log a warning and
+/// point the operator at the stale rows.
+pub fn sanitize_schema_metadata_json(value: &mut serde_json::Value) -> Vec<WidgetRepair> {
+    let mut repairs = Vec::new();
+    sanitize_walk(value, &mut repairs);
+    repairs
+}
+
+fn sanitize_walk(value: &mut serde_json::Value, repairs: &mut Vec<WidgetRepair>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            items.retain_mut(|item| {
+                if let Some(repair) = inspect_widget_object(item) {
+                    match repair {
+                        WidgetRepair::Dropped { .. } => {
+                            repairs.push(repair);
+                            return false;
+                        }
+                        WidgetRepair::Remapped { .. } => {
+                            repairs.push(repair);
+                        }
+                    }
+                }
+                sanitize_walk(item, repairs);
+                true
+            });
+        }
+        serde_json::Value::Object(map) => {
+            for (_, v) in map.iter_mut() {
+                sanitize_walk(v, repairs);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// If `item` is a `{"annotation":"Widget","widget_type":"..."}` object whose
+/// `widget_type` is unknown or legacy, mutate it (or flag it for drop) and
+/// return the repair performed. Returns `None` for any other value.
+fn inspect_widget_object(item: &mut serde_json::Value) -> Option<WidgetRepair> {
+    let obj = item.as_object_mut()?;
+    if obj.get("annotation").and_then(|v| v.as_str()) != Some("Widget") {
+        return None;
+    }
+    let token = obj.get("widget_type")?.as_str()?.to_string();
+    if WidgetType::from_str(&token).is_ok() {
+        return None;
+    }
+    if token == "link" {
+        obj.insert(
+            "widget_type".to_string(),
+            serde_json::Value::String("url".to_string()),
+        );
+        return Some(WidgetRepair::Remapped {
+            from: token,
+            to: "url".to_string(),
+        });
+    }
+    Some(WidgetRepair::Dropped { token })
+}
+
 /// Formats a list of role strings as a comma-separated, quoted list.
 fn format_role_list(roles: &[String]) -> String {
     roles
@@ -424,6 +513,62 @@ mod tests {
         let json = serde_json::to_string(&a).unwrap();
         let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);
+    }
+
+    #[test]
+    fn sanitize_strips_removed_widget_tokens() {
+        let mut json: serde_json::Value = serde_json::json!({
+            "name": "Opportunity",
+            "fields": [
+                {
+                    "name": "amount",
+                    "annotations": [
+                        {"annotation": "Widget", "widget_type": "currency"},
+                        {"annotation": "Owner"}
+                    ]
+                },
+                {
+                    "name": "site",
+                    "annotations": [
+                        {"annotation": "Widget", "widget_type": "link"}
+                    ]
+                }
+            ]
+        });
+        let repairs = sanitize_schema_metadata_json(&mut json);
+        assert_eq!(repairs.len(), 2);
+        assert!(repairs.contains(&WidgetRepair::Dropped {
+            token: "currency".to_string()
+        }));
+        assert!(repairs.contains(&WidgetRepair::Remapped {
+            from: "link".to_string(),
+            to: "url".to_string()
+        }));
+
+        // The `amount` field should retain `@owner` but lose `@widget("currency")`.
+        let amount_annotations = json["fields"][0]["annotations"].as_array().unwrap();
+        assert_eq!(amount_annotations.len(), 1);
+        assert_eq!(amount_annotations[0]["annotation"], "Owner");
+
+        // The `site` field's `@widget("link")` should now be `"url"`.
+        let site_widget = &json["fields"][1]["annotations"][0];
+        assert_eq!(site_widget["widget_type"], "url");
+    }
+
+    #[test]
+    fn sanitize_is_noop_for_valid_metadata() {
+        let mut json = serde_json::json!({
+            "fields": [{
+                "name": "status",
+                "annotations": [
+                    {"annotation": "Widget", "widget_type": "status_badge"}
+                ]
+            }]
+        });
+        let original = json.clone();
+        let repairs = sanitize_schema_metadata_json(&mut json);
+        assert!(repairs.is_empty());
+        assert_eq!(json, original);
     }
 
     #[test]

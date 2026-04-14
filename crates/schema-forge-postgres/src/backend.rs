@@ -8,7 +8,7 @@ use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
-use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaName};
+use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaName, WidgetRepair};
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions, PgRow};
 use sqlx::{Arguments, Row};
 
@@ -18,6 +18,31 @@ use crate::value::{bind_dynamic_value, row_to_entity};
 
 /// The schema metadata table name used to store `SchemaDefinition` records.
 const SCHEMA_META_TABLE: &str = "_schema_metadata";
+
+/// Emit a tracing warning for each legacy widget annotation repaired at
+/// metadata load time. Noisy by design — operators should see every stale
+/// row they need to clean up.
+fn log_widget_repairs(schema: &str, repairs: Vec<WidgetRepair>) {
+    for repair in repairs {
+        match repair {
+            WidgetRepair::Remapped { from, to } => {
+                tracing::warn!(
+                    schema,
+                    from = %from,
+                    to = %to,
+                    "schema metadata: remapped legacy @widget token; rerun `schemaforge apply` to persist the fix"
+                );
+            }
+            WidgetRepair::Dropped { token } => {
+                tracing::warn!(
+                    schema,
+                    token = %token,
+                    "schema metadata: dropped unknown @widget token; rerun `schemaforge apply` to persist the fix"
+                );
+            }
+        }
+    }
+}
 
 /// PostgreSQL backend for SchemaForge.
 ///
@@ -278,11 +303,15 @@ impl SchemaBackend for PgBackend {
         match row {
             None => Ok(None),
             Some(row) => {
-                let json: serde_json::Value =
+                let mut json: serde_json::Value =
                     row.try_get("definition")
                         .map_err(|e| BackendError::Internal {
                             message: format!("failed to read definition column: {e}"),
                         })?;
+                log_widget_repairs(
+                    name_str,
+                    schema_forge_core::types::sanitize_schema_metadata_json(&mut json),
+                );
                 let definition: SchemaDefinition =
                     serde_json::from_value(json).map_err(|e| BackendError::Internal {
                         message: format!("failed to deserialize schema metadata: {e}"),
@@ -304,11 +333,20 @@ impl SchemaBackend for PgBackend {
 
         let mut definitions = Vec::new();
         for row in &rows {
-            let json: serde_json::Value =
+            let mut json: serde_json::Value =
                 row.try_get("definition")
                     .map_err(|e| BackendError::Internal {
                         message: format!("failed to read definition column: {e}"),
                     })?;
+            let schema_label = json
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>")
+                .to_string();
+            log_widget_repairs(
+                &schema_label,
+                schema_forge_core::types::sanitize_schema_metadata_json(&mut json),
+            );
             let definition: SchemaDefinition =
                 serde_json::from_value(json).map_err(|e| BackendError::Internal {
                     message: format!("failed to deserialize schema metadata: {e}"),

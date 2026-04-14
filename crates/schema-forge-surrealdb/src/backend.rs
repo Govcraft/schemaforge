@@ -263,11 +263,7 @@ impl SchemaBackend for SurrealBackend {
                 message: "schema metadata record missing 'definition' field".to_string(),
             })?;
 
-        let definition: SchemaDefinition =
-            serde_json::from_str(def_str).map_err(|e| BackendError::Internal {
-                message: format!("failed to deserialize schema metadata: {e}"),
-            })?;
-
+        let definition = parse_and_sanitize_definition(name_str, def_str)?;
         Ok(Some(definition))
     }
 
@@ -289,15 +285,53 @@ impl SchemaBackend for SurrealBackend {
                     message: "schema metadata record missing 'definition' field".to_string(),
                 })?;
 
-            let definition: SchemaDefinition =
-                serde_json::from_str(def_str).map_err(|e| BackendError::Internal {
-                    message: format!("failed to deserialize schema metadata: {e}"),
-                })?;
-            definitions.push(definition);
+            definitions.push(parse_and_sanitize_definition("<unknown>", def_str)?);
         }
 
         Ok(definitions)
     }
+}
+
+/// Parse a stored schema metadata JSON blob and migrate any legacy
+/// `@widget("...")` annotations on the fly. Removed widget tokens (e.g.
+/// `currency`, `relative_time`) are dropped from the field's annotation list
+/// and `link` is rewritten to `url`, so the server can come up after a
+/// breaking widget-vocabulary change without a hand-rolled DB patch.
+fn parse_and_sanitize_definition(
+    schema_label: &str,
+    def_str: &str,
+) -> Result<SchemaDefinition, BackendError> {
+    let mut json: serde_json::Value =
+        serde_json::from_str(def_str).map_err(|e| BackendError::Internal {
+            message: format!("failed to deserialize schema metadata: {e}"),
+        })?;
+    let schema = json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(schema_label)
+        .to_string();
+    for repair in schema_forge_core::types::sanitize_schema_metadata_json(&mut json) {
+        match repair {
+            schema_forge_core::types::WidgetRepair::Remapped { from, to } => {
+                tracing::warn!(
+                    schema = %schema,
+                    from = %from,
+                    to = %to,
+                    "schema metadata: remapped legacy @widget token; rerun `schemaforge apply` to persist the fix"
+                );
+            }
+            schema_forge_core::types::WidgetRepair::Dropped { token } => {
+                tracing::warn!(
+                    schema = %schema,
+                    token = %token,
+                    "schema metadata: dropped unknown @widget token; rerun `schemaforge apply` to persist the fix"
+                );
+            }
+        }
+    }
+    serde_json::from_value(json).map_err(|e| BackendError::Internal {
+        message: format!("failed to deserialize schema metadata: {e}"),
+    })
 }
 
 impl EntityStore for SurrealBackend {
