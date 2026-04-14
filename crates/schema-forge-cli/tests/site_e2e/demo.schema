@@ -1,0 +1,14 @@
+// Minimal fixture used by the Playwright e2e smoke test. Keep this
+// narrow — the goal is to touch every render path the spec needs
+// (composite, enum, relation, datetime), not to be a full example.
+
+@display("name")
+schema Company {
+    name:     text(max: 255) required
+    status:   enum("active", "archived") default("active")
+    founded:  datetime
+    address:  composite {
+        city:        text(max: 128)
+        postal_code: text(max: 32)
+    }
+}
