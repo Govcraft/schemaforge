@@ -9,7 +9,8 @@
 //!   .schemaforge-hooks                 # sentinel (zero-byte)
 //!   .schemaforge-manifest.toml         # file ownership manifest
 //!   Cargo.toml                         # Owned, always rewritten
-//!   build.rs                           # Owned
+//!   build.rs                           # Owned; copies descriptor to project root
+//!   hooks_descriptor.bin               # Build artifact (stable path for runtime)
 //!   proto/
 //!     <schema>_hooks.proto             # Owned, one per annotated schema
 //!   src/
@@ -258,6 +259,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(false)
         .out_dir(&out_dir)
         .compile_protos(&proto_files, &[PathBuf::from("proto")])?;
+
+    // Copy the freshly-built descriptor to a stable path at the project root
+    // so the schemaforge runtime's `[[schema_forge.hooks.bindings]]` entry can
+    // reference `hooks-service/hooks_descriptor.bin` without picking up a stale
+    // copy. See schemaforge issue #15.
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    let stable_path = manifest_dir.join("hooks_descriptor.bin");
+    std::fs::copy(&descriptor_path, &stable_path)?;
 
     for f in &proto_files {
         println!("cargo:rerun-if-changed={}", f.display());
