@@ -7,22 +7,23 @@ import { RequireAuth } from "@/lib/require-auth"
 import { isAuthenticated, logout } from "@/lib/auth"
 
 export default function App() {
+  const authed = isAuthenticated()
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="border-b px-6 py-4 flex items-center gap-6">
-        <Link to="/" className="font-semibold">{{ project_name }}</Link>
-        <nav className="flex gap-4 text-sm text-muted-foreground">
-          {navEntries.map((n) => (
-            <Link key={n.kebab} to={`/app/${n.kebab}`}>
-              {n.title}
+      {authed && (
+        <header className="border-b px-6 py-4 flex items-center gap-6">
+          <Link to="/" className="font-semibold">{{ project_name }}</Link>
+          <nav className="flex gap-4 text-sm text-muted-foreground">
+            {navEntries.map((n) => (
+              <Link key={n.kebab} to={`/app/${n.kebab}`}>
+                {n.title}
+              </Link>
+            ))}
+            <Link to="/admin" className="font-medium">
+              Admin
             </Link>
-          ))}
-          <Link to="/admin" className="font-medium">
-            Admin
-          </Link>
-        </nav>
-        <div className="ml-auto">
-          {isAuthenticated() ? (
+          </nav>
+          <div className="ml-auto">
             <button
               type="button"
               onClick={logout}
@@ -30,13 +31,9 @@ export default function App() {
             >
               Sign out
             </button>
-          ) : (
-            <Link to="/login" className="text-sm text-muted-foreground hover:text-foreground">
-              Sign in
-            </Link>
-          )}
-        </div>
-      </header>
+          </div>
+        </header>
+      )}
       <main className="flex-1 p-6">
         <Routes>
           <Route path="/login" element={<LoginPage />} />
