@@ -1,8 +1,9 @@
 //! Pure-function mapping from [`FieldDefinition`] to [`FieldView`].
 //!
-//! v0 supports exactly: Text, Integer, Float, Boolean, DateTime, Enum,
-//! Relation(One). Everything else yields [`FieldMapError::Unsupported`] so
-//! the caller can choose to skip (with a warning) or hard-error.
+//! v0 supports: Text, Integer, Float, Boolean, DateTime, Enum, Relation(One),
+//! Relation(Many), RichText, Json, and Array of scalars (including enum).
+//! Composite fields and array-of-array / array-of-composite are still
+//! rejected with [`FieldMapError::Unsupported`].
 
 use schema_forge_core::types::{Cardinality, FieldDefinition, FieldType};
 
@@ -153,32 +154,134 @@ pub fn field_to_view(field: &FieldDefinition) -> Result<FieldView, FieldMapError
             ))
         }
         FieldType::Relation {
+            target,
             cardinality: Cardinality::Many,
-            ..
-        } => Err(FieldMapError::Unsupported {
-            field: field.name.as_str().to_string(),
-            reason: "relation(many) is not yet supported in v0 site generator".to_string(),
-        }),
-        FieldType::Array(_) => Err(FieldMapError::Unsupported {
-            field: field.name.as_str().to_string(),
-            reason: "array fields are not yet supported in v0 site generator".to_string(),
-        }),
+        } => {
+            // Form-side is a CSV string of ids; the edit handler splits on
+            // comma and the API type is `string[]`.
+            let zod = if required {
+                "z.string().min(1, \"Required\")".to_string()
+            } else {
+                "z.string().optional()".to_string()
+            };
+            Ok(make_field_view(
+                field,
+                "string[]".to_string(),
+                zod,
+                "relation_many",
+                true,
+                Some(target.as_str().to_string()),
+                Vec::new(),
+            ))
+        }
+        FieldType::Array(inner) => {
+            let (inner_kind, inner_ts, inner_variants) = describe_array_element(inner)
+                .map_err(|reason| FieldMapError::Unsupported {
+                    field: field.name.as_str().to_string(),
+                    reason,
+                })?;
+            let zod = if required {
+                "z.string().min(1, \"Required\")".to_string()
+            } else {
+                "z.string().optional()".to_string()
+            };
+            let base = make_field_view(
+                field,
+                format!("{inner_ts}[]"),
+                zod,
+                "array",
+                false,
+                None,
+                Vec::new(),
+            );
+            Ok(FieldView {
+                item_kind: Some(inner_kind.to_string()),
+                item_enum_variants: inner_variants,
+                ..base
+            })
+        }
+        FieldType::RichText => {
+            let zod = if required {
+                "z.string().min(1, \"Required\")".to_string()
+            } else {
+                "z.string().optional()".to_string()
+            };
+            Ok(make_field_view(
+                field,
+                "string".to_string(),
+                zod,
+                "rich_text",
+                false,
+                None,
+                Vec::new(),
+            ))
+        }
+        FieldType::Json => {
+            // Form-side is a raw string; edit handler runs JSON.parse before
+            // submit. The API type is unknown — we don't know the shape.
+            let zod = if required {
+                "z.string().min(1, \"Required\")".to_string()
+            } else {
+                "z.string().optional()".to_string()
+            };
+            Ok(make_field_view(
+                field,
+                "unknown".to_string(),
+                zod,
+                "json",
+                false,
+                None,
+                Vec::new(),
+            ))
+        }
         FieldType::Composite(_) => Err(FieldMapError::Unsupported {
             field: field.name.as_str().to_string(),
             reason: "composite fields are not yet supported in v0 site generator".to_string(),
-        }),
-        FieldType::RichText => Err(FieldMapError::Unsupported {
-            field: field.name.as_str().to_string(),
-            reason: "rich text is not yet supported in v0 site generator".to_string(),
-        }),
-        FieldType::Json => Err(FieldMapError::Unsupported {
-            field: field.name.as_str().to_string(),
-            reason: "json fields are not yet supported in v0 site generator".to_string(),
         }),
         other => Err(FieldMapError::Unsupported {
             field: field.name.as_str().to_string(),
             reason: format!("unsupported field type `{other}` in v0 site generator"),
         }),
+    }
+}
+
+/// Describe the element type of an array for projection into a [`FieldView`].
+///
+/// Returns `(kind, ts_type, enum_variants)` on success. Rejects nested
+/// arrays, composites, relations, rich text, and json — v0 only supports
+/// arrays of scalars and enums.
+fn describe_array_element(
+    inner: &FieldType,
+) -> Result<(&'static str, String, Vec<String>), String> {
+    match inner {
+        FieldType::Text(_) => Ok(("text", "string".to_string(), Vec::new())),
+        FieldType::Integer(_) => Ok(("integer", "number".to_string(), Vec::new())),
+        FieldType::Float(_) => Ok(("float", "number".to_string(), Vec::new())),
+        FieldType::Boolean => Ok(("boolean", "boolean".to_string(), Vec::new())),
+        FieldType::Enum(v) => {
+            let variants: Vec<String> = v.as_slice().iter().map(|s| s.to_string()).collect();
+            let ts_type = variants
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            Ok(("enum", format!("({ts_type})"), variants))
+        }
+        FieldType::DateTime => Ok(("datetime", "string".to_string(), Vec::new())),
+        FieldType::Array(_) => Err("nested arrays are not supported in v0 site generator".into()),
+        FieldType::Composite(_) => {
+            Err("arrays of composites are not supported in v0 site generator".into())
+        }
+        FieldType::Relation { .. } => {
+            Err("arrays of relations are not supported here — use `-> T[]` instead".into())
+        }
+        FieldType::RichText => {
+            Err("arrays of rich text are not supported in v0 site generator".into())
+        }
+        FieldType::Json => {
+            Err("arrays of json are not supported in v0 site generator".into())
+        }
+        other => Err(format!("array element type `{other}` is not supported in v0 site generator")),
     }
 }
 
@@ -324,8 +427,8 @@ mod tests {
     }
 
     #[test]
-    fn relation_many_is_unsupported() {
-        let err = field_to_view(&field(
+    fn relation_many_optional() {
+        let v = field_to_view(&field(
             "projects",
             FieldType::Relation {
                 target: SchemaName::new("Project").unwrap(),
@@ -333,34 +436,95 @@ mod tests {
             },
             false,
         ))
-        .unwrap_err();
-        let FieldMapError::Unsupported { reason, .. } = err;
-        assert!(reason.contains("relation(many)"));
+        .unwrap();
+        assert_eq!(v.kind, "relation_many");
+        assert_eq!(v.ts_type, "string[]");
+        assert_eq!(v.zod, "z.string().optional()");
+        assert!(v.is_relation);
+        assert_eq!(v.relation_target.as_deref(), Some("Project"));
     }
 
     #[test]
-    fn array_is_unsupported() {
-        let err = field_to_view(&field(
+    fn array_of_text_optional() {
+        let v = field_to_view(&field(
             "tags",
             FieldType::Array(Box::new(FieldType::Text(TextConstraints::unconstrained()))),
             false,
         ))
+        .unwrap();
+        assert_eq!(v.kind, "array");
+        assert_eq!(v.ts_type, "string[]");
+        assert_eq!(v.item_kind.as_deref(), Some("text"));
+        assert_eq!(v.zod, "z.string().optional()");
+    }
+
+    #[test]
+    fn array_of_integer_required() {
+        let v = field_to_view(&field(
+            "scores",
+            FieldType::Array(Box::new(FieldType::Integer(IntegerConstraints::unconstrained()))),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(v.kind, "array");
+        assert_eq!(v.ts_type, "number[]");
+        assert_eq!(v.item_kind.as_deref(), Some("integer"));
+        assert_eq!(v.zod, "z.string().min(1, \"Required\")");
+    }
+
+    #[test]
+    fn array_of_enum_carries_variants() {
+        let v = field_to_view(&field(
+            "labels",
+            FieldType::Array(Box::new(FieldType::Enum(
+                EnumVariants::new(vec!["bug".into(), "feature".into()]).unwrap(),
+            ))),
+            false,
+        ))
+        .unwrap();
+        assert_eq!(v.kind, "array");
+        assert_eq!(v.ts_type, "(\"bug\" | \"feature\")[]");
+        assert_eq!(v.item_kind.as_deref(), Some("enum"));
+        assert_eq!(v.item_enum_variants, vec!["bug".to_string(), "feature".to_string()]);
+    }
+
+    #[test]
+    fn array_of_array_is_unsupported() {
+        let err = field_to_view(&field(
+            "matrix",
+            FieldType::Array(Box::new(FieldType::Array(Box::new(FieldType::Boolean)))),
+            false,
+        ))
         .unwrap_err();
         let FieldMapError::Unsupported { reason, .. } = err;
-        assert!(reason.contains("array"));
+        assert!(reason.contains("nested arrays"));
     }
 
     #[test]
-    fn json_is_unsupported() {
-        let err = field_to_view(&field("metadata", FieldType::Json, false)).unwrap_err();
-        let FieldMapError::Unsupported { reason, .. } = err;
-        assert!(reason.contains("json"));
+    fn json_field_yields_json_kind() {
+        let v = field_to_view(&field("metadata", FieldType::Json, false)).unwrap();
+        assert_eq!(v.kind, "json");
+        assert_eq!(v.ts_type, "unknown");
+        assert_eq!(v.zod, "z.string().optional()");
     }
 
     #[test]
-    fn rich_text_is_unsupported() {
-        let err = field_to_view(&field("body", FieldType::RichText, false)).unwrap_err();
+    fn rich_text_yields_rich_text_kind() {
+        let v = field_to_view(&field("body", FieldType::RichText, false)).unwrap();
+        assert_eq!(v.kind, "rich_text");
+        assert_eq!(v.ts_type, "string");
+        assert_eq!(v.zod, "z.string().optional()");
+    }
+
+    #[test]
+    fn composite_is_still_unsupported() {
+        let err = field_to_view(&field(
+            "address",
+            FieldType::Composite(vec![]),
+            false,
+        ))
+        .unwrap_err();
         let FieldMapError::Unsupported { reason, .. } = err;
-        assert!(reason.contains("rich text"));
+        assert!(reason.contains("composite"));
     }
 }

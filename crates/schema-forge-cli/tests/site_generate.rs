@@ -34,7 +34,10 @@ schema Department {
 /// Schema with an only-unsupported field — used to assert the clean error path.
 const UNSUPPORTED_SCHEMA: &str = r#"
 schema Bad {
-    tags: text[]
+    address: composite {
+        street: text
+        city:   text required
+    }
 }
 "#;
 

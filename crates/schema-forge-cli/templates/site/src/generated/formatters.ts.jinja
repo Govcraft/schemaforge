@@ -10,6 +10,10 @@ type Kind =
   | "datetime"
   | "enum"
   | "relation_one"
+  | "relation_many"
+  | "array"
+  | "rich_text"
+  | "json"
 
 export type FieldDisplayHints = {
   kind: Kind
@@ -117,6 +121,10 @@ function formatPercent(value: unknown): string {
 /// falls back to the field's native kind. Returns `—` for nullish values.
 export function formatFieldValue(value: unknown, hints: FieldDisplayHints): string {
   if (value === null || value === undefined || value === "") return EMPTY
+  if (Array.isArray(value)) {
+    if (value.length === 0) return EMPTY
+    return value.map((v) => String(v)).join(", ")
+  }
 
   // 1. Explicit @format wins.
   switch (hints.format) {
@@ -163,6 +171,14 @@ export function formatFieldValue(value: unknown, hints: FieldDisplayHints): stri
     case "integer":
     case "float":
       return new Intl.NumberFormat().format(Number(value))
+    case "json": {
+      if (typeof value === "string") return value
+      try {
+        return JSON.stringify(value)
+      } catch {
+        return String(value)
+      }
+    }
     default:
       return String(value)
   }

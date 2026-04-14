@@ -94,6 +94,11 @@ pub struct FieldView {
     pub widget: Option<String>,
     /// `@format("...")` hint as the canonical snake_case token, if present.
     pub format: Option<String>,
+    /// For `kind == "array"`: the scalar kind of each element
+    /// (`"text"`, `"integer"`, `"float"`, `"boolean"`, `"enum"`).
+    pub item_kind: Option<String>,
+    /// For `kind == "array"` whose elements are enums: the variant list.
+    pub item_enum_variants: Vec<String>,
 }
 
 /// Derive the canonical lowerCamelCase JS property name for a DSL field name.
@@ -130,5 +135,7 @@ pub fn make_field_view(
         kind: kind.to_string(),
         widget: field.widget_type_hint().map(|w| w.as_str().to_string()),
         format: field.format_type_hint().map(|fmt| fmt.as_str().to_string()),
+        item_kind: None,
+        item_enum_variants: Vec::new(),
     }
 }

@@ -43,9 +43,12 @@ export function {{ entity.pascal }}Edit() {
     enabled: isEdit,
   })
 
-  // Convert server ISO-8601 timestamps to the `YYYY-MM-DDTHH:MM` local-time
-  // shape `<input type="datetime-local">` accepts for its `value` prop.
-  // Without this, edit mode silently drops existing datetime values.
+  // Convert server representations into the form-friendly shapes each
+  // `<input>` / `<textarea>` expects for its `value` prop:
+  //   - datetime ISO-8601  -> local-time "YYYY-MM-DDTHH:MM"
+  //   - array / relation[] -> comma-separated string
+  //   - json object        -> pretty-printed JSON text
+  // Without this, edit mode silently drops (or garbles) existing values.
   const initialValues = useMemo<{{ entity.pascal }}FormValues | undefined>(() => {
     if (!data) return undefined
     const v: Record<string, unknown> = { ...(data as unknown as Record<string, unknown>) }
@@ -58,6 +61,20 @@ export function {{ entity.pascal }}Edit() {
         v["{{ f.name }}"] =
           `${_d.getFullYear()}-${_pad(_d.getMonth() + 1)}-${_pad(_d.getDate())}` +
           `T${_pad(_d.getHours())}:${_pad(_d.getMinutes())}`
+      }
+    }
+{%- elif f.kind == "array" or f.kind == "relation_many" %}
+    if (Array.isArray(v["{{ f.name }}"])) {
+      v["{{ f.name }}"] = (v["{{ f.name }}"] as unknown[])
+        .map((x) => (x === null || x === undefined ? "" : String(x)))
+        .join(", ")
+    }
+{%- elif f.kind == "json" %}
+    if (v["{{ f.name }}"] !== null && v["{{ f.name }}"] !== undefined && typeof v["{{ f.name }}"] !== "string") {
+      try {
+        v["{{ f.name }}"] = JSON.stringify(v["{{ f.name }}"], null, 2)
+      } catch {
+        v["{{ f.name }}"] = ""
       }
     }
 {%- endif %}
@@ -84,6 +101,42 @@ export function {{ entity.pascal }}Edit() {
         if (!isNaN(_d.getTime())) payload["{{ f.name }}"] = _d.toISOString()
       } else {
         delete payload["{{ f.name }}"]
+      }
+{%- elif f.kind == "array" or f.kind == "relation_many" %}
+      {
+        const _raw = payload["{{ f.name }}"]
+        if (typeof _raw === "string" && _raw.trim() !== "") {
+          const _parts = _raw
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s !== "")
+{%- if f.item_kind == "integer" or f.item_kind == "float" %}
+          payload["{{ f.name }}"] = _parts.map((s) => Number(s))
+{%- elif f.item_kind == "boolean" %}
+          payload["{{ f.name }}"] = _parts.map((s) => s === "true" || s === "1" || s === "yes")
+{%- else %}
+          payload["{{ f.name }}"] = _parts
+{%- endif %}
+        } else {
+          delete payload["{{ f.name }}"]
+        }
+      }
+{%- elif f.kind == "json" %}
+      {
+        const _raw = payload["{{ f.name }}"]
+        if (typeof _raw === "string" && _raw.trim() !== "") {
+          try {
+            payload["{{ f.name }}"] = JSON.parse(_raw)
+          } catch (e) {
+            form.setError("{{ f.name }}", {
+              type: "manual",
+              message: `Invalid JSON: ${(e as Error).message}`,
+            })
+            throw e
+          }
+        } else {
+          delete payload["{{ f.name }}"]
+        }
       }
 {%- elif not f.required %}
       if (payload["{{ f.name }}"] === "" || payload["{{ f.name }}"] === undefined || payload["{{ f.name }}"] === null) {
@@ -139,8 +192,35 @@ export function {{ entity.pascal }}Edit() {
 {%- elif f.kind == "datetime" %}
                     <Input type="datetime-local" {...field} value={field.value as string | undefined ?? ""} />
 {%- elif f.kind == "relation_one" %}
-                    {/* v0: relation target id as a plain text input — a combobox lands in task 4. */}
+                    {/* v0: relation target id as a plain text input — a combobox is a follow-up. */}
                     <Input placeholder="{{ f.relation_target }} id" {...field} value={field.value as string | undefined ?? ""} />
+{%- elif f.kind == "relation_many" %}
+                    <Input
+                      placeholder="comma-separated {{ f.relation_target }} ids"
+                      {...field}
+                      value={field.value as string | undefined ?? ""}
+                    />
+{%- elif f.kind == "array" %}
+                    <Input
+                      placeholder="comma-separated values"
+                      {...field}
+                      value={field.value as string | undefined ?? ""}
+                    />
+{%- elif f.kind == "rich_text" %}
+                    <textarea
+                      {...field}
+                      value={field.value as string | undefined ?? ""}
+                      rows={6}
+                      className="flex min-h-[6rem] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    />
+{%- elif f.kind == "json" %}
+                    <textarea
+                      {...field}
+                      value={field.value as string | undefined ?? ""}
+                      rows={6}
+                      placeholder='{"key": "value"}'
+                      className="flex min-h-[6rem] w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    />
 {%- else %}
                     <Input {...field} value={field.value as string | undefined ?? ""} />
 {%- endif %}
