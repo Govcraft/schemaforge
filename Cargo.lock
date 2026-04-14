@@ -5373,7 +5373,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "acton-service",
  "assert_cmd",
