@@ -336,24 +336,52 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         renderer.render("src/pages/login.tsx", ctx)?,
     ));
 
-    // ---- `/app/*`: per-entity user-facing pages (Preserve) ----
+    // ---- `/app/*`: per-entity user-facing pages ----
     //
     // Lives under `src/app/pages/<kebab>/` so the path mirrors the route
-    // tree (`/app/<kebab>`). Users are free to restyle these — subsequent
-    // generator runs leave them alone unless `--force-user-files` is set.
+    // tree (`/app/<kebab>`). Each page is split across two files:
+    //
+    //   * `<page>.generated.tsx` — Owned. Schema-driven data and helpers
+    //     (column definitions, form-field rendering, detail rows, sort /
+    //     filter whitelists, enum badge metadata). Always regenerated on
+    //     every `site generate` run so schema edits flow through without
+    //     the user having to do anything.
+    //
+    //   * `<page>.tsx`            — Preserve. A thin shell that imports
+    //     the symbols from its `.generated` sibling and composes them
+    //     into the final page. Users own these: restyle freely, drop in
+    //     charts, add state, intercept the mutation — subsequent
+    //     generator runs leave them alone unless `--force-user-files` is
+    //     set.
+    //
+    // The split is the answer to issue #40: schema changes stop
+    // clobbering user customizations, because the only bytes that need to
+    // be rewritten live in the Owned sibling.
     for entity in &ctx.entities {
         let page_ctx = PageContext {
             project_name: ctx.project_name.clone(),
             entity: entity.clone(),
         };
         let page_dir = format!("src/app/pages/{}", entity.kebab);
+        plan.push(owned(
+            &format!("{page_dir}/list.generated.tsx"),
+            renderer.render("src/app/pages/list.generated.tsx", &page_ctx)?,
+        ));
         plan.push(preserve(
             &format!("{page_dir}/list.tsx"),
             renderer.render("src/app/pages/list.tsx", &page_ctx)?,
         ));
+        plan.push(owned(
+            &format!("{page_dir}/detail.generated.tsx"),
+            renderer.render("src/app/pages/detail.generated.tsx", &page_ctx)?,
+        ));
         plan.push(preserve(
             &format!("{page_dir}/detail.tsx"),
             renderer.render("src/app/pages/detail.tsx", &page_ctx)?,
+        ));
+        plan.push(owned(
+            &format!("{page_dir}/edit.generated.tsx"),
+            renderer.render("src/app/pages/edit.generated.tsx", &page_ctx)?,
         ));
         plan.push(preserve(
             &format!("{page_dir}/edit.tsx"),
@@ -514,8 +542,8 @@ mod tests {
 
         let renderer = SiteRenderer::new(None).unwrap();
         let rendered = renderer
-            .render("src/app/pages/list.tsx", &page_ctx)
-            .expect("list template must render");
+            .render("src/app/pages/list.generated.tsx", &page_ctx)
+            .expect("list.generated template must render");
 
         // Per-field color map emitted in declaration order.
         assert!(
@@ -628,8 +656,8 @@ mod tests {
         };
         let renderer = SiteRenderer::new(None).unwrap();
         let rendered = renderer
-            .render("src/app/pages/list.tsx", &page_ctx)
-            .expect("list template must render");
+            .render("src/app/pages/list.generated.tsx", &page_ctx)
+            .expect("list.generated template must render");
 
         // Primary cell renders as a distinctive link with font-semibold.
         assert!(

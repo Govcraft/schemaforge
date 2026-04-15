@@ -1,0 +1,102 @@
+// Schema-driven scaffold for the {{ entity.title }} detail page — always
+// regenerated from the `.schema` file. This file carries the read-only
+// row rendering that has to stay in lock-step with the schema. The
+// sibling `detail.tsx` preserve file imports this component and composes
+// it into the final page, so users can customize layout, section
+// headers, and surrounding widgets there without ever touching the
+// schema-shaped data here.
+import { Link } from "react-router-dom"
+import type { {{ entity.pascal }} } from "@/generated/entity-types"
+import { formatFieldValue } from "@/generated/formatters"
+
+// Default rendering of every field on the entity in schema declaration
+// order. The preserve `detail.tsx` file composes this component inside
+// its layout — wrap it or inline alternative widgets as your page evolves.
+export function {{ entity.pascal }}DetailRows({ data }: { data: {{ entity.pascal }} }) {
+  return (
+    <>
+{%- for f in entity.fields %}
+{%- if f.kind == "composite" %}
+      <div className="pt-2">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground mb-1">
+          {{ f.label }}
+        </div>
+        <div className="pl-3 border-l space-y-1">
+{%- for sub in f.sub_fields %}
+          <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
+            <span className="text-muted-foreground">{{ sub.label }}</span>
+            <span>
+              {formatFieldValue(
+                (data as unknown as Record<string, unknown>)["{{ f.leaf }}"] &&
+                  ((data as unknown as Record<string, unknown>)["{{ f.leaf }}"] as Record<string, unknown>)["{{ sub.leaf }}"],
+                {
+                  kind: "{{ sub.kind }}",
+{%- if sub.widget %}
+                  widget: "{{ sub.widget }}",
+{%- endif %}
+{%- if sub.format %}
+                  format: "{{ sub.format }}",
+{%- endif %}
+                },
+              )}
+            </span>
+          </div>
+{%- endfor %}
+        </div>
+      </div>
+{%- elif f.kind == "relation_one" and f.relation_display_field %}
+      <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
+        <span className="text-muted-foreground">{{ f.label }}</span>
+        <span>
+          {data.{{ f.leaf }} ? (
+            <Link className="underline" to={`/app/{{ f.relation_target_kebab }}/${data.{{ f.leaf }}}`}>
+              {data.{{ f.leaf }}__display ?? data.{{ f.leaf }}}
+            </Link>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </span>
+      </div>
+{%- elif f.kind == "relation_many" and f.relation_display_field %}
+      <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
+        <span className="text-muted-foreground">{{ f.label }}</span>
+        <span>
+          {(() => {
+            const ids = (data.{{ f.leaf }} ?? []) as string[]
+            const labels = (data.{{ f.leaf }}__display ?? []) as (string | null)[]
+            if (ids.length === 0) return <span className="text-muted-foreground">—</span>
+            return (
+              <span>
+                {ids.map((id, i) => (
+                  <span key={id}>
+                    {i > 0 ? ", " : ""}
+                    <Link className="underline" to={`/app/{{ f.relation_target_kebab }}/${id}`}>
+                      {labels[i] ?? id}
+                    </Link>
+                  </span>
+                ))}
+              </span>
+            )
+          })()}
+        </span>
+      </div>
+{%- else %}
+      <div className="grid grid-cols-[160px_1fr] gap-2 text-sm">
+        <span className="text-muted-foreground">{{ f.label }}</span>
+        <span>
+          {formatFieldValue(data.{{ f.leaf }}, {
+            kind: "{{ f.kind }}",
+{%- if f.widget %}
+            widget: "{{ f.widget }}",
+{%- endif %}
+{%- if f.format %}
+            format: "{{ f.format }}",
+{%- endif %}
+          })}
+        </span>
+      </div>
+{%- endif %}
+{%- endfor %}
+    </>
+  )
+}

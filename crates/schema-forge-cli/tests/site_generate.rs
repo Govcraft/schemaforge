@@ -113,11 +113,16 @@ fn fresh_generate_emits_expected_tree() {
     }
 
     // Preserve pages — per-entity pages now live under src/app/pages/.
+    // Each page is split into a Preserve shell (`.tsx`) and an Owned
+    // schema-driven sibling (`.generated.tsx`) — see issue #40.
     for f in [
         "src/pages/login.tsx",
         "src/app/pages/employee/list.tsx",
+        "src/app/pages/employee/list.generated.tsx",
         "src/app/pages/employee/detail.tsx",
+        "src/app/pages/employee/detail.generated.tsx",
         "src/app/pages/employee/edit.tsx",
+        "src/app/pages/employee/edit.generated.tsx",
     ] {
         assert!(out_dir.join(f).exists(), "missing {f}");
     }
@@ -251,6 +256,69 @@ fn preserve_pages_survive_rerun() {
 
     let after = fs::read_to_string(&list_path).unwrap();
     assert_eq!(after, "// user edit\n");
+}
+
+#[test]
+fn issue_40_preserve_shell_survives_while_generated_refreshes() {
+    // Acceptance criterion from #40: schema changes flow into the
+    // per-entity pages without touching user-owned layout or composition.
+    // The Preserve `.tsx` shell must stay byte-identical, while the Owned
+    // `.generated.tsx` sibling picks up the new schema shape on every run.
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+
+    // Round 1: generate from a simple schema.
+    let schema_v1 = r#"
+@display("name")
+schema Widget {
+    name: text(max: 255) required
+}
+"#;
+    write_schemas(&schema_dir, schema_v1);
+    run_generate(&schema_dir, &out_dir, "Widget", &[])
+        .assert()
+        .success();
+
+    // User takes ownership of the preserve shell. This simulates the
+    // real pain point in #40 — dropping a chart or custom state into
+    // `list.tsx` and expecting it to survive future regens.
+    let list_shell = out_dir.join("src/app/pages/widget/list.tsx");
+    let user_content = "// bespoke composition owned by the user\n";
+    fs::write(&list_shell, user_content).unwrap();
+
+    // Round 2: schema grows a new column.
+    let schema_v2 = r#"
+@display("name")
+schema Widget {
+    name: text(max: 255) required
+    sku: text(max: 64) required
+}
+"#;
+    write_schemas(&schema_dir, schema_v2);
+    run_generate(&schema_dir, &out_dir, "Widget", &[])
+        .assert()
+        .success();
+
+    // Preserve shell is untouched.
+    assert_eq!(
+        fs::read_to_string(&list_shell).unwrap(),
+        user_content,
+        "preserve shell must survive regen without --force-user-files",
+    );
+
+    // Generated sibling picked up the new column without any user action.
+    let list_gen =
+        fs::read_to_string(out_dir.join("src/app/pages/widget/list.generated.tsx")).unwrap();
+    assert!(
+        list_gen.contains("accessorKey: \"sku\""),
+        "list.generated.tsx must refresh with new schema fields:\n{list_gen}"
+    );
+
+    // And the idempotence check still passes end-to-end.
+    run_generate(&schema_dir, &out_dir, "Widget", &["--check"])
+        .assert()
+        .success();
 }
 
 #[test]
@@ -410,10 +478,14 @@ fn derived_inverse_collection_skipped_in_forms() {
         "derived field `documents` must not appear in opportunitySchema:\n{opp_block}"
     );
 
-    // Edit template must not render a FormField for `documents`.
-    let edit = fs::read_to_string(out_dir.join("src/app/pages/opportunity/edit.tsx")).unwrap();
+    // Edit form schema must not render a FormField for `documents`. The
+    // schema-driven form-field rendering lives in the Owned
+    // `edit.generated.tsx` sibling now (see issue #40).
+    let edit_gen =
+        fs::read_to_string(out_dir.join("src/app/pages/opportunity/edit.generated.tsx"))
+            .unwrap();
     assert!(
-        !edit.contains("name=\"documents\""),
+        !edit_gen.contains("name=\"documents\""),
         "edit form should not render a control for derived field `documents`"
     );
     // The non-derived child-side FK on Document still wires up its edit
@@ -421,10 +493,10 @@ fn derived_inverse_collection_skipped_in_forms() {
     run_generate(&schema_dir, &out_dir, "Document", &[])
         .assert()
         .success();
-    let doc_edit =
-        fs::read_to_string(out_dir.join("src/app/pages/document/edit.tsx")).unwrap();
+    let doc_edit_gen =
+        fs::read_to_string(out_dir.join("src/app/pages/document/edit.generated.tsx")).unwrap();
     assert!(
-        doc_edit.contains("name=\"opportunity\""),
+        doc_edit_gen.contains("name=\"opportunity\""),
         "child-side FK should still render as an editable relation_one control"
     );
 }

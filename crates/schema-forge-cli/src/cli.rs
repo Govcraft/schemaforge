@@ -147,7 +147,10 @@ pub struct SiteGenerateArgs {
     #[arg(long)]
     pub schema: Option<String>,
 
-    /// Overwrite `Preserve`-mode user files (e.g. `src/pages/<entity>/list.tsx`).
+    /// Overwrite `Preserve`-mode user files (e.g. the per-entity
+    /// `src/app/pages/<entity>/{list,detail,edit}.tsx` shells). In the
+    /// common case you should not need this — schema-driven data lives
+    /// in the `.generated.tsx` siblings, which are always regenerated.
     #[arg(long = "force-user-files", alias = "force")]
     pub force_user_files: bool,
 

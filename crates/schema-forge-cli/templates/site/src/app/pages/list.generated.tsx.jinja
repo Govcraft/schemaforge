@@ -1,0 +1,177 @@
+// Schema-driven scaffold for the {{ entity.title }} list page — always
+// regenerated from the `.schema` file. This file carries the column
+// definitions, sort/filter whitelists, and enum badge metadata that have
+// to stay in lock-step with the schema. The sibling `list.tsx` preserve
+// file imports these symbols and composes them into the final page, so
+// users can customize layout and add components there without ever
+// touching the schema-shaped data here.
+import { Link } from "react-router-dom"
+import type { ColumnDef } from "@tanstack/react-table"
+import type { {{ entity.pascal }} } from "@/generated/entity-types"
+import { formatFieldValue } from "@/generated/formatters"
+
+// Semantic color tokens from `@enum_colors(...)` mapped to Tailwind badge
+// classes. Kept inline so every referenced class is picked up by the JIT
+// scan without needing a safelist.
+const ENUM_BADGE_CLASSES: Record<string, string> = {
+  neutral: "bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200",
+  gray: "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200",
+  red: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
+  amber: "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200",
+  green: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
+  blue: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200",
+  purple: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-200",
+  violet: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-200",
+  teal: "bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-200",
+  rose: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200",
+}
+
+// Per-field @enum_colors map: field name → (variant → color token). Only
+// enum fields that actually carry an `@enum_colors(...)` annotation appear
+// here; other enum fields render as plain text.
+export const ENUM_COLORS: Record<string, Record<string, string>> = {
+{%- for f in entity.fields %}
+{%- if f.kind == "enum" and f.enum_colors %}
+  "{{ f.leaf }}": {
+{%- for variant, color in f.enum_colors | items %}
+    "{{ variant }}": "{{ color }}",
+{%- endfor %}
+  },
+{%- endif %}
+{%- endfor %}
+}
+
+export function EnumBadge({
+  field,
+  value,
+}: {
+  field: string
+  value: unknown
+}) {
+  if (value === null || value === undefined || value === "") return <span>—</span>
+  const colorMap = ENUM_COLORS[field]
+  const color = colorMap?.[String(value)] ?? "neutral"
+  const classes = ENUM_BADGE_CLASSES[color] ?? ENUM_BADGE_CLASSES.neutral
+  return (
+    <span
+      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${classes}`}
+    >
+      {String(value)}
+    </span>
+  )
+}
+
+// Column curation is driven by each field's `@list(...)` hint (resolved in
+// the generator). `primary` is rendered first after ID with display styling;
+// `column` fields render in declaration order; `hidden` fields are omitted.
+export const columns: ColumnDef<{{ entity.pascal }}>[] = [
+  {
+    accessorKey: "id",
+    header: "ID",
+    cell: ({ row }) => (
+      <Link className="underline" to={`/app/{{ entity.kebab }}/${row.original.id}`}>
+        {row.original.id}
+      </Link>
+    ),
+  },
+{%- for f in entity.fields %}
+{%- if f.list_placement == "primary" %}
+  {
+    accessorKey: "{{ f.leaf }}",
+    header: "{{ f.label }}",
+    cell: ({ row }) => (
+      <Link
+        className="font-semibold text-foreground hover:underline"
+        to={`/app/{{ entity.kebab }}/${row.original.id}`}
+      >
+{%- if f.kind == "enum" %}
+        <EnumBadge field="{{ f.leaf }}" value={row.original.{{ f.leaf }}} />
+{%- else %}
+        {formatFieldValue(row.original.{{ f.leaf }}, {
+          kind: "{{ f.kind }}",
+{%- if f.widget %}
+          widget: "{{ f.widget }}",
+{%- endif %}
+{%- if f.format %}
+          format: "{{ f.format }}",
+{%- endif %}
+        })}
+{%- endif %}
+      </Link>
+    ),
+  },
+{%- endif %}
+{%- endfor %}
+{%- for f in entity.fields %}
+{%- if f.list_placement == "column" %}
+  {
+    accessorKey: "{{ f.leaf }}",
+    header: "{{ f.label }}",
+{%- if f.kind == "enum" %}
+    cell: ({ row }) => (
+      <EnumBadge field="{{ f.leaf }}" value={row.original.{{ f.leaf }}} />
+    ),
+{%- elif f.kind == "relation_one" and f.relation_display_field %}
+    cell: ({ row }) => {
+      const label = row.original.{{ f.leaf }}__display ?? row.original.{{ f.leaf }} ?? ""
+      const id = row.original.{{ f.leaf }}
+      if (!id) return <span className="text-muted-foreground">—</span>
+      return (
+        <Link className="underline" to={`/app/{{ f.relation_target_kebab }}/${id}`}>
+          {String(label)}
+        </Link>
+      )
+    },
+{%- elif f.kind == "relation_many" and f.relation_display_field %}
+    cell: ({ row }) => {
+      const ids = (row.original.{{ f.leaf }} ?? []) as string[]
+      const labels = (row.original.{{ f.leaf }}__display ?? []) as (string | null)[]
+      if (ids.length === 0) return <span className="text-muted-foreground">—</span>
+      return (
+        <span>
+          {ids.map((id, i) => (
+            <span key={id}>
+              {i > 0 ? ", " : ""}
+              <Link className="underline" to={`/app/{{ f.relation_target_kebab }}/${id}`}>
+                {labels[i] ?? id}
+              </Link>
+            </span>
+          ))}
+        </span>
+      )
+    },
+{%- else %}
+    cell: ({ row }) =>
+      formatFieldValue(row.original.{{ f.leaf }}, {
+        kind: "{{ f.kind }}",
+{%- if f.widget %}
+        widget: "{{ f.widget }}",
+{%- endif %}
+{%- if f.format %}
+        format: "{{ f.format }}",
+{%- endif %}
+      }),
+{%- endif %}
+  },
+{%- endif %}
+{%- endfor %}
+]
+
+// Fields (excluding `id`) that correspond to visible columns — used as the
+// whitelist for click-to-sort.
+export const SORTABLE_FIELDS: readonly string[] = [
+{%- for f in entity.fields %}
+{%- if f.list_placement == "primary" or f.list_placement == "column" %}
+  "{{ f.leaf }}",
+{%- endif %}
+{%- endfor %}
+]
+
+// Text-like visible fields eligible for the contains filter.
+export const FILTERABLE_FIELDS: readonly string[] = [
+{%- for f in entity.fields %}
+{%- if (f.list_placement == "primary" or f.list_placement == "column") and (f.kind == "text" or f.kind == "enum") %}
+  "{{ f.leaf }}",
+{%- endif %}
+{%- endfor %}
+]
