@@ -149,6 +149,11 @@ fn fresh_generate_emits_expected_tree() {
     // Task 4: the client threads the Bearer token through tokenStore.
     assert!(api.contains("tokenStore.get()"));
     assert!(api.contains("Bearer ${token}"));
+    // GH #36: rawEntityList opts out of the parallel COUNT(*) query, and
+    // listQuery forwards `count: false` when set.
+    assert!(api.contains("count?: boolean"));
+    assert!(api.contains("count === false"));
+    assert!(api.contains("count: false"));
 
     // Task 4: auth.ts exposes the expected surface.
     let auth_ts = fs::read_to_string(out_dir.join("src/lib/auth.ts")).unwrap();

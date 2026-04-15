@@ -52,7 +52,7 @@ fn field_to_view_with_prefix(
                 zod.push_str(&format!(".max({max})"));
             }
             if !required {
-                zod.push_str(".optional()");
+                zod.push_str(".nullish()");
             }
             Ok(make_field_view(
                 field,
@@ -67,7 +67,7 @@ fn field_to_view_with_prefix(
         FieldType::Integer(_) => {
             let mut zod = "z.coerce.number().int()".to_string();
             if !required {
-                zod.push_str(".optional()");
+                zod.push_str(".nullish()");
             }
             Ok(make_field_view(
                 field,
@@ -82,7 +82,7 @@ fn field_to_view_with_prefix(
         FieldType::Float(_) => {
             let mut zod = "z.coerce.number()".to_string();
             if !required {
-                zod.push_str(".optional()");
+                zod.push_str(".nullish()");
             }
             Ok(make_field_view(
                 field,
@@ -97,7 +97,7 @@ fn field_to_view_with_prefix(
         FieldType::Boolean => {
             let mut zod = "z.boolean()".to_string();
             if !required {
-                zod.push_str(".optional()");
+                zod.push_str(".nullish()");
             }
             Ok(make_field_view(
                 field,
@@ -117,7 +117,7 @@ fn field_to_view_with_prefix(
             let zod = if required {
                 "z.string().min(1, \"Required\")".to_string()
             } else {
-                "z.string().optional()".to_string()
+                "z.string().nullish()".to_string()
             };
             Ok(make_field_view(
                 field,
@@ -143,7 +143,7 @@ fn field_to_view_with_prefix(
                 .join(", ");
             let mut zod = format!("z.enum([{variant_list}] as const)");
             if !required {
-                zod.push_str(".optional()");
+                zod.push_str(".nullish()");
             }
             Ok(make_field_view(
                 field, ts_type, zod, "enum", false, None, variants,
@@ -155,7 +155,7 @@ fn field_to_view_with_prefix(
         } => {
             let mut zod = "z.string()".to_string();
             if !required {
-                zod.push_str(".optional()");
+                zod.push_str(".nullish()");
             }
             let base = make_field_view(
                 field,
@@ -177,7 +177,7 @@ fn field_to_view_with_prefix(
             let zod = if required {
                 "z.string().min(1, \"Required\")".to_string()
             } else {
-                "z.string().optional()".to_string()
+                "z.string().nullish()".to_string()
             };
             let base = make_field_view(
                 field,
@@ -194,7 +194,7 @@ fn field_to_view_with_prefix(
             let zod = if required {
                 "z.string().min(1, \"Required\")".to_string()
             } else {
-                "z.string().optional()".to_string()
+                "z.string().nullish()".to_string()
             };
             match describe_array_element(inner) {
                 Ok((inner_kind, inner_ts, inner_variants)) => {
@@ -235,7 +235,7 @@ fn field_to_view_with_prefix(
             let zod = if required {
                 "z.string().min(1, \"Required\")".to_string()
             } else {
-                "z.string().optional()".to_string()
+                "z.string().nullish()".to_string()
             };
             Ok(make_field_view(
                 field,
@@ -253,7 +253,7 @@ fn field_to_view_with_prefix(
             let zod = if required {
                 "z.string().min(1, \"Required\")".to_string()
             } else {
-                "z.string().optional()".to_string()
+                "z.string().nullish()".to_string()
             };
             Ok(make_field_view(
                 field,
@@ -300,7 +300,7 @@ fn field_to_view_with_prefix(
             let ts_type = format!("{{ {} }}", ts_parts.join(", "));
             let mut zod = format!("z.object({{ {} }})", zod_parts.join(", "));
             if !required {
-                zod.push_str(".optional()");
+                zod.push_str(".nullish()");
             }
             let mut view =
                 make_field_view(field, ts_type, zod, "composite", false, None, Vec::new());
@@ -459,7 +459,7 @@ mod tests {
             false,
         ))
         .unwrap();
-        assert_eq!(v.zod, "z.string().optional()");
+        assert_eq!(v.zod, "z.string().nullish()");
         assert!(!v.required);
     }
 
@@ -483,7 +483,7 @@ mod tests {
             false,
         ))
         .unwrap();
-        assert_eq!(v.zod, "z.coerce.number().optional()");
+        assert_eq!(v.zod, "z.coerce.number().nullish()");
     }
 
     #[test]
@@ -498,7 +498,7 @@ mod tests {
         let v = project(&field("created_at", FieldType::DateTime, false)).unwrap();
         assert_eq!(v.ts_type, "string");
         assert_eq!(v.kind, "datetime");
-        assert_eq!(v.zod, "z.string().optional()");
+        assert_eq!(v.zod, "z.string().nullish()");
     }
 
     #[test]
@@ -578,7 +578,7 @@ mod tests {
         .unwrap();
         assert_eq!(v.kind, "relation_many");
         assert_eq!(v.ts_type, "string[]");
-        assert_eq!(v.zod, "z.string().optional()");
+        assert_eq!(v.zod, "z.string().nullish()");
         assert!(v.is_relation);
         assert_eq!(v.relation_target.as_deref(), Some("Project"));
     }
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(v.kind, "array");
         assert_eq!(v.ts_type, "string[]");
         assert_eq!(v.item_kind.as_deref(), Some("text"));
-        assert_eq!(v.zod, "z.string().optional()");
+        assert_eq!(v.zod, "z.string().nullish()");
     }
 
     #[test]
@@ -642,7 +642,7 @@ mod tests {
         .unwrap();
         assert_eq!(v.kind, "json");
         assert_eq!(v.ts_type, "boolean[][]");
-        assert_eq!(v.zod, "z.string().optional()");
+        assert_eq!(v.zod, "z.string().nullish()");
     }
 
     #[test]
@@ -674,7 +674,7 @@ mod tests {
         let v = project(&field("metadata", FieldType::Json, false)).unwrap();
         assert_eq!(v.kind, "json");
         assert_eq!(v.ts_type, "unknown");
-        assert_eq!(v.zod, "z.string().optional()");
+        assert_eq!(v.zod, "z.string().nullish()");
     }
 
     #[test]
@@ -682,7 +682,7 @@ mod tests {
         let v = project(&field("body", FieldType::RichText, false)).unwrap();
         assert_eq!(v.kind, "rich_text");
         assert_eq!(v.ts_type, "string");
-        assert_eq!(v.zod, "z.string().optional()");
+        assert_eq!(v.zod, "z.string().nullish()");
     }
 
     #[test]
@@ -712,10 +712,10 @@ mod tests {
         // Inline object TS type reflects required/optional markers.
         assert!(v.ts_type.contains("city: string"));
         assert!(v.ts_type.contains("postal_code?: string"));
-        // Zod is a z.object(...) + .optional() (since the composite itself
+        // Zod is a z.object(...) + .nullish() (since the composite itself
         // is not required on this test fixture).
         assert!(v.zod.starts_with("z.object({ city:"));
-        assert!(v.zod.ends_with(".optional()"));
+        assert!(v.zod.ends_with(".nullish()"));
     }
 
     #[test]

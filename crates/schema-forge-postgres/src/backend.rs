@@ -11,7 +11,9 @@ use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
-use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaName, WidgetRepair};
+use schema_forge_core::types::{
+    DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName, WidgetRepair,
+};
 use sqlx::postgres::{PgArguments, PgPool, PgPoolOptions, PgRow};
 use sqlx::{Arguments, Row};
 
@@ -299,6 +301,77 @@ impl PgBackend {
     /// currently bind array literals; native-array binding is only needed for
     /// column writes (INSERT/UPDATE), which go through `build_insert` /
     /// `build_update` with schema context.
+    /// Re-type legacy `NUMERIC` columns produced by early Postgres codegen
+    /// back to `DOUBLE PRECISION` for any `Float` field in `definition`.
+    ///
+    /// Introspects `information_schema.columns` for the schema's table and
+    /// issues `ALTER TABLE ... ALTER COLUMN ... TYPE DOUBLE PRECISION
+    /// USING "col"::double precision` for each Float column whose live
+    /// type is `numeric`. Columns that don't exist yet (the table may be
+    /// created by the subsequent migration), or that already live in
+    /// `double precision`, are skipped. See GH #37.
+    async fn repair_float_columns(
+        &self,
+        definition: &SchemaDefinition,
+    ) -> Result<(), BackendError> {
+        let float_columns: Vec<&str> = definition
+            .fields
+            .iter()
+            .filter(|f| matches!(f.field_type, FieldType::Float(_)))
+            .map(|f| f.name.as_str())
+            .collect();
+        if float_columns.is_empty() {
+            return Ok(());
+        }
+
+        let table = definition.name.as_str();
+        // Pull every column's live data_type for this table in a single
+        // round-trip, then filter in Rust. Using a plain scalar comparison
+        // avoids threading a text[] parameter through sqlx.
+        let rows = sqlx::query(
+            "SELECT column_name, data_type \
+             FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = $1;",
+        )
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| BackendError::QueryError {
+            message: format!("failed to introspect columns for '{table}': {e}"),
+        })?;
+
+        for row in rows {
+            let col: String = row.try_get("column_name").map_err(|e| BackendError::Internal {
+                message: format!("failed to read column_name: {e}"),
+            })?;
+            if !float_columns.contains(&col.as_str()) {
+                continue;
+            }
+            let data_type: String = row.try_get("data_type").map_err(|e| BackendError::Internal {
+                message: format!("failed to read data_type: {e}"),
+            })?;
+            if data_type != "numeric" {
+                continue;
+            }
+            tracing::warn!(
+                schema = table,
+                column = %col,
+                "repairing legacy NUMERIC column to DOUBLE PRECISION (GH #37)"
+            );
+            let alter = format!(
+                "ALTER TABLE \"{table}\" ALTER COLUMN \"{col}\" TYPE DOUBLE PRECISION USING \"{col}\"::double precision;"
+            );
+            sqlx::query(&alter).execute(&self.pool).await.map_err(|e| {
+                BackendError::MigrationFailed {
+                    step: format!("repair_float_column({table}.{col})"),
+                    reason: e.to_string(),
+                }
+            })?;
+        }
+
+        Ok(())
+    }
+
     fn bind_params(params: &[DynamicValue]) -> Result<PgArguments, BackendError> {
         let mut args = PgArguments::default();
         for param in params {
@@ -357,6 +430,15 @@ impl SchemaBackend for PgBackend {
         &self,
         definition: &SchemaDefinition,
     ) -> Result<(), BackendError> {
+        // Legacy repair: early builds of the Postgres codegen emitted
+        // `NUMERIC(p,0)` for `float(precision: N)` fields. The current read
+        // path decodes these columns as `FLOAT8`, which sqlx refuses to do
+        // against NUMERIC, 500'ing every GET/PUT on rows with a written
+        // float value. Detect and silently re-type any such columns to
+        // DOUBLE PRECISION whenever the schema is (re)stored — this is
+        // the canonical "schema is authoritative" checkpoint. See GH #37.
+        self.repair_float_columns(definition).await?;
+
         let json = serde_json::to_value(definition).map_err(|e| BackendError::Internal {
             message: format!("failed to serialize schema metadata: {e}"),
         })?;

@@ -23,6 +23,14 @@ export type ListParams = {
    * server-side.
    */
   filters?: Record<string, string>
+  /**
+   * Opt out of the backend's parallel `COUNT(*)` query when `false`. The
+   * envelope's `total_count` will be absent; callers that only read
+   * `entities` (infinite scrolls, relation pickers, one-shot lookups)
+   * should pass `false` here to skip the extra round trip. Defaults to
+   * counting on.
+   */
+  count?: boolean
 }
 
 export type ListResponse<T> = {
@@ -116,6 +124,7 @@ function listQuery(params: ListParams): string {
       if (value !== "") qs.set(key, value)
     }
   }
+  if (params.count === false) qs.set("count", "false")
   return qs.toString() ? `?${qs.toString()}` : ""
 }
 
@@ -128,8 +137,10 @@ export async function rawEntityList(
   schema: string,
   params: ListParams = { limit: 200 },
 ): Promise<Array<{ id: string } & Record<string, unknown>>> {
+  // Relation pickers never read `total_count`, so opt out of the
+  // backend's parallel `COUNT(*)` query. See GH issue #36.
   const envelope = await request<ListEnvelope>(
-    `${FORGE_API_PREFIX}/schemas/${schema}/entities${listQuery(params)}`,
+    `${FORGE_API_PREFIX}/schemas/${schema}/entities${listQuery({ ...params, count: false })}`,
   )
   return envelope.entities.map((e) => flatten(e))
 }
