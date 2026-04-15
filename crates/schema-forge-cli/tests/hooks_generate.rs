@@ -333,9 +333,11 @@ fn regenerate_errors_when_owned_file_hand_edited() {
     let out_dir = workdir.path().join("hooks-service");
     run_generate(&schema_dir, &out_dir);
 
-    // Strip the marker from an owned file (src/hooks/mod.rs).
+    // Strip the marker from an Owned file. Issue #41 moved main.rs and
+    // mod.rs to Preserve (they now splice additively), so pick a still-
+    // Owned proto file to exercise the marker enforcement path.
     fs::write(
-        out_dir.join("src/hooks/mod.rs"),
+        out_dir.join("proto/alpha_hooks.proto"),
         "// hand-edited, marker stripped\n",
     )
     .unwrap();
@@ -347,7 +349,7 @@ fn regenerate_errors_when_owned_file_hand_edited() {
         .arg(&out_dir)
         .assert()
         .failure()
-        .stderr(predicates::str::contains("hooks/mod.rs"));
+        .stderr(predicates::str::contains("alpha_hooks.proto"));
 }
 
 #[test]
@@ -379,10 +381,12 @@ fn check_flag_exits_nonzero_on_drift() {
     let out_dir = workdir.path().join("hooks-service");
     run_generate(&schema_dir, &out_dir);
 
-    // Mutate an owned file (keeping the marker so it's legal to overwrite).
-    let mod_path = out_dir.join("src/hooks/mod.rs");
-    let original = fs::read_to_string(&mod_path).unwrap();
-    fs::write(&mod_path, format!("{original}\n// drift\n")).unwrap();
+    // Mutate an Owned file (keeping the marker so it's legal to
+    // overwrite). Issue #41 moved main.rs and mod.rs to Preserve, so
+    // exercise the drift detector against a still-Owned proto file.
+    let proto_path = out_dir.join("proto/alpha_hooks.proto");
+    let original = fs::read_to_string(&proto_path).unwrap();
+    fs::write(&proto_path, format!("{original}\n// drift\n")).unwrap();
 
     schema_forge()
         .args(["hooks", "generate", "--all", "--check", "--schema-dir"])
@@ -391,7 +395,7 @@ fn check_flag_exits_nonzero_on_drift() {
         .arg(&out_dir)
         .assert()
         .failure()
-        .stderr(predicates::str::contains("hooks/mod.rs"));
+        .stderr(predicates::str::contains("alpha_hooks.proto"));
 }
 
 #[test]
@@ -442,6 +446,154 @@ fn force_init_overrides_foreign_dir_check() {
     assert!(out_dir.join("unrelated.txt").exists());
     assert!(out_dir.join("Cargo.toml").exists());
     assert!(out_dir.join(".schemaforge-hooks").exists());
+}
+
+#[test]
+fn issue_41_additive_mode_inserts_new_schema_without_touching_customized_main() {
+    // Acceptance criterion from #41: adding a net-new @hook schema must
+    // insert the new module + service wiring into the existing main.rs
+    // and mod.rs without clobbering user customizations outside the
+    // insertion markers.
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+
+    // User customizes main.rs: adds a top-of-file mod declaration and a
+    // custom module import. The kind of edit the real engage project
+    // accumulated over time — `mod api; mod cpm; mod guard;` and friends.
+    let main_path = out_dir.join("src/main.rs");
+    let original = fs::read_to_string(&main_path).unwrap();
+    let customized = original.replace("mod hooks;\n", "mod hooks;\nmod api;\nmod guard;\n");
+    assert_ne!(customized, original, "customization must actually differ");
+    fs::write(&main_path, &customized).unwrap();
+
+    // Same for mod.rs — add a user-owned module declaration outside the
+    // insertion markers.
+    let mod_path = out_dir.join("src/hooks/mod.rs");
+    let mod_original = fs::read_to_string(&mod_path).unwrap();
+    fs::write(&mod_path, format!("{mod_original}\npub mod shared;\n")).unwrap();
+
+    // Now add a net-new schema and re-run without any flags. Additive
+    // mode should pick it up.
+    fs::write(schema_dir.join("beta.schema"), SECOND_SCHEMA).unwrap();
+    run_generate(&schema_dir, &out_dir);
+
+    // User customizations survived.
+    let main_after = fs::read_to_string(&main_path).unwrap();
+    assert!(
+        main_after.contains("mod api;"),
+        "user's `mod api;` customization must survive:\n{main_after}"
+    );
+    assert!(
+        main_after.contains("mod guard;"),
+        "user's `mod guard;` customization must survive"
+    );
+    let mod_after = fs::read_to_string(&mod_path).unwrap();
+    assert!(
+        mod_after.contains("pub mod shared;"),
+        "user's out-of-markers module must survive:\n{mod_after}"
+    );
+
+    // New schema is now wired through main.rs and mod.rs.
+    assert!(
+        main_after.contains("pb::beta::beta_hooks_server::BetaHooksServer"),
+        "main.rs must add_service the new Beta hook:\n{main_after}"
+    );
+    assert!(
+        main_after.contains("tonic::include_proto!(\"schema_forge_hooks.beta\")"),
+        "main.rs must include the new Beta proto:\n{main_after}"
+    );
+    assert!(
+        mod_after.contains("pub mod beta;"),
+        "mod.rs must declare the new beta module:\n{mod_after}"
+    );
+
+    // And the existing Alpha wiring is still present.
+    assert!(
+        main_after.contains("pb::alpha::alpha_hooks_server::AlphaHooksServer"),
+        "alpha wiring must remain"
+    );
+    assert!(mod_after.contains("pub mod alpha;"));
+
+    // Per-schema Owned artifacts for the new schema were written.
+    assert!(out_dir.join("proto/beta_hooks.proto").exists());
+    assert!(out_dir
+        .join("src/hooks/beta/before_change.prompt.md")
+        .exists());
+    // And the Preserve stub for Beta was scaffolded as a first-time file.
+    assert!(out_dir.join("src/hooks/beta.rs").exists());
+}
+
+#[test]
+fn issue_41_additive_mode_upgrades_legacy_owned_mod_rs() {
+    // Before #41, `src/hooks/mod.rs` was Owned with an `@generated` header
+    // and no insertion markers. Existing projects that upgrade the CLI
+    // must have their mod.rs transparently migrated to the new
+    // marker-bounded layout on the next run — no --regenerate required.
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+
+    // Simulate a legacy mod.rs: replace the current content with a
+    // marker-less body that carries the old `@generated` header.
+    let mod_path = out_dir.join("src/hooks/mod.rs");
+    fs::write(
+        &mod_path,
+        "// @generated by schema-forge hooks — DO NOT EDIT\n\
+         //! Per-schema hook service implementations.\n\n\
+         pub mod alpha;\n",
+    )
+    .unwrap();
+
+    // Re-run additively.
+    run_generate(&schema_dir, &out_dir);
+
+    let mod_after = fs::read_to_string(&mod_path).unwrap();
+    assert!(
+        mod_after.contains("SCHEMAFORGE_HOOKS_MODS_BEGIN"),
+        "legacy mod.rs must be upgraded to marker-bounded layout:\n{mod_after}"
+    );
+    assert!(mod_after.contains("pub mod alpha;"));
+}
+
+#[test]
+fn issue_41_regenerate_flag_rewrites_preserve_files() {
+    // `--regenerate` is the escape hatch for full rewrites, subsuming
+    // `--force-user-files`. Customized main.rs and mod.rs get clobbered
+    // back to the current scaffold.
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+
+    let main_path = out_dir.join("src/main.rs");
+    fs::write(&main_path, "// custom\n").unwrap();
+
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--regenerate", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+
+    let after = fs::read_to_string(&main_path).unwrap();
+    assert!(
+        after.contains("SCHEMAFORGE_HOOKS_PB_BEGIN"),
+        "--regenerate must rewrite main.rs from the current scaffold:\n{after}"
+    );
+    assert!(!after.contains("// custom\n"));
 }
 
 #[test]

@@ -144,10 +144,13 @@ fn generate(
         .to_snake_case();
     let plan = build_plan(&project_name, &hooked)?;
 
+    // `--regenerate` subsumes `--force-user-files`: rewriting every
+    // Preserve file from scratch is exactly the full-regen escape hatch.
+    // See issue #41.
     let options = WriteOptions {
         generator: GENERATOR,
         sentinel_kind: SentinelKind::Hooks,
-        force_user_files: args.force_user_files,
+        force_user_files: args.force_user_files || args.regenerate,
         force_init: args.force_init,
     };
 
@@ -178,6 +181,23 @@ fn generate(
 
     write_plan(&args.out_dir, &plan, options)?;
 
+    // Additive splice pass (issue #41). Default mode: after `write_plan`
+    // has scaffolded missing files and left existing Preserve files
+    // alone, walk `src/main.rs` and `src/hooks/mod.rs` and surgically
+    // update the schema-driven regions so net-new schemas become visible
+    // to the server. `--regenerate` skips this step because it already
+    // rewrote both files from scratch.
+    if !args.regenerate {
+        let inserted = additive::splice_existing_files(&args.out_dir, &hooked, output)?;
+        if !inserted.is_empty() {
+            output.status(&format!(
+                "  additive: inserted {} net-new schema(s): {}",
+                inserted.len(),
+                inserted.join(", "),
+            ));
+        }
+    }
+
     output.success(&format!(
         "Hook service scaffold written to {}",
         args.out_dir.display()
@@ -193,16 +213,24 @@ fn generate(
 /// Build the flat [`FilePlan`] list describing every file the hooks
 /// generator wants to produce. Pure function — no I/O, no mutation.
 fn build_plan(project_name: &str, hooked: &[SchemaHooks]) -> Result<Vec<FilePlan>, CliError> {
-    // Cargo.toml and src/main.rs are `Preserve`: scaffolded once, then
-    // user-owned. Users accumulate dependencies (chrono, acton-service, ...)
-    // and bootstrap logic (env vars, tracing, custom Service::new wiring)
-    // in these files, and regenerate runs must not clobber them. See #16.
-    // Re-scaffold with `--force-user-files` to reset them.
+    // `Cargo.toml`, `build.rs`, `src/main.rs`, and `src/hooks/mod.rs` are
+    // all `Preserve`: scaffolded once, then user-owned. Users accumulate
+    // dependencies, custom build logic (see #15), env-var validation,
+    // per-service constructor wiring, and extra `mod` declarations in
+    // these files, and regenerate runs must not clobber them.
+    //
+    // `main.rs` and `mod.rs` carry stable insertion markers in the
+    // scaffolded templates — subsequent runs splice new schemas into
+    // those regions surgically without touching anything outside the
+    // markers. See [`additive`] and issue #41.
+    //
+    // `--regenerate` rewrites every Preserve file verbatim; use it as
+    // the one-off rescaffold escape hatch.
     let mut plan: Vec<FilePlan> = vec![
         preserve("Cargo.toml", render_cargo_toml(project_name)),
-        owned("build.rs", BUILD_RS.to_string()),
+        preserve("build.rs", BUILD_RS.to_string()),
         preserve("src/main.rs", render_main_rs(hooked)),
-        owned("src/hooks/mod.rs", render_hooks_mod(hooked)),
+        preserve("src/hooks/mod.rs", render_hooks_mod(hooked)),
     ];
 
     for h in hooked {
@@ -306,22 +334,73 @@ tonic-prost-build = "0.14"
     )
 }
 
+// ---------------------------------------------------------------------------
+// Additive insertion markers
+// ---------------------------------------------------------------------------
+//
+// `main.rs` and `src/hooks/mod.rs` ship as Preserve files: users accumulate
+// real customization in them (custom module imports, env-var validation,
+// per-service constructor wiring). When a new `@hook`-annotated schema is
+// added to the project, the generator must splice new lines into those
+// files *without* rewriting everything else. Stable marker comments bound
+// the regions the generator owns — everything between `*_BEGIN` and
+// `*_END` is regenerated from the current schema list on every run, and
+// everything outside is left alone.
+//
+// See issue #41 for the motivating scenario.
+pub(crate) const MOD_BEGIN: &str =
+    "// SCHEMAFORGE_HOOKS_MODS_BEGIN — DO NOT REMOVE (additive insertion marker)";
+pub(crate) const MOD_END: &str = "// SCHEMAFORGE_HOOKS_MODS_END";
+pub(crate) const PB_BEGIN: &str =
+    "    // SCHEMAFORGE_HOOKS_PB_BEGIN — DO NOT REMOVE (additive insertion marker)";
+pub(crate) const PB_END: &str = "    // SCHEMAFORGE_HOOKS_PB_END";
+pub(crate) const SVC_BEGIN: &str =
+    "        // SCHEMAFORGE_HOOKS_SERVICES_BEGIN — DO NOT REMOVE (additive insertion marker)";
+pub(crate) const SVC_END: &str = "        // SCHEMAFORGE_HOOKS_SERVICES_END";
+
+fn render_pb_entry(h: &SchemaHooks) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("    pub mod {} {{\n", h.snake));
+    s.push_str(&format!(
+        "        tonic::include_proto!(\"{}\");\n",
+        h.proto_package
+    ));
+    s.push_str("    }\n");
+    s
+}
+
+fn render_service_line(h: &SchemaHooks) -> String {
+    format!(
+        "        .add_service(pb::{snake}::{snake}_hooks_server::{pascal}HooksServer::new(hooks::{snake}::Service::default()))\n",
+        snake = h.snake,
+        pascal = h.pascal,
+    )
+}
+
+fn render_mod_line(h: &SchemaHooks) -> String {
+    format!("pub mod {};\n", h.snake)
+}
+
 fn render_main_rs(hooked: &[SchemaHooks]) -> String {
     let mut s = String::new();
-    s.push_str("//! Generated by `schema-forge hooks generate`.\n");
+    s.push_str("//! Scaffolded once by `schema-forge hooks generate` — edit freely.\n");
     s.push_str("//!\n");
-    s.push_str("//! Re-running the generator regenerates this file. Edit\n");
-    s.push_str("//! `src/hooks/<schema>.rs` to implement per-event logic.\n\n");
+    s.push_str("//! Subsequent runs are additive: new `@hook`-annotated schemas get\n");
+    s.push_str("//! spliced into `mod pb { ... }` and the `Server::builder()` chain\n");
+    s.push_str("//! between the `SCHEMAFORGE_HOOKS_*` marker comments below. Keep\n");
+    s.push_str("//! those markers in place and your custom module imports, env-var\n");
+    s.push_str("//! validation, and per-service constructor wiring will survive\n");
+    s.push_str("//! every regen. Use `--regenerate` to opt out and rewrite this\n");
+    s.push_str("//! file from scratch.\n\n");
     s.push_str("mod hooks;\n\n");
     s.push_str("mod pb {\n");
+    s.push_str(PB_BEGIN);
+    s.push('\n');
     for h in hooked {
-        s.push_str(&format!("    pub mod {} {{\n", h.snake));
-        s.push_str(&format!(
-            "        tonic::include_proto!(\"{}\");\n",
-            h.proto_package
-        ));
-        s.push_str("    }\n");
+        s.push_str(&render_pb_entry(h));
     }
+    s.push_str(PB_END);
+    s.push('\n');
     s.push_str("}\n\n");
     s.push_str("use tonic::transport::Server;\n\n");
     s.push_str("#[tokio::main]\n");
@@ -330,13 +409,13 @@ fn render_main_rs(hooked: &[SchemaHooks]) -> String {
     s.push_str("    let addr = \"0.0.0.0:9090\".parse()?;\n");
     s.push_str("    tracing::info!(\"hook service listening on {addr}\");\n\n");
     s.push_str("    Server::builder()\n");
+    s.push_str(SVC_BEGIN);
+    s.push('\n');
     for h in hooked {
-        s.push_str(&format!(
-            "        .add_service(pb::{snake}::{snake}_hooks_server::{pascal}HooksServer::new(hooks::{snake}::Service::default()))\n",
-            snake = h.snake,
-            pascal = h.pascal,
-        ));
+        s.push_str(&render_service_line(h));
     }
+    s.push_str(SVC_END);
+    s.push('\n');
     s.push_str("        .serve(addr)\n");
     s.push_str("        .await?;\n");
     s.push_str("    Ok(())\n");
@@ -346,10 +425,19 @@ fn render_main_rs(hooked: &[SchemaHooks]) -> String {
 
 fn render_hooks_mod(hooked: &[SchemaHooks]) -> String {
     let mut s = String::new();
-    s.push_str("//! Per-schema hook service implementations.\n\n");
+    s.push_str("//! Per-schema hook service implementations.\n");
+    s.push_str("//!\n");
+    s.push_str("//! Module declarations for annotated schemas are managed additively\n");
+    s.push_str("//! between the `SCHEMAFORGE_HOOKS_MODS_*` markers below — keep those\n");
+    s.push_str("//! comments in place. Add your own `pub mod` lines outside the\n");
+    s.push_str("//! markers if you want them to survive every regen.\n\n");
+    s.push_str(MOD_BEGIN);
+    s.push('\n');
     for h in hooked {
-        s.push_str(&format!("pub mod {};\n", h.snake));
+        s.push_str(&render_mod_line(h));
     }
+    s.push_str(MOD_END);
+    s.push('\n');
     s
 }
 
@@ -634,6 +722,231 @@ fn render_prompt(h: &SchemaHooks, event: HookEvent, intent: &str) -> Result<Stri
     s.push_str("- [ ] Edge cases (malformed input, downstream failures) are\n");
     s.push_str("      handled without panics.\n");
     Ok(s)
+}
+
+// ---------------------------------------------------------------------------
+// Additive splice pass (issue #41)
+// ---------------------------------------------------------------------------
+
+/// Surgical in-place update of `src/main.rs` and `src/hooks/mod.rs` for the
+/// default "additive" mode of `schema-forge hooks generate`.
+///
+/// The scaffolded templates for both files carry stable marker comments
+/// (see [`MOD_BEGIN`], [`PB_BEGIN`], [`SVC_BEGIN`]) that fence the regions
+/// the generator owns. Everything inside a `*_BEGIN` / `*_END` pair is
+/// regenerated from the current schema list; everything outside is
+/// user-owned and never touched. The pass:
+///
+/// 1. Loads the on-disk copy of each file (if present).
+/// 2. Detects legacy layouts that predate the markers and upgrades them in
+///    place by replacing the whole file with the new scaffold — safe
+///    because legacy files were written as `Owned` with a `@generated`
+///    header and the one-time upgrade inherits that trust.
+/// 3. Splices the schema-driven regions inside `mod pb { ... }`,
+///    `Server::builder()`, and `src/hooks/mod.rs` with the lines derived
+///    from the full schema list.
+///
+/// Returns the list of schemas that were *newly* referenced after the
+/// splice (best-effort: compares the old `pub mod <snake>` set against the
+/// new one from `src/hooks/mod.rs`).
+mod additive {
+    use std::fs;
+    use std::path::Path;
+
+    use super::{
+        render_hooks_mod, render_main_rs, render_mod_line, render_pb_entry, render_service_line,
+        SchemaHooks, MOD_BEGIN, MOD_END, PB_BEGIN, PB_END, SVC_BEGIN, SVC_END,
+    };
+    use crate::error::CliError;
+    use crate::output::OutputContext;
+
+    pub(super) fn splice_existing_files(
+        out_dir: &Path,
+        hooked: &[SchemaHooks],
+        output: &OutputContext,
+    ) -> Result<Vec<String>, CliError> {
+        let main_path = out_dir.join("src/main.rs");
+        let mod_path = out_dir.join("src/hooks/mod.rs");
+
+        let before_mods = read_mod_set(&mod_path);
+        splice_main_rs(&main_path, hooked, output)?;
+        splice_mod_rs(&mod_path, hooked, output)?;
+        let after_mods = read_mod_set(&mod_path);
+
+        let inserted: Vec<String> = after_mods
+            .iter()
+            .filter(|name| !before_mods.contains(*name))
+            .cloned()
+            .collect();
+        Ok(inserted)
+    }
+
+    fn splice_main_rs(
+        path: &Path,
+        hooked: &[SchemaHooks],
+        output: &OutputContext,
+    ) -> Result<(), CliError> {
+        let Some(existing) = read_if_exists(path)? else {
+            return Ok(());
+        };
+
+        // Legacy file upgrade path: the file was generated before issue
+        // #41 added insertion markers. Detect by "no PB_BEGIN marker" AND
+        // "has the old generator header". Rewrite from scratch — we can
+        // do this safely because a legacy main.rs was either Preserve (so
+        // only hand-written content, which the upgrade still has to opt
+        // into via --regenerate) or, pre-#41, Owned with a @generated
+        // header. We *only* upgrade the Owned legacy case.
+        if !existing.contains(PB_BEGIN) {
+            if existing.contains("@generated by schema-forge hooks") {
+                let fresh = render_main_rs(hooked);
+                fs::write(path, fresh).map_err(|e| CliError::Config {
+                    message: format!("writing {}: {e}", path.display()),
+                })?;
+                output.status(&format!(
+                    "  additive: upgraded legacy {} to marker-bounded layout",
+                    path.display()
+                ));
+                return Ok(());
+            }
+            output.warn(&format!(
+                "additive: {} is missing insertion markers — skipping splice. \
+                 Re-run with --regenerate to rewrite from the current scaffold, \
+                 or add `// SCHEMAFORGE_HOOKS_PB_BEGIN` / `_END` and \
+                 `// SCHEMAFORGE_HOOKS_SERVICES_BEGIN` / `_END` by hand.",
+                path.display()
+            ));
+            return Ok(());
+        }
+
+        let pb_body: String = hooked.iter().map(render_pb_entry).collect();
+        let svc_body: String = hooked.iter().map(render_service_line).collect();
+
+        let spliced = splice_region(&existing, PB_BEGIN, PB_END, &pb_body, path)?;
+        let spliced = splice_region(&spliced, SVC_BEGIN, SVC_END, &svc_body, path)?;
+
+        if spliced != existing {
+            fs::write(path, spliced).map_err(|e| CliError::Config {
+                message: format!("writing {}: {e}", path.display()),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn splice_mod_rs(
+        path: &Path,
+        hooked: &[SchemaHooks],
+        output: &OutputContext,
+    ) -> Result<(), CliError> {
+        let Some(existing) = read_if_exists(path)? else {
+            return Ok(());
+        };
+
+        if !existing.contains(MOD_BEGIN) {
+            if existing.contains("@generated by schema-forge hooks") {
+                let fresh = render_hooks_mod(hooked);
+                fs::write(path, fresh).map_err(|e| CliError::Config {
+                    message: format!("writing {}: {e}", path.display()),
+                })?;
+                output.status(&format!(
+                    "  additive: upgraded legacy {} to marker-bounded layout",
+                    path.display()
+                ));
+                return Ok(());
+            }
+            output.warn(&format!(
+                "additive: {} is missing insertion markers — skipping splice. \
+                 Re-run with --regenerate to rewrite from the current scaffold, \
+                 or add `// SCHEMAFORGE_HOOKS_MODS_BEGIN` / `_END` by hand.",
+                path.display()
+            ));
+            return Ok(());
+        }
+
+        let mod_body: String = hooked.iter().map(render_mod_line).collect();
+        let spliced = splice_region(&existing, MOD_BEGIN, MOD_END, &mod_body, path)?;
+        if spliced != existing {
+            fs::write(path, spliced).map_err(|e| CliError::Config {
+                message: format!("writing {}: {e}", path.display()),
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Replace the content strictly between `begin` and `end` marker lines
+    /// in `existing`. Both markers must appear and `begin` must come first.
+    /// The returned string preserves exact leading content (including the
+    /// `begin` line + its trailing newline), replaces the middle with
+    /// `body`, and keeps the tail (starting with the `end` line).
+    pub(super) fn splice_region(
+        existing: &str,
+        begin: &str,
+        end: &str,
+        body: &str,
+        path: &Path,
+    ) -> Result<String, CliError> {
+        let begin_idx = existing.find(begin).ok_or_else(|| CliError::Config {
+            message: format!(
+                "{}: additive insertion marker `{begin}` not found",
+                path.display()
+            ),
+        })?;
+        let after_begin = begin_idx + begin.len();
+        // Skip exactly one trailing newline after the BEGIN marker so the
+        // inserted body starts on the next line.
+        let body_start = match existing.as_bytes().get(after_begin) {
+            Some(b'\n') => after_begin + 1,
+            _ => after_begin,
+        };
+        let end_idx = existing[body_start..]
+            .find(end)
+            .map(|i| body_start + i)
+            .ok_or_else(|| CliError::Config {
+                message: format!(
+                    "{}: found `{begin}` but no matching `{end}`",
+                    path.display()
+                ),
+            })?;
+        let mut out = String::with_capacity(existing.len() + body.len());
+        out.push_str(&existing[..body_start]);
+        out.push_str(body);
+        out.push_str(&existing[end_idx..]);
+        Ok(out)
+    }
+
+    fn read_if_exists(path: &Path) -> Result<Option<String>, CliError> {
+        match fs::read_to_string(path) {
+            Ok(s) => Ok(Some(s)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(CliError::Config {
+                message: format!("reading {}: {e}", path.display()),
+            }),
+        }
+    }
+
+    /// Cheap set of `pub mod <name>;` declarations parsed out of a mod.rs
+    /// between the insertion markers. Used for the inserted-schema summary
+    /// output; tolerates a missing file by returning an empty set.
+    fn read_mod_set(path: &Path) -> std::collections::BTreeSet<String> {
+        let Ok(src) = fs::read_to_string(path) else {
+            return Default::default();
+        };
+        let Some(begin) = src.find(MOD_BEGIN) else {
+            return Default::default();
+        };
+        let Some(end) = src[begin..].find(MOD_END).map(|i| begin + i) else {
+            return Default::default();
+        };
+        src[begin..end]
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                t.strip_prefix("pub mod ")
+                    .and_then(|rest| rest.strip_suffix(';'))
+                    .map(str::to_string)
+            })
+            .collect()
+    }
 }
 
 fn event_to_method(event: HookEvent) -> &'static str {

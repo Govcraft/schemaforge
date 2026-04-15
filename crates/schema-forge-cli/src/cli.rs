@@ -208,6 +208,15 @@ pub struct HooksGenerateArgs {
     #[arg(long = "force-user-files", alias = "force")]
     pub force_user_files: bool,
 
+    /// Full regeneration mode. By default, `hooks generate` is additive: it
+    /// inserts net-new schemas into `src/main.rs` and `src/hooks/mod.rs`
+    /// between stable insertion markers and leaves every other byte of
+    /// those files alone. `--regenerate` opts out of the additive path and
+    /// rewrites every Preserve file verbatim, clobbering user edits the
+    /// way `--force-user-files` does for one-off rescaffolds.
+    #[arg(long)]
+    pub regenerate: bool,
+
     /// Write into a non-empty, non-schemaforge-managed directory. Normally
     /// the generator refuses to touch such a directory to avoid clobbering
     /// unrelated files.
