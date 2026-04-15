@@ -287,8 +287,9 @@ type-coerced based on the field's schema type.
 
 ### Reserved parameter names
 
-The names `limit`, `offset`, `sort`, and `fields` are reserved for pagination,
-sorting, and projection. They cannot be used as filter field names.
+The names `limit`, `offset`, `sort`, `fields`, `count`, and `resolve` are
+reserved for pagination, sorting, projection, total-count opt-out, and
+relation-display opt-out. They cannot be used as filter field names.
 
 ---
 

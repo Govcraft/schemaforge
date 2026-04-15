@@ -4,7 +4,7 @@ use schema_forge_core::query::{FieldPath, Filter, SortOrder};
 use schema_forge_core::types::{DynamicValue, FieldType, SchemaDefinition};
 
 /// Reserved query parameter names that are not filter fields.
-const RESERVED_PARAMS: &[&str] = &["limit", "offset", "sort", "fields"];
+const RESERVED_PARAMS: &[&str] = &["limit", "offset", "sort", "fields", "count", "resolve"];
 
 /// Supported filter operators parsed from `field__op` suffixes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -657,6 +657,32 @@ mod tests {
     #[test]
     fn parse_filter_key_reserved_fields() {
         assert_eq!(parse_filter_key("fields"), None);
+    }
+
+    #[test]
+    fn parse_filter_key_reserved_count() {
+        assert_eq!(parse_filter_key("count"), None);
+    }
+
+    #[test]
+    fn parse_filter_key_reserved_resolve() {
+        assert_eq!(parse_filter_key("resolve"), None);
+    }
+
+    #[test]
+    fn parse_filter_params_skips_count_opt_out() {
+        let schema = test_schema();
+        let params = HashMap::from([
+            ("count".to_string(), "false".to_string()),
+            ("name".to_string(), "Alice".to_string()),
+        ]);
+        let result = parse_filter_params(&params, &schema).unwrap();
+        // count must be treated as reserved and excluded from filters.
+        let filter = result.unwrap();
+        assert!(matches!(
+            filter,
+            Filter::Eq { ref path, .. } if path == &FieldPath::single("name")
+        ));
     }
 
     // -- parse_fields_param tests --
