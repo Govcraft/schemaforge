@@ -132,6 +132,12 @@ pub enum DslError {
         second_field: String,
         span: Span,
     },
+
+    /// A `file(...)` parameter value was invalid or a required parameter was missing.
+    InvalidFileParam { message: String, span: Span },
+
+    /// A `max_size` literal in `file(...)` could not be parsed.
+    InvalidSizeLiteral { text: String, span: Span },
 }
 
 impl fmt::Display for DslError {
@@ -275,6 +281,15 @@ impl fmt::Display for DslError {
                 write!(
                     f,
                     "@list(primary) at {span} on field '{second_field}' conflicts with earlier @list(primary) on field '{first_field}'; at most one primary per schema"
+                )
+            }
+            Self::InvalidFileParam { message, span } => {
+                write!(f, "invalid file parameter at {span}: {message}")
+            }
+            Self::InvalidSizeLiteral { text, span } => {
+                write!(
+                    f,
+                    "invalid size literal '{text}' at {span}: expected integer bytes or \"<N>(B|KB|MB|GB|TB)\""
                 )
             }
         }

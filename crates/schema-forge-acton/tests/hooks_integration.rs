@@ -138,6 +138,7 @@ async fn setup(
             record_access_policy: None,
             hook_dispatcher: dispatcher
                 .map(|d| d as Arc<dyn schema_forge_acton::hooks::HookDispatcher>),
+            storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
             reply: ReplyChannel::new(tx),
         })
         .await;
@@ -684,6 +685,7 @@ async fn after_change_writeback_to_trigger_entity_is_eventually_consistent() {
             tenant_config: None,
             record_access_policy: None,
             hook_dispatcher: Some(writeback),
+            storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
             reply: schema_forge_acton::messages::ReplyChannel::new(init_tx),
         })
         .await;

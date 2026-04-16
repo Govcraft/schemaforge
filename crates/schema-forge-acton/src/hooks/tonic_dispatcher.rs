@@ -301,6 +301,9 @@ fn event_to_method(event: HookEvent) -> &'static str {
         HookEvent::AfterRead => "AfterRead",
         HookEvent::BeforeDelete => "BeforeDelete",
         HookEvent::AfterDelete => "AfterDelete",
+        HookEvent::BeforeUpload => "BeforeUpload",
+        HookEvent::AfterUpload => "AfterUpload",
+        HookEvent::OnScanComplete => "OnScanComplete",
     }
 }
 

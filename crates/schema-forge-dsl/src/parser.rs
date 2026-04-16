@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 
 use schema_forge_core::types::{
     Annotation, Cardinality, DefaultValue, EnumColor, EnumVariants, FieldAnnotation,
-    FieldDefinition, FieldModifier, FieldName, FieldType, FloatConstraints, FormatType, HookEvent,
-    IntegerConstraints, ListHint, SchemaDefinition, SchemaId, SchemaName, SchemaVersion,
-    TenantKind, TextConstraints, WidgetType,
+    FieldDefinition, FieldModifier, FieldName, FieldType, FileAccess, FileConstraints,
+    FloatConstraints, FormatType, HookEvent, IntegerConstraints, ListHint, MimePattern,
+    SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind, TextConstraints, WidgetType,
 };
 
 use crate::error::{DslError, Span};
@@ -300,10 +300,13 @@ impl Parser {
                 self.expect(&Token::LParen)?;
                 let event_tok = self.expect_ident("hook event")?;
                 let event = event_tok.text.parse::<HookEvent>().map_err(|()| {
+                    let expected = HookEvent::ALL
+                        .iter()
+                        .map(|e| e.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     DslError::UnexpectedToken {
-                        expected: "one of: before_validate, before_change, after_change, \
-                                   before_read, after_read, before_delete, after_delete"
-                            .to_string(),
+                        expected: format!("one of: {expected}"),
                         found: format!("'{}'", event_tok.text),
                         span: event_tok.span.clone(),
                     }
@@ -650,8 +653,12 @@ impl Parser {
             Token::DateTime => Ok(FieldType::DateTime),
             Token::Enum => self.parse_enum_type(),
             Token::Json => Ok(FieldType::Json),
+            Token::File => {
+                let constraints = self.parse_file_params()?;
+                Ok(FieldType::File(constraints))
+            }
             _ => Err(DslError::UnexpectedToken {
-                expected: "type name (text, integer, float, boolean, datetime, enum, richtext, json, composite, or ->)"
+                expected: "type name (text, integer, float, boolean, datetime, enum, richtext, json, file, composite, or ->)"
                     .to_string(),
                 found: format!("{} ('{}')", tok.token.description(), tok.text),
                 span: tok.span,
@@ -748,6 +755,149 @@ impl Parser {
         Ok(match precision {
             Some(p) => FloatConstraints::with_precision(p),
             None => FloatConstraints::unconstrained(),
+        })
+    }
+
+    /// Parse file params: `(bucket: "...", max_size: <int|"<N><SIZE_SUFFIX>">, mime: [...], access: "presigned"|"proxied")`.
+    ///
+    /// `bucket`, `max_size`, and `mime` are required. `access` defaults to `presigned`.
+    fn parse_file_params(&mut self) -> Result<FileConstraints, DslError> {
+        let paren_span = self.current_span();
+        self.expect(&Token::LParen)?;
+
+        let mut bucket: Option<String> = None;
+        let mut max_size: Option<u64> = None;
+        let mut mime: Option<Vec<MimePattern>> = None;
+        let mut access: Option<FileAccess> = None;
+
+        if self.peek_token() != Some(&Token::RParen) {
+            loop {
+                let key_tok = self.expect_ident("file parameter name")?;
+                self.expect(&Token::Colon)?;
+                let key = key_tok.text.clone();
+                let key_span = key_tok.span.clone();
+
+                match key.as_str() {
+                    "bucket" => {
+                        let tok = self.expect_string_literal()?;
+                        bucket = Some(unquote_string(&tok.text));
+                    }
+                    "max_size" => {
+                        let tok = self.advance().ok_or_else(|| {
+                            DslError::UnexpectedEndOfInput {
+                                expected: "integer or string size literal".to_string(),
+                            }
+                        })?;
+                        let (raw, tok_span) = match tok.token {
+                            Token::IntegerLiteral => (tok.text.clone(), tok.span.clone()),
+                            Token::StringLiteral => {
+                                (unquote_string(&tok.text), tok.span.clone())
+                            }
+                            _ => {
+                                return Err(DslError::UnexpectedToken {
+                                    expected: "integer or string size literal".to_string(),
+                                    found: format!(
+                                        "{} ('{}')",
+                                        tok.token.description(),
+                                        tok.text
+                                    ),
+                                    span: tok.span,
+                                });
+                            }
+                        };
+                        let bytes = parse_size_literal(&raw).ok_or_else(|| {
+                            DslError::InvalidSizeLiteral {
+                                text: raw.clone(),
+                                span: tok_span,
+                            }
+                        })?;
+                        max_size = Some(bytes);
+                    }
+                    "mime" => {
+                        let items = self.parse_string_list()?;
+                        if items.is_empty() {
+                            return Err(DslError::InvalidFileParam {
+                                message: "mime list must not be empty".to_string(),
+                                span: key_span,
+                            });
+                        }
+                        let patterns = items
+                            .into_iter()
+                            .map(|s| {
+                                MimePattern::parse(&s).map_err(|e| {
+                                    DslError::CoreSchemaError {
+                                        source: e,
+                                        span: key_span.clone(),
+                                    }
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        mime = Some(patterns);
+                    }
+                    "access" => {
+                        let tok = self.expect_string_literal()?;
+                        let raw = unquote_string(&tok.text);
+                        let a = FileAccess::from_str(&raw).map_err(|()| {
+                            DslError::InvalidFileParam {
+                                message: format!(
+                                    "access must be \"presigned\" or \"proxied\", got \"{raw}\""
+                                ),
+                                span: tok.span.clone(),
+                            }
+                        })?;
+                        access = Some(a);
+                    }
+                    _ => {
+                        return Err(DslError::InvalidFileParam {
+                            message: format!(
+                                "unknown file parameter \"{key}\" (expected bucket, max_size, mime, access)"
+                            ),
+                            span: key_span,
+                        });
+                    }
+                }
+
+                if self.peek_token() == Some(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        self.expect(&Token::RParen)?;
+
+        let bucket = bucket.ok_or_else(|| DslError::InvalidFileParam {
+            message: "file requires `bucket` parameter".to_string(),
+            span: paren_span.clone(),
+        })?;
+        if bucket.is_empty() {
+            return Err(DslError::InvalidFileParam {
+                message: "file bucket must not be empty".to_string(),
+                span: paren_span.clone(),
+            });
+        }
+        let max_size_bytes = max_size.ok_or_else(|| DslError::InvalidFileParam {
+            message: "file requires `max_size` parameter".to_string(),
+            span: paren_span.clone(),
+        })?;
+        if max_size_bytes == 0 {
+            return Err(DslError::InvalidFileParam {
+                message: "file max_size must be greater than zero".to_string(),
+                span: paren_span.clone(),
+            });
+        }
+        let mime_allowlist = mime.ok_or_else(|| DslError::InvalidFileParam {
+            message: "file requires `mime` parameter".to_string(),
+            span: paren_span,
+        })?;
+        let access = access.unwrap_or_default();
+
+        Ok(FileConstraints {
+            bucket,
+            max_size_bytes,
+            mime_allowlist,
+            access,
         })
     }
 
@@ -1072,6 +1222,39 @@ fn unquote_string(s: &str) -> String {
         }
     }
     result
+}
+
+/// Parses a size literal to bytes. Accepts:
+///
+/// - A bare integer (treated as bytes): `25000000`
+/// - An integer followed by a unit suffix: `25MB`, `500KB`, `1GB`, `4096B`
+/// - Case-insensitive suffix; optional `B` (e.g. `25M` == `25MB`); `KiB`/`MiB` accepted
+///
+/// Suffix values are base-1024 (KiB-style) because object-storage tooling
+/// consistently uses that convention for size thresholds.
+fn parse_size_literal(raw: &str) -> Option<u64> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(n);
+    }
+    let split_at = s.find(|c: char| c.is_ascii_alphabetic())?;
+    if split_at == 0 {
+        return None;
+    }
+    let (num_part, suffix) = s.split_at(split_at);
+    let n: u64 = num_part.trim().parse().ok()?;
+    let mult: u64 = match suffix.trim().to_ascii_uppercase().as_str() {
+        "B" => 1,
+        "K" | "KB" | "KIB" => 1024,
+        "M" | "MB" | "MIB" => 1024u64.pow(2),
+        "G" | "GB" | "GIB" => 1024u64.pow(3),
+        "T" | "TB" | "TIB" => 1024u64.pow(4),
+        _ => return None,
+    };
+    n.checked_mul(mult)
 }
 
 fn parse_i64(text: &str, span: &Span) -> Result<i64, DslError> {
@@ -2292,5 +2475,252 @@ schema B { title: text @list(primary) }"#,
     fn parse_webhook_invalid_event() {
         let result = parse(r#"@webhook(events: ["created", "exploded"]) schema S { name: text }"#);
         assert!(result.is_err());
+    }
+
+    // -- Size literal parsing --
+
+    #[test]
+    fn size_literal_plain_integer() {
+        assert_eq!(parse_size_literal("0"), Some(0));
+        assert_eq!(parse_size_literal("1024"), Some(1024));
+        assert_eq!(parse_size_literal("25000000"), Some(25_000_000));
+    }
+
+    #[test]
+    fn size_literal_with_b_suffix() {
+        assert_eq!(parse_size_literal("512B"), Some(512));
+        assert_eq!(parse_size_literal("512b"), Some(512));
+    }
+
+    #[test]
+    fn size_literal_kb_mb_gb_tb() {
+        assert_eq!(parse_size_literal("1KB"), Some(1024));
+        assert_eq!(parse_size_literal("25MB"), Some(25 * 1024 * 1024));
+        assert_eq!(parse_size_literal("1GB"), Some(1024u64.pow(3)));
+        assert_eq!(parse_size_literal("2TB"), Some(2 * 1024u64.pow(4)));
+    }
+
+    #[test]
+    fn size_literal_iec_suffix_forms() {
+        assert_eq!(parse_size_literal("1KiB"), Some(1024));
+        assert_eq!(parse_size_literal("25MiB"), Some(25 * 1024 * 1024));
+        assert_eq!(parse_size_literal("1GiB"), Some(1024u64.pow(3)));
+    }
+
+    #[test]
+    fn size_literal_short_suffix() {
+        assert_eq!(parse_size_literal("1K"), Some(1024));
+        assert_eq!(parse_size_literal("4M"), Some(4 * 1024 * 1024));
+        assert_eq!(parse_size_literal("1G"), Some(1024u64.pow(3)));
+    }
+
+    #[test]
+    fn size_literal_case_insensitive_suffix() {
+        assert_eq!(parse_size_literal("25mb"), Some(25 * 1024 * 1024));
+        assert_eq!(parse_size_literal("25Mb"), Some(25 * 1024 * 1024));
+        assert_eq!(parse_size_literal("25mB"), Some(25 * 1024 * 1024));
+    }
+
+    #[test]
+    fn size_literal_rejects_invalid() {
+        assert!(parse_size_literal("").is_none());
+        assert!(parse_size_literal("   ").is_none());
+        assert!(parse_size_literal("abc").is_none());
+        assert!(parse_size_literal("MB").is_none());
+        assert!(parse_size_literal("25XB").is_none());
+        assert!(parse_size_literal("-25MB").is_none());
+        assert!(parse_size_literal("25 MB x").is_none());
+    }
+
+    #[test]
+    fn size_literal_overflow_returns_none() {
+        // u64::MAX / 1024^4 + 1 -> checked_mul returns None for any suffix
+        assert!(parse_size_literal("99999999999999999999TB").is_none());
+    }
+
+    // -- File field parsing --
+
+    fn parse_one_file_field(source: &str) -> FileConstraints {
+        let schema = parse_one(source);
+        match &schema.fields[0].field_type {
+            FieldType::File(c) => c.clone(),
+            other => panic!("expected File, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_file_minimal_required_params() {
+        let c = parse_one_file_field(
+            r#"schema S { doc: file(bucket: "documents", max_size: 1024, mime: ["application/pdf"]) }"#,
+        );
+        assert_eq!(c.bucket, "documents");
+        assert_eq!(c.max_size_bytes, 1024);
+        assert_eq!(
+            c.mime_allowlist,
+            vec![MimePattern::Exact("application/pdf".into())]
+        );
+        assert_eq!(c.access, FileAccess::Presigned);
+    }
+
+    #[test]
+    fn parse_file_with_size_suffix() {
+        let c = parse_one_file_field(
+            r#"schema S { doc: file(bucket: "documents", max_size: "25MB", mime: ["application/pdf"]) }"#,
+        );
+        assert_eq!(c.max_size_bytes, 25 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_file_with_mime_wildcard() {
+        let c = parse_one_file_field(
+            r#"schema S { doc: file(bucket: "media", max_size: "100MB", mime: ["image/*", "video/mp4"]) }"#,
+        );
+        assert_eq!(
+            c.mime_allowlist,
+            vec![
+                MimePattern::Family("image".into()),
+                MimePattern::Exact("video/mp4".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_file_with_proxied_access() {
+        let c = parse_one_file_field(
+            r#"schema S { doc: file(bucket: "secure", max_size: "5MB", mime: ["application/pdf"], access: "proxied") }"#,
+        );
+        assert_eq!(c.access, FileAccess::Proxied);
+    }
+
+    #[test]
+    fn parse_file_with_presigned_access_explicit() {
+        let c = parse_one_file_field(
+            r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: ["application/pdf"], access: "presigned") }"#,
+        );
+        assert_eq!(c.access, FileAccess::Presigned);
+    }
+
+    #[test]
+    fn parse_file_requires_bucket() {
+        let result = parse(
+            r#"schema S { doc: file(max_size: "5MB", mime: ["application/pdf"]) }"#,
+        );
+        let err = result.unwrap_err();
+        let msg = err[0].to_string();
+        assert!(msg.contains("bucket"), "expected bucket error, got: {msg}");
+    }
+
+    #[test]
+    fn parse_file_requires_max_size() {
+        let result = parse(
+            r#"schema S { doc: file(bucket: "docs", mime: ["application/pdf"]) }"#,
+        );
+        let err = result.unwrap_err();
+        let msg = err[0].to_string();
+        assert!(
+            msg.contains("max_size"),
+            "expected max_size error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_file_requires_mime() {
+        let result = parse(r#"schema S { doc: file(bucket: "docs", max_size: "5MB") }"#);
+        let err = result.unwrap_err();
+        let msg = err[0].to_string();
+        assert!(msg.contains("mime"), "expected mime error, got: {msg}");
+    }
+
+    #[test]
+    fn parse_file_rejects_empty_bucket() {
+        let result = parse(
+            r#"schema S { doc: file(bucket: "", max_size: "5MB", mime: ["application/pdf"]) }"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_file_rejects_zero_max_size() {
+        let result = parse(
+            r#"schema S { doc: file(bucket: "docs", max_size: 0, mime: ["application/pdf"]) }"#,
+        );
+        let err = result.unwrap_err();
+        let msg = err[0].to_string();
+        assert!(
+            msg.contains("greater than zero"),
+            "expected zero-size error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_file_rejects_empty_mime_list() {
+        let result =
+            parse(r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: []) }"#);
+        let err = result.unwrap_err();
+        let msg = err[0].to_string();
+        assert!(
+            msg.contains("mime list must not be empty"),
+            "expected empty-mime error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_file_rejects_bad_mime_pattern() {
+        let result = parse(
+            r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: ["notamime"]) }"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_file_rejects_bad_access_value() {
+        let result = parse(
+            r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: ["application/pdf"], access: "raw") }"#,
+        );
+        let err = result.unwrap_err();
+        let msg = err[0].to_string();
+        assert!(
+            msg.contains("presigned") && msg.contains("proxied"),
+            "expected access-value error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_file_rejects_unknown_param() {
+        let result = parse(
+            r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: ["application/pdf"], bogus: "x") }"#,
+        );
+        let err = result.unwrap_err();
+        let msg = err[0].to_string();
+        assert!(
+            msg.contains("unknown file parameter"),
+            "expected unknown-param error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_file_rejects_bad_size_literal() {
+        let result = parse(
+            r#"schema S { doc: file(bucket: "docs", max_size: "25XB", mime: ["application/pdf"]) }"#,
+        );
+        let err = result.unwrap_err();
+        let msg = err[0].to_string();
+        assert!(
+            msg.contains("invalid size literal"),
+            "expected size-literal error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_file_with_required_modifier() {
+        let schema = parse_one(
+            r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: ["application/pdf"]) required }"#,
+        );
+        assert!(
+            schema.fields[0]
+                .modifiers
+                .iter()
+                .any(|m| matches!(m, FieldModifier::Required))
+        );
     }
 }

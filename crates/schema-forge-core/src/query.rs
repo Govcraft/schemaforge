@@ -705,6 +705,7 @@ fn field_type_name(ft: &FieldType) -> String {
         FieldType::Relation { .. } => "Relation",
         FieldType::Array(_) => "Array",
         FieldType::Composite(_) => "Composite",
+        FieldType::File(_) => "File",
     }
     .to_string()
 }

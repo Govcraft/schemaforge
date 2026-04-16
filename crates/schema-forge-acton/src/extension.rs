@@ -10,6 +10,7 @@ use crate::state::{
 };
 
 use crate::config::SchemaForgeConfig;
+use crate::storage::{StorageConfig, StorageRegistry};
 use acton_service::state::AppState;
 use schema_forge_backend::auth::RecordAccessPolicy;
 use schema_forge_backend::tenant::TenantConfig;
@@ -34,6 +35,9 @@ pub struct InitForgeData {
     pub record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
     /// Optional hook dispatcher for `@hook` lifecycle events.
     pub hook_dispatcher: Option<Arc<dyn crate::hooks::HookDispatcher>>,
+    /// Registry of S3-compatible storage backends for `file` fields.
+    /// Empty when no `[schema_forge.storage]` config is provided.
+    pub storage_registry: StorageRegistry,
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +61,7 @@ pub struct SchemaForgeExtensionBuilder {
     auth_store: Option<Arc<dyn DynAuthStore>>,
     admin_credentials: Option<(String, String)>,
     webhook_config: crate::webhook::WebhookConfig,
+    storage_config: StorageConfig,
 }
 
 impl SchemaForgeExtensionBuilder {
@@ -68,7 +73,14 @@ impl SchemaForgeExtensionBuilder {
             auth_store: None,
             admin_credentials: None,
             webhook_config: crate::webhook::WebhookConfig::default(),
+            storage_config: StorageConfig::default(),
         }
+    }
+
+    /// Set the S3-compatible storage configuration for `file` fields.
+    pub fn with_storage_config(mut self, config: StorageConfig) -> Self {
+        self.storage_config = config;
+        self
     }
 
     /// Set the backend for schema and entity operations.
@@ -207,6 +219,23 @@ impl SchemaForgeExtensionBuilder {
             None
         };
 
+        // Initialize storage registry (empty if no backends configured).
+        let storage_registry = StorageRegistry::from_config(&self.storage_config)
+            .await
+            .map_err(|e| ForgeError::Internal {
+                message: format!("Failed to initialize storage registry: {e}"),
+            })?;
+        if storage_registry.is_enabled() {
+            tracing::info!(
+                backends = storage_registry.len(),
+                "storage registry initialized"
+            );
+        }
+
+        // Validate every `file(bucket: ...)` in the schema registry references a
+        // configured backend. Fail loud at startup rather than at first request.
+        validate_file_references(&all_schemas, &storage_registry)?;
+
         let state = ForgeState {
             registry,
             backend,
@@ -216,9 +245,47 @@ impl SchemaForgeExtensionBuilder {
             graphql_schema,
             auth_store: self.auth_store,
             webhook_dispatcher,
+            storage_registry,
         };
 
         Ok(SchemaForgeExtension { state })
+    }
+}
+
+/// Fail startup if any schema has a `file` field pointing at a bucket name that
+/// is not declared in `[schema_forge.storage.backends]`. File uploads require a
+/// real backend, so this is a misconfiguration we refuse to run under.
+fn validate_file_references(
+    schemas: &[SchemaDefinition],
+    storage: &StorageRegistry,
+) -> Result<(), ForgeError> {
+    use schema_forge_core::types::FieldType;
+
+    let mut missing: Vec<String> = Vec::new();
+    for schema in schemas {
+        for field in &schema.fields {
+            if let FieldType::File(constraints) = &field.field_type {
+                if storage.get(&constraints.bucket).is_none() {
+                    missing.push(format!(
+                        "{}::{} -> bucket \"{}\"",
+                        schema.name.as_str(),
+                        field.name.as_str(),
+                        constraints.bucket
+                    ));
+                }
+            }
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(ForgeError::Internal {
+            message: format!(
+                "file field(s) reference undeclared storage backends: [{}]. \
+                 Add matching [schema_forge.storage.backends.<name>] entries.",
+                missing.join(", ")
+            ),
+        })
     }
 }
 
@@ -245,6 +312,7 @@ impl SchemaForgeExtension {
     pub async fn build_init(
         backend: Arc<dyn DynForgeBackend>,
         record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+        storage_config: &StorageConfig,
     ) -> Result<InitForgeData, ForgeError> {
         // Load existing schemas from the backend into a HashMap
         let stored_schemas = backend
@@ -285,12 +353,28 @@ impl SchemaForgeExtension {
             None
         };
 
+        // Initialize the S3 storage registry (empty if no backends configured).
+        let storage_registry =
+            StorageRegistry::from_config(storage_config)
+                .await
+                .map_err(|e| ForgeError::Internal {
+                    message: format!("Failed to initialize storage registry: {e}"),
+                })?;
+        validate_file_references(&all_schemas, &storage_registry)?;
+        if storage_registry.is_enabled() {
+            tracing::info!(
+                backends = storage_registry.len(),
+                "storage registry initialized"
+            );
+        }
+
         Ok(InitForgeData {
             registry,
             backend,
             tenant_config,
             record_access_policy,
             hook_dispatcher: None,
+            storage_registry,
         })
     }
 

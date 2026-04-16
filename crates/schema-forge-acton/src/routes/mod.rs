@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod entities;
+pub mod files;
 pub mod query_params;
 pub mod schemas;
 pub mod users;
@@ -49,6 +50,23 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
                 .put(entities::update_entity)
                 .patch(entities::patch_entity)
                 .delete(entities::delete_entity),
+        )
+        // File fields (presigned upload, confirm, and download)
+        .route(
+            "/schemas/{schema}/entities/{id}/fields/{field}/upload-url",
+            post(files::mint_upload_url),
+        )
+        .route(
+            "/schemas/{schema}/entities/{id}/fields/{field}/confirm-upload",
+            post(files::confirm_upload),
+        )
+        .route(
+            "/schemas/{schema}/entities/{id}/fields/{field}",
+            get(files::download_file),
+        )
+        .route(
+            "/schemas/{schema}/entities/{id}/fields/{field}/scan-complete",
+            post(files::scan_complete),
         )
         // User management
         .route("/users", post(users::create_user).get(users::list_users))

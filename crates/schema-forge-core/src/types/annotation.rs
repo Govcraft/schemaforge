@@ -78,6 +78,15 @@ pub enum HookEvent {
     BeforeDelete,
     /// Fires after deletion. Cannot abort.
     AfterDelete,
+    /// Fires when a presigned upload URL is requested for a `file` field.
+    /// May modify the request (tighten size/MIME) or abort it.
+    BeforeUpload,
+    /// Fires after the client confirms bytes have landed in storage.
+    /// Cannot abort the upload but can trigger scanning or extraction.
+    AfterUpload,
+    /// Fires when an external scanner reports a terminal decision, transitioning
+    /// a file from `scanning` to `available` or `quarantined`.
+    OnScanComplete,
 }
 
 impl std::str::FromStr for HookEvent {
@@ -92,6 +101,9 @@ impl std::str::FromStr for HookEvent {
             "after_read" => Ok(Self::AfterRead),
             "before_delete" => Ok(Self::BeforeDelete),
             "after_delete" => Ok(Self::AfterDelete),
+            "before_upload" => Ok(Self::BeforeUpload),
+            "after_upload" => Ok(Self::AfterUpload),
+            "on_scan_complete" => Ok(Self::OnScanComplete),
             _ => Err(()),
         }
     }
@@ -108,6 +120,9 @@ impl HookEvent {
             Self::AfterRead => "after_read",
             Self::BeforeDelete => "before_delete",
             Self::AfterDelete => "after_delete",
+            Self::BeforeUpload => "before_upload",
+            Self::AfterUpload => "after_upload",
+            Self::OnScanComplete => "on_scan_complete",
         }
     }
 
@@ -115,7 +130,11 @@ impl HookEvent {
     pub fn is_blocking(self) -> bool {
         matches!(
             self,
-            Self::BeforeValidate | Self::BeforeChange | Self::BeforeRead | Self::BeforeDelete
+            Self::BeforeValidate
+                | Self::BeforeChange
+                | Self::BeforeRead
+                | Self::BeforeDelete
+                | Self::BeforeUpload
         )
     }
 
@@ -128,6 +147,9 @@ impl HookEvent {
         Self::AfterRead,
         Self::BeforeDelete,
         Self::AfterDelete,
+        Self::BeforeUpload,
+        Self::AfterUpload,
+        Self::OnScanComplete,
     ];
 }
 
@@ -246,6 +268,9 @@ impl Annotation {
                 HookEvent::AfterRead => "hook:after_read",
                 HookEvent::BeforeDelete => "hook:before_delete",
                 HookEvent::AfterDelete => "hook:after_delete",
+                HookEvent::BeforeUpload => "hook:before_upload",
+                HookEvent::AfterUpload => "hook:after_upload",
+                HookEvent::OnScanComplete => "hook:on_scan_complete",
             },
         }
     }

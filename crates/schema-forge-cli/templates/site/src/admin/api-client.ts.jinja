@@ -80,6 +80,7 @@ export type FieldMeta = {
     | "relation_many"
     | "array"
     | "composite"
+    | "file"
     | "unknown"
   required: boolean
   /** Enum variants, when `kind === "enum"`. */
@@ -90,6 +91,8 @@ export type FieldMeta = {
   arrayElement?: FieldMeta
   /** Composite sub-fields, when `kind === "composite"`. */
   subFields?: FieldMeta[]
+  /** File-field metadata, when `kind === "file"`. */
+  fileMeta?: FileMeta
   /** `@widget(...)` hint as a snake_case token (e.g. `"status_badge"`). */
   widget?: string
   /** `@format(...)` hint as a snake_case token (e.g. `"currency"`). */
@@ -98,6 +101,15 @@ export type FieldMeta = {
   accessRead?: string[]
   /** `@field_access(write=[...])` roles — undefined means no write gate. */
   accessWrite?: string[]
+}
+
+/** Metadata the file upload widget needs to render accept hints and size caps. */
+export type FileMeta = {
+  bucket: string
+  maxSizeBytes: number
+  maxSizeHuman: string
+  mimeAllowlist: string[]
+  access: "presigned" | "proxied"
 }
 
 /** Project a wire `FieldResponse` into the admin's normalized `FieldMeta`. */
@@ -161,9 +173,51 @@ export function toFieldMeta(f: FieldResponse): FieldMeta {
         subFields: (inner ?? []).map(toFieldMeta),
       }
     }
+    case "File": {
+      const data = raw.data as
+        | {
+            bucket: string
+            max_size_bytes: number
+            mime_allowlist: Array<
+              | { kind: "exact"; value: string }
+              | { kind: "family"; value: string }
+            >
+            access: "presigned" | "proxied"
+          }
+        | undefined
+      if (!data) return { ...base, kind: "file" }
+      const mimeAllowlist = (data.mime_allowlist ?? []).map((m) =>
+        m.kind === "family" ? `${m.value}/*` : m.value,
+      )
+      return {
+        ...base,
+        kind: "file",
+        fileMeta: {
+          bucket: data.bucket,
+          maxSizeBytes: data.max_size_bytes,
+          maxSizeHuman: humanizeBytes(data.max_size_bytes),
+          mimeAllowlist,
+          access: data.access,
+        },
+      }
+    }
     default:
       return { ...base, kind: "unknown" }
   }
+}
+
+function humanizeBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) {
+    const v = n / 1024
+    return v % 1 === 0 ? `${v} KB` : `${v.toFixed(1)} KB`
+  }
+  if (n < 1024 * 1024 * 1024) {
+    const v = n / 1024 / 1024
+    return v % 1 === 0 ? `${v} MB` : `${v.toFixed(1)} MB`
+  }
+  const v = n / 1024 / 1024 / 1024
+  return v % 1 === 0 ? `${v} GB` : `${v.toFixed(2)} GB`
 }
 
 /**

@@ -5,7 +5,7 @@
 // renders a controlled input that calls `onChange(next)` with the next
 // value. Each kind is kept intentionally simple — fancier widgets
 // (markdown preview, JSON linter, etc.) are a later polish pass.
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { Input } from "@/components/ui/input"
 import { RelationSelect } from "@/components/ui/relation-select"
 import { formatFieldValue, type FieldDisplayHints } from "@/generated/formatters"
@@ -274,9 +274,217 @@ function renderEditor(
       )
     }
 
+    case "file": {
+      return (
+        <FileFieldEditor
+          field={field}
+          value={value as FileAttachment | null | undefined}
+          onChange={onChange as (next: FileAttachment | null) => void}
+        />
+      )
+    }
+
     default:
       return <Input value={String(value ?? "")} disabled />
   }
+}
+
+/**
+ * Persisted attachment shape. Matches the JSON the runtime emits via the
+ * confirm-upload endpoint.
+ */
+type FileAttachment = {
+  key: string
+  size: number
+  mime: string
+  status: "pending" | "uploaded" | "scanning" | "available" | "quarantined" | "rejected"
+  uploaded_at?: string
+  checksum?: string
+}
+
+type FileFieldEditorProps = {
+  field: FieldMeta
+  value: FileAttachment | null | undefined
+  onChange: (next: FileAttachment | null) => void
+}
+
+/**
+ * Controlled editor for a `file` field. Implements the three-step flow:
+ *
+ *   1. POST ./upload-url to mint a presigned PUT.
+ *   2. PUT bytes directly to object storage using the returned URL.
+ *   3. POST ./confirm-upload to record the attachment on the entity.
+ *
+ * Progress is rendered with a native `<progress>` element and failures bubble
+ * into an inline error panel so the admin UI does not silently swallow them.
+ */
+function FileFieldEditor({ field, value, onChange }: FileFieldEditorProps) {
+  const [uploading, setUploading] = useState(false)
+  const [progress, setProgress] = useState<number | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  const entityUrl = useEntityUrl()
+  const fileMeta = field.fileMeta
+
+  async function handleFile(file: File) {
+    setErr(null)
+    if (fileMeta?.maxSizeBytes && file.size > fileMeta.maxSizeBytes) {
+      setErr(`File exceeds ${fileMeta.maxSizeHuman ?? `${fileMeta.maxSizeBytes} bytes`}.`)
+      return
+    }
+    setUploading(true)
+    setProgress(0)
+    try {
+      // Step 1 — mint presigned URL.
+      const mintRes = await fetch(`${entityUrl}/fields/${field.name}/upload-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          filename: file.name,
+          mime: file.type || "application/octet-stream",
+          size: file.size,
+        }),
+      })
+      if (!mintRes.ok) {
+        throw new Error(`mint failed: ${mintRes.status} ${await safeBody(mintRes)}`)
+      }
+      const mint = (await mintRes.json()) as {
+        upload_url: string
+        key: string
+        headers: Record<string, string>
+      }
+
+      // Step 2 — upload bytes with progress tracking via XHR (fetch streams
+      // are widely supported but progress is still cleaner via XHR).
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open("PUT", mint.upload_url, true)
+        for (const [k, v] of Object.entries(mint.headers)) xhr.setRequestHeader(k, v)
+        xhr.upload.onprogress = (ev) => {
+          if (ev.lengthComputable) setProgress(Math.round((ev.loaded / ev.total) * 100))
+        }
+        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`upload failed: ${xhr.status}`)))
+        xhr.onerror = () => reject(new Error("upload network error"))
+        xhr.send(file)
+      })
+
+      // Step 3 — confirm and accept the runtime's attachment response.
+      const confirmRes = await fetch(`${entityUrl}/fields/${field.name}/confirm-upload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ key: mint.key }),
+      })
+      if (!confirmRes.ok) {
+        throw new Error(`confirm failed: ${confirmRes.status} ${await safeBody(confirmRes)}`)
+      }
+      const confirm = (await confirmRes.json()) as { attachment: FileAttachment }
+      onChange(confirm.attachment)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUploading(false)
+      setProgress(null)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      {value?.key ? (
+        <div className="flex items-center gap-2 text-sm">
+          <span className="font-medium">{attachmentLabel(value)}</span>
+          <StatusChip status={value.status} />
+          {value.status === "available" ? (
+            <a
+              href={`${entityUrl}/fields/${field.name}`}
+              target="_blank"
+              rel="noreferrer"
+              className="underline"
+            >
+              Download
+            </a>
+          ) : null}
+          <button
+            type="button"
+            className="text-xs text-muted-foreground underline"
+            onClick={() => onChange(null)}
+          >
+            Replace
+          </button>
+        </div>
+      ) : (
+        <input
+          type="file"
+          accept={fileMeta?.mimeAllowlist?.join(",")}
+          disabled={uploading}
+          onChange={(ev) => {
+            const file = ev.target.files?.[0]
+            if (file) void handleFile(file)
+          }}
+        />
+      )}
+      {fileMeta ? (
+        <p className="text-xs text-muted-foreground">
+          Up to {fileMeta.maxSizeHuman ?? `${fileMeta.maxSizeBytes} bytes`}. Allowed:{" "}
+          {fileMeta.mimeAllowlist?.join(", ") ?? "any"}
+        </p>
+      ) : null}
+      {progress !== null ? (
+        <progress max={100} value={progress} className="w-full" />
+      ) : null}
+      {err ? <p className="text-sm text-destructive">{err}</p> : null}
+    </div>
+  )
+}
+
+function attachmentLabel(a: FileAttachment): string {
+  const tail = a.key.split("/").pop() || a.key
+  return `${tail} (${formatBytes(a.size)})`
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function StatusChip({ status }: { status: FileAttachment["status"] }) {
+  const tone: Record<FileAttachment["status"], string> = {
+    pending: "bg-yellow-100 text-yellow-800",
+    uploaded: "bg-blue-100 text-blue-800",
+    scanning: "bg-blue-100 text-blue-800",
+    available: "bg-green-100 text-green-800",
+    quarantined: "bg-red-100 text-red-800",
+    rejected: "bg-red-100 text-red-800",
+  }
+  return (
+    <span className={`text-xs px-1.5 py-0.5 rounded ${tone[status] ?? "bg-muted"}`}>
+      {status}
+    </span>
+  )
+}
+
+async function safeBody(res: Response): Promise<string> {
+  try {
+    return await res.text()
+  } catch {
+    return ""
+  }
+}
+
+/**
+ * Returns the base URL for the current entity: `/api/v1/forge/schemas/{schema}/entities/{id}`.
+ * The admin shell sets `window.__ENTITY_URL__` on the detail page so the
+ * generic field renderer can reach the file endpoints without the schema/id
+ * being passed down explicitly through React Hook Form state.
+ */
+function useEntityUrl(): string {
+  // Best-effort — the admin shell always sets this for detail views. For list
+  // views file cells are read-only (formatted via `renderReadOnly`) so this
+  // path is not hit there.
+  return (globalThis as unknown as { __ENTITY_URL__?: string }).__ENTITY_URL__ ?? ""
 }
 
 function toFormatterKind(kind: FieldMeta["kind"]) {

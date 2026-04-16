@@ -40,6 +40,9 @@ fn parse_hook_all_events() {
            @hook(after_read) """e"""
            @hook(before_delete) """f"""
            @hook(after_delete) """g"""
+           @hook(before_upload) """h"""
+           @hook(after_upload) """i"""
+           @hook(on_scan_complete) """j"""
            schema S { name: text }"#,
     );
     for ev in HookEvent::ALL {

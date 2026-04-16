@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use schema_forge_core::types::{Cardinality, FieldDefinition, FieldType};
 
-use super::context::{make_field_view, FieldView, SchemaMeta};
+use super::context::{make_field_view, FieldView, FileMetaView, SchemaMeta};
 
 /// Reason a field could not be projected into the v0 site view model.
 #[derive(Debug, Clone)]
@@ -310,6 +310,42 @@ fn field_to_view_with_prefix(
             view.sub_fields = sub_fields;
             Ok(view)
         }
+        FieldType::File(constraints) => {
+            // TypeScript shape of a stored file attachment. Matches the server
+            // JSON shape written by confirm_upload.
+            let ts_type = "{ key: string; size: number; mime: string; status: string; \
+                           uploaded_at?: string; checksum?: string }"
+                .to_string();
+            // The form value holds the attachment object (after upload completes)
+            // or null while pending. Zod validates the minimal required shape.
+            let zod = if required {
+                "z.object({ key: z.string(), size: z.number(), mime: z.string(), \
+                 status: z.string(), uploaded_at: z.string().optional(), \
+                 checksum: z.string().optional() })"
+                    .to_string()
+            } else {
+                "z.object({ key: z.string(), size: z.number(), mime: z.string(), \
+                 status: z.string(), uploaded_at: z.string().optional(), \
+                 checksum: z.string().optional() }).nullish()"
+                    .to_string()
+            };
+            let mime_allowlist: Vec<String> = constraints
+                .mime_allowlist
+                .iter()
+                .map(|m| m.to_string())
+                .collect();
+            let file_meta = FileMetaView {
+                bucket: constraints.bucket.clone(),
+                max_size_bytes: constraints.max_size_bytes,
+                max_size_human: human_size(constraints.max_size_bytes),
+                mime_allowlist,
+                access: constraints.access.as_str().to_string(),
+            };
+            let mut view =
+                make_field_view(field, ts_type, zod, "file", false, None, Vec::new());
+            view.file_meta = Some(file_meta);
+            Ok(view)
+        }
         other => Err(FieldMapError::Unsupported {
             field: field.name.as_str().to_string(),
             reason: format!("unsupported field type `{other}` in v0 site generator"),
@@ -321,6 +357,40 @@ fn field_to_view_with_prefix(
         }
         v
     })
+}
+
+/// Format a byte count as a short human-readable string for template labels.
+///
+/// Uses base-1024 (matching the DSL parser) and always drops unnecessary
+/// decimals so common values render cleanly (`1 KB`, `25 MB`, `1.5 GB`).
+fn human_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    const TIB: u64 = GIB * 1024;
+
+    fn fmt_scaled(bytes: u64, unit: u64, suffix: &str) -> String {
+        let whole = bytes / unit;
+        let remainder = bytes % unit;
+        if remainder == 0 {
+            format!("{whole} {suffix}")
+        } else {
+            let value = (bytes as f64) / (unit as f64);
+            format!("{value:.1} {suffix}")
+        }
+    }
+
+    if bytes >= TIB {
+        fmt_scaled(bytes, TIB, "TB")
+    } else if bytes >= GIB {
+        fmt_scaled(bytes, GIB, "GB")
+    } else if bytes >= MIB {
+        fmt_scaled(bytes, MIB, "MB")
+    } else if bytes >= KIB {
+        fmt_scaled(bytes, KIB, "KB")
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// Fill in the relation target's `kebab` slug and `@display("...")` field

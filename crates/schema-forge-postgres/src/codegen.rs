@@ -229,6 +229,7 @@ pub fn field_type_to_pg(field_type: &FieldType) -> String {
             format!("{inner_type}[]")
         }
         FieldType::Composite(_) => "JSONB".to_string(),
+        FieldType::File(_) => "JSONB".to_string(),
         _ => "TEXT".to_string(),
     }
 }
@@ -262,6 +263,17 @@ fn field_check_constraints(table: &str, field_name: &str, field_type: &FieldType
             vec![format!(
                 "CONSTRAINT \"{constraint_name}\" CHECK (\"{field_name}\" IN ({}))",
                 values.join(", ")
+            )]
+        }
+        FieldType::File(_) => {
+            // Structural check only. Size/MIME/access are runtime-enforced so they can be
+            // tightened without requiring a migration.
+            let constraint_name = format!("chk_{table}_{field_name}_file");
+            vec![format!(
+                "CONSTRAINT \"{constraint_name}\" CHECK (\"{field_name}\" IS NULL OR \
+                 (jsonb_typeof(\"{field_name}\") = 'object' \
+                 AND \"{field_name}\" ? 'status' \
+                 AND \"{field_name}\" ? 'key'))"
             )]
         }
         _ => Vec::new(),
@@ -607,6 +619,84 @@ mod tests {
         assert_eq!(
             field_type_to_pg(&FieldType::Array(Box::new(FieldType::Boolean))),
             "BOOLEAN[]"
+        );
+        assert_eq!(field_type_to_pg(&sample_file_field_type()), "JSONB");
+    }
+
+    fn sample_file_field_type() -> FieldType {
+        use schema_forge_core::types::{FileAccess, FileConstraints, MimePattern};
+        FieldType::File(FileConstraints {
+            bucket: "documents".into(),
+            max_size_bytes: 25 * 1024 * 1024,
+            mime_allowlist: vec![MimePattern::Exact("application/pdf".into())],
+            access: FileAccess::Presigned,
+        })
+    }
+
+    #[test]
+    fn add_field_file_emits_jsonb_with_structural_check() {
+        let step = MigrationStep::AddField {
+            field: FieldDefinition::new(
+                FieldName::new("contract").unwrap(),
+                sample_file_field_type(),
+            ),
+        };
+        let stmts = migration_step_to_sql("Deal", &step);
+        assert_eq!(stmts.len(), 1);
+        assert!(
+            stmts[0].contains("\"contract\" JSONB"),
+            "expected JSONB column, got: {}",
+            stmts[0]
+        );
+        assert!(
+            stmts[0].contains("CONSTRAINT \"chk_Deal_contract_file\""),
+            "expected file CHECK constraint, got: {}",
+            stmts[0]
+        );
+        assert!(stmts[0].contains("jsonb_typeof"));
+        assert!(stmts[0].contains("? 'status'"));
+        assert!(stmts[0].contains("? 'key'"));
+    }
+
+    #[test]
+    fn add_field_file_required_adds_not_null() {
+        let step = MigrationStep::AddField {
+            field: FieldDefinition::with_modifiers(
+                FieldName::new("contract").unwrap(),
+                sample_file_field_type(),
+                vec![FieldModifier::Required],
+            ),
+        };
+        let stmts = migration_step_to_sql("Deal", &step);
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].contains("JSONB"));
+        assert!(stmts[0].contains("NOT NULL"));
+    }
+
+    #[test]
+    fn create_schema_with_file_field_includes_check() {
+        let step = MigrationStep::CreateSchema {
+            name: SchemaName::new("Deal").unwrap(),
+            fields: vec![FieldDefinition::new(
+                FieldName::new("contract").unwrap(),
+                sample_file_field_type(),
+            )],
+        };
+        let stmts = migration_step_to_sql("Deal", &step);
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].contains("\"contract\" JSONB"));
+        assert!(stmts[0].contains("chk_Deal_contract_file"));
+    }
+
+    #[test]
+    fn remove_field_file_drops_column() {
+        let step = MigrationStep::RemoveField {
+            name: FieldName::new("contract").unwrap(),
+        };
+        let stmts = migration_step_to_sql("Deal", &step);
+        assert_eq!(
+            stmts,
+            vec!["ALTER TABLE \"Deal\" DROP COLUMN IF EXISTS \"contract\";"]
         );
     }
 

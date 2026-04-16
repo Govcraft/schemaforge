@@ -258,6 +258,23 @@ fn print_type(field_type: &FieldType, output: &mut String, depth: usize) {
             output.push_str(&"    ".repeat(depth));
             output.push('}');
         }
+        FieldType::File(constraints) => {
+            output.push_str("file(");
+            output.push_str(&format!("bucket: \"{}\"", constraints.bucket));
+            output.push_str(&format!(", max_size: {}", constraints.max_size_bytes));
+            output.push_str(", mime: [");
+            for (i, pattern) in constraints.mime_allowlist.iter().enumerate() {
+                if i > 0 {
+                    output.push_str(", ");
+                }
+                output.push('"');
+                output.push_str(&pattern.to_string());
+                output.push('"');
+            }
+            output.push(']');
+            output.push_str(&format!(", access: \"{}\"", constraints.access.as_str()));
+            output.push(')');
+        }
         _ => {
             // Future field types -- print as unknown for forward compatibility
             output.push_str("unknown");

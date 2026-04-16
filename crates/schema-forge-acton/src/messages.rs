@@ -231,6 +231,7 @@ pub struct InitForge {
     pub tenant_config: Option<TenantConfig>,
     pub record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
     pub hook_dispatcher: Option<Arc<dyn crate::hooks::HookDispatcher>>,
+    pub storage_registry: crate::storage::StorageRegistry,
     pub reply: ReplyChannel<()>,
 }
 
@@ -248,7 +249,15 @@ impl std::fmt::Debug for InitForge {
                 "hook_dispatcher",
                 &self.hook_dispatcher.as_ref().map(|_| ".."),
             )
+            .field("storage_backends", &self.storage_registry.len())
             .field("reply", &self.reply)
             .finish()
     }
+}
+
+/// Request the StorageRegistry from the ForgeActor. Returns an empty registry
+/// when no `[schema_forge.storage]` config was provided.
+#[derive(Clone, Debug)]
+pub struct GetStorageRegistry {
+    pub reply: ReplyChannel<crate::storage::StorageRegistry>,
 }

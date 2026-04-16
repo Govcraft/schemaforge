@@ -145,7 +145,10 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
 /// but the parent itself must still be FLEXIBLE or SurrealDB treats it as
 /// the schema of the whole object).
 fn needs_flexible(field_type: &FieldType) -> bool {
-    matches!(field_type, FieldType::Json | FieldType::Composite(_))
+    matches!(
+        field_type,
+        FieldType::Json | FieldType::Composite(_) | FieldType::File(_)
+    )
 }
 
 /// Convert a `FieldType` to its SurrealQL TYPE string.
@@ -171,6 +174,7 @@ pub fn field_type_to_surql(field_type: &FieldType) -> String {
             format!("array<{inner_type}>")
         }
         FieldType::Composite(_) => "object".to_string(),
+        FieldType::File(_) => "object".to_string(),
         _ => "any".to_string(),
     }
 }

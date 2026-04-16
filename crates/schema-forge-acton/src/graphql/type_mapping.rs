@@ -68,6 +68,10 @@ pub fn field_type_to_type_ref(
             let type_name = format!("{schema_name}_{field_name}");
             TypeRef::named(type_name)
         }
+        // `file` fields serialize as a JSON object carrying attachment metadata.
+        // Clients read `{ key, size, mime, status, uploaded_at }`; writes go
+        // through the REST upload flow, not GraphQL mutations.
+        FieldType::File(_) => TypeRef::named(JSON_SCALAR),
         _ => TypeRef::named(TypeRef::STRING),
     };
 

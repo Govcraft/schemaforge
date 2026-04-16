@@ -26,6 +26,8 @@ pub enum SchemaError {
     DuplicateAnnotation(String),
     /// Schema definition has no fields.
     EmptyFields,
+    /// MIME pattern string is empty or malformed.
+    InvalidMimePattern(String),
 }
 
 impl fmt::Display for SchemaError {
@@ -58,6 +60,12 @@ impl fmt::Display for SchemaError {
             Self::DuplicateFieldName(n) => write!(f, "duplicate field name '{n}'"),
             Self::DuplicateAnnotation(a) => write!(f, "duplicate annotation '{a}'"),
             Self::EmptyFields => write!(f, "schema must have at least one field"),
+            Self::InvalidMimePattern(s) => {
+                write!(
+                    f,
+                    "invalid MIME pattern '{s}': must be 'type/subtype' or 'type/*'"
+                )
+            }
         }
     }
 }

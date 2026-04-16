@@ -148,6 +148,33 @@ fn round_trip_annotations() {
 }
 
 #[test]
+fn round_trip_file_field_minimal() {
+    assert_round_trip(
+        r#"schema S {
+            doc: file(bucket: "documents", max_size: 1024, mime: ["application/pdf"])
+        }"#,
+    );
+}
+
+#[test]
+fn round_trip_file_field_all_options() {
+    assert_round_trip(
+        r#"schema S {
+            avatar: file(bucket: "media", max_size: "5MB", mime: ["image/*", "image/png"], access: "proxied")
+        }"#,
+    );
+}
+
+#[test]
+fn round_trip_file_field_with_modifiers() {
+    assert_round_trip(
+        r#"schema S {
+            contract: file(bucket: "docs", max_size: "25MB", mime: ["application/pdf"]) required
+        }"#,
+    );
+}
+
+#[test]
 fn round_trip_multiple_schemas() {
     assert_round_trip(
         r#"schema Contact {

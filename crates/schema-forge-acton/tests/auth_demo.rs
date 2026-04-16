@@ -111,6 +111,7 @@ async fn build_test_app_state(
             tenant_config,
             record_access_policy,
             hook_dispatcher: None,
+            storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
             reply: ReplyChannel::new(tx),
         })
         .await;

@@ -60,12 +60,23 @@ pub async fn run(
     let backend_arc = connected.backend.clone();
     let auth_store = connected.auth_store.clone();
 
-    // 4. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
-    let init_data = SchemaForgeExtension::build_init(backend_arc.clone(), None)
-        .await
-        .map_err(|e| CliError::Server {
-            message: format!("failed to build ForgeActor init data: {e}"),
-        })?;
+    // 4. Load the acton-service config early so the `[schema_forge.storage]`
+    //    section is available when we build ForgeActor initialization data
+    //    (which spins up the S3 storage registry).
+    let mut svc_config =
+        acton_service::config::Config::<schema_forge_acton::SchemaForgeConfig>::load_for_service(
+            "schemaforge",
+        )
+        .unwrap_or_default();
+    let storage_config = svc_config.custom.schema_forge.storage.clone();
+
+    // 5. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
+    let init_data =
+        SchemaForgeExtension::build_init(backend_arc.clone(), None, &storage_config)
+            .await
+            .map_err(|e| CliError::Server {
+                message: format!("failed to build ForgeActor init data: {e}"),
+            })?;
 
     // 5. Apply parsed schemas (using the backend directly, before actor spawning)
     let mut registry = init_data.registry;
@@ -121,6 +132,7 @@ pub async fn run(
         tenant_config,
         record_access_policy: None,
         hook_dispatcher: None,
+        storage_registry: init_data.storage_registry,
     };
 
     // 6. Warn about --watch
@@ -147,12 +159,9 @@ pub async fn run(
 
     // Configure acton-service before building routes so we can read the token
     // config, mint a PasetoGenerator, and wire the login endpoint's Extension
-    // layer onto the versioned router.
-    let mut svc_config =
-        acton_service::config::Config::<schema_forge_acton::SchemaForgeConfig>::load_for_service(
-            "schemaforge",
-        )
-        .unwrap_or_default();
+    // layer onto the versioned router. `svc_config` was already loaded above
+    // so the storage registry could be initialized; finalize the remaining
+    // fields here.
     svc_config.service.port = args.port;
     svc_config.service.name = "schemaforge".to_string();
 
@@ -255,6 +264,7 @@ pub async fn run(
             tenant_config: init_data.tenant_config,
             record_access_policy: init_data.record_access_policy,
             hook_dispatcher,
+            storage_registry: init_data.storage_registry,
             reply: ReplyChannel::new(tx),
         })
         .await;

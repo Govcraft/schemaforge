@@ -20,11 +20,12 @@ use schema_forge_core::types::SchemaDefinition;
 use crate::hooks::HookDispatcher;
 use crate::messages::{
     AggregateEntities, ApplyMigration, CountEntities, CreateEntity, DeleteEntity, GetEntity,
-    GetHookDispatcher, GetRecordAccessPolicy, GetSchema, GetSchemasBatch, GetTenantConfig,
-    InitForge, InsertSchema, ListSchemas, LoadSchemaMetadata, QueryEntities, RemoveSchema,
-    StoreSchemaMetadata, UpdateEntity, UpdateTenantConfig,
+    GetHookDispatcher, GetRecordAccessPolicy, GetSchema, GetSchemasBatch, GetStorageRegistry,
+    GetTenantConfig, InitForge, InsertSchema, ListSchemas, LoadSchemaMetadata, QueryEntities,
+    RemoveSchema, StoreSchemaMetadata, UpdateEntity, UpdateTenantConfig,
 };
 use crate::state::DynForgeBackend;
+use crate::storage::StorageRegistry;
 
 // ---------------------------------------------------------------------------
 // ForgeActor
@@ -41,6 +42,7 @@ pub struct ForgeActor {
     pub(crate) tenant_config: Option<TenantConfig>,
     pub(crate) record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
     pub(crate) hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
+    pub(crate) storage_registry: StorageRegistry,
 }
 
 impl std::fmt::Debug for ForgeActor {
@@ -57,6 +59,7 @@ impl std::fmt::Debug for ForgeActor {
                 "hook_dispatcher",
                 &self.hook_dispatcher.as_ref().map(|_| ".."),
             )
+            .field("storage_backends", &self.storage_registry.len())
             .finish()
     }
 }
@@ -73,6 +76,7 @@ impl ForgeActor {
             tenant_config: None,
             record_access_policy: None,
             hook_dispatcher: None,
+            storage_registry: StorageRegistry::default(),
         }
     }
 }
@@ -102,6 +106,7 @@ fn configure_init(actor: &mut ManagedActor<Idle, ForgeActor>) {
         actor.model.tenant_config = msg.tenant_config.clone();
         actor.model.record_access_policy = msg.record_access_policy.clone();
         actor.model.hook_dispatcher = msg.hook_dispatcher.clone();
+        actor.model.storage_registry = msg.storage_registry.clone();
         let reply = msg.reply.clone();
         Reply::pending(async move {
             reply.send(()).await;
@@ -166,6 +171,14 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             reply.send(dispatcher).await;
+        })
+    });
+
+    actor.act_on::<GetStorageRegistry>(|actor, ctx| {
+        let registry = actor.model.storage_registry.clone();
+        let reply = ctx.message().reply.clone();
+        Reply::pending(async move {
+            reply.send(registry).await;
         })
     });
 }

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::cardinality::Cardinality;
 use super::enum_variants::EnumVariants;
 use super::field_definition::FieldDefinition;
+use super::file_constraints::FileConstraints;
 use super::float_constraints::FloatConstraints;
 use super::integer_constraints::IntegerConstraints;
 use super::schema_name::SchemaName;
@@ -27,6 +28,7 @@ pub enum FieldType {
     },
     Array(Box<FieldType>),
     Composite(Vec<FieldDefinition>),
+    File(FileConstraints),
 }
 
 impl std::fmt::Display for FieldType {
@@ -46,6 +48,7 @@ impl std::fmt::Display for FieldType {
             } => write!(f, "Relation({target}, {cardinality})"),
             Self::Array(inner) => write!(f, "Array<{inner}>"),
             Self::Composite(fields) => write!(f, "Composite({} fields)", fields.len()),
+            Self::File(_) => write!(f, "File"),
         }
     }
 }
@@ -129,6 +132,32 @@ mod tests {
     #[test]
     fn serde_roundtrip_enum() {
         let ft = FieldType::Enum(EnumVariants::new(vec!["A".into(), "B".into()]).unwrap());
+        let json = serde_json::to_string(&ft).unwrap();
+        let back: FieldType = serde_json::from_str(&json).unwrap();
+        assert_eq!(ft, back);
+    }
+
+    #[test]
+    fn display_file() {
+        use super::super::file_constraints::{FileAccess, FileConstraints};
+        let ft = FieldType::File(FileConstraints {
+            bucket: "documents".into(),
+            max_size_bytes: 1024,
+            mime_allowlist: vec![],
+            access: FileAccess::Presigned,
+        });
+        assert_eq!(ft.to_string(), "File");
+    }
+
+    #[test]
+    fn serde_roundtrip_file() {
+        use super::super::file_constraints::{FileAccess, FileConstraints, MimePattern};
+        let ft = FieldType::File(FileConstraints {
+            bucket: "documents".into(),
+            max_size_bytes: 25 * 1024 * 1024,
+            mime_allowlist: vec![MimePattern::Exact("application/pdf".into())],
+            access: FileAccess::Proxied,
+        });
         let json = serde_json::to_string(&ft).unwrap();
         let back: FieldType = serde_json::from_str(&json).unwrap();
         assert_eq!(ft, back);

@@ -13,6 +13,7 @@ pub mod routes;
 pub mod shared;
 pub mod shared_auth;
 pub mod state;
+pub mod storage;
 pub mod system;
 pub mod webhook;
 

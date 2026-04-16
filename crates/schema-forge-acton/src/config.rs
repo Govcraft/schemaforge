@@ -29,6 +29,10 @@ pub struct SchemaForgeSettings {
     /// Lifecycle hook settings.
     #[serde(default)]
     pub hooks: crate::hooks::HooksConfig,
+
+    /// S3-compatible storage backends for `file` field types.
+    #[serde(default)]
+    pub storage: crate::storage::StorageConfig,
 }
 
 fn default_route_prefix() -> String {
@@ -42,6 +46,7 @@ impl Default for SchemaForgeSettings {
             auto_generate_cedar_policies: false,
             webhooks: crate::webhook::WebhookConfig::default(),
             hooks: crate::hooks::HooksConfig::default(),
+            storage: crate::storage::StorageConfig::default(),
         }
     }
 }
@@ -65,6 +70,7 @@ mod tests {
                 auto_generate_cedar_policies: true,
                 webhooks: crate::webhook::WebhookConfig::default(),
                 hooks: crate::hooks::HooksConfig::default(),
+                storage: crate::storage::StorageConfig::default(),
             },
         };
         let json = serde_json::to_string(&config).unwrap();

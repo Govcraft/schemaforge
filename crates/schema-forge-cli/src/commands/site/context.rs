@@ -264,6 +264,29 @@ pub struct FieldView {
     /// the detail view. Reads already flow through the standard relation
     /// envelope, populated by the backend's inverse-collection pass.
     pub derived: bool,
+    /// For `kind == "file"`: metadata the template needs to render the
+    /// upload widget (accept attribute, max-size guard, proxied vs. presigned
+    /// behavior). `None` for non-file fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_meta: Option<FileMetaView>,
+}
+
+/// File-field metadata projected to the site template layer.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileMetaView {
+    /// Configured storage backend name. Purely informational for templates;
+    /// the runtime resolves this to an S3 client at upload time.
+    pub bucket: String,
+    /// Maximum upload size in bytes.
+    pub max_size_bytes: u64,
+    /// Human-friendly rendering of `max_size_bytes` (e.g. `"25 MB"`).
+    pub max_size_human: String,
+    /// MIME allowlist serialized as strings the HTML `<input accept>` attribute
+    /// can consume directly (`"application/pdf"`, `"image/*"`).
+    pub mime_allowlist: Vec<String>,
+    /// Either `"presigned"` or `"proxied"`. Templates branch on this to decide
+    /// whether download buttons follow a 302 redirect or hit the proxy route.
+    pub access: String,
 }
 
 /// Derive the canonical lowerCamelCase JS property name for a DSL field name.
@@ -309,6 +332,7 @@ pub fn make_field_view(
         item_kind: None,
         item_enum_variants: Vec::new(),
         sub_fields: Vec::new(),
+        file_meta: None,
         enum_colors: field
             .enum_colors()
             .map(|m| {

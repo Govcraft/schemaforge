@@ -485,9 +485,21 @@ fn render_proto(h: &SchemaHooks) -> Result<String, CliError> {
         s.push_str("  optional string user_id = 2;\n");
         s.push_str("  optional string entity_id = 3;\n");
         let mut tag = 100;
-        for f in &scalar_fields {
-            s.push_str(&render_proto_field_line(f, tag, /* request = */ true));
-            tag += 1;
+        if is_file_event(*event) {
+            // File-specific shape: entity-level scalars are omitted because file
+            // events fire in isolation from entity writes. Hook services receive
+            // the file's declared metadata plus a short-TTL download URL (for
+            // `after_upload` / `on_scan_complete`) so they can stream bytes
+            // directly from object storage.
+            for file_field in file_hook_fields(*event) {
+                s.push_str(&file_field.render(tag));
+                tag += 1;
+            }
+        } else {
+            for f in &scalar_fields {
+                s.push_str(&render_proto_field_line(f, tag, /* request = */ true));
+                tag += 1;
+            }
         }
         s.push_str("}\n\n");
 
@@ -496,14 +508,70 @@ fn render_proto(h: &SchemaHooks) -> Result<String, CliError> {
         s.push_str(&format!("message {}{}Response {{\n", h.pascal, method));
         s.push_str("  optional string abort_reason = 1;\n");
         let mut tag = 100;
-        for f in &scalar_fields {
-            s.push_str(&render_proto_field_line(f, tag, /* request = */ false));
-            tag += 1;
+        if is_file_event(*event) {
+            // File events are fire-and-forget with respect to data modification —
+            // only `before_upload` is blocking, and it can only abort, not mutate.
+            // Response shape is just the abort marker plus an optional advisory
+            // status the hook can return for logging.
+            s.push_str("  optional string advisory_status = 100;\n");
+        } else {
+            for f in &scalar_fields {
+                s.push_str(&render_proto_field_line(f, tag, /* request = */ false));
+                tag += 1;
+            }
         }
         s.push_str("}\n\n");
     }
 
     Ok(s)
+}
+
+/// Fields carried by a file-event hook request. Names match the keys the
+/// runtime's `files.rs` handler inserts into `HookInvocation::fields`.
+fn file_hook_fields(event: HookEvent) -> &'static [FileHookField] {
+    match event {
+        HookEvent::BeforeUpload => &[
+            FileHookField { name: "field_name", required: true },
+            FileHookField { name: "file_name", required: true },
+            FileHookField { name: "mime_type", required: true },
+            FileHookField { name: "file_size", required: true, /* int64 */ },
+        ],
+        HookEvent::AfterUpload | HookEvent::OnScanComplete => &[
+            FileHookField { name: "field_name", required: true },
+            FileHookField { name: "object_key", required: true },
+            FileHookField { name: "mime_type", required: true },
+            FileHookField { name: "file_size", required: true },
+            FileHookField { name: "status", required: true },
+            FileHookField { name: "download_url", required: false },
+        ],
+        _ => &[],
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FileHookField {
+    name: &'static str,
+    required: bool,
+}
+
+impl FileHookField {
+    fn render(self, tag: u32) -> String {
+        let (ty, optional_prefix) = match self.name {
+            "file_size" => ("int64", if self.required { "" } else { "optional " }),
+            _ => ("string", if self.required { "" } else { "optional " }),
+        };
+        format!(
+            "  {optional_prefix}{ty} {name} = {tag};\n",
+            name = self.name
+        )
+    }
+}
+
+fn is_file_event(event: HookEvent) -> bool {
+    matches!(
+        event,
+        HookEvent::BeforeUpload | HookEvent::AfterUpload | HookEvent::OnScanComplete
+    )
 }
 
 /// Format a single proto field line. `request = true` honors the `required`
@@ -572,6 +640,12 @@ fn field_type_to_proto(
         // wire. Hook services receive the raw JSON and must parse it themselves.
         // Matches the legacy generator's behavior (see issue #14).
         FieldType::Composite(_) => Ok(("string", false)),
+        // Files are projected as an `optional string` carrying the JSON-encoded
+        // attachment snapshot (key, size, mime, status, etc.). File-specific
+        // hook events also receive dedicated `file_name`, `mime_type`,
+        // `file_size`, `object_key`, `status`, and `download_url` fields; see
+        // `file_hook_fields` in render_proto.
+        FieldType::File(_) => Ok(("string", false)),
         FieldType::Relation { cardinality, .. } => {
             Ok(("string", matches!(cardinality, Cardinality::Many)))
         }
@@ -958,6 +1032,9 @@ fn event_to_method(event: HookEvent) -> &'static str {
         HookEvent::AfterRead => "AfterRead",
         HookEvent::BeforeDelete => "BeforeDelete",
         HookEvent::AfterDelete => "AfterDelete",
+        HookEvent::BeforeUpload => "BeforeUpload",
+        HookEvent::AfterUpload => "AfterUpload",
+        HookEvent::OnScanComplete => "OnScanComplete",
     }
 }
 

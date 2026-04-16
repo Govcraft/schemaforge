@@ -78,6 +78,7 @@ async fn build_test_app_state(init: TestForgeInit) -> AppState<SchemaForgeConfig
             tenant_config: init.tenant_config,
             record_access_policy: init.record_access_policy,
             hook_dispatcher: init.hook_dispatcher,
+            storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
             reply: ReplyChannel::new(tx),
         })
         .await;

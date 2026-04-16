@@ -460,6 +460,9 @@ pub struct ForgeState {
     pub auth_store: Option<Arc<dyn DynAuthStore>>,
     /// Optional webhook dispatcher for outbound event notifications.
     pub webhook_dispatcher: Option<Arc<crate::webhook::WebhookDispatcher>>,
+    /// Registry of S3-compatible storage backends bound to their `bucket:` name.
+    /// Empty when no `[schema_forge.storage]` config is provided.
+    pub storage_registry: crate::storage::StorageRegistry,
 }
 
 #[cfg(test)]
