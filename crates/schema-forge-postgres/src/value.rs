@@ -126,7 +126,7 @@ fn bind_null(args: &mut PgArguments, field_type: Option<&FieldType>) -> Result<(
         Some(FieldType::Boolean) => args.add(None::<bool>),
         Some(FieldType::DateTime) => args.add(None::<chrono::DateTime<chrono::Utc>>),
         // Stored as jsonb.
-        Some(FieldType::Json | FieldType::Composite(_)) => {
+        Some(FieldType::Json | FieldType::Composite(_) | FieldType::File(_)) => {
             args.add(None::<sqlx::types::Json<serde_json::Value>>)
         }
         // Relation cardinality determines text vs text[].
@@ -423,6 +423,13 @@ fn read_column(
             let v: sqlx::types::Json<serde_json::Value> =
                 row.try_get(col_name).map_err(|e| BackendError::Internal {
                     message: format!("failed to read composite column '{col_name}': {e}"),
+                })?;
+            Ok(json_to_composite(&v.0))
+        }
+        Some(FieldType::File(_)) => {
+            let v: sqlx::types::Json<serde_json::Value> =
+                row.try_get(col_name).map_err(|e| BackendError::Internal {
+                    message: format!("failed to read file column '{col_name}': {e}"),
                 })?;
             Ok(json_to_composite(&v.0))
         }
@@ -830,6 +837,43 @@ mod tests {
         // without schema context still bind as nullable text.
         let mut args = PgArguments::default();
         assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, None).is_ok());
+    }
+
+    #[test]
+    fn bind_null_with_file_field_type_uses_typed_jsonb_none() {
+        // Regression test for issue #45: the postgres backend writes a
+        // `file` column as JSONB but `bind_null` had no File arm, so a
+        // NULL-round-trip fell through to None::<String>.
+        use schema_forge_core::types::{FileAccess, FileConstraints, MimePattern};
+
+        let mut args = PgArguments::default();
+        let ft = FieldType::File(FileConstraints {
+            bucket: "documents".into(),
+            max_size_bytes: 1024,
+            mime_allowlist: vec![MimePattern::Exact("application/pdf".into())],
+            access: FileAccess::Presigned,
+        });
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_file_composite_binds_as_jsonb() {
+        // A `file` column is JSONB; writing a FileAttachment goes through
+        // `DynamicValue::Composite` → JSONB. Proves the write half of the
+        // round-trip repaired by issue #45 still works.
+        let mut args = PgArguments::default();
+        let mut map = BTreeMap::new();
+        map.insert(
+            "key".to_string(),
+            DynamicValue::Text("docs/Entity/01HX/file.pdf".into()),
+        );
+        map.insert("size".to_string(), DynamicValue::Integer(1024));
+        map.insert("mime".to_string(), DynamicValue::Text("application/pdf".into()));
+        map.insert("status".to_string(), DynamicValue::Text("available".into()));
+        assert!(
+            bind_dynamic_value(&mut args, &DynamicValue::Composite(map), None).is_ok(),
+            "Composite should bind as JSONB"
+        );
     }
 
     #[test]

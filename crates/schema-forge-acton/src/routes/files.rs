@@ -707,16 +707,72 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// Extract the current `FileAttachment` from an entity's field, if any.
+///
+/// The stored shape is the flat `FileAttachment` JSON object (keys `key`,
+/// `size`, `mime`, `checksum`, `status`, `uploaded_at`). When the entity comes
+/// back from the backend, the field's `DynamicValue` is a `Composite` or `Json`
+/// wrapping that shape. Callers must unwrap the payload directly instead of
+/// going through `serde_json::to_value(&DynamicValue)`, whose tagged-enum
+/// representation (`#[serde(tag = "type", content = "value")]`) would produce
+/// `{"type":"Composite","value":{...}}` and fail to deserialize as
+/// `FileAttachment`.
 fn current_attachment(entity: &Entity, field: &str) -> Option<FileAttachment> {
     let value = entity.fields.get(field)?;
-    let json = dynamic_to_json(value)?;
+    let json = dynamic_value_to_attachment_json(value)?;
     serde_json::from_value(json).ok()
 }
 
-fn dynamic_to_json(value: &DynamicValue) -> Option<serde_json::Value> {
+/// Convert the entity field's `DynamicValue` back to the flat JSON object
+/// originally persisted via [`persist_attachment`]. Returns `None` for `Null`
+/// or any shape that cannot represent a file attachment object.
+fn dynamic_value_to_attachment_json(value: &DynamicValue) -> Option<serde_json::Value> {
     match value {
-        DynamicValue::Null => Some(serde_json::Value::Null),
-        other => serde_json::to_value(other).ok(),
+        DynamicValue::Null => None,
+        DynamicValue::Json(v) => Some(v.clone()),
+        DynamicValue::Composite(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), dynamic_inner_to_json(v)))
+                .collect();
+            Some(serde_json::Value::Object(obj))
+        }
+        _ => None,
+    }
+}
+
+/// Inner-value conversion used by [`dynamic_value_to_attachment_json`].
+///
+/// Mirrors the one-way translation in [`json_to_dynamic`]: primitives go
+/// straight to their JSON equivalents; nested composites recurse without the
+/// tagged-enum wrapping that `serde_json::to_value(&DynamicValue)` would add.
+fn dynamic_inner_to_json(value: &DynamicValue) -> serde_json::Value {
+    match value {
+        DynamicValue::Null => serde_json::Value::Null,
+        DynamicValue::Text(s) | DynamicValue::Enum(s) => serde_json::Value::String(s.clone()),
+        DynamicValue::Integer(i) => serde_json::Value::Number((*i).into()),
+        DynamicValue::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        DynamicValue::Boolean(b) => serde_json::Value::Bool(*b),
+        DynamicValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        DynamicValue::Json(v) => v.clone(),
+        DynamicValue::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(dynamic_inner_to_json).collect())
+        }
+        DynamicValue::Composite(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), dynamic_inner_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        DynamicValue::Ref(id) => serde_json::Value::String(id.as_str().to_string()),
+        DynamicValue::RefArray(ids) => serde_json::Value::Array(
+            ids.iter()
+                .map(|id| serde_json::Value::String(id.as_str().to_string()))
+                .collect(),
+        ),
+        _ => serde_json::Value::Null,
     }
 }
 
@@ -965,6 +1021,85 @@ mod tests {
             Some("tenant_abc".to_string()),
         );
         assert!(key.starts_with("tenant_abc/Deal/"));
+    }
+
+    #[test]
+    fn current_attachment_round_trips_through_dynamic_value_composite() {
+        // Issue #45: the read path returned Composite(map); the old
+        // `current_attachment` then called `serde_json::to_value(&DynamicValue)`,
+        // which the #[serde(tag, content)] enum turned into
+        // `{"type":"Composite","value":{...}}`, breaking `FileAttachment::deserialize`.
+        use chrono::Utc;
+        use schema_forge_core::types::{FileAttachment, FileStatus, SchemaName};
+
+        let schema = SchemaName::new("Document").unwrap();
+        let eid = EntityId::new();
+        let attachment = FileAttachment {
+            key: "tenant/Document/abc/attachment/01HX/report.pdf".into(),
+            size: 2_048,
+            mime: "application/pdf".into(),
+            checksum: Some("sha256:deadbeef".into()),
+            status: FileStatus::Available,
+            created_at: Utc::now(),
+            uploaded_at: Some(Utc::now()),
+        };
+
+        let stored_json = serde_json::to_value(&attachment).unwrap();
+        let stored_dv = json_to_dynamic(stored_json);
+
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("attachment".to_string(), stored_dv);
+        let entity = Entity::with_id(eid, schema, fields);
+
+        let recovered =
+            current_attachment(&entity, "attachment").expect("should recover FileAttachment");
+        assert_eq!(recovered.key, attachment.key);
+        assert_eq!(recovered.size, attachment.size);
+        assert_eq!(recovered.mime, attachment.mime);
+        assert_eq!(recovered.checksum, attachment.checksum);
+        assert_eq!(recovered.status, attachment.status);
+    }
+
+    #[test]
+    fn current_attachment_returns_none_for_null() {
+        use schema_forge_core::types::SchemaName;
+
+        let schema = SchemaName::new("Document").unwrap();
+        let eid = EntityId::new();
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("attachment".to_string(), DynamicValue::Null);
+        let entity = Entity::with_id(eid, schema, fields);
+
+        assert!(current_attachment(&entity, "attachment").is_none());
+    }
+
+    #[test]
+    fn current_attachment_works_when_value_is_json_variant() {
+        // Belt-and-suspenders: covers a future read-path that returns
+        // `DynamicValue::Json(v)` instead of `Composite(map)`.
+        use chrono::Utc;
+        use schema_forge_core::types::{FileAttachment, FileStatus, SchemaName};
+
+        let schema = SchemaName::new("Document").unwrap();
+        let eid = EntityId::new();
+        let attachment = FileAttachment {
+            key: "k".into(),
+            size: 10,
+            mime: "text/plain".into(),
+            checksum: None,
+            status: FileStatus::Scanning,
+            created_at: Utc::now(),
+            uploaded_at: None,
+        };
+        let stored_json = serde_json::to_value(&attachment).unwrap();
+
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("attachment".to_string(), DynamicValue::Json(stored_json));
+        let entity = Entity::with_id(eid, schema, fields);
+
+        let recovered = current_attachment(&entity, "attachment").expect("from Json variant");
+        assert_eq!(recovered.size, 10);
+        assert_eq!(recovered.status, FileStatus::Scanning);
     }
 
     #[test]
