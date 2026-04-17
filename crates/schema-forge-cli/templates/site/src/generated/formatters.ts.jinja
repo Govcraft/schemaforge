@@ -14,6 +14,7 @@ type Kind =
   | "array"
   | "rich_text"
   | "json"
+  | "file"
 
 export type FieldDisplayHints = {
   kind: Kind
@@ -103,6 +104,22 @@ function formatCurrency(value: unknown): string {
   }).format(n)
 }
 
+function formatFileAttachment(value: unknown): string {
+  // `file` fields deserialize as a FileAttachment object; render the
+  // filename portion of the storage key. Callers that want a richer
+  // display (status chip, download button) render their own component.
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>
+    const key = typeof obj.key === "string" ? obj.key : null
+    if (key) {
+      const idx = key.lastIndexOf("/")
+      return idx >= 0 ? key.slice(idx + 1) : key
+    }
+    if (typeof obj.status === "string") return obj.status
+  }
+  return EMPTY
+}
+
 function formatPercent(value: unknown): string {
   const n = typeof value === "number" ? value : Number(value)
   if (!Number.isFinite(n)) return EMPTY
@@ -121,6 +138,10 @@ function formatPercent(value: unknown): string {
 /// falls back to the field's native kind. Returns `—` for nullish values.
 export function formatFieldValue(value: unknown, hints: FieldDisplayHints): string {
   if (value === null || value === undefined || value === "") return EMPTY
+  // `file` fields are objects, not scalars — check before the array guard
+  // (arrays would stringify to the tagged enum) and before the object
+  // fallthrough.
+  if (hints.kind === "file") return formatFileAttachment(value)
   if (Array.isArray(value)) {
     if (value.length === 0) return EMPTY
     return value.map((v) => String(v)).join(", ")
