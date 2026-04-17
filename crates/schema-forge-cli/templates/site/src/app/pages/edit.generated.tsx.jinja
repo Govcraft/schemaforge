@@ -217,7 +217,14 @@ export function normalize{{ entity.pascal }}InitialValues(
 // structured validation errors on JSON-parse failures via `setError`.
 export function normalize{{ entity.pascal }}Payload(
   values: {{ entity.pascal }}FormValues,
+{%- if entity.has_json_field %}
   form: UseFormReturn<{{ entity.pascal }}FormValues>,
+{%- else %}
+  // No JSON field on this entity — `form.setError` is unreachable, so the
+  // parameter is renamed (`_`-prefix) to satisfy `noUnusedParameters`.
+  // Callers can still pass their `form`; the wider signature stays stable.
+  _form: UseFormReturn<{{ entity.pascal }}FormValues>,
+{%- endif %}
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     ...(values as unknown as Record<string, unknown>),

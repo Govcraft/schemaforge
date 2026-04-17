@@ -135,6 +135,20 @@ pub struct EntityView {
     /// import the `RelationSelect` component when it will actually be
     /// referenced.
     pub has_relation_one: bool,
+    /// `true` iff any top-level field is a `Relation(One|Many)` whose
+    /// target carries a `@display(...)` field. The detail template only
+    /// renders relation cells through `<Link>` when this metadata is
+    /// present, so the import is gated on the same condition (otherwise
+    /// `noUnusedLocals` rejects the generated file). Composite sub-fields
+    /// always render through `formatFieldValue`, so nested relations do
+    /// not require the import.
+    pub has_relation_link: bool,
+    /// `true` iff any top-level field is `kind == "json"`. The
+    /// `normalize…Payload` helper only consults its `form` argument inside
+    /// the JSON branch (to surface parse errors via `setError`); when no
+    /// JSON field exists the parameter is renamed to `_form` to satisfy
+    /// `noUnusedParameters`.
+    pub has_json_field: bool,
 }
 
 impl EntityView {
@@ -160,6 +174,11 @@ impl EntityView {
             }
         }
         let has_relation_one = fields.iter().any(has_relation_one_field);
+        let has_relation_link = fields.iter().any(|f| {
+            (f.kind == "relation_one" || f.kind == "relation_many")
+                && f.relation_display_field.is_some()
+        });
+        let has_json_field = fields.iter().any(|f| f.kind == "json");
         let display_field = def.display_field().map(|s| s.to_string());
 
         // `@display("field")` auto-promotes to `primary` when no explicit
@@ -186,6 +205,8 @@ impl EntityView {
             fields,
             display_field,
             has_relation_one,
+            has_relation_link,
+            has_json_field,
         })
     }
 }

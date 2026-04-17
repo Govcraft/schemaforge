@@ -501,6 +501,125 @@ fn derived_inverse_collection_skipped_in_forms() {
     );
 }
 
+/// Issue #43: the per-entity `.generated.tsx` siblings used to import
+/// `Link` and declare a `form` parameter unconditionally, even when the
+/// entity carried no display-field-bearing relations and no JSON fields.
+/// That tripped TS's `noUnusedLocals` / `noUnusedParameters` (both enabled
+/// in the scaffolded `tsconfig.json`) and broke `pnpm build` out of the
+/// box. Both symbols must be conditionally emitted now.
+#[test]
+fn issue_43_no_unused_link_import_or_form_param_for_simple_entity() {
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+    // Glossary has no relations and no JSON — both unused symbols would
+    // have shown up here pre-fix.
+    let schema = r#"
+@display("term")
+schema Glossary {
+    term:       text(max: 255) required
+    definition: text(max: 2048) required
+}
+"#;
+    write_schemas(&schema_dir, schema);
+
+    run_generate(&schema_dir, &out_dir, "Glossary", &[])
+        .assert()
+        .success();
+
+    let detail =
+        fs::read_to_string(out_dir.join("src/app/pages/glossary/detail.generated.tsx")).unwrap();
+    assert!(
+        !detail.contains("import { Link }"),
+        "detail.generated.tsx must not import Link when no relation has a display field:\n{detail}"
+    );
+
+    let edit =
+        fs::read_to_string(out_dir.join("src/app/pages/glossary/edit.generated.tsx")).unwrap();
+    // The `normalize…Payload` signature carries `_form` (underscore-prefixed)
+    // so TypeScript's `noUnusedParameters` accepts the unused argument while
+    // keeping the call signature stable for the preserve `edit.tsx` shell.
+    // Look at the slice between the function's open paren and the closing
+    // `): Record` so we don't false-positive against `FormFields(... form: UseFormReturn<...>)`.
+    let payload_sig = slice_between(&edit, "normalizeGlossaryPayload(", "): Record<")
+        .expect("normalizeGlossaryPayload signature must be present");
+    assert!(
+        payload_sig.contains("_form: UseFormReturn<"),
+        "normalizeGlossaryPayload must rename the unused `form` param to `_form`:\n{payload_sig}"
+    );
+    assert!(
+        !payload_sig.contains("\n  form: UseFormReturn<"),
+        "normalizeGlossaryPayload must not declare `form: UseFormReturn<...>` when no JSON field exists:\n{payload_sig}"
+    );
+
+    // And the contrapositive: an entity *with* a JSON field still gets the
+    // real `form` parameter so the JSON-parse setError branch compiles.
+    let schema_with_json = r#"
+@display("name")
+schema Settings {
+    name:    text(max: 255) required
+    payload: json
+}
+"#;
+    let schema_dir2 = tmp.path().join("schemas2");
+    let out_dir2 = tmp.path().join("site2");
+    write_schemas(&schema_dir2, schema_with_json);
+    run_generate(&schema_dir2, &out_dir2, "Settings", &[])
+        .assert()
+        .success();
+    let edit_with_json =
+        fs::read_to_string(out_dir2.join("src/app/pages/settings/edit.generated.tsx")).unwrap();
+    let payload_sig_json = slice_between(&edit_with_json, "normalizeSettingsPayload(", "): Record<")
+        .expect("normalizeSettingsPayload signature must be present");
+    assert!(
+        payload_sig_json.contains("\n  form: UseFormReturn<"),
+        "entity with a JSON field must keep the real `form` param:\n{payload_sig_json}"
+    );
+}
+
+/// Return the substring of `haystack` between the first occurrence of `start`
+/// (after it) and the next occurrence of `end`. Used by tests that want to
+/// scope a `contains(...)` assertion to a single function signature without
+/// false-positiving on similarly-named symbols elsewhere in the same file.
+fn slice_between<'a>(haystack: &'a str, start: &str, end: &str) -> Option<&'a str> {
+    let i = haystack.find(start)? + start.len();
+    let j = haystack[i..].find(end)? + i;
+    Some(&haystack[i..j])
+}
+
+/// Issue #43 (companion): an entity that *does* have a relation with a
+/// display field still imports `Link`. Locks in the contrapositive of the
+/// fix so a future refactor doesn't accidentally suppress the import in
+/// every case.
+#[test]
+fn issue_43_relation_with_display_field_keeps_link_import() {
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+    let schema = r#"
+@display("name")
+schema Department {
+    name: text(max: 255) required
+}
+
+@display("full_name")
+schema Employee {
+    full_name:  text(max: 255) required
+    department: -> Department
+}
+"#;
+    write_schemas(&schema_dir, schema);
+    run_generate(&schema_dir, &out_dir, "Employee", &[])
+        .assert()
+        .success();
+    let detail =
+        fs::read_to_string(out_dir.join("src/app/pages/employee/detail.generated.tsx")).unwrap();
+    assert!(
+        detail.contains("import { Link }"),
+        "detail.generated.tsx must keep the Link import for relations with display fields:\n{detail}"
+    );
+}
+
 #[test]
 fn missing_schema_name_errors_clearly() {
     let tmp = TempDir::new().unwrap();

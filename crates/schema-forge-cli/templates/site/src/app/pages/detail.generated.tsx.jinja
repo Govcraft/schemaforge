@@ -5,7 +5,9 @@
 // it into the final page, so users can customize layout, section
 // headers, and surrounding widgets there without ever touching the
 // schema-shaped data here.
+{%- if entity.has_relation_link %}
 import { Link } from "react-router-dom"
+{%- endif %}
 import type { {{ entity.pascal }} } from "@/generated/entity-types"
 import { formatFieldValue } from "@/generated/formatters"
 
