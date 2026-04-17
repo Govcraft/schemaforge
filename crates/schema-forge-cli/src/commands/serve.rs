@@ -55,20 +55,36 @@ pub async fn run(
         Err(e) => return Err(e),
     };
 
-    // 3. Connect to database (try remote, fail explicitly for production)
-    let connected = connect_with_retries(&db_params, output).await?;
-    let backend_arc = connected.backend.clone();
-    let auth_store = connected.auth_store.clone();
-
-    // 4. Load the acton-service config early so the `[schema_forge.storage]`
-    //    section is available when we build ForgeActor initialization data
-    //    (which spins up the S3 storage registry).
+    // 3. Load the acton-service config before paying for a database
+    //    connection so a malformed `[schema_forge.*]` section fails the
+    //    boot in milliseconds with the underlying Figment error, instead
+    //    of after the connection-retry loop and far away from the actual
+    //    cause.
+    //
+    //    Issue #44: this call used to swallow the error via
+    //    `.unwrap_or_default()`, which silently dropped the entire
+    //    `[schema_forge.storage]` section whenever Figment failed to
+    //    deserialize the config (e.g. an unknown field, a wrong type).
+    //    The server then exited with a misleading "undeclared storage
+    //    backends" error that pointed operators at the wrong file.
+    //    Propagate the underlying Figment error verbatim — it already
+    //    carries the file path, key path, and root cause.
+    //
+    //    Falling through to defaults on `Err` is wrong: `load_for_service`
+    //    returns `Ok(defaults)` already when no config file exists
+    //    anywhere, so the only `Err` path is a real deserialize failure
+    //    that the operator needs to see.
     let mut svc_config =
         acton_service::config::Config::<schema_forge_acton::SchemaForgeConfig>::load_for_service(
             "schemaforge",
         )
-        .unwrap_or_default();
+        .map_err(|e| CliError::Server { message: e.to_string() })?;
     let storage_config = svc_config.custom.schema_forge.storage.clone();
+
+    // 4. Connect to database (try remote, fail explicitly for production)
+    let connected = connect_with_retries(&db_params, output).await?;
+    let backend_arc = connected.backend.clone();
+    let auth_store = connected.auth_store.clone();
 
     // 5. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
     let init_data =

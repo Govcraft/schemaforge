@@ -482,3 +482,57 @@ fn no_subcommand_shows_error() {
         .failure()
         .stderr(predicate::str::contains("Usage"));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #44: a malformed `[schema_forge.storage.backends.*]` section in the
+// shared `config.toml` used to be swallowed by `serve.rs`'s
+// `.unwrap_or_default()` and surface as a misleading "undeclared storage
+// backends" error. After the fix the underlying Figment error must reach
+// the operator with the file path, key path, and root cause intact.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn serve_surfaces_underlying_figment_error_on_malformed_storage_config() {
+    let tmp = TempDir::new().unwrap();
+
+    // The CLI's own `load_config` reads the same `./config.toml` first via
+    // serde+toml. It only deserializes the CLI's narrow schema, so the
+    // `[schema_forge.*]` block is invisible to it; only the acton-service
+    // load below trips. `BackendConfig.bucket` is required (no
+    // `#[serde(default)]`), so omitting it is a reliable deserialize
+    // failure regardless of figment version drift.
+    let bad = r#"
+[schema_forge.storage.backends.docs]
+region = "us-east-1"
+"#;
+    fs::write(tmp.path().join("config.toml"), bad).unwrap();
+
+    let assert = schema_forge()
+        .current_dir(tmp.path())
+        .args([
+            "serve",
+            "--schemas",
+            tmp.path().to_str().unwrap(),
+            // Bind to :0 so we never accidentally collide on a port if we
+            // somehow get past the config load.
+            "--port",
+            "0",
+            // No DB args; if we ever get past the config load the connect
+            // step is what would fail — and the assertions below would
+            // still pass on the wrong error string. Keep the assertion
+            // tight so a regression here surfaces immediately.
+        ])
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.to_lowercase().contains("bucket"),
+        "stderr must name the missing field (`bucket`) so the operator can fix it. got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("undeclared storage backends"),
+        "stderr must NOT surface the downstream `undeclared storage backends` error — \
+         issue #44 is exactly about that misleading message. got:\n{stderr}"
+    );
+}
