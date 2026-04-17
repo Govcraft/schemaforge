@@ -164,6 +164,7 @@ pub async fn run(
         let builder = SchemaForgeExtension::builder()
             .with_backend_arc(init_data.backend.clone())
             .with_auth_store_arc(auth_store.clone())
+            .with_storage_config(svc_config.custom.schema_forge.storage.clone())
             .with_admin_credentials(
                 args.admin_user.clone(),
                 args.admin_password.clone().unwrap_or_default(),
