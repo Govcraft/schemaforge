@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_ref() {
-        let v = DynamicValue::Ref(EntityId::new());
+        let v = DynamicValue::Ref(EntityId::new("test"));
         let json = serde_json::to_string(&v).unwrap();
         let back: DynamicValue = serde_json::from_str(&json).unwrap();
         assert_eq!(v, back);
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_ref_array() {
-        let v = DynamicValue::RefArray(vec![EntityId::new(), EntityId::new()]);
+        let v = DynamicValue::RefArray(vec![EntityId::new("test"), EntityId::new("test")]);
         let json = serde_json::to_string(&v).unwrap();
         let back: DynamicValue = serde_json::from_str(&json).unwrap();
         assert_eq!(v, back);

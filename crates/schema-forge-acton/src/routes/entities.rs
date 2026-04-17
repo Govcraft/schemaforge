@@ -2811,7 +2811,7 @@ mod tests {
             ]),
             &mut out,
         );
-        let id = EntityId::new();
+        let id = EntityId::new("contact");
         collect_relation_ids(&DynamicValue::RefArray(vec![id.clone()]), &mut out);
         collect_relation_ids(&DynamicValue::Ref(id.clone()), &mut out);
 
@@ -2886,8 +2886,8 @@ mod tests {
         )
         .unwrap();
 
-        let id_a = EntityId::new();
-        let id_b = EntityId::new();
+        let id_a = EntityId::new("contact");
+        let id_b = EntityId::new("contact");
         let mut fields = BTreeMap::new();
         fields.insert(
             "contacts".to_string(),
@@ -2922,7 +2922,7 @@ mod tests {
         );
         let response = entity_to_response(&entity);
         assert_eq!(response.schema, "Contact");
-        assert!(response.id.starts_with("entity_"));
+        assert!(response.id.starts_with("contact_"));
         assert_eq!(
             response.fields.get("name"),
             Some(&serde_json::json!("Alice"))
@@ -2964,7 +2964,7 @@ mod tests {
 
     #[test]
     fn convert_relation_ref_from_json() {
-        let entity_id = EntityId::new();
+        let entity_id = EntityId::new("project");
         let id_str = entity_id.as_str().to_string();
         let field_type = FieldType::Relation {
             target: SchemaName::new("Project").unwrap(),
@@ -2986,8 +2986,8 @@ mod tests {
 
     #[test]
     fn convert_relation_ref_array() {
-        let id1 = EntityId::new();
-        let id2 = EntityId::new();
+        let id1 = EntityId::new("tag");
+        let id2 = EntityId::new("tag");
         let field_type = FieldType::Relation {
             target: SchemaName::new("Tag").unwrap(),
             cardinality: Cardinality::Many,
@@ -3255,7 +3255,7 @@ mod tests {
             target: SchemaName::new("Company").unwrap(),
             cardinality: Cardinality::One,
         };
-        let id = EntityId::new();
+        let id = EntityId::new("company");
         let result = coerce_dynamic_value_with_type_hint(
             DynamicValue::Text(id.as_str().to_string()),
             &relation,
@@ -3285,8 +3285,8 @@ mod tests {
             target: SchemaName::new("Tag").unwrap(),
             cardinality: Cardinality::Many,
         };
-        let id1 = EntityId::new();
-        let id2 = EntityId::new();
+        let id1 = EntityId::new("tag");
+        let id2 = EntityId::new("tag");
         let result = coerce_dynamic_value_with_type_hint(
             DynamicValue::Array(vec![
                 DynamicValue::Text(id1.as_str().to_string()),

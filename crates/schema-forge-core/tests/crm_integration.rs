@@ -82,7 +82,7 @@ fn crm_schema_dynamic_values_roundtrip() {
         ("last_name", DynamicValue::Text("Doe".into())),
         ("email", DynamicValue::Text("jane@example.com".into())),
         ("status", DynamicValue::Enum("Active".into())),
-        ("company", DynamicValue::Ref(EntityId::new())),
+        ("company", DynamicValue::Ref(EntityId::new("company"))),
         (
             "tags",
             DynamicValue::Array(vec![

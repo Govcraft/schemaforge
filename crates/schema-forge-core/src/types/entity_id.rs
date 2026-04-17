@@ -4,39 +4,38 @@ use std::str::FromStr;
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// A TypeID-based identifier with prefix "entity".
+/// A TypeID-based identifier whose prefix encodes the entity type
+/// (e.g. `project_01k…`, `opportunity_01k…`, `user_01k…`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntityId(MagicTypeId);
 
-const PREFIX: &str = "entity";
-
 impl EntityId {
-    /// Generates a new random `EntityId` using UUIDv7.
-    pub fn new() -> Self {
-        Self(PREFIX.create_type_id::<V7>())
+    /// Generates a new random `EntityId` using UUIDv7 and the given prefix.
+    ///
+    /// The prefix is sanitized by mti into a valid TypeID prefix: lowercased,
+    /// characters outside `[a-z_]` stripped, leading/trailing `_` trimmed, and
+    /// truncated to 63 chars. Schema names like `"Opportunity"` become
+    /// `"opportunity"`; `"MySchema123"` becomes `"myschema"`.
+    pub fn new(prefix: &str) -> Self {
+        Self(prefix.create_type_id::<V7>())
     }
 
-    /// Parses an `EntityId` from its string representation, validating the "entity" prefix.
+    /// Parses an `EntityId` from its string representation.
+    ///
+    /// Accepts any valid TypeID; the prefix is not constrained to a specific value.
     pub fn parse(s: &str) -> Result<Self, String> {
         let id = MagicTypeId::from_str(s).map_err(|e| format!("{e}"))?;
-        if id.prefix().as_str() != PREFIX {
-            return Err(format!(
-                "expected prefix '{PREFIX}', got '{}'",
-                id.prefix().as_str()
-            ));
-        }
         Ok(Self(id))
+    }
+
+    /// Returns the TypeID prefix (e.g. `"project"`, `"opportunity"`).
+    pub fn prefix(&self) -> &str {
+        self.0.prefix().as_str()
     }
 
     /// Returns the string representation of this id.
     pub fn as_str(&self) -> &str {
         self.0.as_str()
-    }
-}
-
-impl Default for EntityId {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -64,31 +63,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_has_correct_prefix() {
-        let id = EntityId::new();
+    fn new_uses_supplied_prefix() {
+        let id = EntityId::new("project");
         assert!(
-            id.as_str().starts_with("entity_"),
-            "expected 'entity_' prefix, got: {}",
-            id
+            id.as_str().starts_with("project_"),
+            "expected 'project_' prefix, got: {id}"
         );
+        assert_eq!(id.prefix(), "project");
+    }
+
+    #[test]
+    fn new_sanitizes_prefix() {
+        let id = EntityId::new("MySchema123");
+        assert_eq!(id.prefix(), "myschema");
     }
 
     #[test]
     fn parse_valid() {
-        let id = EntityId::new();
+        let id = EntityId::new("contact");
         let parsed = EntityId::parse(id.as_str()).unwrap();
         assert_eq!(id, parsed);
     }
 
     #[test]
-    fn parse_wrong_prefix() {
-        let wrong = "schema_01h455vb4pex5vsknk084sn02q";
-        assert!(EntityId::parse(wrong).is_err());
+    fn parse_accepts_any_prefix() {
+        let legacy = EntityId::new("entity");
+        let parsed = EntityId::parse(legacy.as_str()).unwrap();
+        assert_eq!(parsed, legacy);
+
+        let schema_prefixed = EntityId::new("opportunity");
+        let parsed = EntityId::parse(schema_prefixed.as_str()).unwrap();
+        assert_eq!(parsed, schema_prefixed);
+    }
+
+    #[test]
+    fn parse_rejects_malformed() {
+        assert!(EntityId::parse("not-a-typeid").is_err());
     }
 
     #[test]
     fn serde_roundtrip() {
-        let id = EntityId::new();
+        let id = EntityId::new("tenant");
         let json = serde_json::to_string(&id).unwrap();
         let back: EntityId = serde_json::from_str(&json).unwrap();
         assert_eq!(id, back);
@@ -96,7 +111,7 @@ mod tests {
 
     #[test]
     fn display_matches_as_str() {
-        let id = EntityId::new();
+        let id = EntityId::new("user");
         assert_eq!(id.to_string(), id.as_str());
     }
 }

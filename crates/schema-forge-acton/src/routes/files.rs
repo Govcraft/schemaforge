@@ -1002,7 +1002,7 @@ mod tests {
     #[test]
     fn build_object_key_includes_all_segments() {
         let schema = SchemaName::new("Deal").unwrap();
-        let id = EntityId::new();
+        let id = EntityId::new("deal");
         let key = build_object_key(&schema, &id, "contract", "proposal.pdf", None);
         assert!(key.starts_with("_shared/Deal/"));
         assert!(key.contains("/contract/"));
@@ -1012,7 +1012,7 @@ mod tests {
     #[test]
     fn build_object_key_honors_tenant_segment() {
         let schema = SchemaName::new("Deal").unwrap();
-        let id = EntityId::new();
+        let id = EntityId::new("deal");
         let key = build_object_key(
             &schema,
             &id,
@@ -1033,7 +1033,7 @@ mod tests {
         use schema_forge_core::types::{FileAttachment, FileStatus, SchemaName};
 
         let schema = SchemaName::new("Document").unwrap();
-        let eid = EntityId::new();
+        let eid = EntityId::new("document");
         let attachment = FileAttachment {
             key: "tenant/Document/abc/attachment/01HX/report.pdf".into(),
             size: 2_048,
@@ -1065,7 +1065,7 @@ mod tests {
         use schema_forge_core::types::SchemaName;
 
         let schema = SchemaName::new("Document").unwrap();
-        let eid = EntityId::new();
+        let eid = EntityId::new("document");
         let mut fields = std::collections::BTreeMap::new();
         fields.insert("attachment".to_string(), DynamicValue::Null);
         let entity = Entity::with_id(eid, schema, fields);
@@ -1081,7 +1081,7 @@ mod tests {
         use schema_forge_core::types::{FileAttachment, FileStatus, SchemaName};
 
         let schema = SchemaName::new("Document").unwrap();
-        let eid = EntityId::new();
+        let eid = EntityId::new("document");
         let attachment = FileAttachment {
             key: "k".into(),
             size: 10,

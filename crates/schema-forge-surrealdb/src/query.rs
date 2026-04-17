@@ -261,8 +261,9 @@ pub fn dynamic_value_to_surql_literal(value: &DynamicValue) -> String {
             format!("{{ {} }}", entries.join(", "))
         }
         DynamicValue::Ref(id) => {
-            // EntityId is a TypeID like "entity_01h455vb4pex5vsknk084sn02q".
-            // For SurrealDB record links, we store the raw ID string.
+            // EntityId is a TypeID whose prefix encodes the entity type
+            // (e.g. "project_01h455..."). For SurrealDB record links we
+            // store the raw ID string.
             format!("'{}'", escape_surql_string(id.as_str()))
         }
         DynamicValue::RefArray(ids) => {

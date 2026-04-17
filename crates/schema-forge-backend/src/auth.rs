@@ -151,7 +151,7 @@ mod tests {
 
     fn make_claims(roles: &[&str]) -> Claims {
         Claims {
-            sub: format!("user:{}", EntityId::new().as_str()),
+            sub: format!("user:{}", EntityId::new("user").as_str()),
             roles: roles.iter().map(|r| r.to_string()).collect(),
             perms: vec![],
             exp: 9_999_999_999,
@@ -247,7 +247,7 @@ mod tests {
         let policy = OwnershipBasedPolicy;
         let schema = make_schema_with_owner();
         let admin = make_claims(&["admin"]);
-        let other_id = EntityId::new();
+        let other_id = EntityId::new("user");
 
         let entities = vec![
             make_entity_with_owner("Task", other_id.as_str()),
@@ -262,7 +262,7 @@ mod tests {
     async fn filter_visible_filters_by_owner() {
         let policy = OwnershipBasedPolicy;
         let schema = make_schema_with_owner();
-        let user_id = EntityId::new();
+        let user_id = EntityId::new("user");
         let claims = make_claims_with_sub(&format!("user:{}", user_id.as_str()), &["member"]);
 
         let entities = vec![
@@ -297,7 +297,7 @@ mod tests {
     async fn can_modify_allows_owner() {
         let policy = OwnershipBasedPolicy;
         let schema = make_schema_with_owner();
-        let user_id = EntityId::new();
+        let user_id = EntityId::new("user");
         let claims = make_claims_with_sub(&format!("user:{}", user_id.as_str()), &["member"]);
         let entity = make_entity_with_owner("Task", user_id.as_str());
 

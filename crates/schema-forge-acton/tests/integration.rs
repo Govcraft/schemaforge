@@ -367,7 +367,7 @@ async fn create_entity_returns_201() {
         "expected 201, got {status} with body: {json}"
     );
     assert_eq!(json["schema"], "Contact");
-    assert!(json["id"].as_str().unwrap().starts_with("entity_"));
+    assert!(json["id"].as_str().unwrap().starts_with("contact_"));
     assert_eq!(json["fields"]["name"], "Alice");
     assert_eq!(json["fields"]["age"], 30);
 }
@@ -438,7 +438,7 @@ async fn get_missing_entity_returns_404() {
     json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
 
     // Use a valid but non-existent entity ID
-    let fake_id = schema_forge_core::types::EntityId::new();
+    let fake_id = schema_forge_core::types::EntityId::new("contact");
     let path = format!("/schemas/Contact/entities/{}", fake_id.as_str());
     let (status, _) = json_request(&app, Method::GET, &path, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -527,7 +527,7 @@ async fn delete_missing_entity_returns_404() {
     });
     json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
 
-    let fake_id = schema_forge_core::types::EntityId::new();
+    let fake_id = schema_forge_core::types::EntityId::new("contact");
     let path = format!("/schemas/Contact/entities/{}", fake_id.as_str());
     let (status, _) = json_request(&app, Method::DELETE, &path, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);

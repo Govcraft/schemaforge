@@ -8,7 +8,7 @@ use schema_forge_core::types::{DynamicValue, EntityId, SchemaName};
 /// which simplifies testing and serialization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entity {
-    /// The unique entity identifier (TypeID with "entity" prefix).
+    /// The unique entity identifier (a TypeID whose prefix is derived from the schema name).
     pub id: EntityId,
     /// The schema this entity belongs to.
     pub schema: SchemaName,
@@ -18,10 +18,10 @@ pub struct Entity {
 
 impl Entity {
     /// Creates a new entity with the given schema and fields.
-    /// Generates a fresh `EntityId`.
+    /// Generates a fresh `EntityId` whose prefix is derived from the schema name.
     pub fn new(schema: SchemaName, fields: BTreeMap<String, DynamicValue>) -> Self {
         Self {
-            id: EntityId::new(),
+            id: EntityId::new(schema.as_str()),
             schema,
             fields,
         }
@@ -103,14 +103,14 @@ mod tests {
     #[test]
     fn entity_new_generates_id() {
         let entity = Entity::new(make_schema_name(), make_fields());
-        assert!(entity.id.as_str().starts_with("entity_"));
+        assert!(entity.id.as_str().starts_with("contact_"));
         assert_eq!(entity.schema.as_str(), "Contact");
         assert_eq!(entity.field_count(), 2);
     }
 
     #[test]
     fn entity_with_id_preserves_id() {
-        let id = EntityId::new();
+        let id = EntityId::new("contact");
         let entity = Entity::with_id(id.clone(), make_schema_name(), make_fields());
         assert_eq!(entity.id, id);
     }
@@ -130,7 +130,7 @@ mod tests {
     fn entity_display() {
         let entity = Entity::new(make_schema_name(), BTreeMap::new());
         let display = entity.to_string();
-        assert!(display.starts_with("Contact:entity_"));
+        assert!(display.starts_with("Contact:contact_"));
     }
 
     #[test]

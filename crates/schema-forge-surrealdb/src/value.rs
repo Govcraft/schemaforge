@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn thing_converts_to_ref() {
         use surrealdb::sql::{Id, Thing};
-        let entity_id = EntityId::new();
+        let entity_id = EntityId::new("project");
         let thing = Thing::from(("Project", Id::String(entity_id.as_str().to_string())));
         let sv = SurrealValue::Thing(thing);
         let back = surreal_to_dynamic(&sv).unwrap();

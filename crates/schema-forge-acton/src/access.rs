@@ -307,7 +307,7 @@ mod tests {
 
     fn make_claims(roles: &[&str]) -> Claims {
         Claims {
-            sub: format!("user:{}", EntityId::new().as_str()),
+            sub: format!("user:{}", EntityId::new("user").as_str()),
             roles: roles.iter().map(|r| r.to_string()).collect(),
             perms: vec![],
             exp: 9_999_999_999,
@@ -708,7 +708,7 @@ mod tests {
     #[test]
     fn inject_tenant_scope_adds_filter_when_enabled() {
         let tenant_config = make_enabled_tenant_config();
-        let tenant_id = EntityId::new();
+        let tenant_id = EntityId::new("tenant");
         let claims = make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn inject_tenant_scope_noop_when_disabled() {
         let tenant_config: Option<TenantConfig> = None;
-        let tenant_id = EntityId::new();
+        let tenant_id = EntityId::new("tenant");
         let claims = make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
@@ -743,7 +743,7 @@ mod tests {
     #[test]
     fn inject_tenant_scope_noop_for_admin() {
         let tenant_config = make_enabled_tenant_config();
-        let tenant_id = EntityId::new();
+        let tenant_id = EntityId::new("tenant");
         let claims = make_claims_with_tenant(&["admin"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
@@ -765,7 +765,7 @@ mod tests {
     #[test]
     fn inject_tenant_scope_combines_with_existing_filter() {
         let tenant_config = make_enabled_tenant_config();
-        let tenant_id = EntityId::new();
+        let tenant_id = EntityId::new("tenant");
         let claims = make_claims_with_tenant(&["member"], tenant_id.as_str());
 
         let existing_filter = Filter::eq(
@@ -806,7 +806,7 @@ mod tests {
     #[test]
     fn inject_tenant_on_create_inserts_tenant_field() {
         let tenant_config = make_enabled_tenant_config();
-        let tenant_id = EntityId::new();
+        let tenant_id = EntityId::new("tenant");
         let claims = make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
@@ -823,7 +823,7 @@ mod tests {
     #[test]
     fn inject_tenant_on_create_noop_when_disabled() {
         let tenant_config: Option<TenantConfig> = None;
-        let tenant_id = EntityId::new();
+        let tenant_id = EntityId::new("tenant");
         let claims = make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));

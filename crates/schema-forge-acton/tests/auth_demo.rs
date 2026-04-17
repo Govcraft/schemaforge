@@ -464,8 +464,8 @@ async fn demo_record_ownership() {
     .unwrap();
     register_schema(&schema, &backend, &mut registry).await;
 
-    let alice_id = EntityId::new();
-    let bob_id = EntityId::new();
+    let alice_id = EntityId::new("user");
+    let bob_id = EntityId::new("user");
 
     // --- Alice creates a note ---
     println!("  Alice creates a note");
@@ -625,8 +625,8 @@ async fn demo_multi_tenancy_isolation() {
         tenant_config.hierarchy.len()
     );
 
-    let org_a_id = EntityId::new();
-    let org_b_id = EntityId::new();
+    let org_a_id = EntityId::new("tenant");
+    let org_b_id = EntityId::new("tenant");
 
     // --- Tenant A creates a project ---
     println!("  Tenant A creates a project");
@@ -926,7 +926,7 @@ async fn demo_all_auth_layers_combined() {
     .unwrap();
     register_schema(&schema, &backend, &mut registry).await;
 
-    let author_id = EntityId::new();
+    let author_id = EntityId::new("user");
 
     // --- Step 1: Author (employee) creates document ---
     // @access: employee in write list -> allowed
@@ -976,7 +976,7 @@ async fn demo_all_auth_layers_combined() {
     // @owner: manager is NOT the author -> 403
     println!("  Step 2: non-owner manager blocked by @owner");
     let manager_claims =
-        make_test_claims_with_sub(&format!("user:{}", EntityId::new().as_str()), &["manager"]);
+        make_test_claims_with_sub(&format!("user:{}", EntityId::new("user").as_str()), &["manager"]);
     let manager_state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -1000,7 +1000,7 @@ async fn demo_all_auth_layers_combined() {
     // @field_access: admin bypasses
     println!("  Step 3: admin bypasses all layers");
     let admin_claims =
-        make_test_claims_with_sub(&format!("user:{}", EntityId::new().as_str()), &["admin"]);
+        make_test_claims_with_sub(&format!("user:{}", EntityId::new("user").as_str()), &["admin"]);
     let admin_state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -1023,7 +1023,7 @@ async fn demo_all_auth_layers_combined() {
     // @access: guest NOT in read list -> 403 (never reaches @owner check)
     println!("  Step 4: guest blocked by @access (schema level)");
     let guest_claims =
-        make_test_claims_with_sub(&format!("user:{}", EntityId::new().as_str()), &["guest"]);
+        make_test_claims_with_sub(&format!("user:{}", EntityId::new("user").as_str()), &["guest"]);
     let guest_state = build_test_app_state(
         backend.clone(),
         registry.clone(),
