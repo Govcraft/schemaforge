@@ -7,6 +7,19 @@ use schema_forge_core::types::{DynamicValue, FieldAnnotation, SchemaDefinition};
 use crate::entity::Entity;
 
 // ---------------------------------------------------------------------------
+// Platform-superuser role
+// ---------------------------------------------------------------------------
+
+/// The dedicated platform-superuser role string.
+///
+/// Bypasses every server-side authorization check (schema/field/tenant
+/// access, record-level ownership) and gates the platform-management
+/// endpoints. Distinct from any in-app role string an application may
+/// choose, so applications are free to use `admin` or any other label
+/// for their highest in-app tier without inheriting platform privileges.
+pub const PLATFORM_ADMIN_ROLE: &str = "platform_admin";
+
+// ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 
@@ -55,8 +68,8 @@ pub trait RecordAccessPolicy: Send + Sync {
 ///
 /// If the schema has a field annotated with `@owner`, only the entity owner
 /// (the user whose ID matches the `@owner` field value) can modify or
-/// delete it. Users with the `"admin"` role bypass ownership checks.
-/// Schemas without `@owner` have no record-level restrictions.
+/// delete it. Users with the [`PLATFORM_ADMIN_ROLE`] role bypass ownership
+/// checks. Schemas without `@owner` have no record-level restrictions.
 pub struct OwnershipBasedPolicy;
 
 impl RecordAccessPolicy for OwnershipBasedPolicy {
@@ -67,7 +80,7 @@ impl RecordAccessPolicy for OwnershipBasedPolicy {
         entities: Vec<Entity>,
     ) -> Pin<Box<dyn Future<Output = Vec<Entity>> + Send + 'a>> {
         Box::pin(async move {
-            if claims.has_role("admin") {
+            if claims.has_role(PLATFORM_ADMIN_ROLE) {
                 return entities;
             }
             let owner_field = match find_owner_field(schema) {
@@ -119,12 +132,12 @@ fn find_owner_field(schema: &SchemaDefinition) -> Option<String> {
     })
 }
 
-/// Check if the user is the owner of the entity or has the admin role.
+/// Check if the user is the owner of the entity or holds [`PLATFORM_ADMIN_ROLE`].
 ///
-/// Returns `true` if the user has the admin role, the schema has no `@owner`
-/// annotation, or the entity's owner field matches the user's ID.
+/// Returns `true` if the user holds [`PLATFORM_ADMIN_ROLE`], the schema has no
+/// `@owner` annotation, or the entity's owner field matches the user's ID.
 fn is_owner_or_admin(schema: &SchemaDefinition, claims: &Claims, entity: &Entity) -> bool {
-    if claims.has_role("admin") {
+    if claims.has_role(PLATFORM_ADMIN_ROLE) {
         return true;
     }
     let owner_field = match find_owner_field(schema) {
@@ -243,10 +256,10 @@ mod tests {
     // -- RecordAccessPolicy / OwnershipBasedPolicy tests --
 
     #[tokio::test]
-    async fn filter_visible_returns_all_for_admin() {
+    async fn filter_visible_returns_all_for_platform_admin() {
         let policy = OwnershipBasedPolicy;
         let schema = make_schema_with_owner();
-        let admin = make_claims(&["admin"]);
+        let admin = make_claims(&["platform_admin"]);
         let other_id = EntityId::new("user");
 
         let entities = vec![
@@ -256,6 +269,23 @@ mod tests {
 
         let result = policy.filter_visible(&schema, &admin, entities).await;
         assert_eq!(result.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn filter_visible_does_not_bypass_for_app_admin_role() {
+        // The literal "admin" role is reserved for in-app use; it must
+        // not bypass record-level ownership checks.
+        let policy = OwnershipBasedPolicy;
+        let schema = make_schema_with_owner();
+        let admin = make_claims(&["admin"]);
+
+        let entities = vec![
+            make_entity_with_owner("Task", "someone_else"),
+            make_entity_with_owner("Task", "another_user"),
+        ];
+
+        let result = policy.filter_visible(&schema, &admin, entities).await;
+        assert_eq!(result.len(), 0, "app-level 'admin' must not bypass @owner");
     }
 
     #[tokio::test]
@@ -328,10 +358,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn can_delete_allows_admin() {
+    async fn can_delete_allows_platform_admin() {
         let policy = OwnershipBasedPolicy;
         let schema = make_schema_with_owner();
-        let admin = make_claims(&["admin"]);
+        let admin = make_claims(&["platform_admin"]);
         let entity = make_entity_with_owner("Task", "someone_else");
 
         assert!(policy.can_delete(&schema, &admin, &entity).await);

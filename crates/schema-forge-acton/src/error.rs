@@ -17,6 +17,15 @@ pub enum ForgeError {
     EntityNotFound { schema: String, entity_id: String },
     /// Schema already exists. Maps to 409 Conflict.
     SchemaAlreadyExists { name: String },
+    /// Generic conflict with a stable machine-readable reason. Maps to 409.
+    ///
+    /// The `reason` is a stable kebab-/snake-case code intended for clients
+    /// to branch on (e.g. `"last_platform_admin"`). The `message` carries
+    /// the human-readable detail.
+    Conflict {
+        reason: &'static str,
+        message: String,
+    },
     /// Request body failed validation. Maps to 422.
     ValidationFailed { details: Vec<String> },
     /// Invalid schema name (not PascalCase). Maps to 400.
@@ -50,6 +59,9 @@ impl fmt::Display for ForgeError {
             }
             Self::SchemaAlreadyExists { name } => {
                 write!(f, "schema '{name}' already exists")
+            }
+            Self::Conflict { reason, message } => {
+                write!(f, "conflict ({reason}): {message}")
             }
             Self::ValidationFailed { details } => {
                 write!(f, "validation failed: {}", details.join("; "))
@@ -98,7 +110,7 @@ impl ForgeError {
     fn status_code(&self) -> StatusCode {
         match self {
             Self::SchemaNotFound { .. } | Self::EntityNotFound { .. } => StatusCode::NOT_FOUND,
-            Self::SchemaAlreadyExists { .. } => StatusCode::CONFLICT,
+            Self::SchemaAlreadyExists { .. } | Self::Conflict { .. } => StatusCode::CONFLICT,
             Self::ValidationFailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::InvalidSchemaName { .. }
             | Self::InvalidEntityId { .. }
@@ -118,6 +130,7 @@ impl ForgeError {
             Self::SchemaNotFound { .. } => "schema_not_found",
             Self::EntityNotFound { .. } => "entity_not_found",
             Self::SchemaAlreadyExists { .. } => "schema_already_exists",
+            Self::Conflict { .. } => "conflict",
             Self::ValidationFailed { .. } => "validation_failed",
             Self::InvalidSchemaName { .. } => "invalid_schema_name",
             Self::InvalidEntityId { .. } => "invalid_entity_id",
@@ -135,10 +148,17 @@ impl ForgeError {
 impl IntoResponse for ForgeError {
     fn into_response(self) -> Response {
         let status = self.status_code();
-        let body = serde_json::json!({
-            "error": self.error_kind(),
-            "message": self.to_string(),
-        });
+        let body = match &self {
+            Self::Conflict { reason, message } => serde_json::json!({
+                "error": "conflict",
+                "reason": reason,
+                "message": message,
+            }),
+            _ => serde_json::json!({
+                "error": self.error_kind(),
+                "message": self.to_string(),
+            }),
+        };
         (status, axum::Json(body)).into_response()
     }
 }
@@ -488,5 +508,49 @@ mod tests {
             .status_code(),
             StatusCode::FORBIDDEN
         );
+    }
+
+    #[test]
+    fn display_conflict_includes_reason_and_message() {
+        let err = ForgeError::Conflict {
+            reason: "last_platform_admin",
+            message: "would leave instance without a platform_admin".into(),
+        };
+        let s = err.to_string();
+        assert!(s.contains("last_platform_admin"));
+        assert!(s.contains("would leave instance without a platform_admin"));
+    }
+
+    #[test]
+    fn status_code_conflict() {
+        assert_eq!(
+            ForgeError::Conflict {
+                reason: "last_platform_admin",
+                message: "X".into()
+            }
+            .status_code(),
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[tokio::test]
+    async fn into_response_conflict_has_reason_field_in_body() {
+        let err = ForgeError::Conflict {
+            reason: "last_platform_admin",
+            message: "msg".into(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"], "conflict");
+        assert_eq!(json["reason"], "last_platform_admin");
+        assert_eq!(json["message"], "msg");
     }
 }

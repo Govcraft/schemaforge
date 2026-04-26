@@ -19,8 +19,8 @@ pub struct CedarPolicy {
 /// default policy set:
 /// 1. Read access for any authenticated user
 /// 2. Create/update for the entity owner
-/// 3. Delete for admin group only
-/// 4. Schema modification for schema-admin group only
+/// 3. Delete for `platform_admin` group only
+/// 4. Schema modification for `schema-admin` group only
 pub fn generate_cedar_policies(schema: &SchemaDefinition) -> Vec<CedarPolicy> {
     let name = schema.name.as_str();
 
@@ -38,7 +38,7 @@ pub fn generate_cedar_policies(schema: &SchemaDefinition) -> Vec<CedarPolicy> {
         vec![
             read_policy(name),
             owner_write_policy(name),
-            admin_delete_policy(name),
+            platform_admin_delete_policy(name),
             schema_admin_policy(name),
         ]
     }
@@ -81,12 +81,17 @@ fn owner_write_policy(schema_name: &str) -> CedarPolicy {
     }
 }
 
-/// Render a single Cedar policy for admin delete access.
+/// Render a single Cedar policy for `platform_admin` delete access.
 ///
-/// Only members of Group::"admin" can delete entities.
-fn admin_delete_policy(schema_name: &str) -> CedarPolicy {
+/// Only members of `Group::"platform_admin"` can delete entities under the
+/// default policy template. Apps that opt in to `@access(delete: [...])`
+/// get whatever role groups they declared instead — `platform_admin` is
+/// only the default for schemas without an explicit annotation.
+fn platform_admin_delete_policy(schema_name: &str) -> CedarPolicy {
     CedarPolicy {
-        description: format!("Allow admin group members to delete {schema_name} entities"),
+        description: format!(
+            "Allow platform_admin group members to delete {schema_name} entities"
+        ),
         cedar_text: format!(
             r#"permit (
     principal,
@@ -94,7 +99,7 @@ fn admin_delete_policy(schema_name: &str) -> CedarPolicy {
     resource is {schema_name}
 ) when {{
     principal is User &&
-    principal in Group::"admin"
+    principal in Group::"platform_admin"
 }};"#
         ),
     }
@@ -263,12 +268,13 @@ mod tests {
     }
 
     #[test]
-    fn admin_delete_policy_requires_admin_group() {
+    fn default_delete_policy_requires_platform_admin_group() {
         let schema = make_test_schema();
         let policies = generate_cedar_policies(&schema);
         let delete = &policies[2];
         assert!(delete.cedar_text.contains("DeleteContact"));
-        assert!(delete.cedar_text.contains(r#"Group::"admin""#));
+        assert!(delete.cedar_text.contains(r#"Group::"platform_admin""#));
+        assert!(!delete.cedar_text.contains(r#"Group::"admin""#));
     }
 
     #[test]

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::instrument;
 
-use crate::access::OptionalClaims;
+use crate::access::{OptionalClaims, PLATFORM_ADMIN_ROLE};
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
@@ -91,13 +91,13 @@ fn require_auth(claims: &Option<Claims>) -> Result<&Claims, ForgeError> {
     })
 }
 
-/// Require the admin role. Returns 403 if the user lacks it.
+/// Require the `platform_admin` role. Returns 403 if the caller lacks it.
 fn require_admin(claims: &Claims) -> Result<(), ForgeError> {
-    if claims.has_role("admin") {
+    if claims.has_role(PLATFORM_ADMIN_ROLE) {
         Ok(())
     } else {
         Err(ForgeError::Forbidden {
-            message: "schema management requires admin role".to_string(),
+            message: "schema management requires platform_admin role".to_string(),
         })
     }
 }
@@ -327,7 +327,7 @@ fn schema_to_response(schema: &SchemaDefinition) -> SchemaResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// POST /schemas -- Register a new schema. Requires admin role.
+/// POST /schemas -- Register a new schema. Requires platform_admin role.
 #[instrument(skip_all)]
 pub async fn create_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
@@ -514,7 +514,7 @@ pub async fn get_schema(
     Ok(Json(schema_to_response(&schema)))
 }
 
-/// PUT /schemas/{name} -- Update an existing schema (triggers migration). Requires admin role.
+/// PUT /schemas/{name} -- Update an existing schema (triggers migration). Requires platform_admin role.
 #[instrument(skip_all)]
 pub async fn update_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
@@ -655,7 +655,7 @@ pub async fn update_schema(
     Ok(Json(schema_to_response(&new_definition)))
 }
 
-/// DELETE /schemas/{name} -- Remove a schema. Requires admin role.
+/// DELETE /schemas/{name} -- Remove a schema. Requires platform_admin role.
 #[instrument(skip_all)]
 pub async fn delete_schema(
     State(state): State<AppState<SchemaForgeConfig>>,

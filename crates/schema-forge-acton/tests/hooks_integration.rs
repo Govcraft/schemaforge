@@ -42,7 +42,7 @@ use tower::ServiceExt;
 fn admin_claims() -> Claims {
     Claims {
         sub: "user:test-admin".to_string(),
-        roles: vec!["admin".to_string()],
+        roles: vec!["platform_admin".to_string()],
         perms: vec![],
         exp: 9_999_999_999,
         iat: None,

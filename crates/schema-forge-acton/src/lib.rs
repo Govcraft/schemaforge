@@ -17,6 +17,7 @@ pub mod storage;
 pub mod system;
 pub mod webhook;
 
+pub use access::{PLATFORM_ADMIN_ROLE, PUBLIC_ROLE};
 pub use acton_service;
 pub use actor::ForgeActor;
 pub use config::SchemaForgeConfig;

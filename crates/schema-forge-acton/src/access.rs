@@ -59,11 +59,23 @@ where
 /// that action is accessible without any `Claims`.
 pub const PUBLIC_ROLE: &str = "public";
 
+/// Dedicated platform-superuser role.
+///
+/// The only role that bypasses schema/field/tenant access checks and gates
+/// the user-management endpoints (`/api/v1/forge/users`). Distinct from any
+/// in-app role string an application chooses (including `admin`), so
+/// applications are free to use `admin` as their highest in-app tier
+/// without inheriting platform-wide privileges.
+///
+/// Re-exported from `schema_forge_backend` so the value lives in exactly
+/// one place — the lower crate where `OwnershipBasedPolicy` also reads it.
+pub use schema_forge_backend::PLATFORM_ADMIN_ROLE;
+
 /// Check if the authenticated user has access to perform the given action.
 ///
 /// Access rules (secure by default):
 /// 1. No `Claims` => **DENY** (authentication required)
-/// 2. User has "admin" role => permit (bypass)
+/// 2. User has the `platform_admin` role => permit (bypass)
 /// 3. Schema has no `@access` annotation => **DENY** (secure by default)
 /// 4. Role list for the action contains "public" => permit (even without auth)
 /// 5. Empty role list for the action => permit all authenticated users
@@ -83,8 +95,8 @@ pub fn check_schema_access(
         }
     };
 
-    // Rule 2: admin bypass
-    if claims.has_role("admin") {
+    // Rule 2: platform_admin bypass
+    if claims.has_role(PLATFORM_ADMIN_ROLE) {
         return Ok(());
     }
 
@@ -155,7 +167,7 @@ fn find_access_annotation(
 /// Rules:
 /// 1. No `Claims` => no filtering (unauthenticated requests are rejected at
 ///    the schema level; if they reach here, permit all fields)
-/// 2. Admin role => no filtering (bypass)
+/// 2. `platform_admin` role => no filtering (bypass)
 /// 3. No `@field_access` on field => field is accessible
 /// 4. Empty role list for direction => field is accessible
 /// 5. User must have at least one matching role
@@ -171,8 +183,8 @@ pub fn filter_entity_fields(
         None => return,
     };
 
-    // Rule 2: admin bypass
-    if claims.has_role("admin") {
+    // Rule 2: platform_admin bypass
+    if claims.has_role(PLATFORM_ADMIN_ROLE) {
         return;
     }
 
@@ -202,7 +214,7 @@ pub fn filter_entity_fields(
 /// claims' `tenant_chain` custom claim. No-ops when:
 /// - `tenant_config` is `None` or disabled
 /// - `claims` is `None`
-/// - user is admin (bypass)
+/// - user is `platform_admin` (bypass)
 pub fn inject_tenant_scope(
     query: &mut Query,
     claims: Option<&Claims>,
@@ -216,7 +228,7 @@ pub fn inject_tenant_scope(
         Some(c) => c,
         None => return,
     };
-    if claims.has_role("admin") {
+    if claims.has_role(PLATFORM_ADMIN_ROLE) {
         return;
     }
     let tenant_chain: Vec<TenantRef> = claims
@@ -435,11 +447,21 @@ mod tests {
     }
 
     #[test]
-    fn check_schema_access_permits_admin_always() {
+    fn check_schema_access_permits_platform_admin_always() {
+        let schema = make_access_schema(&["viewer"], &["editor"], &["superadmin"]);
+        let claims = make_claims(&["platform_admin"]);
+        let result = check_schema_access(&schema, Some(&claims), AccessAction::Delete);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_schema_access_does_not_bypass_for_app_admin_role() {
+        // The literal "admin" role is reserved for in-app use; it must
+        // not bypass schema-level @access checks.
         let schema = make_access_schema(&["viewer"], &["editor"], &["superadmin"]);
         let claims = make_claims(&["admin"]);
         let result = check_schema_access(&schema, Some(&claims), AccessAction::Delete);
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(ForgeError::Forbidden { .. })));
     }
 
     #[test]
@@ -571,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_entity_fields_admin_bypasses() {
+    fn filter_entity_fields_platform_admin_bypasses() {
         let schema = SchemaDefinition::new(
             SchemaId::new(),
             SchemaName::new("Employee").unwrap(),
@@ -583,7 +605,7 @@ mod tests {
         )
         .unwrap();
 
-        let claims = make_claims(&["admin"]);
+        let claims = make_claims(&["platform_admin"]);
         let mut entity = make_entity_with_fields(&[("name", "Alice"), ("salary", "100000")]);
 
         filter_entity_fields(
@@ -595,6 +617,34 @@ mod tests {
 
         assert!(entity.fields.contains_key("name"));
         assert!(entity.fields.contains_key("salary"));
+    }
+
+    #[test]
+    fn filter_entity_fields_does_not_bypass_for_app_admin_role() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Employee").unwrap(),
+            vec![
+                make_field("name"),
+                make_field_with_access("salary", &["hr"], &["hr"]),
+            ],
+            vec![],
+        )
+        .unwrap();
+
+        // App-level "admin" must not bypass field-level access.
+        let claims = make_claims(&["admin"]);
+        let mut entity = make_entity_with_fields(&[("name", "Alice"), ("salary", "100000")]);
+
+        filter_entity_fields(
+            &mut entity,
+            &schema,
+            Some(&claims),
+            FieldFilterDirection::Read,
+        );
+
+        assert!(entity.fields.contains_key("name"));
+        assert!(!entity.fields.contains_key("salary"));
     }
 
     #[test]
@@ -741,10 +791,10 @@ mod tests {
     }
 
     #[test]
-    fn inject_tenant_scope_noop_for_admin() {
+    fn inject_tenant_scope_noop_for_platform_admin() {
         let tenant_config = make_enabled_tenant_config();
         let tenant_id = EntityId::new("tenant");
-        let claims = make_claims_with_tenant(&["admin"], tenant_id.as_str());
+        let claims = make_claims_with_tenant(&["platform_admin"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
         inject_tenant_scope(&mut query, Some(&claims), &tenant_config);

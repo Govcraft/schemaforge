@@ -109,7 +109,7 @@ async fn test_app_state() -> AppState<SchemaForgeConfig> {
 /// Create a test router with an empty registry and admin Claims injected.
 async fn test_app() -> Router {
     let state = test_app_state().await;
-    test_app_with_claims_state(state, make_test_claims(&["admin"]))
+    test_app_with_claims_state(state, make_test_claims(&["platform_admin"]))
 }
 
 /// Create a test router from an AppState without injecting Claims.
@@ -610,7 +610,7 @@ async fn extension_register_routes_nests_under_forge() {
         .unwrap();
     request
         .extensions_mut()
-        .insert(make_test_claims(&["admin"]));
+        .insert(make_test_claims(&["platform_admin"]));
 
     let response = router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -633,7 +633,7 @@ async fn request_with_admin_claims_succeeds() {
         hook_dispatcher: None,
     })
     .await;
-    let app = test_app_with_claims_state(state, make_test_claims(&["admin"]));
+    let app = test_app_with_claims_state(state, make_test_claims(&["platform_admin"]));
 
     // Create a schema to verify the request goes through
     let body = serde_json::json!({
@@ -1400,7 +1400,7 @@ async fn setup_paired_schemas() -> (AppState<SchemaForgeConfig>, Router) {
         hook_dispatcher: None,
     })
     .await;
-    let app = test_app_with_claims_state(state.clone(), make_test_claims(&["admin"]));
+    let app = test_app_with_claims_state(state.clone(), make_test_claims(&["platform_admin"]));
     (state, app)
 }
 

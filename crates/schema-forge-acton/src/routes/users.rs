@@ -8,9 +8,12 @@
 //!
 //! Authorization model:
 //! - `GET /users`, `POST /users`, `DELETE /users/:username` require the
-//!   `admin` role.
-//! - `POST /users/:username/password` allows admin OR self (the token's
-//!   `sub` matches `user:<username>` or the bare username).
+//!   `platform_admin` role. Non-platform-admin callers cannot enumerate
+//!   `platform_admin` users in the list response, cannot grant the
+//!   `platform_admin` role to anyone, and cannot delete the last
+//!   `platform_admin` (returned as 409 with reason `last_platform_admin`).
+//! - `POST /users/:username/password` allows `platform_admin` OR self
+//!   (the token's `sub` matches `user:<username>` or the bare username).
 //!
 //! Duplicate usernames are rejected up front via `AuthStore::get_user`
 //! since neither backend surfaces a typed conflict error (both just
@@ -29,7 +32,7 @@ use schema_forge_backend::user_store::ForgeUser;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
-use crate::access::OptionalClaims;
+use crate::access::{OptionalClaims, PLATFORM_ADMIN_ROLE};
 use crate::error::ForgeError;
 use crate::state::DynAuthStore;
 
@@ -48,23 +51,24 @@ fn require_auth(claims: &Option<Claims>) -> Result<&Claims, ForgeError> {
     })
 }
 
-/// Require the admin role. Returns 403 if the user lacks it.
-fn require_admin(claims: &Claims) -> Result<(), ForgeError> {
-    if claims.has_role("admin") {
+/// Require the `platform_admin` role. Returns 403 if the caller lacks it.
+fn require_platform_admin(claims: &Claims) -> Result<(), ForgeError> {
+    if claims.has_role(PLATFORM_ADMIN_ROLE) {
         Ok(())
     } else {
         Err(ForgeError::Forbidden {
-            message: "user management requires admin role".to_string(),
+            message: "user management requires platform_admin role".to_string(),
         })
     }
 }
 
-/// Require admin role OR that the caller's token subject names `target`.
+/// Require `platform_admin` role OR that the caller's token subject names
+/// `target`.
 ///
 /// The login handler emits `sub = "user:<username>"`; we also accept a
 /// bare username to stay resilient to alternative claim sources.
-fn require_admin_or_self(claims: &Claims, target: &str) -> Result<(), ForgeError> {
-    if claims.has_role("admin") {
+fn require_platform_admin_or_self(claims: &Claims, target: &str) -> Result<(), ForgeError> {
+    if claims.has_role(PLATFORM_ADMIN_ROLE) {
         return Ok(());
     }
     let prefixed = format!("user:{target}");
@@ -72,8 +76,30 @@ fn require_admin_or_self(claims: &Claims, target: &str) -> Result<(), ForgeError
         return Ok(());
     }
     Err(ForgeError::Forbidden {
-        message: "admin role or self required".to_string(),
+        message: "platform_admin role or self required".to_string(),
     })
+}
+
+/// Verify the caller is allowed to grant the requested role set.
+///
+/// The only restricted role today is `platform_admin`: only an existing
+/// platform admin may grant it. Other role names pass through. Same
+/// helper will gate role edits in a future `PUT /users/:username`.
+fn caller_can_grant_roles(
+    claims: &Claims,
+    requested_roles: &[String],
+) -> Result<(), ForgeError> {
+    let asks_for_platform_admin = requested_roles
+        .iter()
+        .any(|r| r == PLATFORM_ADMIN_ROLE);
+    if asks_for_platform_admin && !claims.has_role(PLATFORM_ADMIN_ROLE) {
+        return Err(ForgeError::Forbidden {
+            message: format!(
+                "only {PLATFORM_ADMIN_ROLE} may grant the {PLATFORM_ADMIN_ROLE} role"
+            ),
+        });
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -190,17 +216,30 @@ fn user_to_response(user: &ForgeUser) -> UserResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// `GET /users` — list every user. Admin only.
+/// `GET /users` — list every user. Requires `platform_admin`.
+///
+/// Non-`platform_admin` callers (once user-management is opened to other
+/// tiers) never see `platform_admin` rows in the response, even if the
+/// store contains them. Landing this filter pre-emptively makes a future
+/// "open list-users to managers" change a pure routing/policy change.
 #[instrument(skip_all)]
 pub async fn list_users(
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_admin(claims)?;
+    require_platform_admin(claims)?;
 
     let users = auth_store.list_users().await?;
-    let responses: Vec<UserResponse> = users.iter().map(user_to_response).collect();
+    let caller_is_platform_admin = claims.has_role(PLATFORM_ADMIN_ROLE);
+    let responses: Vec<UserResponse> = users
+        .iter()
+        .filter(|u| {
+            caller_is_platform_admin
+                || !u.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE)
+        })
+        .map(user_to_response)
+        .collect();
     let count = responses.len();
     Ok(Json(ListUsersResponse {
         users: responses,
@@ -208,7 +247,11 @@ pub async fn list_users(
     }))
 }
 
-/// `POST /users` — create a new user. Admin only.
+/// `POST /users` — create a new user. Requires `platform_admin`.
+///
+/// Non-`platform_admin` callers (once admitted) cannot grant the
+/// `platform_admin` role to the created user; that escalation path is
+/// blocked up front by [`caller_can_grant_roles`].
 #[instrument(skip_all)]
 pub async fn create_user(
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
@@ -216,10 +259,11 @@ pub async fn create_user(
     Json(body): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_admin(claims)?;
+    require_platform_admin(claims)?;
 
     validate_username(&body.username)?;
     validate_password(&body.password)?;
+    caller_can_grant_roles(claims, &body.roles)?;
 
     // Pre-check to surface duplicates as 422 instead of a raw backend error.
     if auth_store.get_user(&body.username).await?.is_some() {
@@ -248,10 +292,13 @@ pub async fn create_user(
     Ok((StatusCode::CREATED, Json(user_to_response(&created))))
 }
 
-/// `DELETE /users/:username` — delete a user. Admin only.
+/// `DELETE /users/:username` — delete a user. Requires `platform_admin`.
 ///
-/// Refuses to delete the caller themselves as a defense-in-depth against an
-/// admin locking themselves out mid-session.
+/// Refuses to delete the caller themselves as a defense-in-depth against
+/// an operator locking themselves out mid-session. Refuses to remove the
+/// last `platform_admin` (returns 409 with `reason: "last_platform_admin"`)
+/// to prevent the trivial footgun where the entire instance is left
+/// without anyone able to manage users.
 #[instrument(skip_all)]
 pub async fn delete_user(
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
@@ -259,7 +306,7 @@ pub async fn delete_user(
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_admin(claims)?;
+    require_platform_admin(claims)?;
 
     let prefixed = format!("user:{username}");
     if claims.sub == prefixed || claims.sub == username {
@@ -268,10 +315,30 @@ pub async fn delete_user(
         });
     }
 
-    if auth_store.get_user(&username).await?.is_none() {
-        return Err(ForgeError::ValidationFailed {
-            details: vec![format!("user '{username}' not found")],
-        });
+    let target =
+        auth_store
+            .get_user(&username)
+            .await?
+            .ok_or_else(|| ForgeError::ValidationFailed {
+                details: vec![format!("user '{username}' not found")],
+            })?;
+
+    let target_is_platform_admin =
+        target.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
+    if target_is_platform_admin {
+        let all = auth_store.list_users().await?;
+        let platform_admin_count = all
+            .iter()
+            .filter(|u| u.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE))
+            .count();
+        if platform_admin_count <= 1 {
+            return Err(ForgeError::Conflict {
+                reason: "last_platform_admin",
+                message: format!(
+                    "cannot delete '{username}': would leave instance without a {PLATFORM_ADMIN_ROLE}"
+                ),
+            });
+        }
     }
 
     auth_store.delete_user(&username).await?;
@@ -280,8 +347,8 @@ pub async fn delete_user(
 
 /// `POST /users/:username/password` — change a user's password.
 ///
-/// Allowed when the caller has the admin role OR when the caller's token
-/// subject matches `username`.
+/// Allowed when the caller has the `platform_admin` role OR when the
+/// caller's token subject matches `username`.
 #[instrument(skip_all)]
 pub async fn change_password(
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
@@ -290,7 +357,7 @@ pub async fn change_password(
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_admin_or_self(claims, &username)?;
+    require_platform_admin_or_self(claims, &username)?;
 
     validate_password(&body.password)?;
 
@@ -374,39 +441,50 @@ mod tests {
     fn user_to_response_copies_all_fields() {
         let src = ForgeUser {
             username: "alice".to_string(),
-            roles: vec!["admin".to_string(), "hr".to_string()],
+            roles: vec!["platform_admin".to_string(), "hr".to_string()],
             display_name: Some("Alice".to_string()),
             active: true,
         };
         let out = user_to_response(&src);
         assert_eq!(out.username, "alice");
-        assert_eq!(out.roles, vec!["admin".to_string(), "hr".to_string()]);
+        assert_eq!(
+            out.roles,
+            vec!["platform_admin".to_string(), "hr".to_string()]
+        );
         assert_eq!(out.display_name.as_deref(), Some("Alice"));
         assert!(out.active);
     }
 
     #[test]
-    fn require_admin_or_self_allows_admin() {
-        let c = claims_with_sub("user:carol", &["admin"]);
-        assert!(require_admin_or_self(&c, "alice").is_ok());
+    fn require_platform_admin_or_self_allows_platform_admin() {
+        let c = claims_with_sub("user:carol", &["platform_admin"]);
+        assert!(require_platform_admin_or_self(&c, "alice").is_ok());
     }
 
     #[test]
-    fn require_admin_or_self_allows_self_prefixed_sub() {
+    fn require_platform_admin_or_self_allows_self_prefixed_sub() {
         let c = claims_with_sub("user:alice", &[]);
-        assert!(require_admin_or_self(&c, "alice").is_ok());
+        assert!(require_platform_admin_or_self(&c, "alice").is_ok());
     }
 
     #[test]
-    fn require_admin_or_self_allows_self_bare_sub() {
+    fn require_platform_admin_or_self_allows_self_bare_sub() {
         let c = claims_with_sub("alice", &[]);
-        assert!(require_admin_or_self(&c, "alice").is_ok());
+        assert!(require_platform_admin_or_self(&c, "alice").is_ok());
     }
 
     #[test]
-    fn require_admin_or_self_rejects_other_user() {
+    fn require_platform_admin_or_self_rejects_other_user() {
         let c = claims_with_sub("user:bob", &["member"]);
-        let err = require_admin_or_self(&c, "alice").unwrap_err();
+        let err = require_platform_admin_or_self(&c, "alice").unwrap_err();
+        assert!(matches!(err, ForgeError::Forbidden { .. }));
+    }
+
+    #[test]
+    fn require_platform_admin_or_self_rejects_app_admin_role() {
+        // Application-level "admin" must not pass the platform check.
+        let c = claims_with_sub("user:bob", &["admin"]);
+        let err = require_platform_admin_or_self(&c, "alice").unwrap_err();
         assert!(matches!(err, ForgeError::Forbidden { .. }));
     }
 
@@ -417,8 +495,53 @@ mod tests {
     }
 
     #[test]
-    fn require_admin_rejects_non_admin() {
+    fn require_platform_admin_rejects_non_platform_admin() {
         let c = claims_with_sub("user:alice", &["member"]);
-        assert!(require_admin(&c).is_err());
+        assert!(require_platform_admin(&c).is_err());
+    }
+
+    #[test]
+    fn require_platform_admin_rejects_app_admin_role() {
+        // The literal "admin" role is reserved for in-app use; it must
+        // not satisfy the platform-admin gate.
+        let c = claims_with_sub("user:alice", &["admin"]);
+        assert!(require_platform_admin(&c).is_err());
+    }
+
+    #[test]
+    fn require_platform_admin_accepts_platform_admin() {
+        let c = claims_with_sub("user:alice", &["platform_admin"]);
+        assert!(require_platform_admin(&c).is_ok());
+    }
+
+    #[test]
+    fn caller_can_grant_roles_allows_when_caller_has_platform_admin() {
+        let c = claims_with_sub("user:carol", &["platform_admin"]);
+        let requested = vec!["platform_admin".to_string(), "hr".to_string()];
+        assert!(caller_can_grant_roles(&c, &requested).is_ok());
+    }
+
+    #[test]
+    fn caller_can_grant_roles_rejects_role_escalation() {
+        let c = claims_with_sub("user:carol", &["manager"]);
+        let requested = vec!["platform_admin".to_string()];
+        let err = caller_can_grant_roles(&c, &requested).unwrap_err();
+        assert!(matches!(err, ForgeError::Forbidden { .. }));
+    }
+
+    #[test]
+    fn caller_can_grant_roles_allows_other_roles_for_non_platform_caller() {
+        // A caller without platform_admin can still grant arbitrary
+        // non-platform roles.
+        let c = claims_with_sub("user:carol", &["manager"]);
+        let requested = vec!["member".to_string(), "hr".to_string()];
+        assert!(caller_can_grant_roles(&c, &requested).is_ok());
+    }
+
+    #[test]
+    fn caller_can_grant_roles_allows_empty_role_list() {
+        let c = claims_with_sub("user:carol", &["manager"]);
+        let requested: Vec<String> = vec![];
+        assert!(caller_can_grant_roles(&c, &requested).is_ok());
     }
 }

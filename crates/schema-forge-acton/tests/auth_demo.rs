@@ -527,7 +527,10 @@ async fn demo_record_ownership() {
 
     // --- Admin can modify anyone's note ---
     println!("  Admin overrides ownership check");
-    let admin_claims = make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["admin"]);
+    let admin_claims = make_test_claims_with_sub(
+        &format!("user:{}", bob_id.as_str()),
+        &["platform_admin"],
+    );
     let state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -999,8 +1002,10 @@ async fn demo_all_auth_layers_combined() {
     // @owner: admin bypasses
     // @field_access: admin bypasses
     println!("  Step 3: admin bypasses all layers");
-    let admin_claims =
-        make_test_claims_with_sub(&format!("user:{}", EntityId::new("user").as_str()), &["admin"]);
+    let admin_claims = make_test_claims_with_sub(
+        &format!("user:{}", EntityId::new("user").as_str()),
+        &["platform_admin"],
+    );
     let admin_state = build_test_app_state(
         backend.clone(),
         registry.clone(),

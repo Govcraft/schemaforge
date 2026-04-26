@@ -17,7 +17,13 @@ pub struct LoginForm {
     pub password: String,
 }
 
-/// Create initial admin user if `_forge_users` table is empty.
+/// Create the initial `platform_admin` user if `_forge_users` is empty.
+///
+/// The bootstrapped operator is the platform superuser: `platform_admin`
+/// gates every user-management endpoint and bypasses schema/field/tenant
+/// access checks. The literal `admin` role string is intentionally *not*
+/// assigned — it is reserved for application authors to use in their
+/// `@access(...)` annotations without colliding with platform privileges.
 pub async fn bootstrap_admin(
     auth_store: &dyn DynAuthStore,
     username: &str,
@@ -32,7 +38,7 @@ pub async fn bootstrap_admin(
         return Ok(());
     }
 
-    let roles = vec!["admin".to_string()];
+    let roles = vec!["platform_admin".to_string()];
     auth_store
         .create_user(username, password, &roles, "Administrator")
         .await
@@ -85,11 +91,11 @@ mod tests {
 
     #[test]
     fn forge_user_deserialize() {
-        let json = r#"{"username":"admin","roles":["admin"],"display_name":"Admin","active":true}"#;
+        let json = r#"{"username":"admin","roles":["platform_admin"],"display_name":"Admin","active":true}"#;
         let user: ForgeUser = serde_json::from_str(json).unwrap();
         assert_eq!(user.username, "admin");
         assert!(user.active);
-        assert_eq!(user.roles, vec!["admin"]);
+        assert_eq!(user.roles, vec!["platform_admin"]);
     }
 
     #[test]

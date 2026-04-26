@@ -38,7 +38,7 @@ use tokio::sync::oneshot;
 use tracing::{debug, instrument};
 use uuid::Uuid;
 
-use crate::access::{check_schema_access, AccessAction, OptionalClaims};
+use crate::access::{check_schema_access, AccessAction, OptionalClaims, PLATFORM_ADMIN_ROLE};
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
@@ -334,8 +334,8 @@ pub struct ScanCompleteRequest {
 }
 
 /// Transition a file attachment's state after an external scanner reports its
-/// verdict. Only `admin` role may invoke (typical deployment runs the scanner
-/// service under an admin service account).
+/// verdict. Only `platform_admin` role may invoke (typical deployment runs
+/// the scanner service under a `platform_admin` service account).
 #[instrument(skip(state, claims, body), fields(schema, entity_id))]
 pub async fn scan_complete(
     State(state): State<AppState<SchemaForgeConfig>>,
@@ -343,15 +343,15 @@ pub async fn scan_complete(
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<ScanCompleteRequest>,
 ) -> Result<Json<AttachmentResponse>, ForgeError> {
-    // Only admin identities may move files through terminal states. This is a
-    // deliberate simplification: in production deployments the scanner service
-    // runs under an admin service account.
+    // Only platform_admin identities may move files through terminal states.
+    // This is a deliberate simplification: in production deployments the
+    // scanner service runs under a platform_admin service account.
     let caller = claims.as_ref().ok_or_else(|| ForgeError::Unauthorized {
-        message: "scan-complete requires authenticated admin".into(),
+        message: "scan-complete requires authenticated platform_admin".into(),
     })?;
-    if !caller.has_role("admin") {
+    if !caller.has_role(PLATFORM_ADMIN_ROLE) {
         return Err(ForgeError::Forbidden {
-            message: "scan-complete requires admin role".into(),
+            message: "scan-complete requires platform_admin role".into(),
         });
     }
 
