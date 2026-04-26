@@ -1,7 +1,7 @@
 use schema_forge_core::types::SchemaDefinition;
 
 use crate::cli::{GlobalOpts, InspectArgs};
-use crate::config::{load_config, resolve_db_params};
+use crate::config::{load_svc_config, resolve_db_params};
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
 
@@ -11,8 +11,8 @@ pub async fn run(
     global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
-    let config = load_config(global.config.as_deref())?;
-    let db_params = resolve_db_params(&config, global);
+    let svc_config = load_svc_config(global)?;
+    let db_params = resolve_db_params(&svc_config)?;
 
     let backend = super::connect_backend(&db_params, output).await?;
 

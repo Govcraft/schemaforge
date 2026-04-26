@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 
 use crate::cli::{GlobalOpts, ServeArgs};
 use crate::commands::parse::parse_all_schemas;
-use crate::config::{load_config, resolve_db_params, DbParams};
+use crate::config::{load_svc_config, resolve_db_params, DbParams};
 use crate::error::CliError;
 use crate::output::OutputContext;
 
@@ -37,9 +37,18 @@ pub async fn run(
     global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
-    // 1. Load config and resolve DB params
-    let config = load_config(global.config.as_deref())?;
-    let db_params = resolve_db_params(&config, global);
+    // 1. Load the canonical acton-service config and apply CLI overrides.
+    //    Both schema-forge's backend connection and acton-service's pool
+    //    read from this single struct, so they cannot diverge (#47).
+    //
+    //    Loading here — before the connection-retry loop — also keeps
+    //    issue #44's invariant: a malformed `[schema_forge.*]` section
+    //    fails the boot in milliseconds with the underlying Figment
+    //    error rather than minutes later behind a connect timeout.
+    //    `load_svc_config` already propagates Figment errors verbatim.
+    let mut svc_config = load_svc_config(global)?;
+    let db_params = resolve_db_params(&svc_config)?;
+    let storage_config = svc_config.custom.schema_forge.storage.clone();
 
     // 2. Parse schemas from the schema directory
     output.status("Parsing schemas...");
@@ -54,32 +63,6 @@ pub async fn run(
         }
         Err(e) => return Err(e),
     };
-
-    // 3. Load the acton-service config before paying for a database
-    //    connection so a malformed `[schema_forge.*]` section fails the
-    //    boot in milliseconds with the underlying Figment error, instead
-    //    of after the connection-retry loop and far away from the actual
-    //    cause.
-    //
-    //    Issue #44: this call used to swallow the error via
-    //    `.unwrap_or_default()`, which silently dropped the entire
-    //    `[schema_forge.storage]` section whenever Figment failed to
-    //    deserialize the config (e.g. an unknown field, a wrong type).
-    //    The server then exited with a misleading "undeclared storage
-    //    backends" error that pointed operators at the wrong file.
-    //    Propagate the underlying Figment error verbatim — it already
-    //    carries the file path, key path, and root cause.
-    //
-    //    Falling through to defaults on `Err` is wrong: `load_for_service`
-    //    returns `Ok(defaults)` already when no config file exists
-    //    anywhere, so the only `Err` path is a real deserialize failure
-    //    that the operator needs to see.
-    let mut svc_config =
-        acton_service::config::Config::<schema_forge_acton::SchemaForgeConfig>::load_for_service(
-            "schemaforge",
-        )
-        .map_err(|e| CliError::Server { message: e.to_string() })?;
-    let storage_config = svc_config.custom.schema_forge.storage.clone();
 
     // 4. Connect to database (try remote, fail explicitly for production)
     let connected = connect_with_retries(&db_params, output).await?;
@@ -178,14 +161,11 @@ pub async fn run(
     // config, mint a PasetoGenerator, and wire the login endpoint's Extension
     // layer onto the versioned router. `svc_config` was already loaded above
     // so the storage registry could be initialized; finalize the remaining
-    // fields here.
+    // fields here. Database/SurrealDB sections are not touched here — they
+    // were resolved up-front by `load_svc_config` so acton-service's pool
+    // and the schema-forge backend pool see the same URL by construction.
     svc_config.service.port = args.port;
     svc_config.service.name = "schemaforge".to_string();
-
-    #[cfg(feature = "surrealdb")]
-    if let DbParams::Surrealdb(_) = &db_params {
-        svc_config.surrealdb = Some(build_surrealdb_config(&db_params));
-    }
 
     // Token auth public path: the JSON login endpoint must be reachable
     // without a bearer token so clients can obtain one.
@@ -472,28 +452,6 @@ fn build_paseto_generator(
     Ok(Arc::new(generator))
 }
 
-/// Build an acton-service `SurrealDbConfig` from resolved CLI database parameters.
-///
-/// This enables acton-service's health endpoint to report SurrealDB connection
-/// status. Only available when the `surrealdb` feature is enabled.
-#[cfg(feature = "surrealdb")]
-fn build_surrealdb_config(db_params: &DbParams) -> acton_service::config::SurrealDbConfig {
-    match db_params {
-        DbParams::Surrealdb(p) => acton_service::config::SurrealDbConfig {
-            url: p.url.clone(),
-            namespace: p.namespace.clone(),
-            database: p.database.clone(),
-            username: p.username.clone(),
-            password: p.password.clone(),
-            max_retries: MAX_CONNECT_RETRIES,
-            retry_delay_secs: CONNECT_BASE_DELAY_SECS,
-            optional: false,
-            lazy_init: false,
-        },
-        _ => unreachable!("build_surrealdb_config called with non-SurrealDB params"),
-    }
-}
-
 /// Build versioned routes using acton-service's VersionedApiBuilder.
 ///
 /// Nests SchemaForge's JSON API routes under `/api/v1/forge/`. All UI
@@ -518,7 +476,10 @@ fn build_versioned_routes(
         .build_routes()
 }
 
-#[cfg(test)]
+/// Mem-backed SurrealDB is the only auth store we can stand up synchronously
+/// in-process, so the only test in this file is surrealdb-feature-gated.
+/// Postgres builds get coverage from the resolver tests in `config.rs`.
+#[cfg(all(test, feature = "surrealdb"))]
 mod tests {
     use super::*;
 
@@ -547,51 +508,5 @@ mod tests {
         let auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = Arc::new(backend);
 
         let _routes = build_versioned_routes(auth_store, generator);
-    }
-
-    #[cfg(feature = "surrealdb")]
-    #[test]
-    fn build_surrealdb_config_from_db_params() {
-        use crate::config::SurrealDbParams;
-
-        let db_params = DbParams::Surrealdb(SurrealDbParams {
-            url: "ws://db.example.com:8000".to_string(),
-            namespace: "production".to_string(),
-            database: "main".to_string(),
-            username: Some("admin".to_string()),
-            password: Some("secret".to_string()),
-        });
-
-        let config = build_surrealdb_config(&db_params);
-
-        assert_eq!(config.url, "ws://db.example.com:8000");
-        assert_eq!(config.namespace, "production");
-        assert_eq!(config.database, "main");
-        assert_eq!(config.username, Some("admin".to_string()));
-        assert_eq!(config.password, Some("secret".to_string()));
-        assert_eq!(config.max_retries, MAX_CONNECT_RETRIES);
-        assert_eq!(config.retry_delay_secs, CONNECT_BASE_DELAY_SECS);
-        assert!(!config.optional);
-        assert!(!config.lazy_init);
-    }
-
-    #[cfg(feature = "surrealdb")]
-    #[test]
-    fn build_surrealdb_config_without_credentials() {
-        use crate::config::SurrealDbParams;
-
-        let db_params = DbParams::Surrealdb(SurrealDbParams {
-            url: "mem://".to_string(),
-            namespace: "test".to_string(),
-            database: "test".to_string(),
-            username: None,
-            password: None,
-        });
-
-        let config = build_surrealdb_config(&db_params);
-
-        assert_eq!(config.url, "mem://");
-        assert!(config.username.is_none());
-        assert!(config.password.is_none());
     }
 }

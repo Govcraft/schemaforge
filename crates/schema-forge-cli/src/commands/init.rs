@@ -127,14 +127,18 @@ fn create_project_structure(project_dir: &Path, template: Template) -> Result<()
 }
 
 fn create_config_file(project_dir: &Path) -> Result<(), CliError> {
-    let config_content = r#"[database]
+    // Schema-forge uses acton-service's canonical config layout: SurrealDB
+    // settings live under [surrealdb], PostgreSQL settings under [database].
+    // CLI flags (`--db-url`, `--db-ns`, `--db-name`) and `ACTON_*` env vars
+    // override these in-place; there is no parallel schema-forge config layer.
+    let config_content = r#"[surrealdb]
 url = "ws://localhost:8000"
 namespace = "schemaforge"
 database = "dev"
 
-[cli]
-default_schema_dir = "schemas/"
-default_policy_dir = "policies/"
+# Switch to PostgreSQL by removing [surrealdb] above and uncommenting:
+# [database]
+# url = "postgres://user:pass@localhost:5432/schemaforge"
 "#;
     write_file(&project_dir.join("config.toml"), config_content)
 }
@@ -241,7 +245,17 @@ mod tests {
         create_config_file(&project).unwrap();
         let content = std::fs::read_to_string(project.join("config.toml")).unwrap();
         let parsed: toml::Value = toml::from_str(&content).unwrap();
-        assert!(parsed.get("database").is_some());
-        assert!(parsed.get("cli").is_some());
+        // Template uses acton-service's canonical layout: SurrealDB lives
+        // under [surrealdb], Postgres under [database]. The default
+        // template wires up a dev SurrealDB; [database] is shown as a
+        // commented switch.
+        assert!(
+            parsed.get("surrealdb").is_some(),
+            "default config.toml must contain [surrealdb]"
+        );
+        assert!(
+            parsed.get("database").is_none(),
+            "default config.toml must not enable [database] (postgres is opt-in)"
+        );
     }
 }

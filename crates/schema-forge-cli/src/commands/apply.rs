@@ -3,7 +3,7 @@ use schema_forge_core::migration::{DiffEngine, MigrationSafety};
 
 use crate::cli::{ApplyArgs, GlobalOpts};
 use crate::commands::parse::parse_all_schemas;
-use crate::config::{load_config, resolve_db_params};
+use crate::config::{load_svc_config, resolve_db_params};
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
 
@@ -17,8 +17,8 @@ pub async fn run(
     let schemas = parse_all_schemas(&args.paths)?;
     output.status(&format!("  {} schemas parsed.", schemas.len()));
 
-    let config = load_config(global.config.as_deref())?;
-    let db_params = resolve_db_params(&config, global);
+    let svc_config = load_svc_config(global)?;
+    let db_params = resolve_db_params(&svc_config)?;
 
     let backend = super::connect_backend(&db_params, output).await?;
 
