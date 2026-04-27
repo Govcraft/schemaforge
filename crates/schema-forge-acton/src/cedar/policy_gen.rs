@@ -86,6 +86,7 @@ pub fn generate_cedar_policies(schema: &SchemaDefinition) -> Vec<CedarPolicy> {
     if let Some(owner_restrict) = owner_restrict_forbid_policy(schema) {
         policies.push(owner_restrict);
     }
+    policies.push(tenant_guard_forbid_policy(schema));
     policies.push(schema_admin_policy(name));
     policies.extend(generate_field_access_policies(schema));
     policies
@@ -195,6 +196,47 @@ forbid (
             lname = name.to_ascii_lowercase()
         ),
     })
+}
+
+/// Generates the per-schema tenant-isolation forbid.
+///
+/// Cedar — not the query layer — is the authoritative gate on cross-tenant
+/// access. The policy fires for any per-record action when:
+///
+/// - the resource carries a `_tenant` reference (i.e., it's tenant-scoped), AND
+/// - the principal is not a member of that tenant via parent chain, AND
+/// - the principal is not `platform_admin`.
+///
+/// The `resource has "_tenant"` precondition keeps the rule inert for
+/// non-tenant resources and for the schema-level placeholder (which has no
+/// attributes), so it composes cleanly with the schema-level `@access`
+/// permits and with `inject_tenant_scope` (which stays as defense in depth
+/// at the query layer).
+fn tenant_guard_forbid_policy(schema: &SchemaDefinition) -> CedarPolicy {
+    let name = schema.name.as_str();
+    CedarPolicy {
+        description: format!(
+            "Forbid per-record actions on {name} when the principal is not a member of the resource's tenant"
+        ),
+        cedar_text: format!(
+            r#"@id("forge.{lname}.tenant_guard")
+forbid (
+    principal is Forge::Principal,
+    action in [
+        Action::"Read{name}",
+        Action::"List{name}",
+        Action::"Update{name}",
+        Action::"Delete{name}"
+    ],
+    resource is {name}
+) when {{
+    resource has "_tenant"
+    && !(principal in resource["_tenant"])
+    && !(principal in Forge::Group::"platform_admin")
+}};"#,
+            lname = name.to_ascii_lowercase()
+        ),
+    }
 }
 
 fn schema_admin_policy(name: &str) -> CedarPolicy {
@@ -559,15 +601,30 @@ mod tests {
     }
 
     #[test]
-    fn schema_without_access_annotation_emits_only_schema_admin() {
+    fn schema_without_access_annotation_emits_no_user_facing_permits() {
         // Secure by default: a schema with no @access annotation must produce
         // no user-facing permits. Only platform_admin (via the global permit)
-        // and schema-admin can act on it.
+        // and schema-admin can act on it. The tenant guard is also emitted
+        // unconditionally — it's inert for resources without `_tenant`, so
+        // it composes with the secure default.
         let schema = make_test_schema();
         let policies = generate_cedar_policies(&schema);
-        assert_eq!(policies.len(), 1, "expected only the schema_admin policy");
-        assert!(policies[0].cedar_text.contains("UpdateSchema"));
-        assert!(policies[0].cedar_text.contains("schema-admin"));
+        assert!(
+            policies
+                .iter()
+                .any(|p| p.cedar_text.contains("UpdateSchema") && p.cedar_text.contains("schema-admin")),
+            "expected the schema-admin policy"
+        );
+        assert!(
+            policies.iter().any(|p| p.cedar_text.contains("tenant_guard")),
+            "expected the tenant guard policy"
+        );
+        // No user-facing permits.
+        let permit_count = policies
+            .iter()
+            .filter(|p| p.cedar_text.starts_with("@id") && p.cedar_text.contains("\npermit"))
+            .count();
+        assert_eq!(permit_count, 1, "only schema-admin should be a permit");
     }
 
     #[test]
@@ -629,6 +686,66 @@ mod tests {
         assert!(policies
             .iter()
             .any(|p| p.cedar_text.contains("Forge::Group::\"hr\"")));
+    }
+
+    #[test]
+    fn tenant_guard_emitted_for_every_schema() {
+        // Every schema gets the tenant guard — it stays inert for resources
+        // without `_tenant`, so the secure default for non-tenant schemas
+        // is preserved while tenant-scoped schemas get cross-tenant
+        // enforcement for free.
+        for schema in [
+            make_test_schema(),
+            make_owner_schema(),
+            make_access_schema(&["viewer"], &["editor"], &["admin"]),
+        ] {
+            let policies = generate_cedar_policies(&schema);
+            assert!(
+                policies
+                    .iter()
+                    .any(|p| p.cedar_text.contains("tenant_guard")),
+                "schema {} missing tenant guard",
+                schema.name.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn tenant_guard_text_is_well_formed() {
+        let schema = make_test_schema();
+        let policies = generate_cedar_policies(&schema);
+        let guard = policies
+            .iter()
+            .find(|p| p.cedar_text.contains("tenant_guard"))
+            .expect("tenant guard must be emitted");
+
+        // Each clause carries the tenancy invariants:
+        //   has _tenant → only fires on tenant-scoped resources
+        //   !(principal in resource._tenant) → enforces tenant membership
+        //   !platform_admin → bypass for the superuser
+        assert!(guard.cedar_text.contains("resource has \"_tenant\""));
+        assert!(guard.cedar_text.contains("!(principal in resource[\"_tenant\"])"));
+        assert!(guard
+            .cedar_text
+            .contains("!(principal in Forge::Group::\"platform_admin\")"));
+
+        // Action list covers every per-record verb but not Create — the
+        // create placeholder has no resource attributes, so a forbid would
+        // fire even for the user's own tenant. Tenant injection at the
+        // query layer handles Create.
+        for verb in ["Read", "List", "Update", "Delete"] {
+            let needle = format!("Action::\"{verb}{}\"", schema.name.as_str());
+            assert!(
+                guard.cedar_text.contains(&needle),
+                "tenant guard missing {needle}"
+            );
+        }
+        assert!(
+            !guard
+                .cedar_text
+                .contains(&format!("Create{}", schema.name.as_str())),
+            "tenant guard must NOT cover Create — handled by query-layer injection"
+        );
     }
 
     #[test]

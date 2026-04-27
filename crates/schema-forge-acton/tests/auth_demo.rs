@@ -882,11 +882,16 @@ async fn demo_cedar_policies_from_annotations() {
     for policy in &default_policies {
         println!("    - {}", policy.description);
     }
-    // Secure-by-default: a schema without @access produces only the schema-admin
-    // policy. The platform_admin global permit and the schema-admin permit are
-    // the only paths to the schema until an author opts in to broader access.
-    assert_eq!(default_policies.len(), 1);
-    assert!(default_policies[0].cedar_text.contains("UpdateSchema"));
+    // Secure-by-default: a schema without @access yields no user-facing
+    // permits. The two unconditional rules are the schema-admin permit and
+    // the tenant guard forbid (inert when the resource has no `_tenant`).
+    assert_eq!(default_policies.len(), 2);
+    assert!(default_policies
+        .iter()
+        .any(|p| p.cedar_text.contains("UpdateSchema")));
+    assert!(default_policies
+        .iter()
+        .any(|p| p.cedar_text.contains("tenant_guard")));
 
     println!("  PASSED\n");
 }

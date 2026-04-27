@@ -558,12 +558,17 @@ fn cedar_policies_generated_for_schema() {
     .unwrap();
 
     let policies = generate_cedar_policies(&schema);
-    // Secure-by-default: a schema with no @access yields only the
-    // schema-admin policy. ReadContact / CreateContact / DeleteContact are
-    // not emitted unless the author opts in via @access.
-    assert_eq!(policies.len(), 1);
-    assert!(policies[0].cedar_text.contains("UpdateSchema"));
-    assert!(policies[0].cedar_text.contains("schema-admin"));
+    // Secure-by-default: a schema with no @access yields no user-facing
+    // permits. The two unconditional rules are the schema-admin permit and
+    // the tenant-isolation forbid (inert when the resource has no
+    // `_tenant`). Read/Create/Delete actions are not opened up to any role.
+    assert_eq!(policies.len(), 2);
+    assert!(policies
+        .iter()
+        .any(|p| p.cedar_text.contains("UpdateSchema") && p.cedar_text.contains("schema-admin")));
+    assert!(policies
+        .iter()
+        .any(|p| p.cedar_text.contains("tenant_guard")));
 }
 
 // ---------------------------------------------------------------------------
