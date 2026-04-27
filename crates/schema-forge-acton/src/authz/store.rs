@@ -5,13 +5,17 @@
 //! so audit endpoints can expose a stable hash for verification. All four
 //! refresh together when schemas change or custom policies reload.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use cedar_policy::{PolicySet, Schema, ValidationMode, Validator};
+use schema_forge_core::types::SchemaDefinition;
 use sha2::{Digest, Sha256};
 
+use crate::authz::loader::{load_custom_policies, LoaderError};
 use crate::authz::role_ranks::{RoleRanks, RoleRanksError};
+use crate::cedar::{generate_cedar_schema, policy_gen::generate_full_policy_set, SchemaGenError};
 
 /// Errors raised while compiling or installing a policy bundle.
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +32,12 @@ pub enum PolicyStoreError {
     /// The role-rank file could not be loaded.
     #[error(transparent)]
     RoleRanks(#[from] RoleRanksError),
+    /// Custom policy directory could not be read.
+    #[error(transparent)]
+    Loader(#[from] LoaderError),
+    /// Schema source generation failed.
+    #[error(transparent)]
+    SchemaGen(#[from] SchemaGenError),
 }
 
 /// Immutable bundle held by [`PolicyStore`]. Cheap to clone via `Arc`.
@@ -71,6 +81,41 @@ impl PolicyStore {
 }
 
 impl PolicyStoreSnapshot {
+    /// Builds a snapshot from a slice of registered schemas.
+    ///
+    /// End-to-end pipeline:
+    /// 1. Generate the Cedar schema source via [`generate_cedar_schema`].
+    /// 2. Generate the global + per-schema + per-field policy set via
+    ///    [`generate_full_policy_set`].
+    /// 3. Load every `*.cedar` file in `custom_dir` (if the directory exists)
+    ///    and concatenate after the generated policies.
+    /// 4. Run [`PolicyStoreSnapshot::compile`] which strict-validates the
+    ///    bundle and rejects on any error or warning.
+    pub fn from_schemas(
+        schemas: &[SchemaDefinition],
+        custom_dir: Option<&Path>,
+        role_ranks: RoleRanks,
+    ) -> Result<Self, PolicyStoreError> {
+        let schema_src = generate_cedar_schema(schemas)?;
+
+        let generated = generate_full_policy_set(schemas);
+        let mut policies_src = generated
+            .iter()
+            .map(|p| p.cedar_text.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        if let Some(dir) = custom_dir {
+            let custom = load_custom_policies(dir)?;
+            for source in custom {
+                policies_src.push_str("\n\n");
+                policies_src.push_str(&source.text);
+            }
+        }
+
+        Self::compile(&schema_src, &policies_src, role_ranks)
+    }
+
     /// Builds and validates a snapshot from raw Cedar source plus metadata.
     ///
     /// `policies_src` is the concatenation of every generated and custom

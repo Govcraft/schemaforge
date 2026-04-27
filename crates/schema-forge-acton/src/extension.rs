@@ -38,6 +38,9 @@ pub struct InitForgeData {
     /// Registry of S3-compatible storage backends for `file` fields.
     /// Empty when no `[schema_forge.storage]` config is provided.
     pub storage_registry: StorageRegistry,
+    /// Compiled Cedar policy bundle. The single source of truth for every
+    /// authorization decision the actor will make once initialized.
+    pub policy_store: Option<Arc<crate::authz::PolicyStore>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -236,11 +239,40 @@ impl SchemaForgeExtensionBuilder {
         // configured backend. Fail loud at startup rather than at first request.
         validate_file_references(&all_schemas, &storage_registry)?;
 
+        // Compile the Cedar policy bundle from the registered schemas. This is
+        // the single source of truth for every authorization decision the
+        // server will make. Invalid or non-validating bundles fail startup —
+        // partial installs are not acceptable for a gov-audit posture.
+        let role_ranks = crate::authz::role_ranks::RoleRanks::empty();
+        let policy_store = crate::authz::PolicyStore::new(
+            crate::authz::store::PolicyStoreSnapshot::from_schemas(
+                &all_schemas,
+                None,
+                role_ranks,
+            )
+            .map_err(|e| ForgeError::Internal {
+                message: format!("Cedar policy compilation failed at startup: {e}"),
+            })?,
+        );
+        let policy_store = Arc::new(policy_store);
+
+        // Default record-access policy: Cedar engine on the same store. An
+        // operator-supplied custom policy passed to the builder takes
+        // precedence; this fallback ensures every deployment has a
+        // record-level enforcement path even without explicit wiring.
+        let record_access_policy: Option<Arc<dyn RecordAccessPolicy>> =
+            self.record_access_policy.or_else(|| {
+                Some(Arc::new(crate::authz::CedarRecordPolicy::new(
+                    policy_store.clone(),
+                )))
+            });
+
         let state = ForgeState {
             registry,
             backend,
             tenant_config,
-            record_access_policy: self.record_access_policy,
+            record_access_policy,
+            policy_store,
             #[cfg(feature = "graphql")]
             graphql_schema,
             auth_store: self.auth_store,
@@ -368,6 +400,22 @@ impl SchemaForgeExtension {
             );
         }
 
+        // Compile the Cedar policy bundle from the registered schemas. Same
+        // contract as the standalone build path: validation failures abort
+        // initialization rather than producing a partial install.
+        let role_ranks = crate::authz::role_ranks::RoleRanks::empty();
+        let policy_store = crate::authz::PolicyStore::new(
+            crate::authz::store::PolicyStoreSnapshot::from_schemas(
+                &all_schemas,
+                None,
+                role_ranks,
+            )
+            .map_err(|e| ForgeError::Internal {
+                message: format!("Cedar policy compilation failed at startup: {e}"),
+            })?,
+        );
+        let policy_store = Some(Arc::new(policy_store));
+
         Ok(InitForgeData {
             registry,
             backend,
@@ -375,6 +423,7 @@ impl SchemaForgeExtension {
             record_access_policy,
             hook_dispatcher: None,
             storage_registry,
+            policy_store,
         })
     }
 

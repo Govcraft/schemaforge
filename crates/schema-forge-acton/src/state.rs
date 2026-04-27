@@ -453,6 +453,9 @@ pub struct ForgeState {
     /// Optional record-level access policy.
     /// When `Some`, entity handlers check ownership before allowing modify/delete.
     pub record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
+    /// Compiled Cedar policy bundle. The single source of truth for every
+    /// authorization decision the server makes.
+    pub policy_store: Arc<crate::authz::PolicyStore>,
     /// Dynamic GraphQL schema, atomically swappable on schema changes.
     #[cfg(feature = "graphql")]
     pub graphql_schema: Arc<arc_swap::ArcSwap<async_graphql::dynamic::Schema>>,

@@ -111,6 +111,16 @@ pub struct GetHookDispatcher {
     pub reply: ReplyChannel<Option<Arc<dyn crate::hooks::HookDispatcher>>>,
 }
 
+/// Retrieve the compiled Cedar policy bundle from the actor.
+///
+/// Returns `Some` once `InitForge` has populated the actor; `None` before
+/// initialization (which only matters in tests that bypass the standard
+/// boot flow).
+#[derive(Clone, Debug)]
+pub struct GetPolicyStore {
+    pub reply: ReplyChannel<Option<Arc<crate::authz::PolicyStore>>>,
+}
+
 // ---------------------------------------------------------------------------
 // Registry mutations
 // ---------------------------------------------------------------------------
@@ -232,6 +242,7 @@ pub struct InitForge {
     pub record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
     pub hook_dispatcher: Option<Arc<dyn crate::hooks::HookDispatcher>>,
     pub storage_registry: crate::storage::StorageRegistry,
+    pub policy_store: Option<Arc<crate::authz::PolicyStore>>,
     pub reply: ReplyChannel<()>,
 }
 

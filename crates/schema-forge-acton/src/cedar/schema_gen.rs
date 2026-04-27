@@ -87,33 +87,27 @@ action UpdateSchema, DeleteSchema appliesTo {{
 
 fn write_schema_entity(out: &mut String, schema: &SchemaDefinition) -> Result<(), SchemaGenError> {
     let name = schema.name.as_str();
-    write!(out, "entity {name} in [Forge::Tenant] = {{\n")?;
+    writeln!(out, "entity {name} in [Forge::Tenant] = {{")?;
 
     // _tenant is the standardized reference field. Optional because not every
     // schema participates in the tenant hierarchy.
     writeln!(out, "    \"_tenant\"?: Forge::Tenant,")?;
-
-    // role_rank only appears on the User schema, but we declare it
-    // unconditionally as optional so user-management policies parse against
-    // any future schema without a flow-typed condition.
-    if name == "User" {
-        writeln!(out, "    role_rank: Long,")?;
-    }
 
     for field in &schema.fields {
         let cedar_type = match cedar_type_for(&field.field_type) {
             Some(t) => t,
             None => continue,
         };
-        // Every field is declared optional in the Cedar schema even when the
-        // domain marks it required: the resource adapter only inserts present
-        // values, and Cedar will reject a Request whose entity is missing a
-        // required attribute. Optional avoids spurious validation failures
-        // for partial entities (e.g., during update workflows).
+        // Required-by-DSL fields are declared required in the Cedar schema
+        // so strict-mode policies can dereference them without `has` guards.
+        // Optional fields stay optional because adapters skip nulls, and
+        // Cedar's `has` operator covers the absence path.
+        let optional_marker = if field.is_required() { "" } else { "?" };
         writeln!(
             out,
-            "    \"{}\"?: {},",
+            "    \"{}\"{}: {},",
             field.name.as_str(),
+            optional_marker,
             cedar_type
         )?;
     }
@@ -274,19 +268,34 @@ mod tests {
     }
 
     #[test]
-    fn user_schema_carries_role_rank_attribute() {
+    fn user_schema_role_rank_field_is_emitted_when_present_and_required() {
+        // The system User schema declares role_rank as `integer required`,
+        // so the Cedar schema must emit it without the optional marker —
+        // strict-mode policies dereference `resource.role_rank` directly.
+        use schema_forge_core::types::{FieldModifier, IntegerConstraints};
         let user = SchemaDefinition::new(
             SchemaId::new(),
             SchemaName::new("User").unwrap(),
-            vec![FieldDefinition::new(
-                FieldName::new("email").unwrap(),
-                FieldType::Text(TextConstraints::unconstrained()),
-            )],
+            vec![
+                FieldDefinition::new(
+                    FieldName::new("email").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new("role_rank").unwrap(),
+                    FieldType::Integer(IntegerConstraints::default()),
+                    vec![FieldModifier::Required],
+                    vec![],
+                ),
+            ],
             vec![],
         )
         .unwrap();
         let src = generate_cedar_schema(&[user]).unwrap();
-        assert!(src.contains("role_rank: Long"));
+        assert!(
+            src.contains("\"role_rank\": Long,"),
+            "expected required role_rank declaration, got:\n{src}"
+        );
     }
 
     #[test]

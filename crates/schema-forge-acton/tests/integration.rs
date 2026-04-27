@@ -79,6 +79,7 @@ async fn build_test_app_state(init: TestForgeInit) -> AppState<SchemaForgeConfig
             record_access_policy: init.record_access_policy,
             hook_dispatcher: init.hook_dispatcher,
             storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
+            policy_store: None,
             reply: ReplyChannel::new(tx),
         })
         .await;
@@ -557,11 +558,12 @@ fn cedar_policies_generated_for_schema() {
     .unwrap();
 
     let policies = generate_cedar_policies(&schema);
-    assert_eq!(policies.len(), 4);
-    assert!(policies[0].cedar_text.contains("ReadContact"));
-    assert!(policies[1].cedar_text.contains("CreateContact"));
-    assert!(policies[2].cedar_text.contains("DeleteContact"));
-    assert!(policies[3].cedar_text.contains("UpdateSchema"));
+    // Secure-by-default: a schema with no @access yields only the
+    // schema-admin policy. ReadContact / CreateContact / DeleteContact are
+    // not emitted unless the author opts in via @access.
+    assert_eq!(policies.len(), 1);
+    assert!(policies[0].cedar_text.contains("UpdateSchema"));
+    assert!(policies[0].cedar_text.contains("schema-admin"));
 }
 
 // ---------------------------------------------------------------------------

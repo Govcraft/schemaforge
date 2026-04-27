@@ -5,7 +5,7 @@ pub mod tenant;
 pub mod traits;
 pub mod user_store;
 
-pub use auth::{OwnershipBasedPolicy, RecordAccessPolicy, PLATFORM_ADMIN_ROLE};
+pub use auth::{RecordAccessPolicy, PLATFORM_ADMIN_ROLE};
 pub use entity::{Entity, QueryResult};
 pub use error::BackendError;
 pub use tenant::TenantRef;

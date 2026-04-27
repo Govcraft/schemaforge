@@ -33,7 +33,7 @@ pub struct CedarPolicy {
 /// slice of schema definitions. Used by `PolicyStore::compile` at boot and
 /// on every schema-apply.
 pub fn generate_full_policy_set(schemas: &[SchemaDefinition]) -> Vec<CedarPolicy> {
-    let mut out = generate_global_policies();
+    let mut out = generate_global_policies(schemas);
     for schema in schemas {
         out.extend(generate_cedar_policies(schema));
     }
@@ -41,25 +41,29 @@ pub fn generate_full_policy_set(schemas: &[SchemaDefinition]) -> Vec<CedarPolicy
 }
 
 /// Generates the cross-schema "global" policies installed exactly once.
-pub fn generate_global_policies() -> Vec<CedarPolicy> {
-    vec![
-        platform_admin_permit_policy(),
-        user_management_role_rank_forbid_policy(),
-    ]
+///
+/// `schemas` is consulted to decide which globals are emitted: rules that
+/// reference an entity type (such as the User role-rank guard) are skipped
+/// when that schema is not present, since strict-mode validation rejects
+/// policies referencing undeclared types.
+pub fn generate_global_policies(schemas: &[SchemaDefinition]) -> Vec<CedarPolicy> {
+    let mut out = vec![platform_admin_permit_policy()];
+    if schemas.iter().any(|s| s.name.as_str() == "User") {
+        out.push(user_management_role_rank_forbid_policy());
+    }
+    out
 }
 
 /// Generates the per-schema policy set.
 ///
-/// When the schema has an `@access` annotation, role-based policies derive
-/// from its role lists. Otherwise the default secure set applies:
+/// Secure by default: a schema with no `@access` annotation receives no
+/// user-facing permits. Only `platform_admin` (via the global permit) and
+/// schema-admin (via `Forge::Group::"schema-admin"`) can interact with it.
+/// Authors opt in to broader access by adding an `@access(...)` annotation.
 ///
-/// 1. Read access for any authenticated user
-/// 2. Owner-only create/update (if the schema has any field with `@owner`),
-///    falling back to a `platform_admin`-only baseline otherwise
-/// 3. Delete for `platform_admin` only
-/// 4. Schema modification for `Forge::Group::"schema-admin"`
-///
-/// Per-field `@field_access` policies are appended at the end.
+/// When `@access` is present, role-based policies derive from its role lists.
+/// `@owner` always emits an owner-write policy on top of any annotation
+/// rules. `@field_access` emits per-field permits.
 pub fn generate_cedar_policies(schema: &SchemaDefinition) -> Vec<CedarPolicy> {
     let name = schema.name.as_str();
 
@@ -72,12 +76,16 @@ pub fn generate_cedar_policies(schema: &SchemaDefinition) -> Vec<CedarPolicy> {
     {
         generate_annotation_policies(name, read, write, delete)
     } else {
-        vec![
-            default_read_policy(name),
-            default_write_policy(schema),
-            default_delete_policy(name),
-        ]
+        // No @access => no user-facing permits. Only platform_admin (via the
+        // global permit) and schema-admin (below) can act on the schema.
+        Vec::new()
     };
+    if let Some(owner_write) = owner_write_policy(schema) {
+        policies.push(owner_write);
+    }
+    if let Some(owner_restrict) = owner_restrict_forbid_policy(schema) {
+        policies.push(owner_restrict);
+    }
     policies.push(schema_admin_policy(name));
     policies.extend(generate_field_access_policies(schema));
     policies
@@ -126,76 +134,67 @@ forbid (
 }
 
 // ---------------------------------------------------------------------------
-// Default per-schema policies (no @access annotation)
+// Owner-write policy (@owner field annotation)
 // ---------------------------------------------------------------------------
 
-fn default_read_policy(name: &str) -> CedarPolicy {
-    CedarPolicy {
-        description: format!("Allow any authenticated user to read or list {name} entities"),
-        cedar_text: format!(
-            r#"@id("forge.{lname}.read_default")
-permit (
-    principal is Forge::Principal,
-    action in [Action::"Read{name}", Action::"List{name}"],
-    resource is {name}
-);"#,
-            lname = name.to_ascii_lowercase()
-        ),
-    }
-}
-
-fn default_write_policy(schema: &SchemaDefinition) -> CedarPolicy {
+fn owner_write_policy(schema: &SchemaDefinition) -> Option<CedarPolicy> {
     let name = schema.name.as_str();
-    let owner_field = find_owner_field(schema);
-
-    if let Some(field) = owner_field {
-        CedarPolicy {
-            description: format!(
-                "Allow the owner ({field}) to create or update {name} entities"
-            ),
-            cedar_text: format!(
-                r#"@id("forge.{lname}.owner_write")
+    let field = find_owner_field(schema)?;
+    Some(CedarPolicy {
+        description: format!(
+            "Allow the owner (resource.{field}) to update {name} entities they created"
+        ),
+        cedar_text: format!(
+            r#"@id("forge.{lname}.owner_write")
 permit (
     principal is Forge::Principal,
-    action in [Action::"Create{name}", Action::"Update{name}"],
+    action == Action::"Update{name}",
     resource is {name}
 ) when {{
     resource has "{field}" && resource["{field}"] == principal.id
 }};"#,
-                lname = name.to_ascii_lowercase()
-            ),
-        }
-    } else {
-        CedarPolicy {
-            description: format!(
-                "Default-deny baseline for create/update on {name} (no @owner declared)"
-            ),
-            cedar_text: format!(
-                r#"@id("forge.{lname}.default_write_baseline")
-permit (
-    principal in Forge::Group::"platform_admin",
-    action in [Action::"Create{name}", Action::"Update{name}"],
-    resource is {name}
-);"#,
-                lname = name.to_ascii_lowercase()
-            ),
-        }
-    }
-}
-
-fn default_delete_policy(name: &str) -> CedarPolicy {
-    CedarPolicy {
-        description: format!("Allow platform_admin to delete {name} entities"),
-        cedar_text: format!(
-            r#"@id("forge.{lname}.delete_default")
-permit (
-    principal in Forge::Group::"platform_admin",
-    action == Action::"Delete{name}",
-    resource is {name}
-);"#,
             lname = name.to_ascii_lowercase()
         ),
-    }
+    })
+}
+
+/// Forbids any per-record action on an `@owner` schema whose owner does not
+/// match the caller, with one carefully-shaped condition.
+///
+/// The rule fires only when the resource carries the owner field *and* the
+/// owner value does not equal `principal.id`, *and* the caller is not
+/// `platform_admin`. Schema-level checks (which use a placeholder resource
+/// without attributes) leave the first conjunct false and the forbid does
+/// not fire — leaving the schema-level `@access` permit to govern. The
+/// per-record check (with a real entity) carries the owner field, so the
+/// rule fires for non-owners on every Read/List/Update/Delete and the
+/// expected ownership semantics hold.
+fn owner_restrict_forbid_policy(schema: &SchemaDefinition) -> Option<CedarPolicy> {
+    let name = schema.name.as_str();
+    let field = find_owner_field(schema)?;
+    Some(CedarPolicy {
+        description: format!(
+            "Forbid per-record actions on {name} when the caller does not own the record (resource.{field})"
+        ),
+        cedar_text: format!(
+            r#"@id("forge.{lname}.owner_restrict")
+forbid (
+    principal is Forge::Principal,
+    action in [
+        Action::"Read{name}",
+        Action::"List{name}",
+        Action::"Update{name}",
+        Action::"Delete{name}"
+    ],
+    resource is {name}
+) when {{
+    resource has "{field}"
+    && resource["{field}"] != principal.id
+    && !(principal in Forge::Group::"platform_admin")
+}};"#,
+            lname = name.to_ascii_lowercase()
+        ),
+    })
 }
 
 fn schema_admin_policy(name: &str) -> CedarPolicy {
@@ -509,13 +508,24 @@ mod tests {
     }
 
     fn make_user_schema() -> SchemaDefinition {
+        // Mirrors the system User schema's `role_rank: integer required` field
+        // so the user-management forbid policy validates against the schema.
+        use schema_forge_core::types::FieldModifier;
         SchemaDefinition::new(
             SchemaId::new(),
             SchemaName::new("User").unwrap(),
-            vec![FieldDefinition::new(
-                FieldName::new("email").unwrap(),
-                FieldType::Text(TextConstraints::unconstrained()),
-            )],
+            vec![
+                FieldDefinition::new(
+                    FieldName::new("email").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new("role_rank").unwrap(),
+                    FieldType::Integer(IntegerConstraints::default()),
+                    vec![FieldModifier::Required],
+                    vec![],
+                ),
+            ],
             vec![],
         )
         .unwrap()
@@ -531,29 +541,37 @@ mod tests {
 
     #[test]
     fn global_policies_include_platform_admin_permit() {
-        let g = generate_global_policies();
+        let g = generate_global_policies(&[]);
         assert!(g.iter().any(|p| p.cedar_text.contains("platform_admin")));
     }
 
     #[test]
-    fn global_policies_include_user_role_rank_forbid() {
-        let g = generate_global_policies();
+    fn global_policies_include_user_role_rank_forbid_when_user_schema_present() {
+        let g = generate_global_policies(&[make_user_schema()]);
         assert!(g.iter().any(|p| p.cedar_text.contains("forbid")));
         assert!(g.iter().any(|p| p.cedar_text.contains("role_rank")));
     }
 
     #[test]
-    fn default_schema_emits_read_write_delete_admin() {
-        let schema = make_test_schema();
-        let policies = generate_cedar_policies(&schema);
-        assert!(policies.iter().any(|p| p.cedar_text.contains("ReadContact")));
-        assert!(policies.iter().any(|p| p.cedar_text.contains("CreateContact")));
-        assert!(policies.iter().any(|p| p.cedar_text.contains("DeleteContact")));
-        assert!(policies.iter().any(|p| p.cedar_text.contains("UpdateSchema")));
+    fn global_policies_omit_user_role_rank_forbid_when_user_schema_absent() {
+        let g = generate_global_policies(&[]);
+        assert!(!g.iter().any(|p| p.cedar_text.contains("ReadUser")));
     }
 
     #[test]
-    fn owner_schema_emits_owner_write_policy() {
+    fn schema_without_access_annotation_emits_only_schema_admin() {
+        // Secure by default: a schema with no @access annotation must produce
+        // no user-facing permits. Only platform_admin (via the global permit)
+        // and schema-admin can act on it.
+        let schema = make_test_schema();
+        let policies = generate_cedar_policies(&schema);
+        assert_eq!(policies.len(), 1, "expected only the schema_admin policy");
+        assert!(policies[0].cedar_text.contains("UpdateSchema"));
+        assert!(policies[0].cedar_text.contains("schema-admin"));
+    }
+
+    #[test]
+    fn owner_annotation_emits_owner_write_independent_of_access() {
         let schema = make_owner_schema();
         let policies = generate_cedar_policies(&schema);
         assert!(policies

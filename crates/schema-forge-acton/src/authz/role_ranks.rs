@@ -280,7 +280,7 @@ member = 100
         let ranks = RoleRanks::from_toml_str(toml).unwrap();
         let referenced = vec!["member", "manager", "ghost"];
         let err = ranks
-            .ensure_all_registered(referenced.into_iter())
+            .ensure_all_registered(referenced)
             .unwrap_err();
         match err {
             RoleRanksError::UnregisteredRole { role } => assert_eq!(role, "manager"),
@@ -293,7 +293,7 @@ member = 100
         let toml = "[roles]\nmanager = 1\nmember = 2\n";
         let ranks = RoleRanks::from_toml_str(toml).unwrap();
         ranks
-            .ensure_all_registered(["manager", "member", PLATFORM_ADMIN_ROLE].into_iter())
+            .ensure_all_registered(["manager", "member", PLATFORM_ADMIN_ROLE])
             .unwrap();
     }
 }

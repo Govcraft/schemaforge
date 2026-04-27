@@ -97,7 +97,7 @@ pub fn build_principal_entities(
         .collect();
     attrs.insert(
         "roles".into(),
-        RestrictedExpression::new_set(role_set.into_iter()),
+        RestrictedExpression::new_set(role_set),
     );
 
     // Tenant chain: deepest tenant goes into a `tenant` attribute; the

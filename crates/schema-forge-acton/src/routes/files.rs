@@ -132,7 +132,8 @@ pub async fn mint_upload_url(
     Json(body): Json<MintUploadUrlRequest>,
 ) -> Result<Json<MintUploadUrlResponse>, ForgeError> {
     let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
-    check_schema_access(&ctx.schema, claims.as_ref(), AccessAction::Write)?;
+    let policy_store = fetch_policy_store(&state).await?;
+    check_schema_access(&policy_store, &ctx.schema, claims.as_ref(), AccessAction::Write)?;
 
     validate_upload_request(&body, &ctx.constraints)?;
 
@@ -202,7 +203,8 @@ pub async fn confirm_upload(
     Json(body): Json<ConfirmUploadRequest>,
 ) -> Result<Json<AttachmentResponse>, ForgeError> {
     let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
-    check_schema_access(&ctx.schema, claims.as_ref(), AccessAction::Write)?;
+    let policy_store = fetch_policy_store(&state).await?;
+    check_schema_access(&policy_store, &ctx.schema, claims.as_ref(), AccessAction::Write)?;
 
     // Reject keys that don't match the expected per-entity/per-field prefix.
     // Prevents a caller from attaching a confirmed object that was uploaded
@@ -432,7 +434,8 @@ pub async fn download_file(
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<Response, ForgeError> {
     let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
-    check_schema_access(&ctx.schema, claims.as_ref(), AccessAction::Read)?;
+    let policy_store = fetch_policy_store(&state).await?;
+    check_schema_access(&policy_store, &ctx.schema, claims.as_ref(), AccessAction::Read)?;
 
     let attachment = current_attachment(&ctx.entity, &field).ok_or_else(|| {
         ForgeError::EntityNotFound {
@@ -524,6 +527,30 @@ async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
         .map_err(|_| ForgeError::Internal {
             message: "forge actor unavailable".into(),
         })
+}
+
+/// Retrieves the compiled Cedar policy store from the `ForgeActor`.
+///
+/// Every authorization decision routes through this store, so handlers
+/// fetch it once at the top and reuse the same `Arc` for every check in
+/// the request.
+async fn fetch_policy_store(
+    state: &AppState<SchemaForgeConfig>,
+) -> Result<std::sync::Arc<crate::authz::PolicyStore>, ForgeError> {
+    let forge = state
+        .actor::<crate::ForgeActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ForgeActor not registered".into(),
+        })?;
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(crate::messages::GetPolicyStore {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await?.ok_or_else(|| ForgeError::Internal {
+        message: "Cedar policy store not initialized — InitForge has not run".into(),
+    })
 }
 
 async fn load_file_context(

@@ -132,6 +132,7 @@ pub async fn run(
         record_access_policy: None,
         hook_dispatcher: None,
         storage_registry: init_data.storage_registry,
+        policy_store: init_data.policy_store,
     };
 
     // 6. Warn about --watch
@@ -262,6 +263,7 @@ pub async fn run(
             record_access_policy: init_data.record_access_policy,
             hook_dispatcher,
             storage_registry: init_data.storage_registry,
+            policy_store: init_data.policy_store,
             reply: ReplyChannel::new(tx),
         })
         .await;

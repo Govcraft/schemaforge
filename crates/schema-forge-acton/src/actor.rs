@@ -43,6 +43,7 @@ pub struct ForgeActor {
     pub(crate) record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
     pub(crate) hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
     pub(crate) storage_registry: StorageRegistry,
+    pub(crate) policy_store: Option<Arc<crate::authz::PolicyStore>>,
 }
 
 impl std::fmt::Debug for ForgeActor {
@@ -77,6 +78,7 @@ impl ForgeActor {
             record_access_policy: None,
             hook_dispatcher: None,
             storage_registry: StorageRegistry::default(),
+            policy_store: None,
         }
     }
 }
@@ -104,9 +106,44 @@ fn configure_init(actor: &mut ManagedActor<Idle, ForgeActor>) {
         actor.model.registry = msg.registry.clone();
         actor.model.backend = Some(msg.backend.clone());
         actor.model.tenant_config = msg.tenant_config.clone();
-        actor.model.record_access_policy = msg.record_access_policy.clone();
         actor.model.hook_dispatcher = msg.hook_dispatcher.clone();
         actor.model.storage_registry = msg.storage_registry.clone();
+
+        // Lazy-init the policy store when the caller did not supply one. The
+        // CLI / extension build paths always pass it, but tests and ad-hoc
+        // actor wiring may set `policy_store: None`. We compile a default
+        // store from the registered schemas so every authz path has a
+        // non-degenerate store to evaluate against.
+        actor.model.policy_store = msg.policy_store.clone().or_else(|| {
+            let schemas: Vec<schema_forge_core::types::SchemaDefinition> =
+                msg.registry.values().cloned().collect();
+            match crate::authz::store::PolicyStoreSnapshot::from_schemas(
+                &schemas,
+                None,
+                crate::authz::role_ranks::RoleRanks::empty(),
+            ) {
+                Ok(snapshot) => Some(Arc::new(crate::authz::PolicyStore::new(snapshot))),
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "InitForge could not lazy-compile a default Cedar policy store; \
+                         every authz check will fail until a valid store is supplied"
+                    );
+                    None
+                }
+            }
+        });
+
+        // Default the record-access policy to the Cedar-backed implementation
+        // whenever the caller did not supply one. This mirrors the
+        // `SchemaForgeExtension::build()` path so the actor flow used by
+        // tests and the CLI is also Cedar-canonical by default.
+        actor.model.record_access_policy = msg.record_access_policy.clone().or_else(|| {
+            actor.model.policy_store.clone().map(|store| {
+                std::sync::Arc::new(crate::authz::CedarRecordPolicy::new(store))
+                    as std::sync::Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>
+            })
+        });
         let reply = msg.reply.clone();
         Reply::pending(async move {
             reply.send(()).await;
@@ -171,6 +208,14 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             reply.send(dispatcher).await;
+        })
+    });
+
+    actor.act_on::<crate::messages::GetPolicyStore>(|actor, ctx| {
+        let store = actor.model.policy_store.clone();
+        let reply = ctx.message().reply.clone();
+        Reply::pending(async move {
+            reply.send(store).await;
         })
     });
 

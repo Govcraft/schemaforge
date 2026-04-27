@@ -57,6 +57,26 @@ async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
         })
 }
 
+/// Retrieves the compiled Cedar policy store from the `ForgeActor`.
+async fn fetch_policy_store(
+    state: &AppState<SchemaForgeConfig>,
+) -> Result<std::sync::Arc<crate::authz::PolicyStore>, ForgeError> {
+    let forge = state
+        .actor::<crate::ForgeActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ForgeActor not registered".into(),
+        })?;
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(crate::messages::GetPolicyStore {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await?.ok_or_else(|| ForgeError::Internal {
+        message: "Cedar policy store not initialized — InitForge has not run".into(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Hook dispatch helpers
 // ---------------------------------------------------------------------------
@@ -1019,10 +1039,17 @@ async fn execute_entity_query(
     };
 
     // Filter read-restricted fields, then apply optional field projection
+    let policy_store = fetch_policy_store(state).await?;
     let entities: Vec<EntityResponse> = visible_entities
         .into_iter()
         .map(|mut e| {
-            filter_entity_fields(&mut e, schema_def, claims, FieldFilterDirection::Read);
+            filter_entity_fields(
+                &policy_store,
+                &mut e,
+                schema_def,
+                claims,
+                FieldFilterDirection::Read,
+            );
             if let Some(proj) = projection {
                 e.fields.retain(|k, _| proj.contains(k));
             }
@@ -1510,8 +1537,15 @@ pub async fn create_entity(
         name: schema_name.as_str().to_string(),
     })?;
 
+    let policy_store = fetch_policy_store(&state).await?;
+
     // Access check
-    if let Err(e) = check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write) {
+    if let Err(e) = check_schema_access(
+        &policy_store,
+        &schema_def,
+        claims.as_ref(),
+        AccessAction::Write,
+    ) {
         if let Some(logger) = state.audit_logger() {
             logger
                 .log_custom(
@@ -1584,6 +1618,7 @@ pub async fn create_entity(
     // Create the entity, filtering write-restricted fields
     let mut entity = Entity::new(schema_name, fields);
     filter_entity_fields(
+        &policy_store,
         &mut entity,
         &schema_def,
         claims.as_ref(),
@@ -1620,6 +1655,7 @@ pub async fn create_entity(
 
     // Filter read-restricted fields from response
     filter_entity_fields(
+        &policy_store,
         &mut created,
         &schema_def,
         claims.as_ref(),
@@ -1681,8 +1717,15 @@ pub async fn list_entities(
         name: schema_name.as_str().to_string(),
     })?;
 
+    let policy_store = fetch_policy_store(&state).await?;
+
     // Access check
-    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
+    check_schema_access(
+        &policy_store,
+        &schema_def,
+        claims.as_ref(),
+        AccessAction::Read,
+    )?;
 
     // before_read hook gate (no entity_id, no fields — list scope).
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
@@ -1819,8 +1862,15 @@ pub async fn query_entities(
         name: schema_name.as_str().to_string(),
     })?;
 
+    let policy_store = fetch_policy_store(&state).await?;
+
     // Access check
-    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
+    check_schema_access(
+        &policy_store,
+        &schema_def,
+        claims.as_ref(),
+        AccessAction::Read,
+    )?;
 
     // before_read hook gate (no entity_id, no fields — query scope).
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
@@ -1950,8 +2000,15 @@ pub async fn get_entity(
         name: schema_name.as_str().to_string(),
     })?;
 
+    let policy_store = fetch_policy_store(&state).await?;
+
     // Access check
-    check_schema_access(&schema_def, claims.as_ref(), AccessAction::Read)?;
+    check_schema_access(
+        &policy_store,
+        &schema_def,
+        claims.as_ref(),
+        AccessAction::Read,
+    )?;
 
     // Parse the entity ID
     let entity_id =
@@ -2021,6 +2078,7 @@ pub async fn get_entity(
 
     // Filter read-restricted fields from response
     filter_entity_fields(
+        &policy_store,
         &mut entity,
         &schema_def,
         claims.as_ref(),
@@ -2120,8 +2178,15 @@ pub async fn update_entity(
         name: schema_name.as_str().to_string(),
     })?;
 
+    let policy_store = fetch_policy_store(&state).await?;
+
     // Access check
-    if let Err(e) = check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write) {
+    if let Err(e) = check_schema_access(
+        &policy_store,
+        &schema_def,
+        claims.as_ref(),
+        AccessAction::Write,
+    ) {
         if let Some(logger) = state.audit_logger() {
             logger
                 .log_custom(
@@ -2210,6 +2275,7 @@ pub async fn update_entity(
     // Build entity with specific ID, filtering write-restricted fields
     let mut entity = Entity::with_id(entity_id, schema_name, fields);
     filter_entity_fields(
+        &policy_store,
         &mut entity,
         &schema_def,
         claims.as_ref(),
@@ -2246,6 +2312,7 @@ pub async fn update_entity(
 
     // Filter read-restricted fields from response
     filter_entity_fields(
+        &policy_store,
         &mut updated,
         &schema_def,
         claims.as_ref(),
@@ -2314,8 +2381,15 @@ pub async fn patch_entity(
         name: schema_name.as_str().to_string(),
     })?;
 
+    let policy_store = fetch_policy_store(&state).await?;
+
     // Access check
-    if let Err(e) = check_schema_access(&schema_def, claims.as_ref(), AccessAction::Write) {
+    if let Err(e) = check_schema_access(
+        &policy_store,
+        &schema_def,
+        claims.as_ref(),
+        AccessAction::Write,
+    ) {
         if let Some(logger) = state.audit_logger() {
             logger
                 .log_custom(
@@ -2437,6 +2511,7 @@ pub async fn patch_entity(
     } else {
         let mut entity = Entity::with_id(entity_id, schema_name, delta);
         filter_entity_fields(
+            &policy_store,
             &mut entity,
             &schema_def,
             claims.as_ref(),
@@ -2471,6 +2546,7 @@ pub async fn patch_entity(
 
     // Filter read-restricted fields from response
     filter_entity_fields(
+        &policy_store,
         &mut updated,
         &schema_def,
         claims.as_ref(),
@@ -2527,8 +2603,15 @@ pub async fn delete_entity(
         name: schema_name.as_str().to_string(),
     })?;
 
+    let policy_store = fetch_policy_store(&state).await?;
+
     // Access check
-    if let Err(e) = check_schema_access(&schema_def, claims.as_ref(), AccessAction::Delete) {
+    if let Err(e) = check_schema_access(
+        &policy_store,
+        &schema_def,
+        claims.as_ref(),
+        AccessAction::Delete,
+    ) {
         if let Some(logger) = state.audit_logger() {
             logger
                 .log_custom(

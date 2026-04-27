@@ -18,7 +18,7 @@ use schema_forge_core::types::SchemaDefinition;
 
 use crate::authz::adapters::{
     action_entity_uid, build_principal_entities, build_resource_entity, principal_uid,
-    schema_entity_uid, AdapterError,
+    AdapterError,
 };
 use crate::authz::namespace::{
     field_read_action_uid, field_write_action_uid, ActionVerb, PRINCIPAL_TYPE,
@@ -103,17 +103,33 @@ pub fn authorize(
             let uid = res_entity.uid().clone();
             (uid, vec![res_entity])
         }
-        None => (
-            schema_entity_uid(schema.name.as_str())?,
-            Vec::new(),
-        ),
+        None => {
+            // Schema-level checks (no specific resource yet — e.g. authorising
+            // a `CreateX` request before the entity exists) need a placeholder
+            // resource of the correct app-schema entity type so per-action
+            // `appliesTo` declarations match. Use a synthetic ID; policies
+            // that inspect resource attributes will simply not match.
+            let raw = format!("{}::\"_any\"", schema.name.as_str());
+            let uid = raw
+                .parse::<EntityUid>()
+                .map_err(|e: cedar_policy::ParseErrors| AuthzError::Request(e.to_string()))?;
+            let placeholder = cedar_policy::Entity::with_uid(uid.clone());
+            (uid, vec![placeholder])
+        }
     };
 
     let mut all_entities: Vec<cedar_policy::Entity> = Vec::new();
     all_entities.extend(principal_entities);
     all_entities.extend(resource_entities);
 
-    let entities = Entities::from_entities(all_entities, Some(&snapshot.schema))
+    // Note: skip runtime schema validation on the entities and request. The
+    // generator validates policies against a Cedar schema at compile time,
+    // and the policy_store's `schema` snapshot may be stale relative to
+    // dynamically-applied schemas (until T10's hot-reload lands). Skipping
+    // here means a request for an action the policy_store hasn't seen will
+    // simply not match any policy and Deny — secure default — instead of
+    // failing the request with a validation error.
+    let entities = Entities::from_entities(all_entities, None)
         .map_err(|e| AuthzError::Request(e.to_string()))?;
 
     let request = Request::new(
@@ -121,7 +137,7 @@ pub fn authorize(
         action,
         resource_uid,
         Context::empty(),
-        Some(&snapshot.schema),
+        None,
     )
     .map_err(|e| AuthzError::Request(e.to_string()))?;
 

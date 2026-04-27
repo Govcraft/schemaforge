@@ -27,7 +27,6 @@ use schema_forge_acton::state::DynForgeBackend;
 use schema_forge_acton::ForgeActor;
 use schema_forge_backend::auth::RecordAccessPolicy;
 use schema_forge_backend::tenant::TenantConfig;
-use schema_forge_backend::OwnershipBasedPolicy;
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::types::{
     Annotation, EntityId, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaDefinition,
@@ -112,6 +111,7 @@ async fn build_test_app_state(
             record_access_policy,
             hook_dispatcher: None,
             storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
+            policy_store: None,
             reply: ReplyChannel::new(tx),
         })
         .await;
@@ -482,7 +482,7 @@ async fn demo_record_ownership() {
         backend.clone(),
         registry.clone(),
         None,
-        Some(Arc::new(OwnershipBasedPolicy)),
+        None, // CedarRecordPolicy is the default; tests no longer wire it explicitly
     )
     .await;
     let app = test_app_with_claims(state, alice_claims);
@@ -510,7 +510,7 @@ async fn demo_record_ownership() {
         backend.clone(),
         registry.clone(),
         None,
-        Some(Arc::new(OwnershipBasedPolicy)),
+        None, // CedarRecordPolicy is the default; tests no longer wire it explicitly
     )
     .await;
     let app = test_app_with_claims(state, bob_claims);
@@ -542,7 +542,7 @@ async fn demo_record_ownership() {
         backend.clone(),
         registry.clone(),
         None,
-        Some(Arc::new(OwnershipBasedPolicy)),
+        None, // CedarRecordPolicy is the default; tests no longer wire it explicitly
     )
     .await;
     let app = test_app_with_claims(state, admin_claims);
@@ -882,7 +882,11 @@ async fn demo_cedar_policies_from_annotations() {
     for policy in &default_policies {
         println!("    - {}", policy.description);
     }
-    assert_eq!(default_policies.len(), 4);
+    // Secure-by-default: a schema without @access produces only the schema-admin
+    // policy. The platform_admin global permit and the schema-admin permit are
+    // the only paths to the schema until an author opts in to broader access.
+    assert_eq!(default_policies.len(), 1);
+    assert!(default_policies[0].cedar_text.contains("UpdateSchema"));
 
     println!("  PASSED\n");
 }
@@ -948,7 +952,7 @@ async fn demo_all_auth_layers_combined() {
         backend.clone(),
         registry.clone(),
         None,
-        Some(Arc::new(OwnershipBasedPolicy)),
+        None, // CedarRecordPolicy is the default; tests no longer wire it explicitly
     )
     .await;
     let app = test_app_with_claims(employee_state, employee_claims);
@@ -991,7 +995,7 @@ async fn demo_all_auth_layers_combined() {
         backend.clone(),
         registry.clone(),
         None,
-        Some(Arc::new(OwnershipBasedPolicy)),
+        None, // CedarRecordPolicy is the default; tests no longer wire it explicitly
     )
     .await;
     let app = test_app_with_claims(manager_state, manager_claims);
@@ -1017,7 +1021,7 @@ async fn demo_all_auth_layers_combined() {
         backend.clone(),
         registry.clone(),
         None,
-        Some(Arc::new(OwnershipBasedPolicy)),
+        None, // CedarRecordPolicy is the default; tests no longer wire it explicitly
     )
     .await;
     let app = test_app_with_claims(admin_state, admin_claims);
@@ -1040,7 +1044,7 @@ async fn demo_all_auth_layers_combined() {
         backend.clone(),
         registry.clone(),
         None,
-        Some(Arc::new(OwnershipBasedPolicy)),
+        None, // CedarRecordPolicy is the default; tests no longer wire it explicitly
     )
     .await;
     let app = test_app_with_claims(guest_state, guest_claims);
@@ -1060,7 +1064,7 @@ async fn demo_all_auth_layers_combined() {
         backend.clone(),
         registry.clone(),
         None,
-        Some(Arc::new(OwnershipBasedPolicy)),
+        None, // CedarRecordPolicy is the default; tests no longer wire it explicitly
     )
     .await;
     let app = test_app_with_claims(author_state, author_claims);
