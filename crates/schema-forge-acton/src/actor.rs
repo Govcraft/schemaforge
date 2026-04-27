@@ -235,21 +235,53 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
 fn configure_registry_mutations(actor: &mut ManagedActor<Idle, ForgeActor>) {
     actor.mutate_on::<InsertSchema>(|actor, ctx| {
         let msg = ctx.message();
-        debug!(schema = %msg.name, "inserting schema into registry");
-        actor
-            .model
-            .registry
-            .insert(msg.name.clone(), msg.definition.clone());
-        Reply::ready()
+        let name = msg.name.clone();
+        let definition = msg.definition.clone();
+        debug!(schema = %name, "inserting schema into registry");
+
+        // Tentatively install the new definition so the recompile sees the
+        // proposed registry state.
+        let previous = actor.model.registry.insert(name.clone(), definition);
+
+        let result = recompile_policy_store(&mut actor.model, &name);
+        if result.is_err() {
+            // Roll back the registry mutation so the live bundle and
+            // registry stay in sync.
+            match previous {
+                Some(prev) => {
+                    actor.model.registry.insert(name.clone(), prev);
+                }
+                None => {
+                    actor.model.registry.remove(&name);
+                }
+            }
+        }
+
+        let reply = msg.reply.clone();
+        Reply::pending(async move {
+            reply.send(result).await;
+        })
     });
 
     actor.mutate_on::<RemoveSchema>(|actor, ctx| {
-        let name = &ctx.message().name;
+        let name = ctx.message().name.clone();
         debug!(schema = %name, "removing schema from registry");
-        let removed = actor.model.registry.remove(name);
+        let removed = actor.model.registry.remove(&name);
+
+        let result = match recompile_policy_store(&mut actor.model, &name) {
+            Ok(()) => Ok(removed),
+            Err(e) => {
+                // Roll back the removal.
+                if let Some(prev) = removed {
+                    actor.model.registry.insert(name.clone(), prev);
+                }
+                Err(e)
+            }
+        };
+
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
-            reply.send(removed).await;
+            reply.send(result).await;
         })
     });
 
@@ -259,6 +291,58 @@ fn configure_registry_mutations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         actor.model.tenant_config = config;
         Reply::ready()
     });
+}
+
+// ---------------------------------------------------------------------------
+// Policy-store recompile
+// ---------------------------------------------------------------------------
+
+/// Recompile the actor's Cedar [`PolicyStore`] from the current registry,
+/// atomically swapping the active snapshot on success. The actor field is
+/// left untouched; only the `ArcSwap` inside the existing store is updated
+/// so every outstanding `Arc<PolicyStore>` clone — including the ones held
+/// by `ForgeState` and live request handlers — sees the new bundle on the
+/// next `current()` call.
+///
+/// Returns the formatted error string on compile failure so handlers can
+/// surface it through their reply channel without leaking a Cedar error
+/// type into the public message API.
+fn recompile_policy_store(
+    model: &mut ForgeActor,
+    mutating_schema: &str,
+) -> std::result::Result<(), String> {
+    let store = match model.policy_store.as_ref() {
+        Some(store) => store.clone(),
+        None => {
+            // No store yet (test or pre-init flow). Nothing to recompile —
+            // InitForge will compile on its first run.
+            return Ok(());
+        }
+    };
+
+    let schemas: Vec<SchemaDefinition> = model.registry.values().cloned().collect();
+    match store.recompile_from_schemas(&schemas, None) {
+        Ok(()) => {
+            tracing::info!(
+                target: "schema_forge_acton::authz",
+                schema = mutating_schema,
+                policy_count = store.current().policy_count,
+                policy_hash = %store.current().policy_hash,
+                "policy_store recompiled after registry mutation"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            tracing::error!(
+                target: "schema_forge_acton::authz",
+                schema = mutating_schema,
+                error = %msg,
+                "policy_store recompile failed; reverting registry mutation"
+            );
+            Err(msg)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

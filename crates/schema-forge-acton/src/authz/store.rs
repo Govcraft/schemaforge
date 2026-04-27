@@ -78,6 +78,25 @@ impl PolicyStore {
     pub fn swap(&self, next: PolicyStoreSnapshot) {
         self.inner.store(Arc::new(next));
     }
+
+    /// Compiles a fresh snapshot from `schemas` (reusing the current
+    /// snapshot's [`RoleRanks`]) and atomically installs it.
+    ///
+    /// Returns the original snapshot unchanged on compile failure so the
+    /// running bundle keeps serving traffic — callers are expected to
+    /// surface the error so the originating mutation can be rolled back.
+    /// `custom_dir` mirrors [`PolicyStoreSnapshot::from_schemas`] (`None`
+    /// for "no custom policies").
+    pub fn recompile_from_schemas(
+        &self,
+        schemas: &[SchemaDefinition],
+        custom_dir: Option<&Path>,
+    ) -> Result<(), PolicyStoreError> {
+        let role_ranks = self.current().role_ranks.clone();
+        let next = PolicyStoreSnapshot::from_schemas(schemas, custom_dir, role_ranks)?;
+        self.swap(next);
+        Ok(())
+    }
 }
 
 impl PolicyStoreSnapshot {
@@ -231,5 +250,90 @@ mod tests {
                 .unwrap();
         store.swap(s2);
         assert_eq!(store.current().policy_hash, h1);
+    }
+
+    fn schema_named(name: &str) -> SchemaDefinition {
+        use schema_forge_core::types::{
+            FieldDefinition, FieldName, FieldType, SchemaId, SchemaName, TextConstraints,
+        };
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new(name).unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("title").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn recompile_from_schemas_installs_new_bundle() {
+        // Start with a single-schema bundle, then recompile against a
+        // two-schema set — the policy_count should grow and the hash should
+        // change, proving the swap landed.
+        let s1 = PolicyStoreSnapshot::from_schemas(
+            &[schema_named("Alpha")],
+            None,
+            RoleRanks::empty(),
+        )
+        .unwrap();
+        let initial_count = s1.policy_count;
+        let initial_hash = s1.policy_hash.clone();
+        let store = PolicyStore::new(s1);
+
+        store
+            .recompile_from_schemas(&[schema_named("Alpha"), schema_named("Beta")], None)
+            .expect("recompile should succeed");
+
+        let current = store.current();
+        assert!(
+            current.policy_count > initial_count,
+            "second schema should add at least one policy ({} -> {})",
+            initial_count,
+            current.policy_count,
+        );
+        assert_ne!(
+            current.policy_hash, initial_hash,
+            "policy hash must change after recompile",
+        );
+    }
+
+    #[test]
+    fn recompile_from_schemas_keeps_old_bundle_on_failure() {
+        // Build a healthy bundle, then point recompile at a custom-policy
+        // directory whose Cedar source fails to validate. The store must
+        // keep serving the original snapshot instead of dropping into a
+        // half-broken state.
+        let s1 =
+            PolicyStoreSnapshot::from_schemas(&[schema_named("Alpha")], None, RoleRanks::empty())
+                .unwrap();
+        let original_hash = s1.policy_hash.clone();
+        let store = PolicyStore::new(s1);
+
+        let tmp = std::env::temp_dir().join(format!(
+            "schemaforge-policystore-bad-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("invalid.cedar"),
+            r#"permit(principal, action == Action::"DoesNotExist", resource);"#,
+        )
+        .unwrap();
+
+        let result = store.recompile_from_schemas(&[schema_named("Alpha")], Some(&tmp));
+        assert!(
+            matches!(result, Err(PolicyStoreError::Validation(_))),
+            "expected validation failure, got {result:?}"
+        );
+        assert_eq!(
+            store.current().policy_hash,
+            original_hash,
+            "store must preserve the original snapshot when recompile fails",
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

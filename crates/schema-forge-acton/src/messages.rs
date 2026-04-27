@@ -126,19 +126,29 @@ pub struct GetPolicyStore {
 // ---------------------------------------------------------------------------
 
 /// Insert or update a schema definition in the in-memory registry.
-/// Fire-and-forget — no reply channel needed.
+///
+/// On success, the actor recompiles the Cedar policy bundle from the new
+/// registry state and atomically swaps it into the running [`PolicyStore`].
+/// On compile failure, the registry mutation is reverted and the error is
+/// surfaced via the reply channel — the previously-running policy bundle
+/// remains in force, fail-closed.
 #[derive(Clone, Debug)]
 pub struct InsertSchema {
     pub name: String,
     pub definition: SchemaDefinition,
+    pub reply: ReplyChannel<Result<(), String>>,
 }
 
 /// Remove a schema definition from the in-memory registry.
-/// Returns the removed definition (if any) via the reply channel.
+///
+/// On success the reply contains `Ok(removed)` where `removed` is the
+/// previous definition (or `None` if no matching schema existed). On Cedar
+/// recompile failure the removal is reverted and the error is returned via
+/// `Err`.
 #[derive(Clone, Debug)]
 pub struct RemoveSchema {
     pub name: String,
-    pub reply: ReplyChannel<Option<SchemaDefinition>>,
+    pub reply: ReplyChannel<Result<Option<SchemaDefinition>, String>>,
 }
 
 /// Update the tenant configuration.

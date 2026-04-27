@@ -25,7 +25,7 @@ use acton_service::middleware::Claims;
 use cedar_policy::{Entity as CedarEntity, EntityId, EntityTypeName, EntityUid, RestrictedExpression};
 use schema_forge_backend::entity::Entity;
 use schema_forge_backend::TenantRef;
-use schema_forge_core::types::{DynamicValue, SchemaDefinition};
+use schema_forge_core::types::{Cardinality, DynamicValue, FieldType, SchemaDefinition};
 
 use crate::authz::namespace::{
     action_uid, ActionVerb, GROUP_TYPE, PRINCIPAL_TYPE, SCHEMA_TYPE, TENANT_TYPE,
@@ -132,6 +132,12 @@ pub fn build_principal_entities(
         }
     }
 
+    // Tenant chain: build one Cedar Tenant entity per hop and parent the
+    // principal on every level so policies can express
+    // `resource._tenant in principal` for hierarchical scoping. The deepest
+    // tenant could be reached as a separate `principal.tenant` attribute,
+    // but the Cedar Principal schema doesn't declare such an attribute and
+    // no generated policy reads one — so we only populate parents.
     let mut tenant_uids: Vec<EntityUid> = Vec::new();
     let mut tenant_entities: Vec<CedarEntity> = Vec::new();
     for tenant in &tenant_chain {
@@ -157,13 +163,6 @@ pub fn build_principal_entities(
                     detail: e.to_string(),
                 }
             })?,
-        );
-    }
-
-    if let Some(deepest) = tenant_uids.last().cloned() {
-        attrs.insert(
-            "tenant".into(),
-            RestrictedExpression::new_entity_uid(deepest),
         );
     }
 
@@ -227,17 +226,109 @@ pub fn build_resource_entity(
     })
 }
 
+/// Builds a synthetic placeholder Cedar entity for `schema`.
+///
+/// Used by [`crate::authz::engine::authorize`] when there's no concrete
+/// resource yet (e.g. authorising a `CreateContact` or `ListContact` action).
+/// The placeholder carries default values for every required field declared
+/// in the Cedar schema — `""` for `String`, `0` for `Long`, `false` for
+/// `Bool`, an empty set for `Set<...>` — so the strict-mode entity validator
+/// accepts it as a member of the declared entity type. Policies that
+/// dereference a required attribute will read the default; ownership /
+/// tenant guards are designed to fall through when the field doesn't equal
+/// the principal's identity, so the placeholder won't accidentally satisfy
+/// them.
+pub fn build_resource_placeholder(
+    schema: &SchemaDefinition,
+) -> Result<CedarEntity, AdapterError> {
+    let raw = format!("{}::\"_any\"", schema.name.as_str());
+    let uid = EntityUid::from_str(&raw).map_err(|e| AdapterError::InvalidIdentifier {
+        value: raw,
+        detail: e.to_string(),
+    })?;
+
+    let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
+    for field in &schema.fields {
+        if !field.is_required() {
+            continue;
+        }
+        if let Some(expr) = default_cedar_expr(&field.field_type) {
+            attrs.insert(field.name.as_str().to_string(), expr);
+        }
+    }
+
+    CedarEntity::new(uid, attrs, HashSet::new()).map_err(|e| AdapterError::UnrepresentableValue {
+        field: format!("placeholder:{}", schema.name.as_str()),
+        detail: e.to_string(),
+    })
+}
+
+/// Returns a Cedar default expression for a [`FieldType`] used by
+/// [`build_resource_placeholder`]. Mirrors the type mapping the Cedar schema
+/// generator emits: any `FieldType` that produces a Cedar attribute also
+/// produces a default here. Returns `None` for types we don't expose to
+/// Cedar (composites, raw JSON), matching the schema generator's output.
+fn default_cedar_expr(ft: &FieldType) -> Option<RestrictedExpression> {
+    match ft {
+        FieldType::Text(_) | FieldType::RichText | FieldType::Enum(_) | FieldType::File(_) => {
+            Some(RestrictedExpression::new_string(String::new()))
+        }
+        FieldType::Integer(_) | FieldType::Float(_) | FieldType::DateTime => {
+            Some(RestrictedExpression::new_long(0))
+        }
+        FieldType::Boolean => Some(RestrictedExpression::new_bool(false)),
+        FieldType::Relation { cardinality, .. } => match cardinality {
+            Cardinality::One => Some(RestrictedExpression::new_string(String::new())),
+            Cardinality::Many => Some(RestrictedExpression::new_set(Vec::new())),
+            _ => None,
+        },
+        FieldType::Array(_) => Some(RestrictedExpression::new_set(Vec::new())),
+        _ => None,
+    }
+}
+
 /// Maps a [`DynamicValue`] to its Cedar `RestrictedExpression` representation.
 ///
-/// Returns `None` for variants Cedar cannot represent (e.g., embedded
-/// composites with arbitrary nesting).
+/// Mirrors [`crate::cedar::schema_gen::cedar_type_for`] one-for-one — every
+/// `DynamicValue` variant whose `FieldType` advertises a Cedar type produces
+/// a corresponding expression here. Mismatches between the schema generator
+/// and this function silently drop required attributes and cause strict-mode
+/// validation failures, so they must stay in lockstep.
+///
+/// Returns `None` for variants Cedar cannot represent (composites, raw JSON,
+/// `Null`).
 pub fn dynamic_to_cedar(value: &DynamicValue) -> Option<RestrictedExpression> {
     match value {
-        DynamicValue::Text(s) => Some(RestrictedExpression::new_string(s.clone())),
+        DynamicValue::Text(s) | DynamicValue::Enum(s) => {
+            Some(RestrictedExpression::new_string(s.clone()))
+        }
         DynamicValue::Integer(i) => Some(RestrictedExpression::new_long(*i)),
+        // Float maps to Long in the Cedar schema; truncate to match. Cedar
+        // doesn't have a native float type and policy authors writing
+        // numeric predicates over Float fields are already operating in
+        // integer space.
+        DynamicValue::Float(f) => Some(RestrictedExpression::new_long(*f as i64)),
         DynamicValue::Boolean(b) => Some(RestrictedExpression::new_bool(*b)),
+        DynamicValue::DateTime(dt) => {
+            Some(RestrictedExpression::new_long(dt.timestamp_millis()))
+        }
         DynamicValue::Ref(id) => Some(RestrictedExpression::new_string(id.as_str().to_string())),
-        DynamicValue::Null => None,
+        DynamicValue::RefArray(ids) => {
+            let items: Vec<RestrictedExpression> = ids
+                .iter()
+                .map(|id| RestrictedExpression::new_string(id.as_str().to_string()))
+                .collect();
+            Some(RestrictedExpression::new_set(items))
+        }
+        DynamicValue::Array(items) => {
+            let mapped: Vec<RestrictedExpression> =
+                items.iter().filter_map(dynamic_to_cedar).collect();
+            Some(RestrictedExpression::new_set(mapped))
+        }
+        DynamicValue::Null | DynamicValue::Json(_) | DynamicValue::Composite(_) => None,
+        // DynamicValue is `#[non_exhaustive]`; new variants default to
+        // "no Cedar representation" until explicitly mapped (and a matching
+        // Cedar attribute type is added to schema_gen's `cedar_type_for`).
         _ => None,
     }
 }

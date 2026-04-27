@@ -72,6 +72,62 @@ async fn pair_with_registry(
     Ok(())
 }
 
+/// Dry-run the Cedar policy bundle that would result from inserting (or
+/// removing, when `removing` is `true`) `target` into the current registry.
+///
+/// Surfacing the validation error here turns it into a 400-class response —
+/// the caller's request is rejected before any DB migration runs. The actor
+/// will recompile and atomically swap on the subsequent `InsertSchema` /
+/// `RemoveSchema` regardless; this is purely a fail-closed pre-check.
+async fn precheck_policy_bundle(
+    state: &AppState<SchemaForgeConfig>,
+    forge: &acton_service::prelude::ActorHandle,
+    target: &SchemaDefinition,
+    removing: bool,
+) -> Result<(), ForgeError> {
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(ListSchemas {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let mut proposed = ask_forge(rx).await?;
+
+    proposed.retain(|s| s.name.as_str() != target.name.as_str());
+    if !removing {
+        proposed.push(target.clone());
+    }
+
+    let policy_store = fetch_policy_store(state).await?;
+    let role_ranks = policy_store.current().role_ranks.clone();
+
+    crate::authz::store::PolicyStoreSnapshot::from_schemas(&proposed, None, role_ranks).map_err(
+        |e| ForgeError::ValidationFailed {
+            details: vec![format!("Cedar policy validation failed for proposed schema: {e}")],
+        },
+    )?;
+
+    Ok(())
+}
+
+/// Fetch the current Cedar [`PolicyStore`] from the actor.
+async fn fetch_policy_store(
+    state: &AppState<SchemaForgeConfig>,
+) -> Result<std::sync::Arc<crate::authz::PolicyStore>, ForgeError> {
+    let forge = state.actor::<ForgeActor>().ok_or_else(|| ForgeError::Internal {
+        message: "ForgeActor not registered".into(),
+    })?;
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(crate::messages::GetPolicyStore {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await?.ok_or_else(|| ForgeError::Internal {
+        message: "Cedar policy store not initialized — InitForge has not run".into(),
+    })
+}
+
 /// Await an actor response with a timeout.
 async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
     tokio::time::timeout(ACTOR_TIMEOUT, rx)
@@ -404,6 +460,13 @@ pub async fn create_schema(
     // as derived before the migration plan is generated.
     pair_with_registry(forge, &mut definition).await?;
 
+    // 4b. Pre-validate the proposed Cedar bundle BEFORE running any DB
+    // migration. The actor will recompile and atomically swap on InsertSchema
+    // anyway, but doing the dry-run here means a malformed schema is rejected
+    // with a 400 instead of leaving the database in a state the running
+    // policy bundle can't reason about.
+    precheck_policy_bundle(&state, forge, &definition, false).await?;
+
     // 5. Generate migration plan
     let plan = DiffEngine::create_new(&definition);
 
@@ -428,13 +491,22 @@ pub async fn create_schema(
         .await;
     ask_forge(rx).await?.map_err(ForgeError::from)?;
 
-    // 8. Update registry cache via actor (fire-and-forget)
+    // 8. Update registry cache + recompile Cedar bundle. The actor swap is
+    // the source of truth: if the recompile fails here despite the dry-run
+    // above, the actor reverts the registry mutation and returns the error.
+    let (tx, rx) = oneshot::channel();
     forge
         .send(InsertSchema {
             name: schema_name.as_str().to_string(),
             definition: definition.clone(),
+            reply: ReplyChannel::new(tx),
         })
         .await;
+    ask_forge(rx)
+        .await?
+        .map_err(|err| ForgeError::Internal {
+            message: format!("Cedar policy recompile failed during schema insertion: {err}"),
+        })?;
 
     // 9. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -598,6 +670,10 @@ pub async fn update_schema(
     // produce no AddRelation step for a physical column).
     pair_with_registry(forge, &mut new_definition).await?;
 
+    // 4b. Dry-run the Cedar bundle for the proposed registry state so an
+    // invalid schema fails fast — before any DB migration.
+    precheck_policy_bundle(&state, forge, &new_definition, false).await?;
+
     // 5. Compute diff and generate migration plan
     let plan = DiffEngine::diff(&old_schema, &new_definition);
 
@@ -625,13 +701,20 @@ pub async fn update_schema(
         .await;
     ask_forge(rx).await?.map_err(ForgeError::from)?;
 
-    // 8. Update registry cache via actor (fire-and-forget)
+    // 8. Update registry cache + recompile Cedar bundle.
+    let (tx, rx) = oneshot::channel();
     forge
         .send(InsertSchema {
             name: schema_name.as_str().to_string(),
             definition: new_definition.clone(),
+            reply: ReplyChannel::new(tx),
         })
         .await;
+    ask_forge(rx)
+        .await?
+        .map_err(|err| ForgeError::Internal {
+            message: format!("Cedar policy recompile failed during schema update: {err}"),
+        })?;
 
     // 9. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -695,7 +778,9 @@ pub async fn delete_schema(
         .await?
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
 
-    // 2. Remove from registry cache via actor
+    // 2. Remove from registry cache + recompile Cedar bundle. The actor
+    // reverts the registry mutation if the recompile fails so the running
+    // bundle and registry never drift.
     let (tx, rx) = oneshot::channel();
     forge
         .send(RemoveSchema {
@@ -703,7 +788,11 @@ pub async fn delete_schema(
             reply: ReplyChannel::new(tx),
         })
         .await;
-    let _ = ask_forge(rx).await?;
+    ask_forge(rx)
+        .await?
+        .map_err(|err| ForgeError::Internal {
+            message: format!("Cedar policy recompile failed during schema deletion: {err}"),
+        })?;
 
     // 3. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module

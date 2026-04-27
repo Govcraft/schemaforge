@@ -17,8 +17,8 @@ use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::SchemaDefinition;
 
 use crate::authz::adapters::{
-    action_entity_uid, build_principal_entities, build_resource_entity, principal_uid,
-    AdapterError,
+    action_entity_uid, build_principal_entities, build_resource_entity, build_resource_placeholder,
+    principal_uid, AdapterError,
 };
 use crate::authz::namespace::{
     field_read_action_uid, field_write_action_uid, ActionVerb, PRINCIPAL_TYPE,
@@ -107,13 +107,14 @@ pub fn authorize(
             // Schema-level checks (no specific resource yet — e.g. authorising
             // a `CreateX` request before the entity exists) need a placeholder
             // resource of the correct app-schema entity type so per-action
-            // `appliesTo` declarations match. Use a synthetic ID; policies
-            // that inspect resource attributes will simply not match.
-            let raw = format!("{}::\"_any\"", schema.name.as_str());
-            let uid = raw
-                .parse::<EntityUid>()
-                .map_err(|e: cedar_policy::ParseErrors| AuthzError::Request(e.to_string()))?;
-            let placeholder = cedar_policy::Entity::with_uid(uid.clone());
+            // `appliesTo` declarations match and the strict-mode entity
+            // validator accepts the entity. The placeholder is populated with
+            // synthetic default values for every required field — policies
+            // that inspect attributes will see the defaults; ownership / tenant
+            // checks are designed to fall through when the relevant fields
+            // aren't the principal's.
+            let placeholder = build_resource_placeholder(schema)?;
+            let uid = placeholder.uid().clone();
             (uid, vec![placeholder])
         }
     };
@@ -122,14 +123,12 @@ pub fn authorize(
     all_entities.extend(principal_entities);
     all_entities.extend(resource_entities);
 
-    // Note: skip runtime schema validation on the entities and request. The
-    // generator validates policies against a Cedar schema at compile time,
-    // and the policy_store's `schema` snapshot may be stale relative to
-    // dynamically-applied schemas (until T10's hot-reload lands). Skipping
-    // here means a request for an action the policy_store hasn't seen will
-    // simply not match any policy and Deny — secure default — instead of
-    // failing the request with a validation error.
-    let entities = Entities::from_entities(all_entities, None)
+    // The policy_store recompiles atomically on every InsertSchema /
+    // RemoveSchema, so its Cedar `schema` snapshot is always in sync with
+    // the live registry. Validate entities and the request against that
+    // snapshot — a request for an unknown action or a malformed entity
+    // surfaces an explicit error rather than silently default-denying.
+    let entities = Entities::from_entities(all_entities, Some(&snapshot.schema))
         .map_err(|e| AuthzError::Request(e.to_string()))?;
 
     let request = Request::new(
@@ -137,7 +136,7 @@ pub fn authorize(
         action,
         resource_uid,
         Context::empty(),
-        None,
+        Some(&snapshot.schema),
     )
     .map_err(|e| AuthzError::Request(e.to_string()))?;
 
@@ -212,17 +211,17 @@ pub fn authorize_field(
     let entities = Entities::from_entities(all_entities, Some(&snapshot.schema))
         .map_err(|e| AuthzError::Request(e.to_string()))?;
 
-    // Note: we deliberately skip schema-validating the Request here. Field
-    // actions are dynamically generated and may not appear in the schema for
-    // every (schema, field) pair — only for fields with @field_access. When
-    // the action is absent, Cedar falls through to default-deny via the
-    // explicit `forbid` rule the generator emits as a safety net.
+    // `filter_entity_fields` only calls `authorize_field` for fields whose
+    // schema declares a `@field_access` annotation, so the per-field action
+    // is guaranteed to appear in the Cedar schema. That makes strict request
+    // validation safe here — and surfaces real validation errors instead of
+    // silently default-denying when something has drifted.
     let request = Request::new(
         principal_uid_value,
         action,
         resource_uid,
         Context::empty(),
-        None,
+        Some(&snapshot.schema),
     )
     .map_err(|e| AuthzError::Request(e.to_string()))?;
 

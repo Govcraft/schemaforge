@@ -180,12 +180,19 @@ async fn setup(
         .expect("StoreSchemaMetadata channel dropped")
         .expect("StoreSchemaMetadata failed");
 
+    let (tx, rx) = oneshot::channel();
     forge
         .send(InsertSchema {
             name: schema.name.as_str().to_string(),
             definition: schema,
+            reply: ReplyChannel::new(tx),
         })
         .await;
+    tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .expect("InsertSchema timeout")
+        .expect("InsertSchema channel dropped")
+        .expect("InsertSchema policy recompile failed");
 
     service.state().clone()
 }
@@ -714,12 +721,19 @@ async fn after_change_writeback_to_trigger_entity_is_eventually_consistent() {
         .expect("ApplyMigration failed");
 
     // Insert the schema into the registry too (re-init wiped it).
+    let (itx, irx) = oneshot::channel();
     forge
         .send(InsertSchema {
             name: schema_def.name.as_str().to_string(),
             definition: schema_def.clone(),
+            reply: ReplyChannel::new(itx),
         })
         .await;
+    tokio::time::timeout(Duration::from_secs(5), irx)
+        .await
+        .expect("InsertSchema timeout")
+        .expect("InsertSchema channel dropped")
+        .expect("InsertSchema policy recompile failed");
 
     // Drive a POST through the router. The `after_change` hook will
     // synchronously write back via the WriteBackDispatcher; we then
