@@ -67,7 +67,7 @@ pub async fn run(
     // 4. Connect to database (try remote, fail explicitly for production)
     let connected = connect_with_retries(&db_params, output).await?;
     let backend_arc = connected.backend.clone();
-    let auth_store = connected.auth_store.clone();
+    let entity_store = connected.entity_store.clone();
 
     // 5. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
     let init_data =
@@ -127,7 +127,7 @@ pub async fn run(
 
     let init_data = InitForgeData {
         registry,
-        backend: backend_arc,
+        backend: backend_arc.clone(),
         tenant_config,
         record_access_policy: None,
         hook_dispatcher: None,
@@ -135,15 +135,22 @@ pub async fn run(
         policy_store: init_data.policy_store,
     };
 
+    // Build the canonical AuthStore from the User entity table. This
+    // is the production identity-store path: every user-mgmt mutation
+    // flows through the User schema, with `password_hash` locked behind
+    // `@hidden` so it never leaves the storage boundary. The legacy
+    // `_forge_users` table is no longer touched.
+    let auth_store = build_entity_auth_store(&init_data, entity_store.clone())?;
+
     // 6. Warn about --watch
     if args.watch {
         output.warn("--watch is not yet implemented; schemas will not auto-reload.");
     }
 
-    // 7. Build SchemaForgeExtension solely to bootstrap the initial admin user
-    //    and (indirectly) seed demo users via the auth store. The extension no
-    //    longer mounts any routes — the JSON forge router is mounted directly
-    //    by `build_versioned_routes()` below.
+    // 7. Bootstrap the initial admin user, if requested. The
+    //    SchemaForgeExtension builder is the legacy seam for this — it
+    //    no longer mounts any routes; the JSON forge router is mounted
+    //    directly by `build_versioned_routes()` below.
     if args.admin_password.is_some() {
         let builder = SchemaForgeExtension::builder()
             .with_backend_arc(init_data.backend.clone())
@@ -337,14 +344,18 @@ async fn connect_with_retries(
     })
 }
 
-/// Connected backend: the type-erased backend plus an optional auth store.
+/// Connected backend: the type-erased schema/entity backend plus the
+/// trait-object-safe entity store handle that powers the
+/// [`schema_forge_backend::EntityAuthStore`].
 ///
-/// Both are produced from the same concrete backend at connection time, before
-/// the concrete type is erased. This avoids needing the concrete type later
-/// when building `SchemaForgeExtension` for admin/widget UI routes.
+/// Both handles are produced from the same concrete backend at connection
+/// time, before the concrete type is erased. The legacy
+/// `schema_forge_acton::DynAuthStore` is no longer derived here — the
+/// canonical auth store is built later from the User entity table once
+/// the policy_store's role-rank table is in scope.
 struct ConnectedBackend {
     backend: Arc<dyn DynForgeBackend>,
-    auth_store: Arc<dyn schema_forge_acton::DynAuthStore>,
+    entity_store: Arc<dyn schema_forge_backend::DynEntityStore>,
 }
 
 /// Attempt a single connection to the configured backend.
@@ -366,7 +377,7 @@ async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError
             let backend = Arc::new(backend);
             Ok(ConnectedBackend {
                 backend: backend.clone(),
-                auth_store: backend,
+                entity_store: backend,
             })
         }
         #[cfg(feature = "postgres")]
@@ -379,7 +390,7 @@ async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError
             let backend = Arc::new(backend);
             Ok(ConnectedBackend {
                 backend: backend.clone(),
-                auth_store: backend,
+                entity_store: backend,
             })
         }
         #[allow(unreachable_patterns)]
@@ -387,6 +398,45 @@ async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError
             message: format!("backend '{}' is not enabled in this build", other.url()),
         }),
     }
+}
+
+/// Build the canonical auth store for the running server.
+///
+/// Returns an [`EntityAuthStore`] wrapped behind the acton-service
+/// `DynAuthStore` trait so it slots straight into the existing
+/// extension and login layers. The store reads and writes the `User`
+/// entity table, with `password_hash` locked behind `@hidden`.
+fn build_entity_auth_store(
+    init_data: &InitForgeData,
+    entity_store: Arc<dyn schema_forge_backend::DynEntityStore>,
+) -> Result<Arc<dyn schema_forge_acton::DynAuthStore>, CliError> {
+    let user_schema = init_data
+        .registry
+        .get("User")
+        .cloned()
+        .ok_or_else(|| CliError::Server {
+            message:
+                "User system schema is not registered; cannot build EntityAuthStore. \
+                 Confirm `seed_system_schemas_into_map` ran during InitForgeData::build."
+                    .into(),
+        })?;
+
+    let policy_store = init_data
+        .policy_store
+        .clone()
+        .ok_or_else(|| CliError::Server {
+            message: "policy_store missing from InitForgeData; cannot build EntityAuthStore"
+                .into(),
+        })?;
+
+    let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =
+        Arc::new(move |role: &str| policy_store.current().role_ranks.get(role));
+
+    Ok(Arc::new(schema_forge_backend::EntityAuthStore::new(
+        entity_store,
+        user_schema,
+        resolver,
+    )))
 }
 
 /// Build a [`PasetoGenerator`] from the loaded acton-service config.
@@ -488,9 +538,14 @@ mod tests {
     #[test]
     fn build_versioned_routes_is_callable() {
         // Compile-time verification: builds routes without an extension.
-        // A dummy PasetoGenerator is constructed from a random 32-byte symmetric
-        // key so we don't need a key file on disk.
+        // A dummy PasetoGenerator is constructed from a fixed 32-byte
+        // symmetric key so we don't need a key file on disk.
         use acton_service::auth::config::TokenGenerationConfig;
+        use schema_forge_backend::EntityAuthStore;
+        use schema_forge_core::types::{
+            FieldAnnotation, FieldDefinition, FieldModifier, FieldName, FieldType,
+            IntegerConstraints, SchemaDefinition, SchemaId, SchemaName, TextConstraints,
+        };
         use schema_forge_surrealdb::SurrealBackend;
 
         let key = [0u8; 32];
@@ -499,15 +554,63 @@ mod tests {
             TokenGenerationConfig::default(),
         ));
 
-        // We need an AuthStore; reuse the in-memory SurrealBackend builder via
-        // a blocking runtime because this helper test is synchronous.
         let rt = tokio::runtime::Runtime::new().unwrap();
         let backend = rt
             .block_on(SurrealBackend::connect_with_auth(
                 "mem://", "test", "test", None, None,
             ))
             .unwrap();
-        let auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = Arc::new(backend);
+        let backend = Arc::new(backend);
+        let entity_store: Arc<dyn schema_forge_backend::DynEntityStore> = backend.clone();
+
+        // Minimal User schema mirroring the production system schema's
+        // shape so the auth store has a valid SchemaDefinition handle.
+        let user_schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("User").unwrap(),
+            vec![
+                FieldDefinition::with_annotations(
+                    FieldName::new("email").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                    vec![FieldModifier::Required],
+                    vec![],
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new("display_name").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                    vec![FieldModifier::Required],
+                    vec![],
+                ),
+                FieldDefinition::new(
+                    FieldName::new("roles").unwrap(),
+                    FieldType::Array(Box::new(FieldType::Text(TextConstraints::unconstrained()))),
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new("role_rank").unwrap(),
+                    FieldType::Integer(IntegerConstraints::default()),
+                    vec![FieldModifier::Required],
+                    vec![],
+                ),
+                FieldDefinition::new(
+                    FieldName::new("active").unwrap(),
+                    FieldType::Boolean,
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new("password_hash").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                    vec![],
+                    vec![FieldAnnotation::Hidden],
+                ),
+            ],
+            Vec::new(),
+        )
+        .unwrap();
+
+        let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =
+            Arc::new(|_role: &str| None);
+        let auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = Arc::new(
+            EntityAuthStore::new(entity_store, user_schema, resolver),
+        );
 
         let _routes = build_versioned_routes(auth_store, generator);
     }

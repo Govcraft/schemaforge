@@ -10,10 +10,18 @@
 //! no-ops once a single user (admin or otherwise) exists. That keeps a
 //! restart of a Kubernetes init container from creating duplicate
 //! admins or rotating credentials silently.
+//!
+//! Identity store: every user lives in the `User` entity table managed
+//! by [`schema_forge_backend::EntityAuthStore`]. The bootstrap path
+//! mirrors the canonical `serve` wiring — schemas are loaded, system
+//! schemas seeded, the policy store compiled, then the auth store is
+//! built on top of the live `User` schema definition. This keeps the
+//! out-of-band bootstrap and the running server using the exact same
+//! identity backend.
 
 use std::sync::Arc;
 
-use schema_forge_acton::DynAuthStore;
+use schema_forge_acton::{DynAuthStore, DynForgeBackend, SchemaForgeExtension};
 
 use crate::cli::{BootstrapAdminArgs, GlobalOpts};
 use crate::config::{load_svc_config, resolve_db_params, DbParams};
@@ -37,7 +45,20 @@ pub async fn run(
     let db_params = resolve_db_params(&svc_config)?;
 
     output.status(&format!("Connecting to backend at {}…", db_params.url()));
-    let auth_store = connect_auth_store(&db_params).await?;
+    let connected = connect(&db_params).await?;
+
+    output.status("Loading schemas and policy store…");
+    let init_data = SchemaForgeExtension::build_init(
+        connected.backend.clone(),
+        None,
+        &svc_config.custom.schema_forge.storage,
+    )
+    .await
+    .map_err(|e| CliError::Server {
+        message: format!("failed to build init data: {e}"),
+    })?;
+
+    let auth_store = build_auth_store(&init_data, connected.entity_store)?;
 
     schema_forge_acton::shared_auth::bootstrap_admin_with_display_name(
         auth_store.as_ref(),
@@ -48,9 +69,6 @@ pub async fn run(
     .await
     .map_err(|e| CliError::Server { message: e })?;
 
-    // The bootstrap fn returns Ok when the store already has users — make
-    // the result observable so operators know whether the seed actually
-    // landed or was a no-op.
     let count = auth_store
         .count_users()
         .await
@@ -73,12 +91,15 @@ pub async fn run(
     Ok(())
 }
 
-/// Connect to the configured backend and return its auth store handle.
-///
-/// Mirrors the connect logic in `serve::connect_once` but without the
-/// retry / backend-handle plumbing — bootstrap-admin only needs the
-/// auth store interface.
-async fn connect_auth_store(db_params: &DbParams) -> Result<Arc<dyn DynAuthStore>, CliError> {
+/// Connect-and-erase result: a [`DynForgeBackend`] for schema/entity
+/// operations and the [`DynEntityStore`] handle the auth store needs.
+struct ConnectedHandles {
+    backend: Arc<dyn DynForgeBackend>,
+    entity_store: Arc<dyn schema_forge_backend::DynEntityStore>,
+}
+
+/// Connect to the configured backend.
+async fn connect(db_params: &DbParams) -> Result<ConnectedHandles, CliError> {
     match db_params {
         #[cfg(feature = "surrealdb")]
         DbParams::Surrealdb(p) => {
@@ -93,7 +114,11 @@ async fn connect_auth_store(db_params: &DbParams) -> Result<Arc<dyn DynAuthStore
             .map_err(|e| CliError::Server {
                 message: format!("SurrealDB connection failed: {e}"),
             })?;
-            Ok(Arc::new(backend))
+            let backend = Arc::new(backend);
+            Ok(ConnectedHandles {
+                backend: backend.clone(),
+                entity_store: backend,
+            })
         }
         #[cfg(feature = "postgres")]
         DbParams::Postgres(p) => {
@@ -102,11 +127,45 @@ async fn connect_auth_store(db_params: &DbParams) -> Result<Arc<dyn DynAuthStore
                 .map_err(|e| CliError::Server {
                     message: format!("PostgreSQL connection failed: {e}"),
                 })?;
-            Ok(Arc::new(backend))
+            let backend = Arc::new(backend);
+            Ok(ConnectedHandles {
+                backend: backend.clone(),
+                entity_store: backend,
+            })
         }
         #[allow(unreachable_patterns)]
         other => Err(CliError::Config {
             message: format!("backend '{}' is not enabled in this build", other.url()),
         }),
     }
+}
+
+fn build_auth_store(
+    init_data: &schema_forge_acton::InitForgeData,
+    entity_store: Arc<dyn schema_forge_backend::DynEntityStore>,
+) -> Result<Arc<dyn DynAuthStore>, CliError> {
+    let user_schema = init_data
+        .registry
+        .get("User")
+        .cloned()
+        .ok_or_else(|| CliError::Server {
+            message: "User system schema is not registered; cannot build EntityAuthStore".into(),
+        })?;
+
+    let policy_store = init_data
+        .policy_store
+        .clone()
+        .ok_or_else(|| CliError::Server {
+            message: "policy_store missing from InitForgeData; cannot build EntityAuthStore"
+                .into(),
+        })?;
+
+    let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =
+        Arc::new(move |role: &str| policy_store.current().role_ranks.get(role));
+
+    Ok(Arc::new(schema_forge_backend::EntityAuthStore::new(
+        entity_store,
+        user_schema,
+        resolver,
+    )))
 }

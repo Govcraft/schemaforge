@@ -23,26 +23,56 @@ use axum::{Extension, Router};
 use http_body_util::BodyExt;
 use schema_forge_acton::routes::auth_routes;
 use schema_forge_acton::state::DynAuthStore;
-use schema_forge_backend::AuthStore;
+use schema_forge_backend::{AuthStore, EntityAuthStore};
+use schema_forge_core::types::SchemaDefinition;
 use schema_forge_surrealdb::SurrealBackend;
 use tempfile::NamedTempFile;
 use tower::ServiceExt;
 
 /// Seed an in-memory SurrealBackend with one known-good admin user.
+///
+/// Uses the production [`EntityAuthStore`] path so the test exercises
+/// the real identity surface — `User` entity table, `password_hash`
+/// behind `@hidden`. The schema is migrated to the in-memory backend
+/// so entity create/get queries work.
 async fn seeded_auth_store() -> Arc<dyn DynAuthStore> {
+    use schema_forge_backend::traits::SchemaBackend;
+    use schema_forge_core::migration::DiffEngine;
+
     let backend = SurrealBackend::connect_memory("test", "auth_login_test")
         .await
         .expect("connect in-memory surreal");
-    AuthStore::create_user(
-        &backend,
-        "admin",
-        "dev",
-        &["admin".to_string()],
-        "Administrator",
-    )
-    .await
-    .expect("seed admin user");
-    Arc::new(backend)
+
+    // Apply the system User schema and register its metadata so the
+    // SchemaId → table mapping exists.
+    let user_schema = parse_user_schema();
+    let plan = DiffEngine::create_new(&user_schema);
+    backend
+        .apply_migration(&user_schema.name, &plan.steps)
+        .await
+        .expect("apply User migration");
+    backend
+        .store_schema_metadata(&user_schema)
+        .await
+        .expect("store User schema metadata");
+
+    let backend = Arc::new(backend);
+    let entity_store: Arc<dyn schema_forge_backend::DynEntityStore> = backend.clone();
+
+    let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =
+        Arc::new(|_role: &str| None);
+    let store = EntityAuthStore::new(entity_store, user_schema, resolver);
+    AuthStore::create_user(&store, "admin", "dev", &["admin".to_string()], "Administrator")
+        .await
+        .expect("seed admin user");
+    Arc::new(store)
+}
+
+/// Parse the system USER_SCHEMA DSL into a `SchemaDefinition` for tests.
+fn parse_user_schema() -> SchemaDefinition {
+    let mut schemas = schema_forge_dsl::parse(schema_forge_core::system_schemas::USER_SCHEMA)
+        .expect("USER_SCHEMA must parse");
+    schemas.pop().expect("USER_SCHEMA must yield one schema")
 }
 
 /// Write a random 32-byte V4.local key to a NamedTempFile and build a

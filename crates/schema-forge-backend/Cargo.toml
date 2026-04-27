@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 acton-service = { version = "0.23", default-features = false }
-argon2 = "0.5.3"
+argon2 = { version = "0.5", features = ["std"] }
 schema-forge-core = { path = "../schema-forge-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
