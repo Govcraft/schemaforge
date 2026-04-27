@@ -202,6 +202,16 @@ pub fn build_resource_entity(
 
     let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
     for (field_name, value) in &entity.fields {
+        // `@hidden` fields are never declared as Cedar attributes, so
+        // including them here would fail strict-mode entity validation.
+        // The schema's field definition is the canonical source of the
+        // hidden flag — entities loaded from storage may still carry the
+        // value, but it must not leak into authorization context.
+        if let Some(field_def) = schema.field(field_name) {
+            if field_def.is_hidden() {
+                continue;
+            }
+        }
         if let Some(expr) = dynamic_to_cedar(value) {
             attrs.insert(field_name.clone(), expr);
         }
@@ -249,7 +259,10 @@ pub fn build_resource_placeholder(
 
     let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
     for field in &schema.fields {
-        if !field.is_required() {
+        if !field.is_required() || field.is_hidden() {
+            // Hidden fields are not declared in the Cedar schema, so the
+            // strict-mode entity validator would reject a placeholder that
+            // includes them.
             continue;
         }
         if let Some(expr) = default_cedar_expr(&field.field_type) {

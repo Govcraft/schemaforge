@@ -511,6 +511,17 @@ pub enum FieldAnnotation {
     /// appears in the generated list view and, for `primary`, marks it
     /// as the headline cell rendered with display styling.
     List { hint: ListHint },
+    /// `@hidden` -- marks the field as out-of-band: it must not appear in
+    /// any API response (REST, GraphQL, list, query, get) and must not be
+    /// accepted in any client-supplied request body. Consumers that legitimately
+    /// need the value (e.g. an `AuthStore` reading a `password_hash`) bypass
+    /// the API layer and read the entity directly from the backend.
+    ///
+    /// Cedar policy generation skips `@hidden` fields entirely so they never
+    /// surface as resource attributes to policy authors either. Combined with
+    /// the routing-layer strip, this makes the field invisible to every
+    /// authenticated principal short of the storage layer itself.
+    Hidden,
 }
 
 impl FieldAnnotation {
@@ -524,6 +535,7 @@ impl FieldAnnotation {
             Self::Format { .. } => "format",
             Self::EnumColors { .. } => "enum_colors",
             Self::List { .. } => "list",
+            Self::Hidden => "hidden",
         }
     }
 }
@@ -551,6 +563,7 @@ impl fmt::Display for FieldAnnotation {
                 write!(f, "@enum_colors({})", parts.join(", "))
             }
             Self::List { hint } => write!(f, "@list({hint})"),
+            Self::Hidden => write!(f, "@hidden"),
         }
     }
 }

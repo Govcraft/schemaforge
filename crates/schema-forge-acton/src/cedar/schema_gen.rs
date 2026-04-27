@@ -94,6 +94,12 @@ fn write_schema_entity(out: &mut String, schema: &SchemaDefinition) -> Result<()
     writeln!(out, "    \"_tenant\"?: Forge::Tenant,")?;
 
     for field in &schema.fields {
+        // `@hidden` fields never surface as Cedar attributes. They live only
+        // in the storage layer; the API and the policy engine must remain
+        // unaware of them. (See `FieldAnnotation::Hidden` for the contract.)
+        if field.is_hidden() {
+            continue;
+        }
         let cedar_type = match cedar_type_for(&field.field_type) {
             Some(t) => t,
             None => continue,
@@ -134,6 +140,11 @@ fn write_per_field_actions(
     let name = schema.name.as_str();
     let mut field_actions: BTreeSet<String> = BTreeSet::new();
     for field in &schema.fields {
+        if field.is_hidden() {
+            // @hidden fields are invisible to Cedar — no actions, no
+            // attributes. Internal callers read them out-of-band.
+            continue;
+        }
         if !field
             .annotations
             .iter()

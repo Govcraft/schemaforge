@@ -798,9 +798,42 @@ fn coerce_dynamic_value_with_type_hint(
     }
 }
 
-/// Convert an `Entity` to an `EntityResponse`.
-fn entity_to_response(entity: &Entity) -> EntityResponse {
-    crate::conversions::entity_to_response(entity)
+/// Convert an `Entity` to an `EntityResponse`, stripping `@hidden` fields.
+fn entity_to_response(entity: &Entity, schema: &SchemaDefinition) -> EntityResponse {
+    crate::conversions::entity_to_response(entity, schema)
+}
+
+/// Reject any client-supplied request body that names a `@hidden` field.
+///
+/// `@hidden` fields are out-of-band: they're populated by privileged
+/// internal consumers (like `EntityAuthStore` writing a `password_hash`)
+/// and must never accept input from a user-facing endpoint. This guard
+/// lives at the request-deserialization boundary so `create`, `update`,
+/// and `patch` all share the same enforcement.
+fn reject_hidden_fields_in_body(
+    schema: &SchemaDefinition,
+    body_fields: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), ForgeError> {
+    let offenders: Vec<String> = body_fields
+        .keys()
+        .filter(|name| {
+            schema
+                .field(name)
+                .map(|f| f.is_hidden())
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    if offenders.is_empty() {
+        Ok(())
+    } else {
+        Err(ForgeError::ValidationFailed {
+            details: vec![format!(
+                "fields cannot be set via the API (marked @hidden): {}",
+                offenders.join(", ")
+            )],
+        })
+    }
 }
 
 /// Convert a `DynamicValue` to a JSON value.
@@ -1053,7 +1086,7 @@ async fn execute_entity_query(
             if let Some(proj) = projection {
                 e.fields.retain(|k, _| proj.contains(k));
             }
-            let mut response = entity_to_response(&e);
+            let mut response = entity_to_response(&e, schema_def);
             apply_relation_displays(&mut response, schema_def, &e, &display_map);
             response
         })
@@ -1562,6 +1595,9 @@ pub async fn create_entity(
         return Err(e);
     }
 
+    // Reject any client-supplied @hidden fields up front.
+    reject_hidden_fields_in_body(&schema_def, &body.fields)?;
+
     // Convert JSON fields to DynamicValue fields
     let mut fields = json_to_entity_fields(&schema_def, &body.fields)
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
@@ -1685,7 +1721,7 @@ pub async fn create_entity(
     );
     dispatch_webhook(&state, &schema_def, webhook_event, "created").await;
 
-    Ok((StatusCode::CREATED, Json(entity_to_response(&created))))
+    Ok((StatusCode::CREATED, Json(entity_to_response(&created, &schema_def))))
 }
 
 /// GET /schemas/{schema}/entities -- List/query entities.
@@ -2127,7 +2163,7 @@ pub async fn get_entity(
     .await?;
     let [entity] = single;
 
-    let mut response = entity_to_response(&entity);
+    let mut response = entity_to_response(&entity, &schema_def);
 
     // Resolve relation display fields unless the caller opted out with
     // `?resolve=false`. Reuses the same batched IN-query path the list
@@ -2228,6 +2264,9 @@ pub async fn update_entity(
             });
         }
     }
+
+    // Reject any client-supplied @hidden fields up front.
+    reject_hidden_fields_in_body(&schema_def, &body.fields)?;
 
     // Convert JSON fields
     let mut fields = json_to_entity_fields(&schema_def, &body.fields)
@@ -2342,7 +2381,7 @@ pub async fn update_entity(
     );
     dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
 
-    Ok(Json(entity_to_response(&updated)))
+    Ok(Json(entity_to_response(&updated, &schema_def)))
 }
 
 /// PATCH /schemas/{schema}/entities/{id} -- Partially update entity.
@@ -2434,6 +2473,9 @@ pub async fn patch_entity(
             });
         }
     }
+
+    // Reject any client-supplied @hidden fields up front.
+    reject_hidden_fields_in_body(&schema_def, &body.fields)?;
 
     // Convert only the fields supplied by the client. Merge mode skips
     // the required-field check so partial payloads are valid.
@@ -2576,7 +2618,7 @@ pub async fn patch_entity(
     );
     dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
 
-    Ok(Json(entity_to_response(&updated)))
+    Ok(Json(entity_to_response(&updated, &schema_def)))
 }
 
 /// DELETE /schemas/{schema}/entities/{id} -- Delete entity.
@@ -2931,7 +2973,7 @@ mod tests {
             DynamicValue::Text("entity_01abcd".into()),
         );
         let entity = Entity::new(schema.name.clone(), fields);
-        let mut response = entity_to_response(&entity);
+        let mut response = entity_to_response(&entity, &schema);
 
         let mut id_to_display = HashMap::new();
         id_to_display.insert(
@@ -2977,7 +3019,7 @@ mod tests {
             DynamicValue::RefArray(vec![id_a.clone(), id_b.clone()]),
         );
         let entity = Entity::new(schema.name.clone(), fields);
-        let mut response = entity_to_response(&entity);
+        let mut response = entity_to_response(&entity, &schema);
 
         let mut id_to_display = HashMap::new();
         id_to_display.insert(id_a.as_str().to_string(), "Alice".to_string());
@@ -2996,6 +3038,7 @@ mod tests {
 
     #[test]
     fn entity_to_response_roundtrip() {
+        let schema = test_contact_schema();
         let entity = Entity::new(
             SchemaName::new("Contact").unwrap(),
             BTreeMap::from([
@@ -3003,7 +3046,7 @@ mod tests {
                 ("age".to_string(), DynamicValue::Integer(30)),
             ]),
         );
-        let response = entity_to_response(&entity);
+        let response = entity_to_response(&entity, &schema);
         assert_eq!(response.schema, "Contact");
         assert!(response.id.starts_with("contact_"));
         assert_eq!(
@@ -3011,6 +3054,36 @@ mod tests {
             Some(&serde_json::json!("Alice"))
         );
         assert_eq!(response.fields.get("age"), Some(&serde_json::json!(30)));
+    }
+
+    /// Test helper: a Contact schema with `name` (text) and `age` (integer).
+    /// Avoids a per-test re-declaration when the test only needs a Contact
+    /// shape to satisfy `entity_to_response`'s schema-aware filtering.
+    fn test_contact_schema() -> SchemaDefinition {
+        use schema_forge_core::types::{
+            FieldDefinition, FieldName, FieldType, IntegerConstraints, SchemaId, SchemaName,
+            TextConstraints,
+        };
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Contact").unwrap(),
+            vec![
+                FieldDefinition::new(
+                    FieldName::new("name").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                ),
+                FieldDefinition::new(
+                    FieldName::new("age").unwrap(),
+                    FieldType::Integer(IntegerConstraints::default()),
+                ),
+                FieldDefinition::new(
+                    FieldName::new("active").unwrap(),
+                    FieldType::Boolean,
+                ),
+            ],
+            Vec::new(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -3243,6 +3316,7 @@ mod tests {
 
     #[test]
     fn projection_filters_entity_fields() {
+        let schema = test_contact_schema();
         let mut entity = Entity::new(
             SchemaName::new("Contact").unwrap(),
             BTreeMap::from([
@@ -3253,7 +3327,7 @@ mod tests {
         );
         let proj: HashSet<String> = ["name".to_string()].into_iter().collect();
         entity.fields.retain(|k, _| proj.contains(k));
-        let response = entity_to_response(&entity);
+        let response = entity_to_response(&entity, &schema);
         assert_eq!(response.fields.len(), 1);
         assert_eq!(
             response.fields.get("name"),
@@ -3265,6 +3339,7 @@ mod tests {
 
     #[test]
     fn projection_none_returns_all_fields() {
+        let schema = test_contact_schema();
         let entity = Entity::new(
             SchemaName::new("Contact").unwrap(),
             BTreeMap::from([
@@ -3272,7 +3347,7 @@ mod tests {
                 ("age".to_string(), DynamicValue::Integer(30)),
             ]),
         );
-        let response = entity_to_response(&entity);
+        let response = entity_to_response(&entity, &schema);
         assert_eq!(response.fields.len(), 2);
     }
 

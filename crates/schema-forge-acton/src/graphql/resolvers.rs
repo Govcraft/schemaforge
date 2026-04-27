@@ -23,6 +23,37 @@ pub struct EntityFields {
     pub fields: BTreeMap<String, DynamicValue>,
 }
 
+/// Reject any GraphQL input that names a `@hidden` schema field.
+///
+/// Mirrors the REST-side `reject_hidden_fields_in_body` guard so a
+/// password_hash (or any other operator-marked secret) can't be supplied
+/// through the GraphQL mutation surface either.
+fn reject_hidden_input(
+    schema_def: &SchemaDefinition,
+    input: &async_graphql::indexmap::IndexMap<async_graphql::Name, GqlValue>,
+) -> Result<(), ForgeError> {
+    let offenders: Vec<String> = input
+        .keys()
+        .filter_map(|key| {
+            let name = key.as_str();
+            schema_def
+                .field(name)
+                .filter(|f| f.is_hidden())
+                .map(|_| name.to_string())
+        })
+        .collect();
+    if offenders.is_empty() {
+        Ok(())
+    } else {
+        Err(ForgeError::ValidationFailed {
+            details: vec![format!(
+                "fields cannot be set via the GraphQL API (marked @hidden): {}",
+                offenders.join(", ")
+            )],
+        })
+    }
+}
+
 /// Convert ForgeError to async_graphql::Error with extension codes.
 pub fn forge_error_to_gql(err: ForgeError) -> async_graphql::Error {
     let code = match &err {
@@ -79,6 +110,7 @@ pub async fn resolve_get_entity<'a>(
         }
     }
 
+    entity.strip_hidden(schema_def);
     filter_entity_fields(
         &gql_ctx.state.policy_store,
         &mut entity,
@@ -184,6 +216,9 @@ pub async fn resolve_list_entities<'a>(
     let items: Vec<EntityFields> = visible_entities
         .into_iter()
         .map(|mut entity| {
+            // Strip @hidden fields before any further processing — these
+            // must never reach a GraphQL response, even at debug.
+            entity.strip_hidden(schema_def);
             filter_entity_fields(
                 &gql_ctx.state.policy_store,
                 &mut entity,
@@ -231,7 +266,10 @@ pub async fn resolve_create_entity<'a>(
     let input_accessor = ctx.args.try_get("input")?;
     let input_obj = input_accessor.object()?;
 
-    let mut fields = gql_input_to_entity_fields(input_obj.as_index_map(), schema_def)
+    let input_map = input_obj.as_index_map();
+    reject_hidden_input(schema_def, input_map).map_err(forge_error_to_gql)?;
+
+    let mut fields = gql_input_to_entity_fields(input_map, schema_def)
         .map_err(|errors| forge_error_to_gql(ForgeError::ValidationFailed { details: errors }))?;
 
     // Inject tenant
@@ -259,6 +297,7 @@ pub async fn resolve_create_entity<'a>(
         .await
         .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
 
+    created.strip_hidden(schema_def);
     filter_entity_fields(
         &gql_ctx.state.policy_store,
         &mut created,
@@ -312,7 +351,10 @@ pub async fn resolve_update_entity<'a>(
     let input_accessor = ctx.args.try_get("input")?;
     let input_obj = input_accessor.object()?;
 
-    let fields = gql_input_to_partial_fields(input_obj.as_index_map(), schema_def)
+    let input_map = input_obj.as_index_map();
+    reject_hidden_input(schema_def, input_map).map_err(forge_error_to_gql)?;
+
+    let fields = gql_input_to_partial_fields(input_map, schema_def)
         .map_err(|errors| forge_error_to_gql(ForgeError::ValidationFailed { details: errors }))?;
 
     let mut entity = Entity::with_id(entity_id, schema, fields);
@@ -331,6 +373,7 @@ pub async fn resolve_update_entity<'a>(
         .await
         .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
 
+    updated.strip_hidden(schema_def);
     filter_entity_fields(
         &gql_ctx.state.policy_store,
         &mut updated,
@@ -480,6 +523,7 @@ pub async fn resolve_relation_many<'a>(
     let mut results = Vec::new();
     for ref_id in ref_ids {
         if let Ok(mut entity) = gql_ctx.state.backend.get(&target_schema, &ref_id).await {
+            entity.strip_hidden(target_schema_def);
             filter_entity_fields(
                 &gql_ctx.state.policy_store,
                 &mut entity,

@@ -491,6 +491,7 @@ impl Parser {
         let name_tok = self.expect_ident("field annotation name")?;
         match name_tok.text.as_str() {
             "owner" => Ok(FieldAnnotation::Owner),
+            "hidden" => Ok(FieldAnnotation::Hidden),
             "field_access" => {
                 self.expect(&Token::LParen)?;
                 let lists = self.parse_named_string_lists()?;

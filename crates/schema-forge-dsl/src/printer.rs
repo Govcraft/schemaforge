@@ -368,6 +368,7 @@ fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
             output.push_str(hint.as_str());
             output.push(')');
         }
+        FieldAnnotation::Hidden => output.push_str("@hidden"),
         _ => {
             output.push_str("@unknown_field_annotation");
         }

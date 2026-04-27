@@ -45,6 +45,26 @@ impl Entity {
     pub fn field_count(&self) -> usize {
         self.fields.len()
     }
+
+    /// Drop every field whose schema definition carries the `@hidden`
+    /// annotation.
+    ///
+    /// Called by every API surface (REST, GraphQL) before handing an entity
+    /// to the response layer so a `password_hash` or other secrets-only
+    /// field can never escape the storage boundary. Internal consumers
+    /// (e.g., `EntityAuthStore`) read the raw entity directly from the
+    /// backend and must not pass through this filter.
+    pub fn strip_hidden(&mut self, schema: &schema_forge_core::types::SchemaDefinition) {
+        self.fields
+            .retain(|name, _| match schema.field(name) {
+                Some(field) => !field.is_hidden(),
+                // Unknown field name — preserve. (Schema drift is reported
+                // elsewhere; the safe default for an *unknown* field is to
+                // pass through, since the worst case is that a stale field
+                // ends up in the response, not a known-secret leakage.)
+                None => true,
+            });
+    }
 }
 
 impl std::fmt::Display for Entity {

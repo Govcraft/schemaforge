@@ -1,6 +1,6 @@
 use chrono::SecondsFormat;
 use schema_forge_backend::entity::Entity;
-use schema_forge_core::types::DynamicValue;
+use schema_forge_core::types::{DynamicValue, SchemaDefinition};
 
 use crate::routes::entities::EntityResponse;
 
@@ -43,10 +43,24 @@ pub fn dynamic_value_to_json(value: &DynamicValue) -> serde_json::Value {
     }
 }
 
-/// Convert an `Entity` to an `EntityResponse`.
-pub fn entity_to_response(entity: &Entity) -> EntityResponse {
+/// Convert an `Entity` to an `EntityResponse`, omitting any field that
+/// the schema marks `@hidden`.
+///
+/// `@hidden` is the language-level contract for "never let this leave
+/// the storage layer" — it covers `password_hash` on the system `User`
+/// schema and any other field operators add the annotation to. Stripping
+/// here means every API surface that runs through `entity_to_response`
+/// (REST, GraphQL list/get/query/create/update/patch) is automatically
+/// safe; consumers that need the raw value must read the entity
+/// out-of-band.
+pub fn entity_to_response(entity: &Entity, schema: &SchemaDefinition) -> EntityResponse {
     let mut fields = serde_json::Map::new();
     for (key, value) in &entity.fields {
+        if let Some(field_def) = schema.field(key) {
+            if field_def.is_hidden() {
+                continue;
+            }
+        }
         fields.insert(key.clone(), dynamic_value_to_json(value));
     }
 

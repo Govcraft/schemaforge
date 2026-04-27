@@ -28,6 +28,7 @@ schema User {
     roles:          text[]
     role_rank:      integer required
     active:         boolean default(true)
+    password_hash:  text(max: 512)
     last_login:     datetime
     metadata:       json
 }

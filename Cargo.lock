@@ -6319,6 +6319,7 @@ name = "schema-forge-backend"
 version = "0.7.0"
 dependencies = [
  "acton-service",
+ "argon2",
  "schema-forge-core",
  "serde",
  "serde_json",

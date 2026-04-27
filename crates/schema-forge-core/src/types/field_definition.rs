@@ -119,6 +119,18 @@ impl FieldDefinition {
             .find(|a| matches!(a, FieldAnnotation::FieldAccess { .. }))
     }
 
+    /// Returns `true` when the field carries the `@hidden` annotation.
+    ///
+    /// `@hidden` fields must not appear in any API response (REST, GraphQL,
+    /// list, query, get) and must not be accepted in any client-supplied
+    /// request body. Internal consumers (e.g., `EntityAuthStore` reading a
+    /// `password_hash`) bypass the API layer and read the entity directly.
+    pub fn is_hidden(&self) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| matches!(a, FieldAnnotation::Hidden))
+    }
+
     /// Returns the widget hint string if this field has a `@widget` annotation.
     ///
     /// Prefer [`FieldDefinition::widget_type_hint`] for new code that needs
