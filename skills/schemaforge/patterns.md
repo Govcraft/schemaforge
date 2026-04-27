@@ -43,9 +43,11 @@ schema Team {
 
 ## Access Control Pattern
 
-Layer schema-level and field-level access for defense in depth.
+Layer schema-level and field-level access for defense in depth. Every annotation in this section lowers into a **Cedar policy** and is enforced by the embedded Cedar engine — there is no parallel custom-guard path the runtime falls through to. The Cedar bundle (generated policies + your `policies/custom/*.cedar` files) is strict-mode-validated on every load; CI should run `schema-forge policies validate` before merging schema changes.
 
 > **A note on `"admin"`** — role names in `@access(...)` are application-defined strings the schema-forge runtime treats opaquely. `"admin"`, `"member"`, `"hr"`, `"superadmin"` etc. are *your* in-app tier labels and carry no platform-wide privileges. The single reserved name is `platform_admin`, which gates schema-forge's `/api/v1/forge/users` endpoints and the file scan-complete callback — keep it out of `@access` lists unless you mean to grant schema-bypass and user-management rights along with whatever schema action you're naming.
+
+> **Role ranks** — every role name you reference in `@access(...)` (or hand-written Cedar policies) needs a numeric rank in `policies/role_ranks.toml`. The rank drives the no-upward-visibility rule for user management (`principal.role_rank >= resource.role_rank`) and is also where the operator declares the in-app hierarchy. `platform_admin` is reserved at `i64::MAX` and must NOT appear in the file.
 
 ### Schema-Level Access
 
@@ -94,6 +96,62 @@ schema Employee {
                @field_access(read: ["hr", "admin"], write: ["hr"])  // restricted
     owner_id:  text @owner                               // ownership tracking
 }
+```
+
+## Hidden Field Pattern (`@hidden`)
+
+`@hidden` is the language-level secret guard. A field annotated `@hidden`:
+
+- **Never appears in any API response.** REST get/list/query, GraphQL queries, file-field metadata — every serializer strips it before bytes leave the process.
+- **Is rejected in any client-supplied request body.** Create / update / patch / GraphQL inputs that mention a hidden field's name return `422 hidden_field_in_body` without touching storage.
+- **Is invisible to Cedar.** Policy generation skips hidden fields entirely, so a custom policy can't accidentally gate decisions on a secret value.
+- **Stays readable to backend code.** Internal consumers (e.g. `EntityAuthStore` reading `password_hash` to check argon2 hashes during login) read the entity directly from the storage layer, bypassing the API surface that does the strip.
+
+This is the first-class replacement for the "remember to never expose this column" pattern. If a hidden field ever shows up in an API response, that's a parser-level regression — not a missed code review.
+
+### When to use `@hidden`
+
+- **Password hashes** — argon2 / bcrypt outputs that must never round-trip to a client. The system `User` schema's `password_hash: text(max: 512) @hidden` is the canonical example.
+- **API credentials stored on entities** — third-party access tokens, webhook signing secrets, encryption keys held alongside business data.
+- **Server-internal counters or accumulators** — values the runtime mutates (e.g. login-attempt counters) that the client should never see or set.
+
+### Example
+
+```
+@system @display("email")
+schema User {
+    email:          text(max: 512) required indexed
+    display_name:   text(max: 255) required
+    roles:          text[]
+    role_rank:      integer required
+    active:         boolean default(true)
+    password_hash:  text(max: 512) @hidden    // argon2 hash; never serialized, never accepted in body
+    last_login:     datetime
+    metadata:       json
+}
+```
+
+```
+@display("name")
+schema Integration {
+    name:           text(max: 255) required indexed
+    provider:       enum("stripe", "twilio", "sendgrid") required
+    api_key:        text(max: 512) required @hidden    // server-side outbound credential
+    webhook_secret: text(max: 128) @hidden             // verifies inbound webhooks
+    active:         boolean default(true)
+    owner_id:       text required @owner
+}
+```
+
+### Layering with `@field_access`
+
+Use `@hidden` for fields that **no API caller** should ever see, regardless of role. Use `@field_access` for fields where some roles legitimately read the value through the API. They compose — adding `@hidden` to a field with `@field_access` makes the field-access read list moot (the field is stripped before role evaluation runs), so pick the stronger guard intentionally:
+
+```
+salary:         float(precision: 2)
+                @field_access(read: ["hr", "admin"], write: ["hr"])   // HR can see it via API
+
+password_hash:  text(max: 512) @hidden                                // nobody sees it via API; backend reads directly
 ```
 
 ## Dashboard & Kanban Pattern

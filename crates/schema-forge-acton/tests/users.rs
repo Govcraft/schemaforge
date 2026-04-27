@@ -508,3 +508,62 @@ async fn delete_allows_when_other_platform_admins_exist() {
     let (status, _) = json_request(&app, Method::DELETE, "/users/ops", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
+
+/// `password_hash` is `@hidden` in the system `User` schema. Even a
+/// `platform_admin` (the most-privileged caller possible against the
+/// user-mgmt routes) must never see the field in any list / get / create
+/// response — the `@hidden` strip happens at the entity layer before
+/// serialization. Recursively walks every response value to catch the
+/// field nested anywhere in the JSON tree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn password_hash_never_appears_in_user_mgmt_responses() {
+    fn assert_no_password_hash(value: &serde_json::Value, path: &str) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (k, v) in map {
+                    assert_ne!(
+                        k, "password_hash",
+                        "password_hash leaked at {path}.{k}: {value}"
+                    );
+                    assert_no_password_hash(v, &format!("{path}.{k}"));
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for (i, v) in arr.iter().enumerate() {
+                    assert_no_password_hash(v, &format!("{path}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let seeded = seed_backend("users_hidden_password_hash").await;
+    seeded
+        .auth_store
+        .create_user("alice", "alicepass", &["sales".to_string()], "Alice")
+        .await
+        .unwrap();
+
+    let app = users_router(seeded, make_claims("user:admin", &["platform_admin"])).await;
+
+    // List response.
+    let (status, list_body) = json_request(&app, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::OK, "body: {list_body}");
+    assert_no_password_hash(&list_body, "list");
+
+    // Create response.
+    let (status, create_body) = json_request(
+        &app,
+        Method::POST,
+        "/users",
+        Some(serde_json::json!({
+            "username": "bob",
+            "password": "bobpass123",
+            "roles": ["sales"],
+            "display_name": "Bob"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {create_body}");
+    assert_no_password_hash(&create_body, "create");
+}

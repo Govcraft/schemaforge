@@ -9,9 +9,9 @@ description: Use when writing, creating, editing, or reviewing SchemaForge .sche
 
 SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `.schema` file produces database tables, REST API endpoints, migrations, Cedar authorization policies, and OpenAPI specs — no recompilation required.
 
-**Version:** 0.21.0
+**Version:** 0.22.0
 
-**Core principle:** Schemas are the single source of truth for the entire entity lifecycle.
+**Core principle:** Schemas are the single source of truth for the entire entity lifecycle. Authorization is **Cedar-canonical**: every read/write/delete decision flows through the embedded Cedar engine — there are no parallel custom guards.
 
 **Database backends:** SurrealDB (default) or PostgreSQL (feature-gated, mutually exclusive).
 
@@ -23,13 +23,13 @@ SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `schema-forge-core` | 0.12.0 | Core types: schemas, fields (incl. `FieldType::File`), annotations, migrations, queries, hook events |
-| `schema-forge-dsl` | 0.7.0 | Lexer/parser for `.schema` DSL (logos-based) incl. `file(...)` syntax and size literals |
-| `schema-forge-backend` | 0.7.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant |
+| `schema-forge-core` | 0.12.0 | Core types: schemas, fields (incl. `FieldType::File`), annotations (incl. `@hidden`), migrations, queries, hook events |
+| `schema-forge-dsl` | 0.7.0 | Lexer/parser for `.schema` DSL (logos-based) incl. `file(...)` syntax, size literals, and the `@hidden` field annotation |
+| `schema-forge-backend` | 0.7.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant and `EntityAuthStore` (the user-mgmt impl over the system `User` schema) |
 | `schema-forge-surrealdb` | 0.7.1 | SurrealDB backend implementation |
 | `schema-forge-postgres` | 0.5.1 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file columns |
-| `schema-forge-acton` | 0.23.0 | Axum/acton-service integration: REST API, auth, hook dispatcher, S3 storage registry (`aws-sdk-s3`); platform_admin role guards on `/users` and file scan-complete |
-| `schema-forge-cli` | 0.21.0 | CLI binary (`schemaforge`) built with clap derive; routes all configuration through `acton_service::Config<SchemaForgeConfig>` (single source of truth) |
+| `schema-forge-acton` | 0.23.0 | Axum/acton-service integration: REST API, Cedar policy store (hot-recompiled atomically on schema apply), auth, hook dispatcher, S3 storage registry (`aws-sdk-s3`) |
+| `schema-forge-cli` | 0.22.0 | CLI binary (`schemaforge`) built with clap derive; routes all configuration through `acton_service::Config<SchemaForgeConfig>` (single source of truth); ships `policies validate` and `bootstrap-admin` for CI / first-run provisioning |
 
 ## When to Use
 
@@ -37,7 +37,7 @@ SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `
 - Adding entities, fields, relations, or annotations to existing schemas
 - Reviewing or validating DSL syntax
 - Designing multi-tenant data models with access control
-- Running SchemaForge CLI commands (init, parse, apply, serve, migrate, inspect, export, policies, token, hooks, `site generate`)
+- Running SchemaForge CLI commands (init, parse, apply, serve, migrate, inspect, export, policies, token, hooks, `site generate`, `bootstrap-admin`)
 - Scaffolding or regenerating the React site with `schema-forge site generate`
 - Wiring `/app/*` per-entity pages (codegen'd, Preserve-mode) or iterating on the runtime-dynamic `/admin/*` admin shell
 - Iterating on bundled site templates via the `--templates-dir` override loader
@@ -207,6 +207,38 @@ schema-forge policies regenerate -o policies/generated/   # output directory
 schema-forge policies regenerate --force                  # overwrite existing
 ```
 
+#### `schema-forge policies validate [SCHEMA_PATHS...]`
+
+Compile the full Cedar bundle (generated schema-forge policies + every `*.cedar` file under `--custom-dir`) into a `PolicyStore` and run **strict-mode** validation. Exits non-zero on any error so CI / pre-deploy hooks can gate releases on a passing bundle. This is the same compilation path the runtime uses; passing here means `serve` will mount the store cleanly.
+
+```
+schema-forge policies validate                                          # default: schemas/
+schema-forge policies validate src/schemas/
+schema-forge policies validate --custom-dir policies/custom/            # merge hand-written .cedar files
+schema-forge policies validate --role-ranks policies/role_ranks.toml    # default path; missing = empty hierarchy
+schema-forge policies validate --format json                            # machine-readable error report
+```
+
+Use this in CI before merging schema changes — strict-mode failures here are the same ones the runtime would refuse to hot-swap on `apply`, so catching them at PR time avoids deploys that would roll back automatically.
+
+#### `schema-forge bootstrap-admin`
+
+Seed the initial `platform_admin` user against the configured backend. Idempotent: refuses to run when other users already exist so provisioning pipelines (init containers, ansible playbooks, DR runbooks) can't accidentally double-seed. Reads backend connection settings from the same precedence chain as `serve` (CLI flag → env → config.toml).
+
+```
+schema-forge bootstrap-admin --password "$ADMIN_PASSWORD"
+schema-forge bootstrap-admin --username root --password "$ADMIN_PASSWORD" --display-name "Root Operator"
+SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD="$ADMIN_PASSWORD" schema-forge bootstrap-admin
+```
+
+| Flag | Env Var | Default |
+|------|---------|---------|
+| `--username` | `SCHEMA_FORGE_BOOTSTRAP_ADMIN_USERNAME` | `admin` |
+| `--password` | `SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD` | (required) |
+| `--display-name` | `SCHEMA_FORGE_BOOTSTRAP_ADMIN_DISPLAY_NAME` | `Administrator` |
+
+The created row lands in the system `User` table (the same canonical store `EntityAuthStore` reads); the password is argon2-hashed into the `@hidden` `password_hash` field. Never prompted interactively — operators run this from non-interactive provisioning contexts.
+
 #### `schema-forge hooks generate`
 
 Scaffold a gRPC hook service (an `acton-service` Rust project) from schemas annotated with `@hook(...)`. You never hand-write the protobufs — `build.rs` compiles them and emits a `FileDescriptorSet` that SchemaForge loads at startup.
@@ -343,16 +375,18 @@ The React site's `src/lib/auth.ts` stores the token in `sessionStorage`, schedul
 
 ### Users (`/api/v1/forge/users`)
 
-Schema-forge-native user management. All routes require a bearer token; list/create/delete require the dedicated `platform_admin` role (the only role that gates platform-level user management — *not* the same as an in-app `"admin"` role you might use in `@access(...)` annotations). Password changes are allowed for self-edits.
+Schema-forge-native user management backed by `EntityAuthStore` — the user table **is** the system `User` schema, not a parallel `_forge_users` store. Every endpoint routes through Cedar; there are no hand-written role string-matches in the handlers.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/v1/forge/users` | List users. Requires `platform_admin`. **Non-`platform_admin` callers (once admitted) never see `platform_admin` rows in the response** — those are filtered out before serialization. |
-| POST | `/api/v1/forge/users` | Create a user. Requires `platform_admin`. Body: `{ username, password, roles, display_name? }`. **Callers who don't already hold `platform_admin` cannot grant the `platform_admin` role** — that escalation path is closed at the route guard. |
-| DELETE | `/api/v1/forge/users/:username` | Delete a user. Requires `platform_admin`. **Refuses to delete the last `platform_admin` with `409 Conflict { error: "conflict", reason: "last_platform_admin", message: "..." }`** so the instance can never be left without one. |
+| GET | `/api/v1/forge/users` | List users. Cedar evaluates `Action::"ListUser"` on each row; rows the principal can't read are filtered out before serialization. The `password_hash` field is stripped at the entity layer via `@hidden` regardless of role. |
+| POST | `/api/v1/forge/users` | Create a user. Body: `{ username, password, roles, display_name? }`. Cedar evaluates `Action::"CreateUser"` against a synthetic target carrying the requested roles' computed `role_rank` — so a non-platform-admin caller cannot grant `platform_admin` (or any role outranking themselves) because the resulting principal would outrank them. |
+| DELETE | `/api/v1/forge/users/:username` | Delete a user. Cedar evaluates `Action::"DeleteUser"` against the target's actual `role_rank`. Additionally refuses to delete the last `platform_admin` with `409 Conflict { error: "conflict", reason: "last_platform_admin", message: "..." }` so the instance can never be left without one. |
 | POST | `/api/v1/forge/users/:username/password` | Change password. `platform_admin` may target any user; everyone else may only change their own (`sub` claim must equal `:username`). Body: `{ password }`. |
 
-**Bootstrap**: when `--admin-password` (or `FORGE_ADMIN_PASSWORD`) seeds the initial user on first boot, that user is granted `["platform_admin"]` — not `["admin"]`. Use `schema-forge token generate ... --roles platform_admin` to mint a token with the equivalent permissions.
+**No-upward-visibility guard**: list/create/delete are gated by the canonical role-rank rule `principal.role_rank >= resource.role_rank`. `role_rank` is computed server-side as the maximum rank in the user's `roles` list, looked up from `policies/role_ranks.toml` — `platform_admin` is hardcoded to `i64::MAX` and the loader rejects any attempt to redefine it.
+
+**Bootstrap**: use `schema-forge bootstrap-admin --password "$ADMIN_PASSWORD"` for first-run provisioning. The bootstrap user is granted `["platform_admin"]` — not `["admin"]`. Use `schema-forge token generate ... --roles platform_admin` to mint a token with the equivalent permissions.
 
 **Distinction**: `"admin"` is now a free string for application authors. Declaring `@access(write: ["admin"])` on a schema names an in-app role with no platform-wide privileges. Only `platform_admin` bypasses schema-/field-/tenant-level access checks and gates the `/users` endpoints.
 
@@ -438,6 +472,35 @@ Schema-forge CLI-flag aliases (clap `env = "..."` mappings; equivalent to passin
 > - The `[cli]` section (`default_schema_dir` / `default_policy_dir`) was never read at runtime; remove it.
 > - `SCHEMA_FORGE_DB_USER` / `SCHEMA_FORGE_DB_PASS` env vars are removed; use `ACTON_SURREALDB_USERNAME` / `ACTON_SURREALDB_PASSWORD`.
 > - The bootstrap admin user is now granted `platform_admin` (not `admin`) — see [Users](#users-apiv1forgeusers) for the role split.
+>
+> **Migration notes (v0.22.0, breaking)**:
+> - Authorization is now Cedar-canonical end-to-end. The legacy `Permission` and `Role` system schemas have been removed; their data was never used at runtime once the Cedar engine landed. Drop them from any custom seed scripts.
+> - The legacy `_forge_users` parallel store is gone. User accounts live in the canonical system `User` schema and are read through `EntityAuthStore`. First-run provisioning now goes through `schema-forge bootstrap-admin` (or the existing `--admin-user` / `FORGE_ADMIN_USER` seeding on `serve`, which was rewired to `EntityAuthStore`). Existing `_forge_users` rows must be migrated into the `User` table — there is no automatic backfill.
+> - Custom Cedar policies (under `policies/custom/`) are now strict-mode-validated on every load. Policies that compiled under the previous lenient mode but reference unknown attributes / actions / entity types will fail validation; run `schema-forge policies validate` to surface every issue at once.
+> - Add `policies/role_ranks.toml` with the operator-controlled rank for any custom role you reference in policies. Missing ranks fail the bundle. `platform_admin` is reserved and cannot appear in this file.
+
+### policies/role_ranks.toml
+
+The role-name → numeric-rank map that gates user-mgmt and any policy that compares `principal.role_rank` against `resource.role_rank`. Lives in version control alongside the policies it governs. Missing file is treated as "platform_admin only".
+
+```toml
+# policies/role_ranks.toml
+#
+# Numeric ranks define the no-upward-visibility hierarchy. A principal can
+# manage / see another user only when principal.role_rank >= target.role_rank.
+# `platform_admin` is hardcoded to i64::MAX and MUST NOT appear here.
+
+[roles]
+admin    = 1000
+manager  = 500
+member   = 100
+```
+
+Validate the bundle (policies + ranks) before committing:
+
+```
+schema-forge policies validate --custom-dir policies/custom/ --role-ranks policies/role_ranks.toml
+```
 
 ## Database Backends
 
@@ -513,6 +576,7 @@ The two backends are **mutually exclusive** at build time (enforced by acton-ser
 | Field Access | `@field_access(read: [...], write: [...])` | field-level access control |
 | List Hint | `@list(primary\|column\|hidden)` | list-view column curation |
 | Enum Colors | `@enum_colors(variant: "color", ...)` | semantic color tokens per enum variant |
+| Hidden | `@hidden` | language-level secret guard — field is invisible to every API surface (REST, GraphQL, list, query, get) and rejected in any client-supplied request body; Cedar policy generation skips it so it never surfaces as a resource attribute. Backend code that legitimately needs the value (e.g. `EntityAuthStore` reading `password_hash`) reads the entity directly, bypassing the API layer. |
 
 **New in v0.17.0:**
 
@@ -626,8 +690,17 @@ From a `.schema` file, SchemaForge produces:
 1. **Database tables** — DDL matching the backend (PostgreSQL: `CREATE TABLE` with constraints; SurrealDB: `DEFINE TABLE` + `DEFINE FIELD`)
 2. **REST API routes** — CRUD endpoints at `/api/v1/forge/schemas/{schema}/entities`
 3. **Migrations** — diff-based, atomic steps with safety classification
-4. **Cedar policies** — role-based authorization from `@access` annotations
+4. **Cedar policies + a compiled `PolicyStore`** — every `@access` / `@field_access` / `@tenant` / `@owner` annotation lowers into Cedar policy text, gets validated in **strict mode** against a generated Cedar schema, and is mounted as a hot-swappable `PolicyStore` snapshot (via `ArcSwap`) that every authorization check runs against. There is no parallel custom-guard path — Cedar is canonical.
 5. **OpenAPI spec** — dynamic generation from schema registry
+
+### Authorization model — Cedar-canonical
+
+- **Single decision path.** Every read/write/delete decision (REST handler, GraphQL resolver, file-field endpoint, user-mgmt route) calls `authz::engine::authorize` and is bound by Cedar's verdict. There are no role string-matches living outside the policy bundle.
+- **Atomic hot-recompile.** `POST /api/v1/forge/schemas` and `apply` mutate the registry tentatively, recompile a fresh `PolicyStore` snapshot, validate it strict-mode, and only then atomically swap. Any compile/validate failure reverts the registry mutation — the running server never falls into a state where Cedar can't decide the authz question, and never serves a partially-applied policy bundle.
+- **Pre-validate before persistence.** On runtime schema changes the operator's bundle is dry-run *before* the DB migration runs, so a bad policy never produces an orphaned table.
+- **Tenant guard policy.** Every multi-tenant schema gets a generated `forbid` policy that rejects access when `resource._tenant` is set and the principal isn't a member (with `platform_admin` as the only escape). Cross-tenant access is enforced at the record level, not just at the query layer.
+- **`platform_admin` is hardcoded.** Reserved role name `platform_admin` is rank `i64::MAX`. The `role_ranks.toml` loader rejects any attempt to redefine it. All other role names are application-defined and ranked in the operator-controlled file.
+- **Cedar entities exclude `@hidden`.** Hidden fields are stripped before resource attributes are built — Cedar policies cannot reference them, even by mistake.
 
 ## Common Mistakes
 
