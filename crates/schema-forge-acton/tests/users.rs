@@ -22,17 +22,25 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
+use acton_service::config::Config;
 use acton_service::middleware::Claims;
+use acton_service::prelude::ActorHandleInterface;
+use acton_service::state::AppState;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::{Extension, Router};
 use http_body_util::BodyExt;
 use schema_forge_acton::config::SchemaForgeConfig;
+use schema_forge_acton::messages::{InitForge, ReplyChannel};
 use schema_forge_acton::routes::forge_routes;
-use schema_forge_acton::state::DynAuthStore;
+use schema_forge_acton::state::{DynAuthStore, DynForgeBackend};
+use schema_forge_acton::ForgeActor;
 use schema_forge_backend::AuthStore;
+use schema_forge_core::types::SchemaDefinition;
 use schema_forge_surrealdb::SurrealBackend;
+use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
@@ -71,8 +79,57 @@ async fn seed_backend(namespace: &str) -> Arc<SurrealBackend> {
     Arc::new(backend)
 }
 
-fn users_router(backend: Arc<SurrealBackend>, claims: Claims) -> Router {
+/// Build a router whose `AppState` carries a live `ForgeActor`.
+///
+/// The user-management handlers need an actor to resolve the User schema
+/// definition and the Cedar policy store. Without it, every request
+/// fails with `ForgeActor not registered`. Mirrors the harness shape in
+/// `tests/integration.rs::build_test_app_state` but seeds the system
+/// schemas (User in particular) so authorization lookups succeed.
+async fn users_router(backend: Arc<SurrealBackend>, claims: Claims) -> Router {
+    use acton_service::service_builder::ServiceBuilder;
+
+    let backend_dyn: Arc<dyn DynForgeBackend> = backend.clone();
     let auth_store: Arc<dyn DynAuthStore> = backend;
+
+    // Seed the User system schema into the registry so the authz
+    // handlers can look it up via GetSchema.
+    let mut registry: HashMap<String, SchemaDefinition> = HashMap::new();
+    schema_forge_acton::system::seed_system_schemas_into_map(&mut registry, backend_dyn.as_ref())
+        .await
+        .expect("seed system schemas");
+
+    let config = Config::<SchemaForgeConfig>::default();
+    let service = ServiceBuilder::new()
+        .with_config(config)
+        .with_actor::<ForgeActor>()
+        .build();
+
+    let forge_handle = service
+        .state()
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
+    let (tx, rx) = oneshot::channel();
+    forge_handle
+        .send(InitForge {
+            registry,
+            backend: backend_dyn,
+            tenant_config: None,
+            record_access_policy: None,
+            hook_dispatcher: None,
+            storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
+            policy_store: None,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .expect("InitForge timeout")
+        .expect("InitForge channel dropped");
+
+    let state: AppState<SchemaForgeConfig> = service.state().clone();
+
     forge_routes()
         .layer(Extension(auth_store))
         .layer(axum::middleware::from_fn(
@@ -84,7 +141,7 @@ fn users_router(backend: Arc<SurrealBackend>, claims: Claims) -> Router {
                 }
             },
         ))
-        .with_state(acton_service::state::AppState::<SchemaForgeConfig>::default())
+        .with_state(state)
 }
 
 async fn json_request(
@@ -121,7 +178,7 @@ async fn json_request(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn platform_admin_can_create_and_list_users() {
     let backend = seed_backend("users_create_list").await;
-    let app = users_router(backend, make_claims("user:admin", &["platform_admin"]));
+    let app = users_router(backend, make_claims("user:admin", &["platform_admin"])).await;
 
     let (status, json) = json_request(
         &app,
@@ -166,7 +223,7 @@ async fn non_platform_admin_cannot_create_user() {
     .await
     .unwrap();
 
-    let app = users_router(backend, make_claims("user:alice", &["sales"]));
+    let app = users_router(backend, make_claims("user:alice", &["sales"])).await;
     let (status, json) = json_request(
         &app,
         Method::POST,
@@ -198,7 +255,7 @@ async fn app_admin_role_does_not_grant_platform_admin_powers() {
     .await
     .unwrap();
 
-    let app = users_router(backend, make_claims("user:appadmin", &["admin"]));
+    let app = users_router(backend, make_claims("user:appadmin", &["admin"])).await;
     let (status, json) = json_request(&app, Method::GET, "/users", None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {json}");
     assert_eq!(json["error"], "forbidden");
@@ -217,7 +274,7 @@ async fn platform_admin_can_delete_non_platform_user() {
     .await
     .unwrap();
 
-    let app = users_router(backend, make_claims("user:admin", &["platform_admin"]));
+    let app = users_router(backend, make_claims("user:admin", &["platform_admin"])).await;
     let (status, _) = json_request(&app, Method::DELETE, "/users/alice", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
@@ -246,7 +303,7 @@ async fn user_can_change_own_password_without_platform_admin() {
     .await
     .unwrap();
 
-    let app = users_router(backend.clone(), make_claims("user:alice", &["sales"]));
+    let app = users_router(backend.clone(), make_claims("user:alice", &["sales"])).await;
     let (status, json) = json_request(
         &app,
         Method::POST,
@@ -288,7 +345,7 @@ async fn cross_user_password_change_is_forbidden_for_non_platform_admin() {
     .await
     .unwrap();
 
-    let app = users_router(backend, make_claims("user:alice", &["sales"]));
+    let app = users_router(backend, make_claims("user:alice", &["sales"])).await;
     let (status, json) = json_request(
         &app,
         Method::POST,
@@ -321,7 +378,7 @@ async fn platform_admin_sees_all_users_in_list() {
     .await
     .unwrap();
 
-    let app = users_router(backend, make_claims("user:admin", &["platform_admin"]));
+    let app = users_router(backend, make_claims("user:admin", &["platform_admin"])).await;
     let (status, json) = json_request(&app, Method::GET, "/users", None).await;
     assert_eq!(status, StatusCode::OK, "body: {json}");
     let names: Vec<&str> = json["users"]
@@ -360,7 +417,7 @@ async fn list_filter_hides_platform_admins_from_non_platform_callers() {
     .await
     .unwrap();
 
-    let app = users_router(backend, make_claims("user:alice", &["sales"]));
+    let app = users_router(backend, make_claims("user:alice", &["sales"])).await;
     let (status, _) = json_request(&app, Method::GET, "/users", None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -376,7 +433,7 @@ async fn non_platform_admin_cannot_grant_platform_admin() {
     // "only platform_admin may grant the platform_admin role". Either
     // way, the response is 403.
     let backend = seed_backend("users_no_escalation").await;
-    let app = users_router(backend, make_claims("user:alice", &["manager"]));
+    let app = users_router(backend, make_claims("user:alice", &["manager"])).await;
     let (status, json) = json_request(
         &app,
         Method::POST,
@@ -399,7 +456,7 @@ async fn delete_refuses_last_platform_admin() {
     // *different* platform_admin caller (sub "user:operator") so that
     // the "cannot delete yourself" check doesn't fire first.
     let backend = seed_backend("users_last_platform_admin").await;
-    let app = users_router(backend, make_claims("user:operator", &["platform_admin"]));
+    let app = users_router(backend, make_claims("user:operator", &["platform_admin"])).await;
     let (status, json) = json_request(&app, Method::DELETE, "/users/admin", None).await;
     assert_eq!(status, StatusCode::CONFLICT, "body: {json}");
     assert_eq!(json["error"], "conflict");
@@ -419,7 +476,7 @@ async fn delete_allows_when_other_platform_admins_exist() {
     .await
     .unwrap();
 
-    let app = users_router(backend, make_claims("user:operator", &["platform_admin"]));
+    let app = users_router(backend, make_claims("user:operator", &["platform_admin"])).await;
     let (status, _) = json_request(&app, Method::DELETE, "/users/ops", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }

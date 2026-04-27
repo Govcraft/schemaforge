@@ -21,20 +21,34 @@
 //! `ForgeError` untouched — the caller sees a `validation_failed`
 //! envelope with a clear message.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use acton_service::middleware::Claims;
-use axum::extract::Path;
+use acton_service::state::AppState;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use schema_forge_backend::entity::Entity;
 use schema_forge_backend::user_store::ForgeUser;
+use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaName};
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 use tracing::instrument;
 
-use crate::access::{OptionalClaims, PLATFORM_ADMIN_ROLE};
+use crate::access::{
+    check_schema_access, AccessAction, OptionalClaims, PLATFORM_ADMIN_ROLE,
+};
+use crate::actor::ForgeActor;
+use crate::authz::engine::authorize;
+use crate::authz::namespace::ActionVerb;
+use crate::authz::PolicyStore;
+use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
+use crate::messages::{GetPolicyStore, GetSchema, ReplyChannel};
 use crate::state::DynAuthStore;
+use acton_service::prelude::ActorHandleInterface;
 
 // ---------------------------------------------------------------------------
 // Auth helpers
@@ -51,33 +65,107 @@ fn require_auth(claims: &Option<Claims>) -> Result<&Claims, ForgeError> {
     })
 }
 
-/// Require the `platform_admin` role. Returns 403 if the caller lacks it.
-fn require_platform_admin(claims: &Claims) -> Result<(), ForgeError> {
-    if claims.has_role(PLATFORM_ADMIN_ROLE) {
-        Ok(())
-    } else {
-        Err(ForgeError::Forbidden {
-            message: "user management requires platform_admin role".to_string(),
+
+/// Fetch the User schema definition from the registry.
+async fn fetch_user_schema(
+    state: &AppState<SchemaForgeConfig>,
+) -> Result<SchemaDefinition, ForgeError> {
+    let forge = state
+        .actor::<ForgeActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ForgeActor not registered".into(),
+        })?;
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: "User".to_string(),
+            reply: ReplyChannel::new(tx),
         })
-    }
+        .await;
+    let result = rx.await.map_err(|_| ForgeError::Internal {
+        message: "ForgeActor reply channel dropped while fetching User schema".into(),
+    })?;
+    result.ok_or_else(|| ForgeError::Internal {
+        message: "User system schema is missing from the registry".into(),
+    })
 }
 
-/// Require `platform_admin` role OR that the caller's token subject names
-/// `target`.
+/// Fetch the current Cedar policy store from the actor.
+async fn fetch_policy_store(
+    state: &AppState<SchemaForgeConfig>,
+) -> Result<Arc<PolicyStore>, ForgeError> {
+    let forge = state
+        .actor::<ForgeActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ForgeActor not registered".into(),
+        })?;
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetPolicyStore {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    rx.await
+        .map_err(|_| ForgeError::Internal {
+            message: "ForgeActor reply channel dropped while fetching PolicyStore".into(),
+        })?
+        .ok_or_else(|| ForgeError::Internal {
+            message: "Cedar policy store not initialized — InitForge has not run".into(),
+        })
+}
+
+/// Build a synthetic SchemaForge `Entity` of schema "User" for Cedar
+/// authorization.
 ///
-/// The login handler emits `sub = "user:<username>"`; we also accept a
-/// bare username to stay resilient to alternative claim sources.
-fn require_platform_admin_or_self(claims: &Claims, target: &str) -> Result<(), ForgeError> {
-    if claims.has_role(PLATFORM_ADMIN_ROLE) {
-        return Ok(());
-    }
-    let prefixed = format!("user:{target}");
-    if claims.sub == prefixed || claims.sub == target {
-        return Ok(());
-    }
-    Err(ForgeError::Forbidden {
-        message: "platform_admin role or self required".to_string(),
-    })
+/// `_forge_users` and the User schema's entity table are still separate
+/// data sources today (T19 collapses that duality). The Cedar engine
+/// reasons about User entities, so we adapt every `ForgeUser` row into a
+/// User entity just-in-time, computing `role_rank` from the role-rank
+/// table the policy store already carries. This makes the global
+/// `user_role_rank_forbid` policy fire correctly without requiring a
+/// separate read of the User table.
+fn forge_user_to_user_entity(user: &ForgeUser, store: &PolicyStore) -> Entity {
+    let snapshot = store.current();
+    let role_rank = snapshot.role_ranks.max_rank(&user.roles);
+
+    let mut fields: BTreeMap<String, DynamicValue> = BTreeMap::new();
+    // The User schema declares `email` as required; the legacy ForgeUser
+    // record uses `username` as the canonical identifier and doesn't
+    // separately track email, so we mirror it here.
+    fields.insert(
+        "email".to_string(),
+        DynamicValue::Text(user.username.clone()),
+    );
+    fields.insert(
+        "display_name".to_string(),
+        DynamicValue::Text(
+            user.display_name
+                .clone()
+                .unwrap_or_else(|| user.username.clone()),
+        ),
+    );
+    fields.insert(
+        "roles".to_string(),
+        DynamicValue::Array(
+            user.roles
+                .iter()
+                .cloned()
+                .map(DynamicValue::Text)
+                .collect(),
+        ),
+    );
+    fields.insert("role_rank".to_string(), DynamicValue::Integer(role_rank));
+    fields.insert("active".to_string(), DynamicValue::Boolean(user.active));
+
+    // Cedar policy decisions are driven by the resource's attributes, not
+    // its UID. A fresh TypeID with the `user` prefix is stable enough for
+    // audit logs and avoids stitching a deterministic ID together from
+    // the username.
+    Entity::with_id(
+        EntityId::new("user"),
+        SchemaName::new("User").expect("User schema name is always valid"),
+        fields,
+    )
 }
 
 /// Verify the caller is allowed to grant the requested role set.
@@ -216,30 +304,48 @@ fn user_to_response(user: &ForgeUser) -> UserResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// `GET /users` — list every user. Requires `platform_admin`.
+/// `GET /users` — list every user.
 ///
-/// Non-`platform_admin` callers (once user-management is opened to other
-/// tiers) never see `platform_admin` rows in the response, even if the
-/// store contains them. Landing this filter pre-emptively makes a future
-/// "open list-users to managers" change a pure routing/policy change.
+/// Authorization flows through Cedar:
+/// - Schema-level `ListUser` access is decided by [`check_schema_access`].
+///   Without an `@access` annotation on the User schema, the secure
+///   default lets only `platform_admin` (via the global permit) through —
+///   matching the original handler's intent.
+/// - Each row is then re-evaluated through [`authorize`] with the
+///   target's synthetic User entity as resource. The global
+///   `user_role_rank_forbid` policy filters out users at a higher rank
+///   than the caller, so a manager-tier admin (once granted) cannot
+///   enumerate platform_admin entries.
 #[instrument(skip_all)]
 pub async fn list_users(
+    State(state): State<AppState<SchemaForgeConfig>>,
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_platform_admin(claims)?;
+    let user_schema = fetch_user_schema(&state).await?;
+    let policy_store = fetch_policy_store(&state).await?;
+
+    check_schema_access(&policy_store, &user_schema, Some(claims), AccessAction::List)?;
 
     let users = auth_store.list_users().await?;
-    let caller_is_platform_admin = claims.has_role(PLATFORM_ADMIN_ROLE);
-    let responses: Vec<UserResponse> = users
-        .iter()
-        .filter(|u| {
-            caller_is_platform_admin
-                || !u.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE)
-        })
-        .map(user_to_response)
-        .collect();
+    let mut responses: Vec<UserResponse> = Vec::with_capacity(users.len());
+    for user in &users {
+        let entity = forge_user_to_user_entity(user, policy_store.as_ref());
+        let decision = authorize(
+            &policy_store,
+            Some(claims),
+            ActionVerb::Read,
+            &user_schema,
+            Some(&entity),
+        )
+        .map_err(|e| ForgeError::Internal {
+            message: format!("authz engine error during list_users: {e}"),
+        })?;
+        if decision.is_allow() {
+            responses.push(user_to_response(user));
+        }
+    }
     let count = responses.len();
     Ok(Json(ListUsersResponse {
         users: responses,
@@ -247,23 +353,67 @@ pub async fn list_users(
     }))
 }
 
-/// `POST /users` — create a new user. Requires `platform_admin`.
+/// `POST /users` — create a new user.
 ///
-/// Non-`platform_admin` callers (once admitted) cannot grant the
-/// `platform_admin` role to the created user; that escalation path is
-/// blocked up front by [`caller_can_grant_roles`].
+/// Schema-level access is gated by the Cedar `CreateUser` action. The
+/// proposed user's effective rank (`max(role_ranks)` over `body.roles`)
+/// must not exceed the caller's rank — the global `user_role_rank_forbid`
+/// policy can't fire on a not-yet-created entity, so we re-evaluate it
+/// here against a synthetic placeholder built from the request body.
+/// Combined with [`caller_can_grant_roles`] this prevents both upward
+/// rank escalation and the trivial `platform_admin` grant footgun.
 #[instrument(skip_all)]
 pub async fn create_user(
+    State(state): State<AppState<SchemaForgeConfig>>,
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_platform_admin(claims)?;
+
+    let user_schema = fetch_user_schema(&state).await?;
+    let policy_store = fetch_policy_store(&state).await?;
+
+    check_schema_access(
+        &policy_store,
+        &user_schema,
+        Some(claims),
+        AccessAction::Create,
+    )?;
 
     validate_username(&body.username)?;
     validate_password(&body.password)?;
     caller_can_grant_roles(claims, &body.roles)?;
+
+    // Run the Cedar rank guard against a synthetic User entity carrying
+    // the proposed roles. The forbid policy compares the caller's
+    // role_rank with the target's; it can't fire on a placeholder
+    // resource (no attributes), so we synthesize one here.
+    let proposed = ForgeUser {
+        username: body.username.clone(),
+        roles: body.roles.clone(),
+        display_name: body.display_name.clone(),
+        active: true,
+    };
+    let proposed_entity = forge_user_to_user_entity(&proposed, policy_store.as_ref());
+    let decision = authorize(
+        &policy_store,
+        Some(claims),
+        ActionVerb::Create,
+        &user_schema,
+        Some(&proposed_entity),
+    )
+    .map_err(|e| ForgeError::Internal {
+        message: format!("authz engine error during create_user: {e}"),
+    })?;
+    if !decision.is_allow() {
+        return Err(ForgeError::Forbidden {
+            message: format!(
+                "creating user with roles {:?} would exceed caller's role_rank",
+                body.roles
+            ),
+        });
+    }
 
     // Pre-check to surface duplicates as 422 instead of a raw backend error.
     if auth_store.get_user(&body.username).await?.is_some() {
@@ -292,21 +442,26 @@ pub async fn create_user(
     Ok((StatusCode::CREATED, Json(user_to_response(&created))))
 }
 
-/// `DELETE /users/:username` — delete a user. Requires `platform_admin`.
+/// `DELETE /users/:username` — delete a user.
 ///
 /// Refuses to delete the caller themselves as a defense-in-depth against
 /// an operator locking themselves out mid-session. Refuses to remove the
-/// last `platform_admin` (returns 409 with `reason: "last_platform_admin"`)
-/// to prevent the trivial footgun where the entire instance is left
-/// without anyone able to manage users.
+/// last `platform_admin` (409 with `reason: "last_platform_admin"`) to
+/// prevent the trivial footgun where the instance is left without
+/// anyone able to manage users.
+///
+/// Cedar gates the actual deletion: the per-target `DeleteUser` action
+/// is evaluated against the resolved User entity, so the global
+/// `user_role_rank_forbid` policy stops a manager-tier admin from
+/// deleting a higher-ranked user.
 #[instrument(skip_all)]
 pub async fn delete_user(
+    State(state): State<AppState<SchemaForgeConfig>>,
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Path(username): Path<String>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_platform_admin(claims)?;
 
     let prefixed = format!("user:{username}");
     if claims.sub == prefixed || claims.sub == username {
@@ -315,6 +470,9 @@ pub async fn delete_user(
         });
     }
 
+    let user_schema = fetch_user_schema(&state).await?;
+    let policy_store = fetch_policy_store(&state).await?;
+
     let target =
         auth_store
             .get_user(&username)
@@ -322,6 +480,23 @@ pub async fn delete_user(
             .ok_or_else(|| ForgeError::ValidationFailed {
                 details: vec![format!("user '{username}' not found")],
             })?;
+
+    let target_entity = forge_user_to_user_entity(&target, policy_store.as_ref());
+    let decision = authorize(
+        &policy_store,
+        Some(claims),
+        ActionVerb::Delete,
+        &user_schema,
+        Some(&target_entity),
+    )
+    .map_err(|e| ForgeError::Internal {
+        message: format!("authz engine error during delete_user: {e}"),
+    })?;
+    if !decision.is_allow() {
+        return Err(ForgeError::Forbidden {
+            message: format!("not authorized to delete user '{username}'"),
+        });
+    }
 
     let target_is_platform_admin =
         target.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
@@ -347,24 +522,53 @@ pub async fn delete_user(
 
 /// `POST /users/:username/password` — change a user's password.
 ///
-/// Allowed when the caller has the `platform_admin` role OR when the
-/// caller's token subject matches `username`.
+/// Self-service is always allowed (the caller can rotate their own
+/// password without needing platform_admin). For administrative
+/// resets, the per-target Cedar `UpdateUser` action governs: the global
+/// `user_role_rank_forbid` policy prevents a lower-ranked admin from
+/// resetting a higher-ranked user's password.
 #[instrument(skip_all)]
 pub async fn change_password(
+    State(state): State<AppState<SchemaForgeConfig>>,
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Path(username): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
-    require_platform_admin_or_self(claims, &username)?;
 
     validate_password(&body.password)?;
 
-    if auth_store.get_user(&username).await?.is_none() {
-        return Err(ForgeError::ValidationFailed {
+    let target = auth_store
+        .get_user(&username)
+        .await?
+        .ok_or_else(|| ForgeError::ValidationFailed {
             details: vec![format!("user '{username}' not found")],
-        });
+        })?;
+
+    // Self-service path: a user can always change their own password.
+    let prefixed = format!("user:{username}");
+    let is_self = claims.sub == prefixed || claims.sub == username;
+
+    if !is_self {
+        let user_schema = fetch_user_schema(&state).await?;
+        let policy_store = fetch_policy_store(&state).await?;
+        let target_entity = forge_user_to_user_entity(&target, policy_store.as_ref());
+        let decision = authorize(
+            &policy_store,
+            Some(claims),
+            ActionVerb::Update,
+            &user_schema,
+            Some(&target_entity),
+        )
+        .map_err(|e| ForgeError::Internal {
+            message: format!("authz engine error during change_password: {e}"),
+        })?;
+        if !decision.is_allow() {
+            return Err(ForgeError::Forbidden {
+                message: format!("not authorized to change password for user '{username}'"),
+            });
+        }
     }
 
     auth_store
@@ -456,62 +660,9 @@ mod tests {
     }
 
     #[test]
-    fn require_platform_admin_or_self_allows_platform_admin() {
-        let c = claims_with_sub("user:carol", &["platform_admin"]);
-        assert!(require_platform_admin_or_self(&c, "alice").is_ok());
-    }
-
-    #[test]
-    fn require_platform_admin_or_self_allows_self_prefixed_sub() {
-        let c = claims_with_sub("user:alice", &[]);
-        assert!(require_platform_admin_or_self(&c, "alice").is_ok());
-    }
-
-    #[test]
-    fn require_platform_admin_or_self_allows_self_bare_sub() {
-        let c = claims_with_sub("alice", &[]);
-        assert!(require_platform_admin_or_self(&c, "alice").is_ok());
-    }
-
-    #[test]
-    fn require_platform_admin_or_self_rejects_other_user() {
-        let c = claims_with_sub("user:bob", &["member"]);
-        let err = require_platform_admin_or_self(&c, "alice").unwrap_err();
-        assert!(matches!(err, ForgeError::Forbidden { .. }));
-    }
-
-    #[test]
-    fn require_platform_admin_or_self_rejects_app_admin_role() {
-        // Application-level "admin" must not pass the platform check.
-        let c = claims_with_sub("user:bob", &["admin"]);
-        let err = require_platform_admin_or_self(&c, "alice").unwrap_err();
-        assert!(matches!(err, ForgeError::Forbidden { .. }));
-    }
-
-    #[test]
     fn require_auth_returns_unauthorized_when_missing() {
         let err = require_auth(&None).unwrap_err();
         assert!(matches!(err, ForgeError::Unauthorized { .. }));
-    }
-
-    #[test]
-    fn require_platform_admin_rejects_non_platform_admin() {
-        let c = claims_with_sub("user:alice", &["member"]);
-        assert!(require_platform_admin(&c).is_err());
-    }
-
-    #[test]
-    fn require_platform_admin_rejects_app_admin_role() {
-        // The literal "admin" role is reserved for in-app use; it must
-        // not satisfy the platform-admin gate.
-        let c = claims_with_sub("user:alice", &["admin"]);
-        assert!(require_platform_admin(&c).is_err());
-    }
-
-    #[test]
-    fn require_platform_admin_accepts_platform_admin() {
-        let c = claims_with_sub("user:alice", &["platform_admin"]);
-        assert!(require_platform_admin(&c).is_ok());
     }
 
     #[test]
