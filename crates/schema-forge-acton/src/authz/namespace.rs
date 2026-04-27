@@ -29,8 +29,12 @@ pub const TENANT_TYPE: &str = "Forge::Tenant";
 /// `Forge::Schema` in Cedar source.
 pub const SCHEMA_TYPE: &str = "Forge::Schema";
 
-/// Cedar action namespace prefix for SchemaForge built-in actions.
-pub const ACTION_PREFIX: &str = "Forge::Action";
+/// Cedar action UID prefix.
+///
+/// Actions live at the top level rather than inside the `Forge::` namespace —
+/// this matches Cedar's conventional idioms and avoids cross-namespace
+/// reference quirks for the per-action `appliesTo` declarations.
+pub const ACTION_PREFIX: &str = "Action";
 
 /// Action verbs recognised by the policy generator for entity CRUD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -91,11 +95,11 @@ mod tests {
     fn action_uid_renders_correctly() {
         assert_eq!(
             action_uid(ActionVerb::Read, "Contact"),
-            "Forge::Action::\"ReadContact\""
+            "Action::\"ReadContact\""
         );
         assert_eq!(
             action_uid(ActionVerb::Create, "Order"),
-            "Forge::Action::\"CreateOrder\""
+            "Action::\"CreateOrder\""
         );
     }
 
@@ -105,7 +109,7 @@ mod tests {
         // `::` namespace separator inside the quoted action id.
         assert_eq!(
             field_read_action_uid("Employee", "salary"),
-            "Forge::Action::\"ReadFieldEmployee_salary\""
+            "Action::\"ReadFieldEmployee_salary\""
         );
     }
 }
