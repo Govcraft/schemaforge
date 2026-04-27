@@ -460,6 +460,9 @@ pub enum PolicyCommands {
 
     /// Regenerate Cedar policy templates
     Regenerate(PolicyRegenerateArgs),
+
+    /// Validate the Cedar bundle (generated + custom) without applying it
+    Validate(PolicyValidateArgs),
 }
 
 /// Arguments for `schema-forge policies list`.
@@ -482,6 +485,30 @@ pub struct PolicyRegenerateArgs {
     /// Overwrite existing generated policies
     #[arg(short = 'f', long = "force")]
     pub force: bool,
+}
+
+/// Arguments for `schema-forge policies validate`.
+///
+/// Compiles the Cedar schema + generated policies + every `*.cedar` file
+/// under `--custom-dir` into a `PolicyStore` and runs strict-mode
+/// validation. Exits non-zero on any error so CI / pre-deploy hooks can
+/// gate releases on a passing bundle.
+#[derive(Args)]
+pub struct PolicyValidateArgs {
+    /// Directories to scan for SchemaForge `.sf` schema files.
+    #[arg(default_value = "schemas/")]
+    pub schema_paths: Vec<PathBuf>,
+
+    /// Directory containing additional `*.cedar` policies to merge into
+    /// the bundle (e.g. `policies/custom/`). Missing directories are
+    /// treated as empty.
+    #[arg(long = "custom-dir")]
+    pub custom_dir: Option<PathBuf>,
+
+    /// Path to a `role_ranks.toml` defining the role hierarchy. Missing
+    /// files are treated as the empty (platform_admin-only) hierarchy.
+    #[arg(long = "role-ranks", default_value = "policies/role_ranks.toml")]
+    pub role_ranks: PathBuf,
 }
 
 /// Arguments for `schema-forge completions`.
@@ -633,6 +660,31 @@ mod tests {
             assert!(args.force);
         } else {
             panic!("expected Policies Regenerate command");
+        }
+    }
+
+    #[test]
+    fn parse_policies_validate() {
+        let cli = Cli::try_parse_from([
+            "schemaforge",
+            "policies",
+            "validate",
+            "schemas/",
+            "--custom-dir",
+            "policies/custom",
+            "--role-ranks",
+            "policies/role_ranks.toml",
+        ])
+        .unwrap();
+        if let Commands::Policies {
+            command: PolicyCommands::Validate(args),
+        } = cli.command
+        {
+            assert_eq!(args.schema_paths, vec![PathBuf::from("schemas/")]);
+            assert_eq!(args.custom_dir, Some(PathBuf::from("policies/custom")));
+            assert_eq!(args.role_ranks, PathBuf::from("policies/role_ranks.toml"));
+        } else {
+            panic!("expected Policies Validate command");
         }
     }
 

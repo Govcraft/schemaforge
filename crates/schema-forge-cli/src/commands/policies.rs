@@ -1,8 +1,12 @@
 use std::fs;
 
+use schema_forge_acton::authz::role_ranks::RoleRanks;
+use schema_forge_acton::authz::store::PolicyStoreSnapshot;
 use schema_forge_acton::cedar::generate_cedar_policies;
 
-use crate::cli::{GlobalOpts, PolicyCommands, PolicyListArgs, PolicyRegenerateArgs};
+use crate::cli::{
+    GlobalOpts, PolicyCommands, PolicyListArgs, PolicyRegenerateArgs, PolicyValidateArgs,
+};
 use crate::commands::parse::parse_all_schemas;
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
@@ -16,6 +20,7 @@ pub async fn run(
     match command {
         PolicyCommands::List(args) => run_list(args, global, output).await,
         PolicyCommands::Regenerate(args) => run_regenerate(args, global, output).await,
+        PolicyCommands::Validate(args) => run_validate(args, global, output).await,
     }
 }
 
@@ -134,6 +139,65 @@ async fn run_regenerate(
         "Regenerated {total_files} policy files in {}",
         args.output_dir.display()
     ));
+
+    Ok(())
+}
+
+/// Compile the full Cedar bundle (Cedar schema + generated policies +
+/// custom policies) and run strict-mode validation. The exit code mirrors
+/// the validation result so CI / pre-deploy hooks can gate on a passing
+/// bundle.
+async fn run_validate(
+    args: PolicyValidateArgs,
+    _global: &GlobalOpts,
+    output: &OutputContext,
+) -> Result<(), CliError> {
+    let schemas = parse_all_schemas(&args.schema_paths)?;
+
+    let role_ranks = RoleRanks::from_toml_file(&args.role_ranks).map_err(|e| {
+        CliError::Other(format!(
+            "failed to load role ranks from '{}': {e}",
+            args.role_ranks.display()
+        ))
+    })?;
+
+    let custom_dir = args.custom_dir.as_deref();
+    let snapshot = PolicyStoreSnapshot::from_schemas(&schemas, custom_dir, role_ranks)
+        .map_err(|e| CliError::Other(format!("Cedar policy validation failed:\n{e}")))?;
+
+    match output.mode {
+        OutputMode::Json => {
+            let json = serde_json::json!({
+                "ok": true,
+                "schema_count": schemas.len(),
+                "policy_count": snapshot.policy_count,
+                "policy_hash": snapshot.policy_hash,
+                "custom_dir": custom_dir.map(|p| p.display().to_string()),
+                "role_ranks": args.role_ranks.display().to_string(),
+            });
+            output.print_json(&json);
+        }
+        OutputMode::Plain => {
+            println!(
+                "{}\t{}\t{}",
+                schemas.len(),
+                snapshot.policy_count,
+                snapshot.policy_hash
+            );
+        }
+        OutputMode::Human => {
+            output.success(&format!(
+                "Cedar bundle validated: {} schemas, {} policies, hash {}",
+                schemas.len(),
+                snapshot.policy_count,
+                &snapshot.policy_hash[..16],
+            ));
+            if let Some(dir) = custom_dir {
+                output.status(&format!("  Custom policies: {}", dir.display()));
+            }
+            output.status(&format!("  Role ranks: {}", args.role_ranks.display()));
+        }
+    }
 
     Ok(())
 }
