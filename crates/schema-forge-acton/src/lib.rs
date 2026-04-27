@@ -1,5 +1,6 @@
 pub mod access;
 pub mod actor;
+pub mod authz;
 pub mod cedar;
 pub mod config;
 pub mod conversions;
