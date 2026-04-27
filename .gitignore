@@ -3,11 +3,12 @@
 !.gitignore
 !.github
 
-# Text and markdown files (except README.md and docs/)
+# Text and markdown files (except README.md, docs/, and skills/)
 *.txt
 *.md
 !README.md
 !docs/**
+!skills/**
 
 # Rust
 target/
