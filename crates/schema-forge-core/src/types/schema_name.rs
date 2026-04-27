@@ -3,18 +3,26 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SchemaError;
+use crate::types::cedar_reserved::reserved_schema_name;
 
 /// A validated PascalCase schema name matching `[A-Z][a-zA-Z0-9]*`.
+///
+/// Names that collide with SchemaForge's Cedar policy namespace are also
+/// rejected; see [`crate::types::cedar_reserved::RESERVED_SCHEMA_NAMES`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct SchemaName(String);
 
 impl SchemaName {
-    /// Creates a new `SchemaName`, validating PascalCase format.
+    /// Creates a new `SchemaName`, validating PascalCase format and rejecting
+    /// names reserved by the Cedar policy generator.
     pub fn new(s: impl Into<String>) -> Result<Self, SchemaError> {
         let s = s.into();
         if !is_pascal_case(&s) {
             return Err(SchemaError::InvalidSchemaName(s));
+        }
+        if reserved_schema_name(&s).is_some() {
+            return Err(SchemaError::ReservedSchemaName(s));
         }
         Ok(Self(s))
     }
@@ -105,5 +113,29 @@ mod tests {
     fn serde_rejects_invalid() {
         let result = serde_json::from_str::<SchemaName>("\"bad_name\"");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_cedar_namespace_collisions() {
+        for name in ["Forge", "SchemaForge", "Principal", "Cedar"] {
+            let err = SchemaName::new(name).unwrap_err();
+            assert!(
+                matches!(err, SchemaError::ReservedSchemaName(ref s) if s == name),
+                "expected ReservedSchemaName for {name}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn permits_app_names_that_resemble_cedar_types() {
+        // `User`, `Group`, `Schema`, `Action` are entity types in Cedar but
+        // SchemaForge namespaces its own types under `Forge::`, so app
+        // schemas may use these names freely.
+        for name in ["User", "Group", "Schema", "Action"] {
+            assert!(
+                SchemaName::new(name).is_ok(),
+                "should permit app schema name {name}"
+            );
+        }
     }
 }

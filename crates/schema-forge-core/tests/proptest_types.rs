@@ -1,11 +1,24 @@
 use proptest::prelude::*;
 use schema_forge_core::types::{
+    cedar_reserved::{reserved_field_name, reserved_schema_name},
     EnumVariants, FieldName, IntegerConstraints, SchemaName, SchemaVersion,
 };
 
+fn valid_schema_name() -> impl Strategy<Value = String> {
+    "[A-Z][a-zA-Z0-9]{0,30}".prop_filter("Cedar-reserved schema name", |s| {
+        reserved_schema_name(s).is_none()
+    })
+}
+
+fn valid_field_name() -> impl Strategy<Value = String> {
+    "[a-z][a-z0-9_]{0,30}".prop_filter("Cedar-reserved field name", |s| {
+        reserved_field_name(s).is_none()
+    })
+}
+
 proptest! {
     #[test]
-    fn schema_name_display_roundtrip(s in "[A-Z][a-zA-Z0-9]{0,30}") {
+    fn schema_name_display_roundtrip(s in valid_schema_name()) {
         let name = SchemaName::new(&s).unwrap();
         let displayed = name.to_string();
         let back = SchemaName::new(displayed).unwrap();
@@ -13,7 +26,7 @@ proptest! {
     }
 
     #[test]
-    fn field_name_display_roundtrip(s in "[a-z][a-z0-9_]{0,30}") {
+    fn field_name_display_roundtrip(s in valid_field_name()) {
         let name = FieldName::new(&s).unwrap();
         let displayed = name.to_string();
         let back = FieldName::new(displayed).unwrap();
@@ -74,7 +87,7 @@ proptest! {
     }
 
     #[test]
-    fn schema_name_serde_roundtrip(s in "[A-Z][a-zA-Z0-9]{0,30}") {
+    fn schema_name_serde_roundtrip(s in valid_schema_name()) {
         let name = SchemaName::new(&s).unwrap();
         let json = serde_json::to_string(&name).unwrap();
         let back: SchemaName = serde_json::from_str(&json).unwrap();
@@ -82,7 +95,7 @@ proptest! {
     }
 
     #[test]
-    fn field_name_serde_roundtrip(s in "[a-z][a-z0-9_]{0,30}") {
+    fn field_name_serde_roundtrip(s in valid_field_name()) {
         let name = FieldName::new(&s).unwrap();
         let json = serde_json::to_string(&name).unwrap();
         let back: FieldName = serde_json::from_str(&json).unwrap();

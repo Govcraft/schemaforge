@@ -3,18 +3,26 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SchemaError;
+use crate::types::cedar_reserved::reserved_field_name;
 
 /// A validated snake_case field name matching `[a-z][a-z0-9_]*`.
+///
+/// Cedar grammar keywords are also rejected; see
+/// [`crate::types::cedar_reserved::RESERVED_FIELD_NAMES`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct FieldName(String);
 
 impl FieldName {
-    /// Creates a new `FieldName`, validating snake_case format.
+    /// Creates a new `FieldName`, validating snake_case format and rejecting
+    /// Cedar grammar keywords.
     pub fn new(s: impl Into<String>) -> Result<Self, SchemaError> {
         let s = s.into();
         if !is_snake_case(&s) {
             return Err(SchemaError::InvalidFieldName(s));
+        }
+        if reserved_field_name(&s).is_some() {
+            return Err(SchemaError::ReservedFieldName(s));
         }
         Ok(Self(s))
     }
@@ -106,5 +114,30 @@ mod tests {
     fn serde_rejects_invalid() {
         let result = serde_json::from_str::<FieldName>("\"BadName\"");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_cedar_keywords() {
+        for kw in [
+            "permit", "forbid", "principal", "action", "resource", "context",
+            "when", "unless", "if", "then", "else", "in", "has", "like", "is",
+            "true", "false",
+        ] {
+            let err = FieldName::new(kw).unwrap_err();
+            assert!(
+                matches!(err, SchemaError::ReservedFieldName(ref s) if s == kw),
+                "expected ReservedFieldName for {kw}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn permits_field_names_that_contain_keywords_as_substrings() {
+        for ok in ["principal_id", "is_active", "has_access", "in_progress", "action_type"] {
+            assert!(
+                FieldName::new(ok).is_ok(),
+                "should permit field name {ok}"
+            );
+        }
     }
 }

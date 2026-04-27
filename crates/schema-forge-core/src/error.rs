@@ -8,6 +8,10 @@ pub enum SchemaError {
     InvalidSchemaName(String),
     /// Field name failed snake_case validation.
     InvalidFieldName(String),
+    /// Schema name is reserved by SchemaForge's Cedar policy namespace.
+    ReservedSchemaName(String),
+    /// Field name is a Cedar grammar keyword and cannot be used as an attribute.
+    ReservedFieldName(String),
     /// Schema version must be >= 1.
     InvalidSchemaVersion(u32),
     /// Enum variants list was empty.
@@ -43,6 +47,20 @@ impl fmt::Display for SchemaError {
                 write!(
                     f,
                     "invalid field name '{s}': must be snake_case [a-z][a-z0-9_]*"
+                )
+            }
+            Self::ReservedSchemaName(s) => {
+                write!(
+                    f,
+                    "schema name '{s}' is reserved by SchemaForge's Cedar policy namespace; \
+                     please choose a different name"
+                )
+            }
+            Self::ReservedFieldName(s) => {
+                write!(
+                    f,
+                    "field name '{s}' is a Cedar policy keyword and cannot be used as a \
+                     field name; please choose a different name"
                 )
             }
             Self::InvalidSchemaVersion(v) => {

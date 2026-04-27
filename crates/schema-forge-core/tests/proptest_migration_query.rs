@@ -4,6 +4,7 @@ use schema_forge_core::migration::{
 };
 use schema_forge_core::query::{FieldPath, Filter, Query, SortOrder};
 use schema_forge_core::types::{
+    cedar_reserved::{reserved_field_name, reserved_schema_name},
     DefaultValue, DynamicValue, FieldDefinition, FieldName, FieldType, SchemaDefinition, SchemaId,
     SchemaName, TextConstraints,
 };
@@ -13,15 +14,21 @@ use schema_forge_core::types::{
 // ---------------------------------------------------------------------------
 
 fn field_name_strategy() -> impl Strategy<Value = String> {
-    "[a-z][a-z0-9_]{0,15}"
+    "[a-z][a-z0-9_]{0,15}".prop_filter("Cedar-reserved field name", |s| {
+        reserved_field_name(s).is_none()
+    })
 }
 
 fn schema_name_strategy() -> impl Strategy<Value = String> {
-    "[A-Z][a-zA-Z0-9]{0,15}"
+    "[A-Z][a-zA-Z0-9]{0,15}".prop_filter("Cedar-reserved schema name", |s| {
+        reserved_schema_name(s).is_none()
+    })
 }
 
 fn field_path_segment_strategy() -> impl Strategy<Value = String> {
-    "[a-z][a-z0-9_]{0,10}"
+    "[a-z][a-z0-9_]{0,10}".prop_filter("Cedar-reserved field name", |s| {
+        reserved_field_name(s).is_none()
+    })
 }
 
 fn unique_field_definitions(min: usize, max: usize) -> impl Strategy<Value = Vec<FieldDefinition>> {

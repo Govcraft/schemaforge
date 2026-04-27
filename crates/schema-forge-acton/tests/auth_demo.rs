@@ -207,16 +207,23 @@ async fn demo_system_schemas_seeded_at_startup() {
 
     println!("  System schemas found: {:?}", names);
     assert!(names.contains(&"User"), "User schema should be seeded");
-    assert!(names.contains(&"Role"), "Role schema should be seeded");
-    assert!(
-        names.contains(&"Permission"),
-        "Permission schema should be seeded"
-    );
     assert!(
         names.contains(&"TenantMembership"),
         "TenantMembership schema should be seeded"
     );
-    assert_eq!(schemas.len(), 5);
+    assert!(
+        names.contains(&"WebhookSubscription"),
+        "WebhookSubscription schema should be seeded"
+    );
+    assert!(
+        !names.contains(&"Role"),
+        "Role schema must not exist — Cedar policies own role definitions"
+    );
+    assert!(
+        !names.contains(&"Permission"),
+        "Permission schema must not exist — Cedar policies own permissions"
+    );
+    assert_eq!(schemas.len(), 3);
 
     // Verify system schemas are protected from deletion
     let user_schema = schemas.iter().find(|s| s.name.as_str() == "User").unwrap();
