@@ -24,10 +24,27 @@ pub struct LoginForm {
 /// access checks. The literal `admin` role string is intentionally *not*
 /// assigned — it is reserved for application authors to use in their
 /// `@access(...)` annotations without colliding with platform privileges.
+///
+/// Idempotent: returns `Ok(())` without creating anything when the store
+/// already has at least one user. Use [`bootstrap_admin_with_display_name`]
+/// when the operator-facing display name needs to be overridden.
 pub async fn bootstrap_admin(
     auth_store: &dyn DynAuthStore,
     username: &str,
     password: &str,
+) -> Result<(), String> {
+    bootstrap_admin_with_display_name(auth_store, username, password, "Administrator").await
+}
+
+/// Variant of [`bootstrap_admin`] that takes a custom display name.
+///
+/// Used by the `schemaforge bootstrap-admin` CLI subcommand so operators
+/// can customize the human-readable label written into the user record.
+pub async fn bootstrap_admin_with_display_name(
+    auth_store: &dyn DynAuthStore,
+    username: &str,
+    password: &str,
+    display_name: &str,
 ) -> Result<(), String> {
     let count = auth_store
         .count_users()
@@ -40,7 +57,7 @@ pub async fn bootstrap_admin(
 
     let roles = vec!["platform_admin".to_string()];
     auth_store
-        .create_user(username, password, &roles, "Administrator")
+        .create_user(username, password, &roles, display_name)
         .await
         .map_err(|e| format!("Bootstrap create failed: {e}"))?;
 

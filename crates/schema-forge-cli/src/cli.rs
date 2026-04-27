@@ -123,6 +123,43 @@ pub enum Commands {
         #[command(subcommand)]
         command: SiteCommands,
     },
+
+    /// Bootstrap the initial `platform_admin` user against the configured
+    /// backend. Idempotent: only seeds when the user store is empty.
+    BootstrapAdmin(BootstrapAdminArgs),
+}
+
+/// Arguments for `schema-forge bootstrap-admin`.
+///
+/// Connects to the configured backend (resolved via the same precedence
+/// chain as `serve`: CLI flag → env → config.toml) and creates a user
+/// holding the `platform_admin` role. Refuses to run when other users
+/// already exist so production deployments don't accidentally double-seed.
+#[derive(Args)]
+pub struct BootstrapAdminArgs {
+    /// Username for the bootstrapped platform_admin.
+    #[arg(
+        long = "username",
+        env = "SCHEMA_FORGE_BOOTSTRAP_ADMIN_USERNAME",
+        default_value = "admin"
+    )]
+    pub username: String,
+
+    /// Password for the bootstrapped platform_admin. Required either as a
+    /// flag or via `SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD`. Never prompted
+    /// interactively — operators run this command from provisioning
+    /// pipelines (init containers, ansible playbooks) where stdin isn't
+    /// available.
+    #[arg(long = "password", env = "SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD")]
+    pub password: String,
+
+    /// Display name written into the user record. Cosmetic only.
+    #[arg(
+        long = "display-name",
+        env = "SCHEMA_FORGE_BOOTSTRAP_ADMIN_DISPLAY_NAME",
+        default_value = "Administrator"
+    )]
+    pub display_name: String,
 }
 
 /// Site generator subcommands.
@@ -686,6 +723,38 @@ mod tests {
         } else {
             panic!("expected Policies Validate command");
         }
+    }
+
+    #[test]
+    fn parse_bootstrap_admin_with_flags() {
+        let cli = Cli::try_parse_from([
+            "schemaforge",
+            "bootstrap-admin",
+            "--username",
+            "ops",
+            "--password",
+            "s3cret",
+            "--display-name",
+            "Ops Team",
+        ])
+        .unwrap();
+        if let Commands::BootstrapAdmin(args) = cli.command {
+            assert_eq!(args.username, "ops");
+            assert_eq!(args.password, "s3cret");
+            assert_eq!(args.display_name, "Ops Team");
+        } else {
+            panic!("expected BootstrapAdmin command");
+        }
+    }
+
+    #[test]
+    fn parse_bootstrap_admin_password_is_required() {
+        // Without --password and no env var, clap must reject the invocation
+        // so provisioning scripts fail loud rather than seeding an empty
+        // password.
+        std::env::remove_var("SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD");
+        let result = Cli::try_parse_from(["schemaforge", "bootstrap-admin"]);
+        assert!(result.is_err(), "missing --password should be a parse error");
     }
 
     #[test]

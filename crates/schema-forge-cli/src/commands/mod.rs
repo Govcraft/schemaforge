@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod bootstrap_admin;
 pub mod codegen;
 pub mod completions;
 pub mod export;

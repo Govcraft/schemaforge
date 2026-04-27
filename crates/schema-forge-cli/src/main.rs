@@ -33,6 +33,9 @@ async fn main() {
             commands::hooks::run(command, &cli.global, &output).await
         }
         cli::Commands::Site { command } => commands::site::run(command, &cli.global, &output).await,
+        cli::Commands::BootstrapAdmin(args) => {
+            commands::bootstrap_admin::run(args, &cli.global, &output).await
+        }
     };
 
     match result {
