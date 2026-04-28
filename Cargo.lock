@@ -6331,7 +6331,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.23.2"
+version = "0.23.3"
 dependencies = [
  "acton-service",
  "assert_cmd",
