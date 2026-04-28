@@ -32,11 +32,32 @@ export type FieldResponse = {
   annotations?: unknown[]
 }
 
+/** Schema-level permission flags computed by Cedar for the calling user.
+ *  Present on read responses (`GET /schemas`, `GET /schemas/:name`); absent
+ *  on create/update responses where the caller's authority is implicit. */
+export type SchemaPermissions = {
+  /** Whether the user may create new entities of this schema. Drives the
+   *  visibility of "New" buttons in the admin shell. */
+  create: boolean
+}
+
+/** Per-entity permission flags computed against the entity's actual
+ *  attributes, so per-record policies (`@owner`, `@tenant`) are honored. */
+export type EntityPermissions = {
+  /** Whether the user may update this row. */
+  update: boolean
+  /** Whether the user may delete this row. */
+  delete: boolean
+}
+
 export type SchemaResponse = {
   id: string
   name: string
   fields: FieldResponse[]
   annotations: unknown[]
+  /** Cedar-derived schema-level permissions for the calling user. Absent
+   *  on responses produced by mutations. */
+  permissions?: SchemaPermissions
 }
 
 export type ListSchemasResponse = {
@@ -48,12 +69,14 @@ type EntityEnvelope = {
   id: string
   schema: string
   fields: Record<string, unknown>
+  permissions?: EntityPermissions
 }
 
 type ListEntitiesEnvelope = {
   entities: EntityEnvelope[]
   count: number
   total_count?: number
+  permissions?: SchemaPermissions
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +378,15 @@ async function sendRequest(path: string, init?: RequestInit): Promise<Response> 
 }
 
 function flatten(env: EntityEnvelope): Record<string, unknown> {
-  return { id: env.id, ...env.fields }
+  // `__permissions` carries the Cedar decision the server already made for
+  // this row. Double-underscore matches the codebase's existing convention
+  // for synthetic, non-field metadata (`__display`, etc.) so it's unlikely
+  // to collide with a schema-declared field name.
+  const flat: Record<string, unknown> = { id: env.id, ...env.fields }
+  if (env.permissions !== undefined) {
+    flat.__permissions = env.permissions
+  }
+  return flat
 }
 
 function wrap(body: Record<string, unknown>): { fields: Record<string, unknown> } {
@@ -461,12 +492,18 @@ export type ListEntitiesParams = {
   filters?: Record<string, string>
 }
 
-export type EntityRow = Record<string, unknown> & { id: string }
+/** A flattened entity row. The optional `__permissions` field carries the
+ *  Cedar decision the server made for the calling user, so per-row UI
+ *  affordances can be gated without round-tripping. */
+export type EntityRow = Record<string, unknown> & {
+  id: string
+  __permissions?: EntityPermissions
+}
 
 export async function listEntities(
   schema: string,
   params: ListEntitiesParams = { limit: 100 },
-): Promise<{ rows: EntityRow[]; count: number }> {
+): Promise<{ rows: EntityRow[]; count: number; permissions?: SchemaPermissions }> {
   const qs = new URLSearchParams()
   if (params.limit !== undefined) qs.set("limit", String(params.limit))
   if (params.offset !== undefined) qs.set("offset", String(params.offset))
@@ -483,6 +520,7 @@ export async function listEntities(
   return {
     rows: env.entities.map((e) => flatten(e) as EntityRow),
     count: env.total_count ?? env.count,
+    permissions: env.permissions,
   }
 }
 
@@ -605,4 +643,44 @@ export async function changePassword(
     `${FORGE_API_PREFIX}/users/${encodeURIComponent(username)}/password`,
     { method: "POST", body: JSON.stringify({ password }) },
   )
+}
+
+/** A single available role as returned by `GET /users/roles`. */
+export type RoleOption = {
+  name: string
+  rank: number
+}
+
+type ListRolesEnvelope = {
+  roles: RoleOption[]
+  count: number
+}
+
+/** List the roles the caller is allowed to grant. The server filters out
+ *  `platform_admin` for callers that don't already hold it, so the form
+ *  can render the response directly without re-filtering. */
+export async function listRoles(): Promise<RoleOption[]> {
+  const env = await request<ListRolesEnvelope>(`${FORGE_API_PREFIX}/users/roles`)
+  return env.roles
+}
+
+// ---------------------------------------------------------------------------
+// Admin-shell permissions (`/permissions`)
+// ---------------------------------------------------------------------------
+
+/** Wire shape of `GET /api/v1/forge/permissions`. The admin shell queries
+ *  this once after login and uses the flags to decide which top-level
+ *  admin nav items to render. */
+export type AdminPermissionsResponse = {
+  admin: {
+    /** Whether the Schemas admin section is visible (platform_admin only). */
+    schemas_manage: boolean
+    /** Whether the Users admin section is visible (anyone with List on User). */
+    users_manage: boolean
+  }
+}
+
+/** Fetch the admin-shell permission flags for the calling user. */
+export async function getAdminPermissions(): Promise<AdminPermissionsResponse> {
+  return request<AdminPermissionsResponse>(`${FORGE_API_PREFIX}/permissions`)
 }

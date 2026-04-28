@@ -108,11 +108,12 @@ mod tests {
 
     #[test]
     fn forge_user_deserialize() {
-        let json = r#"{"username":"admin","roles":["platform_admin"],"display_name":"Admin","active":true}"#;
+        let json = r#"{"username":"admin","roles":["platform_admin"],"display_name":"Admin","active":true,"role_rank":9223372036854775807}"#;
         let user: ForgeUser = serde_json::from_str(json).unwrap();
         assert_eq!(user.username, "admin");
         assert!(user.active);
         assert_eq!(user.roles, vec!["platform_admin"]);
+        assert_eq!(user.role_rank, i64::MAX);
     }
 
     #[test]

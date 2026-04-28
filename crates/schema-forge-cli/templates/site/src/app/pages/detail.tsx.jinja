@@ -49,6 +49,11 @@ export function {{ entity.pascal }}Detail() {
   const headline =
     pickHeadline(data as unknown as Record<string, unknown>) ?? data.id
 
+  // Edit visibility tracks the Cedar `Update` decision the server already
+  // computed against this record's actual attributes; default to hidden
+  // when the field is absent (older server, etc.).
+  const canUpdate = data.__permissions?.update ?? false
+
   return (
     <div className="page-narrow">
       <div className="page-head">
@@ -59,9 +64,11 @@ export function {{ entity.pascal }}Detail() {
         </div>
         <div style={ { display: "flex", gap: 8 }}>
           <Link to="/app/{{ entity.kebab }}" className="btn">Back</Link>
-          <Link to={`/app/{{ entity.kebab }}/${data.id}/edit`} className="btn btn-primary">
-            Edit
-          </Link>
+          {canUpdate ? (
+            <Link to={`/app/{{ entity.kebab }}/${data.id}/edit`} className="btn btn-primary">
+              Edit
+            </Link>
+          ) : null}
         </div>
       </div>
 

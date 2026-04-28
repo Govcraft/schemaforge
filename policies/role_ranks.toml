@@ -1,0 +1,23 @@
+# Role-rank hierarchy consumed by Cedar's `user_role_rank_forbid` policy.
+#
+# Each entry maps a role name to a non-negative i64 rank. A user's effective
+# rank is `max(rank for role in user.roles)`, and Cedar's global policy
+# refuses any user-management action where `principal.role_rank <
+# resource.role_rank` (no upward visibility, no upward grant). See
+# `crates/schema-forge-acton/src/authz/role_ranks.rs` for the loader.
+#
+# `platform_admin` is implicit: it always sits at `i64::MAX` and listing it
+# here is a hard error. Roles referenced by Cedar policies but missing from
+# this file abort startup, so add a row before referencing a new role.
+#
+# This default ladder is what the `task demo` workflow seeds against.
+# Production deployments should replace it with the operator's real
+# hierarchy as part of their config-management workflow.
+[roles]
+admin     = 1000
+manager   = 500
+hr        = 400
+finance   = 400
+sales     = 200
+marketing = 200
+member    = 100

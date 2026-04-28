@@ -2,6 +2,7 @@ pub mod auth;
 pub mod entities;
 pub mod files;
 pub mod meta;
+pub mod permissions;
 pub mod query_params;
 pub mod schemas;
 pub mod users;
@@ -70,8 +71,11 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
             "/schemas/{schema}/entities/{id}/fields/{field}/scan-complete",
             post(files::scan_complete),
         )
+        // Admin-shell permission summary (drives sidebar gating)
+        .route("/permissions", get(permissions::get_permissions))
         // User management
         .route("/users", post(users::create_user).get(users::list_users))
+        .route("/users/roles", get(users::list_roles))
         .route(
             "/users/{username}",
             delete(users::delete_user).put(users::update_user),

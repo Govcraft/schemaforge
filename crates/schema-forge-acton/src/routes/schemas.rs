@@ -16,7 +16,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::instrument;
 
-use crate::access::{OptionalClaims, PLATFORM_ADMIN_ROLE};
+use crate::access::{
+    check_schema_access, schema_permissions, AccessAction, OptionalClaims, SchemaPermissions,
+    PLATFORM_ADMIN_ROLE,
+};
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
@@ -197,6 +200,12 @@ pub struct SchemaResponse {
     pub fields: Vec<FieldResponse>,
     /// The annotations.
     pub annotations: Vec<serde_json::Value>,
+    /// Cedar-derived permission summary for the calling user. Only populated
+    /// on read paths (`GET /schemas`, `GET /schemas/{name}`); omitted from
+    /// write responses where the caller's authority is implicit in the
+    /// request having succeeded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<SchemaPermissions>,
 }
 
 /// A single field in the response.
@@ -376,6 +385,7 @@ fn schema_to_response(schema: &SchemaDefinition) -> SchemaResponse {
         name: schema.name.as_str().to_string(),
         fields,
         annotations,
+        permissions: None,
     }
 }
 
@@ -533,13 +543,18 @@ pub async fn create_schema(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
-/// GET /schemas -- List all registered schemas. Requires authentication.
+/// GET /schemas -- List schemas the caller is allowed to see, each annotated
+/// with the action permissions that drive the admin UI's affordances.
+///
+/// Schemas the caller cannot `Read` are omitted entirely so the client never
+/// has to filter or 403-probe to learn nav contents — the Cedar bundle is
+/// the single source of truth.
 #[instrument(skip_all)]
 pub async fn list_schemas(
     State(state): State<AppState<SchemaForgeConfig>>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
-    require_auth(&claims)?;
+    let claims = require_auth(&claims)?;
     let forge = state
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered");
@@ -551,8 +566,21 @@ pub async fn list_schemas(
         })
         .await;
     let schemas = ask_forge(rx).await?;
+    let policy_store = fetch_policy_store(&state).await?;
 
-    let responses: Vec<SchemaResponse> = schemas.iter().map(schema_to_response).collect();
+    let mut responses: Vec<SchemaResponse> = Vec::with_capacity(schemas.len());
+    for schema in &schemas {
+        // Drop schemas the caller cannot read. `check_schema_access(Read)`
+        // returns the same decision the entity-list handler would surface
+        // as a 403 — keep them in lockstep so visibility and access stay
+        // mutually consistent.
+        if check_schema_access(&policy_store, schema, Some(claims), AccessAction::Read).is_err() {
+            continue;
+        }
+        let mut response = schema_to_response(schema);
+        response.permissions = Some(schema_permissions(&policy_store, schema, Some(claims)));
+        responses.push(response);
+    }
     let count = responses.len();
     Ok(Json(ListSchemasResponse {
         schemas: responses,
@@ -560,14 +588,18 @@ pub async fn list_schemas(
     }))
 }
 
-/// GET /schemas/{name} -- Get a schema by name. Requires authentication.
+/// GET /schemas/{name} -- Get a schema by name. Requires read access.
+///
+/// Returns 403 instead of leaking schema metadata when the caller lacks
+/// `Read` access; mirrors the list endpoint's filtering rule so a denied
+/// caller can never use this route to enumerate hidden schemas.
 #[instrument(skip_all)]
 pub async fn get_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path(name): Path<String>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<impl IntoResponse, ForgeError> {
-    require_auth(&claims)?;
+    let claims = require_auth(&claims)?;
     let forge = state
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered");
@@ -583,7 +615,12 @@ pub async fn get_schema(
         .await?
         .ok_or(ForgeError::SchemaNotFound { name })?;
 
-    Ok(Json(schema_to_response(&schema)))
+    let policy_store = fetch_policy_store(&state).await?;
+    check_schema_access(&policy_store, &schema, Some(claims), AccessAction::Read)?;
+
+    let mut response = schema_to_response(&schema);
+    response.permissions = Some(schema_permissions(&policy_store, &schema, Some(claims)));
+    Ok(Json(response))
 }
 
 /// PUT /schemas/{name} -- Update an existing schema (triggers migration). Requires platform_admin role.

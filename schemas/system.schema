@@ -1,0 +1,34 @@
+// =============================================================================
+// SchemaForge System Schema Overrides
+// =============================================================================
+//
+// Re-declares built-in system schemas to attach project-local @access
+// annotations. The system seeder writes the built-in definitions on first
+// boot; the loop in `serve` then overwrites the registry entry with the
+// version below and persists its metadata to the backend, so the override
+// becomes the source of truth on subsequent runs.
+//
+// Field shape MUST match `crates/schema-forge-core/src/system_schemas.rs`
+// exactly — anything else is treated as a real migration by the diff
+// engine.
+
+/* User accounts. The application `admin` role is granted full CRUD; the
+   global Cedar `user_role_rank_forbid` policy then prevents an admin from
+   listing, editing, or deleting any user whose `role_rank` exceeds their
+   own (so `platform_admin` users at `i64::MAX` remain unreachable), and
+   `caller_can_grant_roles` in the user route handlers refuses to grant
+   the `platform_admin` role to anyone unless the caller already holds it.
+   `platform_admin` itself bypasses every check via the global permit. */
+
+@system @display("email")
+@access(read: ["admin"], write: ["admin"], delete: ["admin"])
+schema User {
+    email:          text(max: 512) required indexed
+    display_name:   text(max: 255) required
+    roles:          text[]
+    role_rank:      integer required
+    active:         boolean default(true)
+    password_hash:  text(max: 512) @hidden
+    last_login:     datetime
+    metadata:       json
+}

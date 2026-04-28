@@ -124,6 +124,12 @@ export function AdminEntityList() {
   const pageStart = total === 0 ? 0 : offset + 1
   const pageEnd = Math.min(offset + (rows.data?.rows.length ?? 0), total)
 
+  // Schema-level "create" decision rides on the list response so the
+  // "New {schema}" button matches what `POST /entities` would actually
+  // accept. Default to hidden when the server hasn't reported a value
+  // yet — better to under-show than to render a button that 403s.
+  const canCreate = rows.data?.permissions?.create ?? false
+
   function toggleSort(fieldName: string) {
     if (sortField !== fieldName) {
       setSortField(fieldName)
@@ -148,9 +154,11 @@ export function AdminEntityList() {
           </div>
         </div>
         <div style={ { display: "flex", gap: 8 }}>
-          <Button onClick={() => navigate(`/admin/${schema}/new`)}>
-            New {schema}
-          </Button>
+          {canCreate ? (
+            <Button onClick={() => navigate(`/admin/${schema}/new`)}>
+              New {schema}
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -237,35 +245,47 @@ export function AdminEntityList() {
                 </td>
               </tr>
             ) : null}
-            {(rows.data?.rows ?? []).map((row) => (
-              <tr key={row.id}>
-                <td className="id-cell">
-                  <Link to={`/admin/${schema}/${row.id}`}>{shortId(row.id)}</Link>
-                </td>
-                {fields.map((f) => (
-                  <td key={f.name}>{renderCell(f, row[f.name])}</td>
-                ))}
-                <td className="actioncell">
-                  <div className="row-actions">
-                    <Button variant="ghost" size="xs" asChild>
-                      <Link to={`/admin/${schema}/${row.id}/edit`}>Edit</Link>
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      disabled={remove.isPending}
-                      onClick={() => {
-                        if (window.confirm(`Delete ${schema} ${row.id}?`)) {
-                          remove.mutate(row.id)
-                        }
-                      }}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {(rows.data?.rows ?? []).map((row) => {
+              // Per-row permissions ride along on the list envelope. Cedar
+              // already evaluated them against this entity's actual fields,
+              // so attribute-based policies (`@owner`, `@tenant`) get
+              // honored — no client-side guesswork.
+              const canUpdate = row.__permissions?.update ?? false
+              const canDelete = row.__permissions?.delete ?? false
+              return (
+                <tr key={row.id}>
+                  <td className="id-cell">
+                    <Link to={`/admin/${schema}/${row.id}`}>{shortId(row.id)}</Link>
+                  </td>
+                  {fields.map((f) => (
+                    <td key={f.name}>{renderCell(f, row[f.name])}</td>
+                  ))}
+                  <td className="actioncell">
+                    <div className="row-actions">
+                      {canUpdate ? (
+                        <Button variant="ghost" size="xs" asChild>
+                          <Link to={`/admin/${schema}/${row.id}/edit`}>Edit</Link>
+                        </Button>
+                      ) : null}
+                      {canDelete ? (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          disabled={remove.isPending}
+                          onClick={() => {
+                            if (window.confirm(`Delete ${schema} ${row.id}?`)) {
+                              remove.mutate(row.id)
+                            }
+                          }}
+                        >
+                          Delete
+                        </Button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
             {!rows.isLoading &&
             !rows.error &&
             (rows.data?.rows ?? []).length === 0 ? (

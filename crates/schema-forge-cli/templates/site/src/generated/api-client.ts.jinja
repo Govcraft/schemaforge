@@ -33,9 +33,27 @@ export type ListParams = {
   count?: boolean
 }
 
+/** Schema-level permission flags computed by Cedar for the calling user.
+ *  Drives "New" button visibility on list pages. */
+export type SchemaPermissions = {
+  create: boolean
+}
+
+/** Per-entity permission flags computed against the entity's actual
+ *  attributes — `@owner` / `@tenant` style policies are honored. */
+export type EntityPermissions = {
+  update: boolean
+  delete: boolean
+}
+
 export type ListResponse<T> = {
-  items: T[]
+  /** Each item carries an optional `__permissions` companion field with
+   *  the Cedar decision the server made for that row. */
+  items: Array<T & { __permissions?: EntityPermissions }>
   total?: number
+  /** Schema-level permissions for the caller (e.g., `create`). Absent
+   *  when the server is older than the client. */
+  permissions?: SchemaPermissions
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -95,16 +113,30 @@ type EntityEnvelope = {
   id: string
   schema: string
   fields: Record<string, unknown>
+  permissions?: EntityPermissions
 }
 
 type ListEnvelope = {
   entities: EntityEnvelope[]
   count: number
   total_count?: number
+  permissions?: SchemaPermissions
 }
 
-function flatten<T>(envelope: EntityEnvelope): T {
-  return { id: envelope.id, ...envelope.fields } as T
+function flatten<T>(envelope: EntityEnvelope): T & { __permissions?: EntityPermissions } {
+  // The `__permissions` companion is attached as a non-typed extra so
+  // T-typed callers can opt to read it (`row.__permissions?.update`)
+  // without every entity type having to declare the field. The
+  // `unknown` step is only needed because TypeScript can't prove the
+  // structural compatibility between `{id, ...fields}` and an arbitrary
+  // T at this generic layer; runtime shape is what the backend serializes.
+  const flat = { id: envelope.id, ...envelope.fields } as unknown as T & {
+    __permissions?: EntityPermissions
+  }
+  if (envelope.permissions !== undefined) {
+    flat.__permissions = envelope.permissions
+  }
+  return flat
 }
 
 function wrap(body: Record<string, unknown>): { fields: Record<string, unknown> } {
@@ -156,10 +188,11 @@ export async function list{{ entity.pascal_plural }}(params: ListParams = {}): P
   return {
     items: envelope.entities.map((e) => flatten<{{ entity.pascal }}>(e)),
     total: envelope.total_count ?? envelope.count,
+    permissions: envelope.permissions,
   }
 }
 
-export async function get{{ entity.pascal }}(id: string): Promise<{{ entity.pascal }}> {
+export async function get{{ entity.pascal }}(id: string): Promise<{{ entity.pascal }} & { __permissions?: EntityPermissions }> {
   const envelope = await request<EntityEnvelope>(
     `${FORGE_API_PREFIX}/schemas/{{ entity.schema_name }}/entities/${encodeURIComponent(id)}`,
   )

@@ -36,12 +36,17 @@ import {
   Target,
   Users,
 } from "lucide-react"
-import { routeManifest, navEntries, defaultEntity } from "@/generated/route-manifest"
+import { routeManifest } from "@/generated/route-manifest"
 import { LoginPage } from "@/pages/login"
 import { AdminLayout } from "@/admin/layout"
 import { RequireAuth } from "@/lib/require-auth"
 import { getCurrentUsername, isAuthenticated, logout } from "@/lib/auth"
-import { listSchemas, isSystemSchema, type SchemaResponse } from "@/admin/api-client"
+import {
+  getAdminPermissions,
+  isSystemSchema,
+  listSchemas,
+  type SchemaResponse,
+} from "@/admin/api-client"
 
 const THEME_KEY = "{{ project_name | lower }}.theme"
 type Theme = "light" | "dark"
@@ -89,6 +94,14 @@ const SCHEMA_ICON_BY_NAME: Record<string, ComponentType<{ size?: number }>> = {
   Tag: Tag,
 }
 
+/** Convert a PascalCase schema name to its `/app/{kebab}` URL slug.
+ *  Mirrors the conversion `schemaforge site generate` applies when
+ *  emitting the route manifest: `Contact` → `contact`,
+ *  `PullRequest` → `pull-request`. */
+function pascalToKebab(name: string): string {
+  return name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase()
+}
+
 function pickIcon(name: string): ComponentType<{ size?: number }> {
   const exact = SCHEMA_ICON_BY_NAME[name]
   if (exact) return exact
@@ -107,11 +120,28 @@ function pickIcon(name: string): ComponentType<{ size?: number }> {
 
 function Sidebar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const location = useLocation()
+  // The schemas endpoint already filters to whatever the caller can read,
+  // so the nav reflects Cedar's decision without any client-side
+  // post-filtering. System schemas (User et al.) are still hidden from
+  // the user-facing entities list — they're administered through dedicated
+  // /admin/users surfaces, not the generic entity browser.
   const { data: schemas } = useQuery({
     queryKey: ["admin", "schemas"],
     queryFn: () => listSchemas(),
   })
   const appSchemas = (schemas ?? []).filter((s: SchemaResponse) => !isSystemSchema(s))
+
+  // The admin shell's top-level sections (Schemas, Users) are gated by a
+  // tiny dedicated endpoint so the nav matches what the underlying pages
+  // would actually allow. A 401 from this query means the user is signed
+  // out — that's already handled by the auth-aware `request()` helper.
+  const { data: adminPerms } = useQuery({
+    queryKey: ["admin", "permissions"],
+    queryFn: getAdminPermissions,
+  })
+  const showSchemasAdmin = adminPerms?.admin.schemas_manage ?? false
+  const showUsersAdmin = adminPerms?.admin.users_manage ?? false
+  const showAdminSection = showSchemasAdmin || showUsersAdmin
 
   const isActive = (prefix: string) =>
     location.pathname === prefix || location.pathname.startsWith(prefix + "/")
@@ -127,25 +157,31 @@ function Sidebar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
         <div className="rail-title">{{ project_name }}</div>
       </div>
 
-      <div className="rail-section">
-        <div className="rail-section-label">
-          <span>Admin</span>
+      {showAdminSection ? (
+        <div className="rail-section">
+          <div className="rail-section-label">
+            <span>Admin</span>
+          </div>
+          {showSchemasAdmin ? (
+            <Link
+              to="/admin"
+              className={"rail-link" + (location.pathname === "/admin" ? " active" : "")}
+            >
+              <Layers size={14} />
+              <span>Schemas</span>
+            </Link>
+          ) : null}
+          {showUsersAdmin ? (
+            <Link
+              to="/admin/users"
+              className={"rail-link" + (isActive("/admin/users") ? " active" : "")}
+            >
+              <Users size={14} />
+              <span>Users</span>
+            </Link>
+          ) : null}
         </div>
-        <Link
-          to="/admin"
-          className={"rail-link" + (location.pathname === "/admin" ? " active" : "")}
-        >
-          <Layers size={14} />
-          <span>Schemas</span>
-        </Link>
-        <Link
-          to="/admin/users"
-          className={"rail-link" + (isActive("/admin/users") ? " active" : "")}
-        >
-          <Users size={14} />
-          <span>Users</span>
-        </Link>
-      </div>
+      ) : null}
 
       <div className="rail-section" style={ { flex: 1, minHeight: 0, overflow: "auto" }}>
         <div className="rail-section-label">
@@ -154,20 +190,21 @@ function Sidebar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
             {appSchemas.length}
           </span>
         </div>
-        {navEntries.map((n) => {
-          const Icon = pickIcon(n.title)
+        {appSchemas.map((s) => {
+          const kebab = pascalToKebab(s.name)
+          const Icon = pickIcon(s.name)
           return (
             <Link
-              key={n.kebab}
-              to={`/app/${n.kebab}`}
-              className={"rail-link" + (isActive(`/app/${n.kebab}`) ? " active" : "")}
+              key={kebab}
+              to={`/app/${kebab}`}
+              className={"rail-link" + (isActive(`/app/${kebab}`) ? " active" : "")}
             >
               <Icon size={14} />
-              <span>{n.title}</span>
+              <span>{s.name}</span>
             </Link>
           )
         })}
-        {navEntries.length === 0 ? (
+        {appSchemas.length === 0 ? (
           <div style={ { padding: "4px 8px", color: "var(--app-rail-fg-3)", fontSize: 12 }}>
             No application schemas yet.
           </div>
@@ -283,7 +320,7 @@ export default function App() {
           path="*"
           element={
             <RequireAuth>
-              <Navigate to={`/app/${defaultEntity}`} replace />
+              <Navigate to="/admin" replace />
             </RequireAuth>
           }
         />
@@ -299,11 +336,16 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
 
+          {/* Land on the schema catalog: it's access-aware (filters to
+              schemas the user can read) and never auto-loads a specific
+              entity, so callers without read access on the first declared
+              schema don't trigger a 403 popup before they've even chosen
+              where to go. */}
           <Route
             path="/"
             element={
               <RequireAuth>
-                <Navigate to={`/app/${defaultEntity}`} replace />
+                <Navigate to="/admin" replace />
               </RequireAuth>
             }
           />

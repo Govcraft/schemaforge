@@ -19,8 +19,9 @@ use tracing::instrument;
 
 use super::query_params::{parse_fields_param, parse_filter_params, parse_sort_param};
 use crate::access::{
-    check_schema_access, filter_entity_fields, inject_tenant_on_create, inject_tenant_scope,
-    AccessAction, FieldFilterDirection, OptionalClaims,
+    check_schema_access, entity_permissions, filter_entity_fields, inject_tenant_on_create,
+    inject_tenant_scope, schema_permissions, AccessAction, EntityPermissions,
+    FieldFilterDirection, OptionalClaims, SchemaPermissions,
 };
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
@@ -415,6 +416,12 @@ pub struct EntityResponse {
     pub schema: String,
     /// The entity fields.
     pub fields: serde_json::Map<String, serde_json::Value>,
+    /// Cedar-derived per-entity permissions for the calling user. Set on
+    /// read paths (`GET` list/detail) so the client can render row-level
+    /// affordances honestly; absent on write responses where the caller's
+    /// authority is implicit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<EntityPermissions>,
 }
 
 /// Response for entity list/query.
@@ -427,6 +434,10 @@ pub struct ListEntitiesResponse {
     /// The total count of matching entities before pagination, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_count: Option<usize>,
+    /// Schema-level permissions for the caller, populated on read paths so
+    /// the client can render the "New" affordance without round-tripping.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<SchemaPermissions>,
 }
 
 /// Request body for POST query endpoint.
@@ -1076,6 +1087,11 @@ async fn execute_entity_query(
     let entities: Vec<EntityResponse> = visible_entities
         .into_iter()
         .map(|mut e| {
+            // Compute per-entity permissions before field filtering: Cedar
+            // policies that key on attributes (e.g. `@owner`) need the full
+            // entity, not the read-projected view we hand back to the
+            // client.
+            let perms = entity_permissions(&policy_store, schema_def, &e, claims);
             filter_entity_fields(
                 &policy_store,
                 &mut e,
@@ -1088,15 +1104,18 @@ async fn execute_entity_query(
             }
             let mut response = entity_to_response(&e, schema_def);
             apply_relation_displays(&mut response, schema_def, &e, &display_map);
+            response.permissions = Some(perms);
             response
         })
         .collect();
     let count = entities.len();
+    let permissions = Some(schema_permissions(&policy_store, schema_def, claims));
 
     Ok(ListEntitiesResponse {
         entities,
         count,
         total_count: result.total_count,
+        permissions,
     })
 }
 
@@ -2112,6 +2131,12 @@ pub async fn get_entity(
         }
     }
 
+    // Compute per-entity permissions against the unfiltered entity so any
+    // attribute-based Cedar policy (`@owner`, `@tenant`, etc.) sees the
+    // full record. Capture before field filtering strips read-restricted
+    // fields from the response payload.
+    let perms = entity_permissions(&policy_store, &schema_def, &entity, claims.as_ref());
+
     // Filter read-restricted fields from response
     filter_entity_fields(
         &policy_store,
@@ -2164,6 +2189,7 @@ pub async fn get_entity(
     let [entity] = single;
 
     let mut response = entity_to_response(&entity, &schema_def);
+    response.permissions = Some(perms);
 
     // Resolve relation display fields unless the caller opted out with
     // `?resolve=false`. Reuses the same batched IN-query path the list

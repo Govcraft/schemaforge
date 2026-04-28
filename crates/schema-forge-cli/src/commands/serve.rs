@@ -71,8 +71,8 @@ pub async fn run(
 
     // Load the role-rank hierarchy so the runtime no-upward-visibility
     // guard runs against the operator-controlled file the same way
-    // `policies validate` does. Missing file → empty hierarchy
-    // (`platform_admin` only); invalid file aborts startup.
+    // `policies validate` does. Missing or invalid file aborts startup —
+    // we refuse to silently degrade to an empty hierarchy.
     let role_ranks = schema_forge_acton::authz::RoleRanks::from_toml_file(&args.role_ranks)
         .map_err(|e| CliError::Server {
             message: format!(

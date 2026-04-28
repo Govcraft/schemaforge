@@ -62,6 +62,12 @@ export function AdminEntityDetail() {
 
   const fields = (meta.data?.fields ?? []).filter(canReadField)
   const data = entity.data
+  // Per-entity permissions are computed by Cedar against this record's
+  // actual attributes, so attribute-driven policies (`@owner`, `@tenant`)
+  // are honored. Default to hidden when absent — better to under-show than
+  // to render a button that 403s on click.
+  const canUpdate = data.__permissions?.update ?? false
+  const canDelete = data.__permissions?.delete ?? false
 
   return (
     <div className="page-narrow">
@@ -75,20 +81,24 @@ export function AdminEntityDetail() {
           <Button variant="outline" asChild>
             <Link to={`/admin/${schema}`}>Back</Link>
           </Button>
-          <Button asChild>
-            <Link to={`/admin/${schema}/${data.id}/edit`}>Edit</Link>
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={remove.isPending}
-            onClick={() => {
-              if (window.confirm(`Delete ${schema} ${data.id}?`)) {
-                remove.mutate()
-              }
-            }}
-          >
-            Delete
-          </Button>
+          {canUpdate ? (
+            <Button asChild>
+              <Link to={`/admin/${schema}/${data.id}/edit`}>Edit</Link>
+            </Button>
+          ) : null}
+          {canDelete ? (
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => {
+                if (window.confirm(`Delete ${schema} ${data.id}?`)) {
+                  remove.mutate()
+                }
+              }}
+            >
+              Delete
+            </Button>
+          ) : null}
         </div>
       </div>
 

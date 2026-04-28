@@ -68,5 +68,6 @@ pub fn entity_to_response(entity: &Entity, schema: &SchemaDefinition) -> EntityR
         id: entity.id.as_str().to_string(),
         schema: entity.schema.as_str().to_string(),
         fields,
+        permissions: None,
     }
 }

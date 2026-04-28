@@ -15,6 +15,7 @@ import { toast } from "sonner"
 import {
   changePassword,
   createUser,
+  listRoles,
   listUsers,
   updateUser,
   type UserRow,
@@ -26,7 +27,7 @@ type FormState = {
   username: string
   password: string
   displayName: string
-  rolesCsv: string
+  roles: string[]
   active: boolean
 }
 
@@ -34,7 +35,7 @@ const EMPTY: FormState = {
   username: "",
   password: "",
   displayName: "",
-  rolesCsv: "",
+  roles: [],
   active: true,
 }
 
@@ -49,6 +50,15 @@ export function UsersEdit() {
     queryKey: ["admin", "users"],
     queryFn: listUsers,
     enabled: !isNew,
+  })
+
+  // Roles are operator-controlled at runtime via `policies/role_ranks.toml`,
+  // so the form fetches the live catalog rather than baking it into the
+  // generated bundle. The server filters out `platform_admin` for callers
+  // that don't already hold it; we render whatever it returns.
+  const rolesQuery = useQuery({
+    queryKey: ["admin", "users", "roles"],
+    queryFn: listRoles,
   })
 
   const [values, setValues] = useState<FormState>(EMPTY)
@@ -70,7 +80,7 @@ export function UsersEdit() {
           username: row.username,
           password: "",
           displayName: row.display_name ?? row.username,
-          rolesCsv: row.roles.join(", "),
+          roles: row.roles,
           active: row.active,
         })
         setInitialActive(row.active)
@@ -80,12 +90,11 @@ export function UsersEdit() {
 
   const save = useMutation({
     mutationFn: async (state: FormState) => {
-      const roles = parseRoles(state.rolesCsv)
       if (isNew) {
         return createUser({
           username: state.username,
           password: state.password,
-          roles,
+          roles: state.roles,
           display_name:
             state.displayName.trim().length > 0
               ? state.displayName.trim()
@@ -97,7 +106,7 @@ export function UsersEdit() {
       // supplied. The password endpoint is its own resource because it
       // needs different access rules (self-service is allowed).
       await updateUser(username!, {
-        roles,
+        roles: state.roles,
         display_name: state.displayName,
         active: state.active,
       })
@@ -210,19 +219,51 @@ export function UsersEdit() {
           </div>
 
           <div className="form-row">
-            <label className="form-label">
-              roles
-              <span className="opt">csv</span>
-            </label>
+            <label className="form-label">roles</label>
             <div className="form-field">
-              <Input
-                value={values.rolesCsv}
-                onChange={(e) =>
-                  setValues((prev) => ({ ...prev, rolesCsv: e.target.value }))
-                }
-                placeholder="admin, sales"
-              />
-              <div className="help mono">comma-separated</div>
+              {rolesQuery.isLoading ? (
+                <div className="help">loading roles…</div>
+              ) : rolesQuery.isError ? (
+                <div className="err mono" style={ { fontSize: 11 }}>
+                  failed to load roles
+                </div>
+              ) : rolesQuery.data && rolesQuery.data.length > 0 ? (
+                <div style={ { display: "flex", flexDirection: "column", gap: 6 }}>
+                  {rolesQuery.data.map((role) => (
+                    <label
+                      key={role.name}
+                      style={ {
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 8,
+                        fontSize: 13,
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={values.roles.includes(role.name)}
+                        onChange={(e) => {
+                          const checked = e.target.checked
+                          setValues((prev) => ({
+                            ...prev,
+                            roles: checked
+                              ? [...prev.roles, role.name]
+                              : prev.roles.filter((r) => r !== role.name),
+                          }))
+                        }}
+                      />
+                      <span className="mono">{role.name}</span>
+                      <span className="help" style={ { marginLeft: "auto" }}>
+                        rank {role.rank}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <div className="help">
+                  no roles configured — see policies/role_ranks.toml
+                </div>
+              )}
             </div>
           </div>
 
@@ -278,13 +319,3 @@ export function UsersEdit() {
   )
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function parseRoles(csv: string): string[] {
-  return csv
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-}

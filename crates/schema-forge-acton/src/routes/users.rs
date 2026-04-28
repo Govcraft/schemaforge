@@ -271,6 +271,28 @@ pub struct ListUsersResponse {
     pub count: usize,
 }
 
+/// One row of the `GET /users/roles` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleRow {
+    /// Role name as declared in `policies/role_ranks.toml`, plus the
+    /// implicit `platform_admin` (only included for callers that hold it).
+    pub name: String,
+    /// Numeric rank from the live policy snapshot. Surfaced so admin UIs
+    /// can sort or annotate without a second round-trip.
+    pub rank: i64,
+}
+
+/// Response body for `GET /users/roles`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListRolesResponse {
+    /// Roles, ordered by rank ascending then name. `platform_admin` is
+    /// omitted unless the caller already holds it (since
+    /// [`caller_can_grant_roles`] would reject the grant anyway).
+    pub roles: Vec<RoleRow>,
+    /// Total count, equivalent to `roles.len()`.
+    pub count: usize,
+}
+
 /// Request body for `POST /users`.
 #[derive(Debug, Deserialize)]
 pub struct CreateUserRequest {
@@ -373,6 +395,44 @@ pub async fn list_users(
         users: responses,
         count,
     }))
+}
+
+/// `GET /users/roles` — list roles available to the caller.
+///
+/// Sourced from the live policy snapshot's `role_ranks` map (driven by
+/// `policies/role_ranks.toml`), so admin UIs see whatever the operator
+/// declared without redeploying the generated site. Authorization piggy-backs
+/// on `ListUser`: anyone allowed to list users is allowed to see the role
+/// catalog they'd choose from. `platform_admin` is filtered out for callers
+/// that don't already hold it, because [`caller_can_grant_roles`] would
+/// reject any attempt to assign it.
+#[instrument(skip_all)]
+pub async fn list_roles(
+    State(state): State<AppState<SchemaForgeConfig>>,
+    OptionalClaims(claims): OptionalClaims,
+) -> Result<impl IntoResponse, ForgeError> {
+    let claims = require_auth(&claims)?;
+    let user_schema = fetch_user_schema(&state).await?;
+    let policy_store = fetch_policy_store(&state).await?;
+
+    check_schema_access(&policy_store, &user_schema, Some(claims), AccessAction::List)?;
+
+    let snapshot = policy_store.current();
+    let caller_is_platform_admin = claims.has_role(PLATFORM_ADMIN_ROLE);
+
+    let mut rows: Vec<RoleRow> = snapshot
+        .role_ranks
+        .role_names()
+        .filter(|name| caller_is_platform_admin || *name != PLATFORM_ADMIN_ROLE)
+        .map(|name| RoleRow {
+            name: name.to_string(),
+            rank: snapshot.role_ranks.get(name).unwrap_or(0),
+        })
+        .collect();
+    rows.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.name.cmp(&b.name)));
+
+    let count = rows.len();
+    Ok(Json(ListRolesResponse { roles: rows, count }))
 }
 
 /// `POST /users` — create a new user.

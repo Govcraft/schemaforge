@@ -8,6 +8,8 @@ use schema_forge_backend::TenantRef;
 use schema_forge_core::query::{FieldPath, Filter, Query};
 use schema_forge_core::types::{DynamicValue, SchemaDefinition};
 
+use serde::Serialize;
+
 use crate::authz::namespace::ActionVerb;
 use crate::authz::{authorize, authorize_field, FieldDirection, PolicyStore};
 use crate::error::ForgeError;
@@ -157,6 +159,67 @@ pub fn check_schema_access(
             schema.name.as_str(),
         ),
     })
+}
+
+/// Summary of schema-level operations the caller may perform.
+///
+/// Computed server-side from the live Cedar bundle so the client can render
+/// action affordances (e.g., "New" buttons) without guessing. `read`/`list`
+/// is implicit: callers without read access never see the response.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct SchemaPermissions {
+    /// Whether the caller can create new entities of this schema.
+    pub create: bool,
+}
+
+/// Summary of per-entity operations the caller may perform.
+///
+/// Computed server-side by evaluating Cedar against the entity's actual
+/// attributes, so per-record policies (`@owner`, `@tenant`, custom
+/// predicates) get factored in without the client second-guessing them.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct EntityPermissions {
+    /// Whether the caller can update this entity.
+    pub update: bool,
+    /// Whether the caller can delete this entity.
+    pub delete: bool,
+}
+
+/// Compute schema-level permissions for the caller.
+///
+/// Cedar's `Create{Schema}` action is evaluated against a placeholder
+/// resource (Cedar requires *some* resource entity even for create) — that
+/// matches what `routes::entities::create_entity` does at request time, so
+/// this preview is honest by construction.
+pub fn schema_permissions(
+    store: &Arc<PolicyStore>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+) -> SchemaPermissions {
+    let create = authorize(store, claims, ActionVerb::Create, schema, None)
+        .map(|d| d.is_allow())
+        .unwrap_or(false);
+    SchemaPermissions { create }
+}
+
+/// Compute per-entity permissions for the caller.
+///
+/// Both verbs are evaluated against the actual `entity` so attribute-based
+/// policies fire correctly — a user who can update entities they own but
+/// not those owned by others gets `update: true` only on their own rows.
+pub fn entity_permissions(
+    store: &Arc<PolicyStore>,
+    schema: &SchemaDefinition,
+    entity: &Entity,
+    claims: Option<&Claims>,
+) -> EntityPermissions {
+    let update = authorize(store, claims, ActionVerb::Update, schema, Some(entity))
+        .map(|d| d.is_allow())
+        .unwrap_or(false);
+    let delete = authorize(store, claims, ActionVerb::Delete, schema, Some(entity))
+        .map(|d| d.is_allow())
+        .unwrap_or(false);
+    EntityPermissions { update, delete }
 }
 
 /// Filter entity fields based on `@field_access` annotations, delegating to

@@ -33,6 +33,19 @@ pub type RoleRank = i64;
 /// Errors that can occur while loading or validating a [`RoleRanks`] map.
 #[derive(Debug, thiserror::Error)]
 pub enum RoleRanksError {
+    /// The role-ranks file does not exist at the expected path.
+    ///
+    /// Distinct from [`RoleRanksError::Io`] so callers (and operators) can
+    /// tell a missing-config problem from an unreadable-config problem
+    /// without parsing error strings. SchemaForge refuses to start without
+    /// an explicit hierarchy because a silently-empty rank map would let
+    /// the runtime accept any role name with rank 0 and still pass Cedar's
+    /// `user_role_rank_forbid` checks for non-platform-admin users.
+    #[error(
+        "role ranks file '{path}' does not exist; create it (even with an \
+         empty `[roles]` table) so the policy hierarchy is explicit"
+    )]
+    FileNotFound { path: String },
     /// The TOML file could not be read from disk.
     #[error("failed to read role ranks file '{path}': {source}")]
     Io {
@@ -96,14 +109,18 @@ impl RoleRanks {
 
     /// Loads ranks from a TOML file at `path`.
     ///
-    /// A missing file is treated as the empty map — equivalent to
-    /// [`RoleRanks::empty`]. This lets a fresh deployment skip the file
-    /// entirely until custom roles are introduced.
+    /// A missing file is a hard error ([`RoleRanksError::FileNotFound`]).
+    /// Operators must provision the file explicitly — even an empty
+    /// `[roles]` table is acceptable — so a deployment never silently
+    /// runs with no role hierarchy. Use [`RoleRanks::empty`] directly in
+    /// tests or programmatic constructors that don't go through disk.
     pub fn from_toml_file(path: &Path) -> Result<Self, RoleRanksError> {
         let path_str = path.display().to_string();
         let contents = match std::fs::read_to_string(path) {
             Ok(s) => s,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::empty()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(RoleRanksError::FileNotFound { path: path_str })
+            }
             Err(e) => {
                 return Err(RoleRanksError::Io {
                     path: path_str,
@@ -239,10 +256,15 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_treated_as_empty() {
+    fn missing_file_is_hard_error() {
         let path = std::path::PathBuf::from("/tmp/definitely-does-not-exist-role-ranks.toml");
-        let ranks = RoleRanks::from_toml_file(&path).unwrap();
-        assert_eq!(ranks.role_names().count(), 1);
+        let err = RoleRanks::from_toml_file(&path).unwrap_err();
+        match err {
+            RoleRanksError::FileNotFound { path: reported } => {
+                assert!(reported.contains("definitely-does-not-exist"));
+            }
+            other => panic!("expected FileNotFound, got {other:?}"),
+        }
     }
 
     #[test]

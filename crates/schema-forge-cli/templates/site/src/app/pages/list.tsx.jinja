@@ -82,6 +82,12 @@ export function {{ entity.pascal }}List() {
   const pageStart = total === 0 ? 0 : offset + 1
   const pageEnd = Math.min(offset + rows.length, total)
 
+  // Schema-level "create" decision rides on the list response so the
+  // "New" button matches what `POST /entities` would actually accept.
+  // Default to hidden when absent — better to under-show than to render
+  // a button that 403s.
+  const canCreate = data?.permissions?.create ?? false
+
   const table = useReactTable({
     data: rows,
     columns,
@@ -113,9 +119,11 @@ export function {{ entity.pascal }}List() {
           </div>
         </div>
         <div style={ { display: "flex", gap: 8 }}>
-          <Link to="/app/{{ entity.kebab }}/new" className="btn btn-primary">
-            New {{ entity.title }}
-          </Link>
+          {canCreate ? (
+            <Link to="/app/{{ entity.kebab }}/new" className="btn btn-primary">
+              New {{ entity.title }}
+            </Link>
+          ) : null}
         </div>
       </div>
 
