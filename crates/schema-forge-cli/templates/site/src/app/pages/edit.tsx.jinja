@@ -6,8 +6,11 @@
 // is always regenerated from the schema. Reference them here so schema
 // changes flow through automatically while your layout, section headers,
 // and mutation intercepts stay put in this preserve file.
+//
+// Layout follows the Govcraft form-grid: 220px mono uppercase labels in a
+// left column, fields in a right column, accent primary button.
 import { useMemo } from "react"
-import { useNavigate, useParams } from "react-router-dom"
+import { Link, useNavigate, useParams } from "react-router-dom"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -22,13 +25,6 @@ import {
   {{ entity.snake }}Schema,
   type {{ entity.pascal }}FormValues,
 } from "@/generated/zod-schemas"
-import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import { Form } from "@/components/ui/form"
 import {
   {{ entity.pascal }}FormFields,
@@ -68,30 +64,44 @@ export function {{ entity.pascal }}Edit() {
     onSuccess: (saved) => {
       toast.success(isEdit ? `Saved {{ entity.title }} ${saved.id}` : "Created {{ entity.title }}")
       queryClient.invalidateQueries({ queryKey: ["{{ entity.snake }}"] })
-      navigate(`/{{ entity.kebab }}/${saved.id}`)
+      navigate(`/app/{{ entity.kebab }}/${saved.id}`)
     },
   })
 
   return (
-    <Card className="max-w-2xl">
-      <CardHeader>
-        <CardTitle>{isEdit ? "Edit" : "New"} {{ entity.title }}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))} className="space-y-4">
+    <div className="page-narrow">
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">{{ entity.title | upper }} · {isEdit ? "EDIT" : "NEW"}</div>
+          <h1 className="page-title">
+            {isEdit ? `Edit {{ entity.title }}` : "New {{ entity.title }}"}
+          </h1>
+          {isEdit && id ? <div className="page-sub mono">{id}</div> : null}
+        </div>
+      </div>
+
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))}>
+          <div className="form-grid">
             <{{ entity.pascal }}FormFields form={form} />
-            <div className="flex gap-2">
-              <Button type="submit" disabled={mutation.isPending}>
-                {mutation.isPending ? "Saving…" : "Save"}
-              </Button>
-              <Button type="button" variant="outline" onClick={() => navigate(-1)}>
-                Cancel
-              </Button>
-            </div>
-          </form>
-        </Form>
-      </CardContent>
-    </Card>
+          </div>
+          <div style={ { display: "flex", gap: 8, marginTop: 24 }}>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={mutation.isPending}
+            >
+              {mutation.isPending ? "Saving…" : isEdit ? "Save changes" : "Create"}
+            </button>
+            <Link
+              to={isEdit && id ? `/app/{{ entity.kebab }}/${id}` : "/app/{{ entity.kebab }}"}
+              className="btn"
+            >
+              Cancel
+            </Link>
+          </div>
+        </form>
+      </Form>
+    </div>
   )
 }

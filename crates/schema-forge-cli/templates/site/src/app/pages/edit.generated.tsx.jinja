@@ -6,14 +6,7 @@
 // page, so users can customize layout, section headers, and intercepts
 // there without ever touching the schema-shaped data here.
 import type { UseFormReturn } from "react-hook-form"
-import {
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form"
-import { Input } from "@/components/ui/input"
+import { FormField } from "@/components/ui/form"
 {%- if entity.has_relation_one %}
 import { RelationSelect } from "@/components/ui/relation-select"
 {%- endif %}
@@ -23,29 +16,38 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
 {#-
   -- Shared macros ----------------------------------------------------------
   Both top-level fields and composite sub-fields go through the same
-  control-rendering logic, so we factor it into a macro. The macro takes a
-  FieldView and emits a single `<FormField>` element.
+  control-rendering logic, so we factor it into a macro. The macro emits a
+  single `.form-row` block that fits inside the parent `.form-grid`.
 -#}
 {% macro control(f) -%}
       <FormField
         control={form.control}
         name="{{ f.name }}"
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>{{ f.label }}</FormLabel>
-            <FormControl>
+        render={({ field, fieldState }) => (
+          <div className="form-row">
+            <label className="form-label" htmlFor={field.name}>
+              {{ f.label }}
+{%- if f.required %}
+              <span className="req">*</span>
+{%- endif %}
+            </label>
+            <div className="form-field">
 {%- if f.kind == "boolean" %}
-              <input
-                type="checkbox"
-                checked={Boolean(field.value)}
-                onChange={(e) => field.onChange(e.target.checked)}
-                className="size-4"
-              />
+              <label style={ { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                <input
+                  id={field.name}
+                  type="checkbox"
+                  checked={Boolean(field.value)}
+                  onChange={(e) => field.onChange(e.target.checked)}
+                />
+                <span>{Boolean(field.value) ? "On" : "Off"}</span>
+              </label>
 {%- elif f.kind == "enum" %}
               <select
+                id={field.name}
                 {...field}
                 value={field.value as string | undefined ?? ""}
-                className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+                className={"select" + (fieldState.error ? " invalid" : "")}
               >
                 <option value="">—</option>
 {%- for variant in f.enum_variants %}
@@ -53,9 +55,21 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
 {%- endfor %}
               </select>
 {%- elif f.kind == "integer" or f.kind == "float" %}
-              <Input type="number" {...field} value={field.value as number | string | undefined ?? ""} />
+              <input
+                id={field.name}
+                type="number"
+                {...field}
+                value={field.value as number | string | undefined ?? ""}
+                className={"input" + (fieldState.error ? " invalid" : "")}
+              />
 {%- elif f.kind == "datetime" %}
-              <Input type="datetime-local" {...field} value={field.value as string | undefined ?? ""} />
+              <input
+                id={field.name}
+                type="datetime-local"
+                {...field}
+                value={field.value as string | undefined ?? ""}
+                className={"input" + (fieldState.error ? " invalid" : "")}
+              />
 {%- elif f.kind == "relation_one" %}
               <RelationSelect
                 target="{{ f.relation_target }}"
@@ -69,38 +83,53 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
                 placeholder="— no {{ f.relation_target }} selected —"
               />
 {%- elif f.kind == "relation_many" %}
-              <Input
+              <input
+                id={field.name}
                 placeholder="comma-separated {{ f.relation_target }} ids"
                 {...field}
                 value={field.value as string | undefined ?? ""}
+                className={"input" + (fieldState.error ? " invalid" : "")}
               />
 {%- elif f.kind == "array" %}
-              <Input
+              <input
+                id={field.name}
                 placeholder="comma-separated values"
                 {...field}
                 value={field.value as string | undefined ?? ""}
+                className={"input" + (fieldState.error ? " invalid" : "")}
               />
 {%- elif f.kind == "rich_text" %}
               <textarea
+                id={field.name}
                 {...field}
                 value={field.value as string | undefined ?? ""}
                 rows={6}
-                className="flex min-h-[6rem] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className={"textarea" + (fieldState.error ? " invalid" : "")}
               />
 {%- elif f.kind == "json" %}
               <textarea
+                id={field.name}
                 {...field}
                 value={field.value as string | undefined ?? ""}
                 rows={6}
                 placeholder='{"key": "value"}'
-                className="flex min-h-[6rem] w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className={"textarea mono" + (fieldState.error ? " invalid" : "")}
+                style={ { fontSize: 12 }}
               />
 {%- else %}
-              <Input {...field} value={field.value as string | undefined ?? ""} />
+              <input
+                id={field.name}
+                {...field}
+                value={field.value as string | undefined ?? ""}
+                className={"input" + (fieldState.error ? " invalid" : "")}
+              />
 {%- endif %}
-            </FormControl>
-            <FormMessage />
-          </FormItem>
+              <div className="help mono">{{ f.kind }}</div>
+              {fieldState.error ? (
+                <div className="err">{fieldState.error.message}</div>
+              ) : null}
+            </div>
+          </div>
         )}
       />
 {%- endmacro %}
@@ -120,14 +149,26 @@ export function {{ entity.pascal }}FormFields({
 {%- if f.derived %}
 {#- Derived inverse collections are read-only — surfaced on the detail view only. #}
 {%- elif f.kind == "composite" %}
-      <fieldset className="rounded-md border p-3 space-y-3">
-        <legend className="text-xs uppercase tracking-wide text-muted-foreground px-1">
-          {{ f.label }}
-        </legend>
+      <div className="form-row">
+        <label className="form-label">{{ f.label }}</label>
+        <div className="form-field">
+          <fieldset
+            style={ {
+              border: "1px solid var(--app-border)",
+              borderRadius: 2,
+              padding: 12,
+              display: "grid",
+              gridTemplateColumns: "180px 1fr",
+              gap: "12px 16px",
+              alignItems: "start",
+            }}
+          >
 {%- for sub in f.sub_fields %}
 {{ control(sub) }}
 {%- endfor %}
-      </fieldset>
+          </fieldset>
+        </div>
+      </div>
 {%- else %}
 {{ control(f) }}
 {%- endif %}

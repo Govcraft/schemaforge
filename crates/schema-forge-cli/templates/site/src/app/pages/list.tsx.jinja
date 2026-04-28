@@ -6,6 +6,10 @@
 // regenerated from the schema. Reference them here to stay in sync with
 // schema changes while keeping your layout, charts, and custom state in
 // this preserve file.
+//
+// Layout follows the Govcraft DS: eyebrow + page title, mono toolbar with
+// field-targeted contains filter, compact 32px-row table with mono
+// uppercase headers + signal-orange sort arrows, hairline pager.
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
@@ -15,17 +19,7 @@ import {
   flexRender,
 } from "@tanstack/react-table"
 import { list{{ entity.pascal_plural }} } from "@/generated/api-client"
-import { Button } from "@/components/ui/button"
 import { ErrorBlock } from "@/components/ui/error-block"
-import { Input } from "@/components/ui/input"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import {
   columns,
   SORTABLE_FIELDS,
@@ -46,6 +40,7 @@ export function {{ entity.pascal }}List() {
   const [filterInput, setFilterInput] = useState<string>("")
   const [filterValue, setFilterValue] = useState<string>("")
 
+  // Debounce the filter input so keystrokes don't stampede the backend.
   useEffect(() => {
     const t = setTimeout(() => {
       setFilterValue(filterInput)
@@ -108,144 +103,162 @@ export function {{ entity.pascal }}List() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center gap-4">
-        <h1 className="text-2xl font-semibold">{{ entity.title }}</h1>
-        <div className="flex items-center gap-2">
-          {FILTERABLE_FIELDS.length > 0 ? (
-            <>
-              <select
-                className="rounded border bg-background px-2 py-1 text-sm"
-                value={filterField}
-                onChange={(e) => setFilterField(e.target.value)}
-              >
-                {FILTERABLE_FIELDS.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </select>
-              <Input
-                placeholder="Contains…"
-                className="w-56"
-                value={filterInput}
-                onChange={(e) => setFilterInput(e.target.value)}
-              />
-            </>
-          ) : null}
-          <Button asChild>
-            <Link to="/{{ entity.kebab }}/new">New {{ entity.title }}</Link>
-          </Button>
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">ENTITY</div>
+          <h1 className="page-title">{{ entity.title }}</h1>
+          <div className="page-sub">
+            <span className="mono">{total.toLocaleString()}</span> total
+          </div>
+        </div>
+        <div style={ { display: "flex", gap: 8 }}>
+          <Link to="/app/{{ entity.kebab }}/new" className="btn btn-primary">
+            New {{ entity.title }}
+          </Link>
         </div>
       </div>
 
-      <Table>
-        <TableHeader>
-          {table.getHeaderGroups().map((hg) => (
-            <TableRow key={hg.id}>
-              {hg.headers.map((h) => {
-                const field = h.column.id
-                const sortable = SORTABLE_FIELDS.includes(field)
-                const active = sortField === field
-                const arrow = active ? (sortDir === "asc" ? " ▲" : " ▼") : ""
-                return (
-                  <TableHead key={h.id}>
-                    {sortable ? (
-                      <button
-                        type="button"
-                        className="font-medium hover:underline"
-                        onClick={() => toggleSort(field)}
-                      >
-                        {flexRender(h.column.columnDef.header, h.getContext())}
-                        {arrow}
-                      </button>
-                    ) : (
-                      flexRender(h.column.columnDef.header, h.getContext())
-                    )}
-                  </TableHead>
-                )
-              })}
-            </TableRow>
-          ))}
-        </TableHeader>
-        <TableBody>
-          {isLoading && rows.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
-                Loading…
-              </TableCell>
-            </TableRow>
-          ) : null}
-          {error && rows.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={columns.length}>
-                <ErrorBlock
-                  title="Failed to load"
-                  error={error}
-                  onRetry={() => query.refetch()}
-                />
-              </TableCell>
-            </TableRow>
-          ) : null}
-          {table.getRowModel().rows.map((row) => (
-            <TableRow key={row.id}>
-              {row.getVisibleCells().map((cell) => (
-                <TableCell key={cell.id}>
-                  {cell.column.columnDef.cell
-                    ? flexRender(cell.column.columnDef.cell, cell.getContext())
-                    : String(cell.getValue() ?? "")}
-                </TableCell>
+      <div className="toolbar">
+        {FILTERABLE_FIELDS.length > 0 ? (
+          <>
+            <select
+              className="toolbar-select"
+              value={filterField}
+              onChange={(e) => setFilterField(e.target.value)}
+            >
+              {FILTERABLE_FIELDS.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
               ))}
-            </TableRow>
+            </select>
+            <div className="toolbar-input" style={ { flex: "0 1 320px" }}>
+              <span
+                className="mono"
+                style={ { color: "var(--app-fg-4)", fontSize: 11 }}
+              >
+                contains
+              </span>
+              <input
+                placeholder="filter…"
+                value={filterInput}
+                onChange={(e) => setFilterInput(e.target.value)}
+              />
+            </div>
+          </>
+        ) : null}
+        <span className="grow" />
+        <select
+          className="toolbar-select"
+          value={limit}
+          onChange={(e) => {
+            setLimit(Number(e.target.value))
+            setOffset(0)
+          }}
+          aria-label="Rows per page"
+        >
+          {PAGE_SIZES.map((size) => (
+            <option key={size} value={size}>
+              {size} / page
+            </option>
           ))}
-          {!isLoading && !error && rows.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={columns.length} className="text-center text-muted-foreground">
-                No {{ entity.title }}s match.
-              </TableCell>
-            </TableRow>
-          ) : null}
-        </TableBody>
-      </Table>
+        </select>
+      </div>
 
-      <div className="flex items-center justify-between text-sm">
-        <div className="flex items-center gap-2">
-          <label className="text-muted-foreground">Rows per page</label>
-          <select
-            className="rounded border bg-background px-2 py-1"
-            value={limit}
-            onChange={(e) => {
-              setLimit(Number(e.target.value))
-              setOffset(0)
-            }}
-          >
-            {PAGE_SIZES.map((size) => (
-              <option key={size} value={size}>
-                {size}
-              </option>
+      <div className="table-wrap">
+        <table className="tbl">
+          <thead>
+            {table.getHeaderGroups().map((hg) => (
+              <tr key={hg.id}>
+                {hg.headers.map((h) => {
+                  const field = h.column.id
+                  const sortable = SORTABLE_FIELDS.includes(field)
+                  const active = sortField === field
+                  const arrow = active ? (sortDir === "asc" ? " ↑" : " ↓") : ""
+                  return (
+                    <th key={h.id}>
+                      {sortable ? (
+                        <button type="button" onClick={() => toggleSort(field)}>
+                          {flexRender(h.column.columnDef.header, h.getContext())}
+                          {active ? <span className="sort-arrow">{arrow}</span> : null}
+                        </button>
+                      ) : (
+                        flexRender(h.column.columnDef.header, h.getContext())
+                      )}
+                    </th>
+                  )
+                })}
+              </tr>
             ))}
-          </select>
+          </thead>
+          <tbody>
+            {isLoading && rows.length === 0 ? (
+              <tr>
+                <td colSpan={columns.length}>
+                  <div className="empty">Loading…</div>
+                </td>
+              </tr>
+            ) : null}
+            {error && rows.length === 0 ? (
+              <tr>
+                <td colSpan={columns.length}>
+                  <ErrorBlock
+                    title="Failed to load"
+                    error={error}
+                    onRetry={() => query.refetch()}
+                  />
+                </td>
+              </tr>
+            ) : null}
+            {table.getRowModel().rows.map((row) => (
+              <tr key={row.id}>
+                {row.getVisibleCells().map((cell) => (
+                  <td key={cell.id}>
+                    {cell.column.columnDef.cell
+                      ? flexRender(cell.column.columnDef.cell, cell.getContext())
+                      : String(cell.getValue() ?? "")}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {!isLoading && !error && rows.length === 0 ? (
+              <tr>
+                <td colSpan={columns.length}>
+                  <div className="empty">
+                    <h4>No {{ entity.title }} records</h4>
+                    <div>Create one to get started, or relax your filter.</div>
+                  </div>
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="pager">
+        <div className="group">
+          <span className="mono">
+            {total === 0 ? "0 of 0" : `${pageStart}–${pageEnd} of ${total}`}
+          </span>
         </div>
-        <div className="text-muted-foreground">
-          {total === 0 ? "0 of 0" : `${pageStart}–${pageEnd} of ${total}`}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
+        <div className="group">
+          <button
+            type="button"
+            className="btn btn-sm"
             disabled={offset === 0}
             onClick={() => setOffset(Math.max(0, offset - limit))}
           >
             Prev
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
             disabled={pageEnd >= total}
             onClick={() => setOffset(offset + limit)}
           >
             Next
-          </Button>
+          </button>
         </div>
       </div>
     </div>
