@@ -34,8 +34,11 @@ tasks:
   serve:
     desc: Start the SchemaForge server (Ctrl+C to stop)
     cmds:
+      # Pass --config explicitly: acton-service's auto-discovery walks XDG +
+      # /etc but doesn't reliably pick up the project root's `config.toml`
+      # under all `cargo run` cwd contexts. Explicit beats implicit.
       - >-
-        cargo run -p schema-forge-cli {{if .FEATURES}}--no-default-features --features {{.FEATURES}}{{end}} -- serve
+        cargo run -p schema-forge-cli {{if .FEATURES}}--no-default-features --features {{.FEATURES}}{{end}} -- --config config.toml serve
         --port {{.PORT}}
         --schemas {{.SCHEMA_DIR}}
         --admin-password {{.ADMIN_PASSWORD}}
@@ -57,8 +60,11 @@ tasks:
         # Build the CLI
         cargo build -p schema-forge-cli {{if .FEATURES}}--no-default-features --features {{.FEATURES}}{{end}}
 
-        # Start server in background with in-memory DB
-        ./target/debug/schemaforge serve \
+        # Start server in background with in-memory DB.
+        # `--config config.toml` is explicit so the project's [rate_limit]
+        # block applies; acton-service's auto-discovery doesn't always pick
+        # up the project root.
+        ./target/debug/schemaforge --config config.toml serve \
           --port {{.PORT}} \
           --schemas {{.SCHEMA_DIR}} \
           --admin-password {{.ADMIN_PASSWORD}} \

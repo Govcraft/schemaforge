@@ -5,6 +5,16 @@ purpose = "local"
 key_path = "./keys/paseto.key"
 issuer = "schema-forge"
 
+# Rate limiting (acton-service governor backend).
+# Defaults are tuned for production (100 req/min/user). The seed script
+# inside `task demo` fires ~50 entity creates back-to-back as the bootstrap
+# admin, so the production cap trips immediately. Lift the per-user budget
+# to 6000/min (≈100 req/s) so demo seeding completes while the middleware
+# stays active for any rate-limit behavior testing.
+[rate_limit]
+per_user_rpm = 6000
+per_client_rpm = 60000
+
 # Webhook notification settings
 # [schema_forge.webhooks]
 # enabled = true

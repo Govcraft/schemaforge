@@ -17,6 +17,9 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:3000}"
 API="${BASE_URL}/api/v1/forge/schemas"
+LOGIN_URL="${BASE_URL}/api/v1/forge/auth/login"
+ADMIN_USER="${ADMIN_USER:-admin}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-changeme}"
 
 # Colors
 RED='\033[0;31m'
@@ -28,6 +31,40 @@ NC='\033[0m'
 
 TOTAL=0
 ERRORS=0
+TOKEN=""
+
+# ---------------------------------------------------------------------------
+# Authenticate
+# ---------------------------------------------------------------------------
+
+# Exchange admin credentials for a PASETO token. The backend gates every
+# entity write behind authn now, so the seed script needs to hold a token
+# for the lifetime of its run. Honors $ADMIN_USER and $ADMIN_PASSWORD env
+# vars (defaults match `task demo`'s admin-password).
+authenticate() {
+    echo -e "${CYAN}Authenticating as ${ADMIN_USER}...${NC}"
+    local tmp
+    tmp=$(mktemp)
+    local http_code
+    http_code=$(curl -s -o "$tmp" -w '%{http_code}' \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n --arg u "$ADMIN_USER" --arg p "$ADMIN_PASSWORD" '{username: $u, password: $p}')" \
+        "$LOGIN_URL")
+    if [ "$http_code" != "200" ]; then
+        echo -e "${RED}ERROR: login failed (HTTP ${http_code})${NC}" >&2
+        cat "$tmp" >&2
+        rm -f "$tmp"
+        exit 1
+    fi
+    TOKEN=$(jq -r '.token' "$tmp")
+    rm -f "$tmp"
+    if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+        echo -e "${RED}ERROR: login response had no .token field${NC}" >&2
+        exit 1
+    fi
+    echo -e "${GREEN}Token acquired.${NC}"
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -47,6 +84,7 @@ create_entity() {
     http_code=$(curl -s -o "$tmp" -w '%{http_code}' \
         -X POST \
         -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${TOKEN}" \
         -d "$body" \
         "${API}/${schema}/entities")
 
@@ -85,6 +123,7 @@ wait_for_server() {
 # ---------------------------------------------------------------------------
 
 wait_for_server
+authenticate
 
 echo ""
 echo -e "${BOLD}Seeding demo data...${NC}"
