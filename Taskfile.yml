@@ -1,36 +1,48 @@
 version: '3'
 
+# Project task runner. Reflects the current shape of the repo:
+# - Binary is `schemaforge` (defined in crates/schema-forge-cli/Cargo.toml).
+# - Default backend is `surrealdb`; alternate is `postgres` (mutually
+#   exclusive with the default — opt in by setting FEATURES=postgres).
+# - The React admin/app surface lives in `site/`, scaffolded by
+#   `schemaforge site generate` and served by Vite. The legacy Tera +
+#   Tailwind `admin-ui` is gone; there is no embedded HTML template
+#   pipeline to compile any more.
+
 vars:
-  FEATURES: admin-ui,widget-ui
+  # Override on the CLI to swap backends, e.g. `FEATURES=postgres task serve`.
+  # Empty by default → uses the crate's default features (surrealdb).
+  FEATURES: ""
   PORT: 3000
   ADMIN_PASSWORD: changeme
   BASE_URL: "http://127.0.0.1:{{.PORT}}"
-  TEMPLATE_DIR: crates/schema-forge-acton/templates
-  CSS_INPUT: crates/schema-forge-acton/static/css/input.css
-  CSS_OUTPUT: crates/schema-forge-acton/static/css/admin.css
-  CSS_CONTENT: "crates/schema-forge-acton/templates/**/*.html"
+  SITE_DIR: site
+  SCHEMA_DIR: schemas
+  SITE_DEV_PORT: 5173
 
 tasks:
   build:
-    desc: Build the schema-forge-cli binary
+    desc: Build the schemaforge binary (debug)
     cmds:
-      - cargo build -p schema-forge-cli --features {{.FEATURES}}
+      - cargo build -p schema-forge-cli {{if .FEATURES}}--no-default-features --features {{.FEATURES}}{{end}}
 
   install:
-    desc: Build release binary and install to ~/.cargo/bin/schema-forge
+    desc: Build release binary and install to ~/.cargo/bin/schemaforge
     cmds:
-      - cargo install --path crates/schema-forge-cli
+      - cargo install --path crates/schema-forge-cli {{if .FEATURES}}--no-default-features --features {{.FEATURES}}{{end}}
 
   serve:
     desc: Start the SchemaForge server (Ctrl+C to stop)
     cmds:
       - >-
-        cargo run -p schema-forge-cli --features {{.FEATURES}} -- serve
+        cargo run -p schema-forge-cli {{if .FEATURES}}--no-default-features --features {{.FEATURES}}{{end}} -- serve
+        --port {{.PORT}}
+        --schemas {{.SCHEMA_DIR}}
         --admin-password {{.ADMIN_PASSWORD}}
-        --template-dir {{.TEMPLATE_DIR}}
+        --dev-cors
 
   seed:
-    desc: Seed demo data (expects server already running)
+    desc: Seed demo data (expects server already running on $BASE_URL)
     cmds:
       - bash scripts/seed-demo-data.sh
     env:
@@ -42,21 +54,23 @@ tasks:
       - |
         set -euo pipefail
 
-        # Compile CSS
-        npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}'
-
-        # Build
-        cargo build -p schema-forge-cli --features {{.FEATURES}}
+        # Build the CLI
+        cargo build -p schema-forge-cli {{if .FEATURES}}--no-default-features --features {{.FEATURES}}{{end}}
 
         # Start server in background with in-memory DB
-        ./target/debug/schema-forge serve --admin-password {{.ADMIN_PASSWORD}} --db-url "mem://" --template-dir {{.TEMPLATE_DIR}} &
+        ./target/debug/schemaforge serve \
+          --port {{.PORT}} \
+          --schemas {{.SCHEMA_DIR}} \
+          --admin-password {{.ADMIN_PASSWORD}} \
+          --db-url "mem://" \
+          --dev-cors &
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null' EXIT
 
         # Wait for health endpoint (30s timeout)
         echo "Waiting for server to start..."
         for i in $(seq 1 30); do
-          if curl -sf http://127.0.0.1:{{.PORT}}/health > /dev/null 2>&1; then
+          if curl -sf {{.BASE_URL}}/health > /dev/null 2>&1; then
             echo "Server is ready."
             break
           fi
@@ -71,28 +85,42 @@ tasks:
         BASE_URL="{{.BASE_URL}}" bash scripts/seed-demo-data.sh
 
         echo ""
-        echo "Demo server running at {{.BASE_URL}}"
-        echo "Admin UI: {{.BASE_URL}}/admin/"
-        echo "Press Ctrl+C to stop."
+        echo "Demo backend running at {{.BASE_URL}}"
+        echo "  health:    {{.BASE_URL}}/health"
+        echo "  meta:      {{.BASE_URL}}/api/v1/forge/meta"
+        echo ""
+        echo "To launch the React admin/app site:"
+        echo "  task site:dev   # regenerates site/ and starts Vite on :{{.SITE_DEV_PORT}}"
+        echo ""
+        echo "Press Ctrl+C to stop the backend."
         wait $SERVER_PID
 
-  css:
-    desc: Build Tailwind CSS
+  site:
+    desc: Regenerate the React site scaffold from the schema directory
     cmds:
-      - npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}'
+      - cargo run -p schema-forge-cli --quiet -- site generate --schema-dir {{.SCHEMA_DIR}} --out-dir {{.SITE_DIR}}
 
-  css:watch:
-    desc: Watch and rebuild Tailwind CSS
+  site:dev:
+    desc: Regenerate the React site and start the Vite dev server
     cmds:
-      - npx @tailwindcss/cli -i {{.CSS_INPUT}} -o {{.CSS_OUTPUT}} --content '{{.CSS_CONTENT}}' --watch
+      - cargo run -p schema-forge-cli --quiet -- site generate --schema-dir {{.SCHEMA_DIR}} --out-dir {{.SITE_DIR}}
+      - pnpm --dir {{.SITE_DIR}} install
+      - pnpm --dir {{.SITE_DIR}} dev --port {{.SITE_DEV_PORT}}
+
+  site:build:
+    desc: Type-check and bundle the React site for production
+    cmds:
+      - cargo run -p schema-forge-cli --quiet -- site generate --schema-dir {{.SCHEMA_DIR}} --out-dir {{.SITE_DIR}}
+      - pnpm --dir {{.SITE_DIR}} install
+      - pnpm --dir {{.SITE_DIR}} build
 
   test:
-    desc: Run all workspace tests
+    desc: Run all workspace tests with cargo nextest
     cmds:
-      - cargo test --workspace
+      - cargo nextest run --workspace {{if .FEATURES}}--no-default-features --features {{.FEATURES}}{{end}}
 
   check:
     desc: Run clippy and format checks
     cmds:
-      - cargo clippy --workspace --all-targets --features {{.FEATURES}} -- -D warnings
+      - cargo clippy --workspace --all-targets {{if .FEATURES}}--no-default-features --features {{.FEATURES}}{{end}} -- -D warnings
       - cargo fmt --all -- --check
