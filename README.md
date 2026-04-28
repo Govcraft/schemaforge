@@ -25,10 +25,42 @@ From this single file, SchemaForge generates:
 - **Cedar authorization policies** for access control
 - **OpenAPI specifications** that stay in sync with your schemas
 
+## Try it in 2 minutes
+
+The repo ships a self-contained demo: an in-memory backend with twelve seeded entities and a React admin UI. There is no database to install.
+
+### Prerequisites
+
+| Tool | Why it's needed |
+|---|---|
+| [Rust 1.75+](https://rustup.rs) | The demo builds the CLI from source |
+| [Task](https://taskfile.dev/installation/) | Runs the bundled demo recipes |
+| [pnpm](https://pnpm.io/installation) + Node 20+ | Builds and serves the React admin |
+
+### Run the demo
+
+```bash
+git clone https://github.com/Govcraft/schemaforge
+cd schemaforge
+
+task demo        # builds the CLI, starts an in-memory backend on :3000, seeds 12 entities
+```
+
+In a second terminal:
+
+```bash
+task site:dev    # regenerates the React admin and serves it on :5173
+```
+
+Open <http://localhost:5173> and sign in with `admin` / `changeme`.
+
+That's the whole demo. The backend uses an embedded in-memory store, so nothing persists between runs; press Ctrl+C in the `task demo` terminal to stop. When you're ready to point SchemaForge at SurrealDB or PostgreSQL, see [Install for a Real Project](#install-for-a-real-project).
+
 ## Table of Contents
 
+- [Try it in 2 minutes](#try-it-in-2-minutes)
 - [Why SchemaForge](#why-schemaforge)
-- [Quick Start](#quick-start)
+- [Install for a Real Project](#install-for-a-real-project)
 - [Architecture](#architecture)
 - [SchemaDSL Reference](#schemadsl-reference)
 - [CLI Reference](#cli-reference)
@@ -46,7 +78,9 @@ SchemaForge collapses that workflow. One schema file is the single source of tru
 
 The AI agent takes this further. Describe what you need in plain English, and an LLM generates the schema, validates it through the tool execution loop (self-correcting any errors), and applies it to your database -- all without writing DSL by hand.
 
-## Quick Start
+## Install for a Real Project
+
+This section walks through running SchemaForge against a real SurrealDB or PostgreSQL instance: install the binary, scaffold a project, define a schema, and serve it. If you only want to kick the tires, the [self-contained demo](#try-it-in-2-minutes) above is faster.
 
 ### Prerequisites
 
