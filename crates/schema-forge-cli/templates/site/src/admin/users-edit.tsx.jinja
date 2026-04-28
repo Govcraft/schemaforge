@@ -1,20 +1,22 @@
 // Admin users create/edit form. Dual-purpose component behind both
 // `/admin/users/new` and `/admin/users/:username/edit`:
 //
-// - **Create path** (no `:username`): POST /users with the whole form.
-// - **Edit path** (`:username` present): username is read-only. Submitting
-//   the form with a non-blank password calls `changePassword(username, ...)`.
-//   Role editing is out of scope for v1 (there is no PUT /users/:username
-//   endpoint yet) and the roles input is decorative on edit — submitting it
-//   is a no-op. The `active` checkbox is likewise display-only on edit.
+// - **Create path** (no `:username`): POST /users with username, password,
+//   display_name, roles. The `active` checkbox is honoured at creation.
+// - **Edit path** (`:username` present): username is read-only.
+//   - display_name, roles, active are editable via PUT /users/:username
+//     and submitted in a single mutation when the form is saved.
+//   - password is editable via POST /users/:username/password and only
+//     submitted when the field is non-blank.
 import { FormEvent, useEffect, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
-import { useMutation, useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
   changePassword,
   createUser,
   listUsers,
+  updateUser,
   type UserRow,
 } from "@/admin/api-client"
 import { Button } from "@/components/ui/button"
@@ -30,6 +32,7 @@ import { Input } from "@/components/ui/input"
 type FormState = {
   username: string
   password: string
+  displayName: string
   rolesCsv: string
   active: boolean
 }
@@ -37,6 +40,7 @@ type FormState = {
 const EMPTY: FormState = {
   username: "",
   password: "",
+  displayName: "",
   rolesCsv: "",
   active: true,
 }
@@ -45,6 +49,7 @@ export function UsersEdit() {
   const params = useParams<{ username?: string }>()
   const username = params.username
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const isNew = !username
 
   const existing = useQuery({
@@ -54,11 +59,13 @@ export function UsersEdit() {
   })
 
   const [values, setValues] = useState<FormState>(EMPTY)
+  const [initialActive, setInitialActive] = useState<boolean>(true)
   const [formError, setFormError] = useState<string | null>(null)
 
   useEffect(() => {
     if (isNew) {
       setValues(EMPTY)
+      setInitialActive(true)
       return
     }
     if (existing.data && username) {
@@ -69,9 +76,11 @@ export function UsersEdit() {
         setValues({
           username: row.username,
           password: "",
+          displayName: row.display_name ?? row.username,
           rolesCsv: row.roles.join(", "),
           active: row.active,
         })
+        setInitialActive(row.active)
       }
     }
   }, [isNew, existing.data, username])
@@ -84,10 +93,21 @@ export function UsersEdit() {
           username: state.username,
           password: state.password,
           roles,
-          display_name: state.username,
+          display_name:
+            state.displayName.trim().length > 0
+              ? state.displayName.trim()
+              : state.username,
         })
       }
-      // Edit path: only the password is writable today.
+      // Edit path: PUT /users/:username with the editable fields, then
+      // (separately) POST /users/:username/password if a password was
+      // supplied. The password endpoint is its own resource because it
+      // needs different access rules (self-service is allowed).
+      await updateUser(username!, {
+        roles,
+        display_name: state.displayName,
+        active: state.active,
+      })
       if (state.password.length > 0) {
         await changePassword(username!, state.password)
       }
@@ -95,6 +115,7 @@ export function UsersEdit() {
     },
     onSuccess: () => {
       toast.success(isNew ? "Created user" : `Updated user '${username}'`)
+      qc.invalidateQueries({ queryKey: ["admin", "users"] })
       navigate("/admin/users")
     },
   })
@@ -119,6 +140,10 @@ export function UsersEdit() {
     }
     save.mutate(values)
   }
+
+  // The active checkbox shows a warning on edit when it would self-disable.
+  const willDisableSelf =
+    !isNew && initialActive && !values.active && username === "admin"
 
   return (
     <Card className="max-w-2xl">
@@ -145,6 +170,20 @@ export function UsersEdit() {
           </div>
 
           <div className="grid grid-cols-[160px_1fr] gap-2 items-center">
+            <label className="text-sm">display name</label>
+            <Input
+              value={values.displayName}
+              onChange={(e) =>
+                setValues((prev) => ({
+                  ...prev,
+                  displayName: e.target.value,
+                }))
+              }
+              placeholder="Alice Chen"
+            />
+          </div>
+
+          <div className="grid grid-cols-[160px_1fr] gap-2 items-center">
             <label className="text-sm">
               password
               {isNew ? <span className="text-destructive"> *</span> : null}
@@ -166,21 +205,13 @@ export function UsersEdit() {
                 comma-separated
               </div>
             </label>
-            <div>
-              <Input
-                value={values.rolesCsv}
-                onChange={(e) =>
-                  setValues((prev) => ({ ...prev, rolesCsv: e.target.value }))
-                }
-                placeholder="admin, sales"
-                disabled={!isNew}
-              />
-              {!isNew ? (
-                <p className="text-[10px] text-muted-foreground mt-1">
-                  role editing is not yet supported via REST
-                </p>
-              ) : null}
-            </div>
+            <Input
+              value={values.rolesCsv}
+              onChange={(e) =>
+                setValues((prev) => ({ ...prev, rolesCsv: e.target.value }))
+              }
+              placeholder="admin, sales"
+            />
           </div>
 
           <div className="grid grid-cols-[160px_1fr] gap-2 items-center">
@@ -189,14 +220,13 @@ export function UsersEdit() {
               <input
                 type="checkbox"
                 checked={values.active}
-                disabled={!isNew}
                 onChange={(e) =>
                   setValues((prev) => ({ ...prev, active: e.target.checked }))
                 }
               />
-              {!isNew ? (
-                <span className="text-[10px] text-muted-foreground">
-                  toggling active is not yet supported via REST
+              {willDisableSelf ? (
+                <span className="text-[10px] text-destructive">
+                  warning: disabling the bootstrap admin will lock the instance
                 </span>
               ) : null}
             </label>

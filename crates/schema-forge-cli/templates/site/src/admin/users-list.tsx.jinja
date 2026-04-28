@@ -1,7 +1,7 @@
 // Admin users list. Mirrors `entity-list.tsx` but against the dedicated
-// `/api/v1/forge/users` endpoint instead of generic entity CRUD, because
-// users live in the `_forge_users` system table and do not share the
-// field-rendering machinery.
+// `/api/v1/forge/users` endpoint instead of generic entity CRUD. The
+// User entity table is reachable through that path and only that path —
+// the generic `/admin/User` route redirects here.
 import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -61,7 +61,9 @@ export function UsersList() {
         <TableHeader>
           <TableRow>
             <TableHead>username</TableHead>
+            <TableHead>display name</TableHead>
             <TableHead>roles</TableHead>
+            <TableHead className="text-right">role rank</TableHead>
             <TableHead>active</TableHead>
             <TableHead className="w-[160px] text-right">Actions</TableHead>
           </TableRow>
@@ -77,7 +79,16 @@ export function UsersList() {
                   {u.username}
                 </Link>
               </TableCell>
+              <TableCell className="text-muted-foreground">
+                {u.display_name ?? "—"}
+              </TableCell>
               <TableCell>{u.roles.join(", ")}</TableCell>
+              <TableCell className="text-right font-mono text-xs">
+                {u.role_rank === Number.MAX_SAFE_INTEGER ||
+                u.role_rank >= 9_223_372_036_854_775_000
+                  ? "∞"
+                  : u.role_rank.toLocaleString()}
+              </TableCell>
               <TableCell>{u.active ? "yes" : "no"}</TableCell>
               <TableCell className="text-right space-x-2">
                 <Button variant="outline" size="sm" asChild>
@@ -102,7 +113,7 @@ export function UsersList() {
           ))}
           {rows.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={4} className="text-center text-muted-foreground">
+              <TableCell colSpan={6} className="text-center text-muted-foreground">
                 No users yet.
               </TableCell>
             </TableRow>

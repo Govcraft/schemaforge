@@ -70,6 +70,9 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
         )
         // User management
         .route("/users", post(users::create_user).get(users::list_users))
-        .route("/users/{username}", delete(users::delete_user))
+        .route(
+            "/users/{username}",
+            delete(users::delete_user).put(users::update_user),
+        )
         .route("/users/{username}/password", post(users::change_password))
 }

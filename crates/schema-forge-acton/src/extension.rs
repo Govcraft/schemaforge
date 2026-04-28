@@ -65,6 +65,7 @@ pub struct SchemaForgeExtensionBuilder {
     admin_credentials: Option<(String, String)>,
     webhook_config: crate::webhook::WebhookConfig,
     storage_config: StorageConfig,
+    role_ranks: crate::authz::role_ranks::RoleRanks,
 }
 
 impl SchemaForgeExtensionBuilder {
@@ -77,7 +78,17 @@ impl SchemaForgeExtensionBuilder {
             admin_credentials: None,
             webhook_config: crate::webhook::WebhookConfig::default(),
             storage_config: StorageConfig::default(),
+            role_ranks: crate::authz::role_ranks::RoleRanks::empty(),
         }
+    }
+
+    /// Set the role-name → numeric-rank hierarchy used by the Cedar
+    /// no-upward-visibility guard. Defaults to the empty hierarchy
+    /// (`platform_admin` only). Embedders typically load this from
+    /// `policies/role_ranks.toml` via `RoleRanks::from_toml_file`.
+    pub fn with_role_ranks(mut self, ranks: crate::authz::role_ranks::RoleRanks) -> Self {
+        self.role_ranks = ranks;
+        self
     }
 
     /// Set the S3-compatible storage configuration for `file` fields.
@@ -243,12 +254,11 @@ impl SchemaForgeExtensionBuilder {
         // the single source of truth for every authorization decision the
         // server will make. Invalid or non-validating bundles fail startup —
         // partial installs are not acceptable for a gov-audit posture.
-        let role_ranks = crate::authz::role_ranks::RoleRanks::empty();
         let policy_store = crate::authz::PolicyStore::new(
             crate::authz::store::PolicyStoreSnapshot::from_schemas(
                 &all_schemas,
                 None,
-                role_ranks,
+                self.role_ranks,
             )
             .map_err(|e| ForgeError::Internal {
                 message: format!("Cedar policy compilation failed at startup: {e}"),
@@ -345,6 +355,7 @@ impl SchemaForgeExtension {
         backend: Arc<dyn DynForgeBackend>,
         record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
         storage_config: &StorageConfig,
+        role_ranks: crate::authz::role_ranks::RoleRanks,
     ) -> Result<InitForgeData, ForgeError> {
         // Load existing schemas from the backend into a HashMap
         let stored_schemas = backend
@@ -403,7 +414,6 @@ impl SchemaForgeExtension {
         // Compile the Cedar policy bundle from the registered schemas. Same
         // contract as the standalone build path: validation failures abort
         // initialization rather than producing a partial install.
-        let role_ranks = crate::authz::role_ranks::RoleRanks::empty();
         let policy_store = crate::authz::PolicyStore::new(
             crate::authz::store::PolicyStoreSnapshot::from_schemas(
                 &all_schemas,

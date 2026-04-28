@@ -2,7 +2,7 @@
 // with a field count and a link into its generic CRUD surface.
 import { Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
-import { listSchemas } from "@/admin/api-client"
+import { listSchemas, isSystemSchema, type SchemaResponse } from "@/admin/api-client"
 import {
   Card,
   CardContent,
@@ -11,6 +11,42 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { ErrorBlock } from "@/components/ui/error-block"
+
+function SchemaCard({ schema }: { schema: SchemaResponse }) {
+  const system = isSystemSchema(schema)
+  return (
+    <Link to={`/admin/${schema.name}`} className="block">
+      <Card className="hover:border-primary transition-colors">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            {schema.name}
+            {system && (
+              <span className="text-[10px] uppercase tracking-wide bg-muted text-muted-foreground rounded px-1.5 py-0.5">
+                System
+              </span>
+            )}
+          </CardTitle>
+          <CardDescription>
+            {schema.fields.length} field{schema.fields.length === 1 ? "" : "s"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ul className="text-xs text-muted-foreground space-y-0.5">
+            {schema.fields.slice(0, 5).map((f) => (
+              <li key={f.name}>
+                <span className="font-mono">{f.name}</span>
+                <span className="ml-2">{f.field_type.type}</span>
+              </li>
+            ))}
+            {schema.fields.length > 5 ? (
+              <li>… and {schema.fields.length - 5} more</li>
+            ) : null}
+          </ul>
+        </CardContent>
+      </Card>
+    </Link>
+  )
+}
 
 export function SchemasIndex() {
   const query = useQuery({
@@ -31,6 +67,15 @@ export function SchemasIndex() {
   }
 
   const schemas = data ?? []
+  const appSchemas = schemas.filter((s) => !isSystemSchema(s))
+  // Drop `User` from the System catalog: the dedicated /admin/users page
+  // is the only sanctioned entry to user mgmt. Other system schemas stay
+  // visible so operators can inspect TenantMembership, WebhookSubscription,
+  // etc. through their generic CRUD surface.
+  const systemSchemas = schemas.filter(
+    (s) => isSystemSchema(s) && s.name !== "User",
+  )
+
   if (schemas.length === 0) {
     return (
       <div className="space-y-2">
@@ -44,41 +89,41 @@ export function SchemasIndex() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-semibold">Schemas</h1>
         <p className="text-sm text-muted-foreground">
-          Every schema visible to your account. Click one to browse and edit
-          its entities.
+          Application schemas you defined. System schemas (User,
+          TenantMembership, WebhookSubscription) are platform plumbing —
+          managed via the dedicated routes when possible.
         </p>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {schemas.map((s) => (
-          <Link key={s.name} to={`/admin/${s.name}`} className="block">
-            <Card className="hover:border-primary transition-colors">
-              <CardHeader>
-                <CardTitle>{s.name}</CardTitle>
-                <CardDescription>
-                  {s.fields.length} field{s.fields.length === 1 ? "" : "s"}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ul className="text-xs text-muted-foreground space-y-0.5">
-                  {s.fields.slice(0, 5).map((f) => (
-                    <li key={f.name}>
-                      <span className="font-mono">{f.name}</span>
-                      <span className="ml-2">{f.field_type.type}</span>
-                    </li>
-                  ))}
-                  {s.fields.length > 5 ? (
-                    <li>… and {s.fields.length - 5} more</li>
-                  ) : null}
-                </ul>
-              </CardContent>
-            </Card>
-          </Link>
-        ))}
-      </div>
+
+      {appSchemas.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Application
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {appSchemas.map((s) => (
+              <SchemaCard key={s.name} schema={s} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {systemSchemas.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            System
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {systemSchemas.map((s) => (
+              <SchemaCard key={s.name} schema={s} />
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }

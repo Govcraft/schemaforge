@@ -9,6 +9,7 @@
 //! [`authorize_field`] is the per-field variant used by response/request
 //! field filtering, parameterised by [`FieldDirection`].
 
+use std::error::Error as StdError;
 use std::sync::Arc;
 
 use acton_service::middleware::Claims;
@@ -24,6 +25,24 @@ use crate::authz::namespace::{
     field_read_action_uid, field_write_action_uid, ActionVerb, PRINCIPAL_TYPE,
 };
 use crate::authz::store::PolicyStore;
+
+/// Renders an error plus its full source chain.
+///
+/// Cedar wraps `EntitySchemaConformanceError` behind `#[diagnostic(transparent)]`
+/// so the outer `Display` is a generic "entity does not conform to the schema"
+/// — the actually-useful detail (which entity, which attribute) lives in the
+/// source chain. Operators triaging an authz failure need that detail; without
+/// it every conformance bug looks identical.
+fn render_error_chain<E: StdError + ?Sized>(err: &E) -> String {
+    let mut out = err.to_string();
+    let mut src = err.source();
+    while let Some(s) = src {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        src = s.source();
+    }
+    out
+}
 
 /// Direction for field-level authorization decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,7 +111,7 @@ pub fn authorize(
             let raw = format!("{PRINCIPAL_TYPE}::\"_anonymous\"");
             let uid = raw
                 .parse::<EntityUid>()
-                .map_err(|e| AuthzError::Request(e.to_string()))?;
+                .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
             (uid, Vec::new())
         }
     };
@@ -129,7 +148,7 @@ pub fn authorize(
     // snapshot — a request for an unknown action or a malformed entity
     // surfaces an explicit error rather than silently default-denying.
     let entities = Entities::from_entities(all_entities, Some(&snapshot.schema))
-        .map_err(|e| AuthzError::Request(e.to_string()))?;
+        .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
 
     let request = Request::new(
         principal_uid_value,
@@ -138,7 +157,7 @@ pub fn authorize(
         Context::empty(),
         Some(&snapshot.schema),
     )
-    .map_err(|e| AuthzError::Request(e.to_string()))?;
+    .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
 
     let response = Authorizer::new().is_authorized(&request, &snapshot.policy_set, &entities);
     let allowed = matches!(response.decision(), Decision::Allow);
@@ -198,7 +217,7 @@ pub fn authorize_field(
             let raw = format!("{PRINCIPAL_TYPE}::\"_anonymous\"");
             let uid = raw
                 .parse::<EntityUid>()
-                .map_err(|e| AuthzError::Request(e.to_string()))?;
+                .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
             (uid, Vec::new())
         }
     };
@@ -209,7 +228,7 @@ pub fn authorize_field(
     all_entities.push(resource_entity);
 
     let entities = Entities::from_entities(all_entities, Some(&snapshot.schema))
-        .map_err(|e| AuthzError::Request(e.to_string()))?;
+        .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
 
     // `filter_entity_fields` only calls `authorize_field` for fields whose
     // schema declares a `@field_access` annotation, so the per-field action
@@ -223,7 +242,7 @@ pub fn authorize_field(
         Context::empty(),
         Some(&snapshot.schema),
     )
-    .map_err(|e| AuthzError::Request(e.to_string()))?;
+    .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
 
     let response = Authorizer::new().is_authorized(&request, &snapshot.policy_set, &entities);
     let allowed = matches!(response.decision(), Decision::Allow);

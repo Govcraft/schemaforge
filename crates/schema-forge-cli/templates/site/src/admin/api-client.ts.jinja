@@ -374,6 +374,21 @@ export async function listSchemas(): Promise<SchemaResponse[]> {
   return res.schemas
 }
 
+/** True when the schema carries the `@system` annotation. System schemas
+ *  (User, TenantMembership, WebhookSubscription) are platform plumbing
+ *  and should be hidden from the user-facing entity navigation — they
+ *  remain reachable through the schema-administration view for operators
+ *  who need them. */
+export function isSystemSchema(schema: SchemaResponse): boolean {
+  return (schema.annotations ?? []).some(
+    (a) =>
+      typeof a === "object" &&
+      a !== null &&
+      "annotation" in a &&
+      (a as { annotation: unknown }).annotation === "System",
+  )
+}
+
 /** Describe a single schema. Returns both the raw response and the
  *  normalized field metadata used by the admin renderer. */
 export async function describeSchema(name: string): Promise<{
@@ -483,6 +498,8 @@ export type UserRow = {
   roles: string[]
   display_name: string | null
   active: boolean
+  /** Server-computed max rank across `roles`. Read-only. */
+  role_rank: number
 }
 
 type ListUsersEnvelope = {
@@ -498,6 +515,15 @@ export type CreateUserBody = {
   display_name?: string | null
 }
 
+/** Request body for `PUT /users/:username`. All fields are optional —
+ *  omitting a field leaves it unchanged. An empty `roles` array clears
+ *  every role. Password rotation goes through `changePassword(...)`. */
+export type UpdateUserBody = {
+  roles?: string[]
+  display_name?: string
+  active?: boolean
+}
+
 /** List every user (admin only). */
 export async function listUsers(): Promise<UserRow[]> {
   const env = await request<ListUsersEnvelope>(`${FORGE_API_PREFIX}/users`)
@@ -510,6 +536,18 @@ export async function createUser(body: CreateUserBody): Promise<UserRow> {
     method: "POST",
     body: JSON.stringify(body),
   })
+}
+
+/** Update a user's roles, display name, and/or active flag (admin only).
+ *  Password rotation goes through `changePassword`. */
+export async function updateUser(
+  username: string,
+  body: UpdateUserBody,
+): Promise<UserRow> {
+  return request<UserRow>(
+    `${FORGE_API_PREFIX}/users/${encodeURIComponent(username)}`,
+    { method: "PUT", body: JSON.stringify(body) },
+  )
 }
 
 /** Delete a user by username (admin only). */

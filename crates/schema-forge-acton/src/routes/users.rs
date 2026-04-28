@@ -257,6 +257,9 @@ pub struct UserResponse {
     pub display_name: Option<String>,
     /// Whether the user is currently allowed to log in.
     pub active: bool,
+    /// Maximum rank across the user's `roles`, computed server-side from
+    /// `role_ranks.toml`. Read-only — clients cannot set it.
+    pub role_rank: i64,
 }
 
 /// Response body for `GET /users`.
@@ -290,6 +293,24 @@ pub struct ChangePasswordRequest {
     pub password: String,
 }
 
+/// Request body for `PUT /users/:username`.
+///
+/// All fields are optional — the handler interprets `Some(value)` as
+/// "set to this" and `None` as "leave unchanged". An empty `roles` Vec
+/// (`Some(vec![])`) is meaningful: it removes every role.
+#[derive(Debug, Deserialize)]
+pub struct UpdateUserRequest {
+    /// Replacement role list. `Some([])` clears all roles.
+    #[serde(default)]
+    pub roles: Option<Vec<String>>,
+    /// Replacement display name.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Whether the user is active. `false` disables login.
+    #[serde(default)]
+    pub active: Option<bool>,
+}
+
 /// Pure helper: project a `ForgeUser` into the wire response shape.
 fn user_to_response(user: &ForgeUser) -> UserResponse {
     UserResponse {
@@ -297,6 +318,7 @@ fn user_to_response(user: &ForgeUser) -> UserResponse {
         roles: user.roles.clone(),
         display_name: user.display_name.clone(),
         active: user.active,
+        role_rank: user.role_rank,
     }
 }
 
@@ -389,11 +411,15 @@ pub async fn create_user(
     // the proposed roles. The forbid policy compares the caller's
     // role_rank with the target's; it can't fire on a placeholder
     // resource (no attributes), so we synthesize one here.
+    // role_rank is recomputed inside forge_user_to_user_entity from the
+    // policy_store snapshot, so this synthetic value is overwritten before
+    // Cedar evaluates the request — supply a placeholder.
     let proposed = ForgeUser {
         username: body.username.clone(),
         roles: body.roles.clone(),
         display_name: body.display_name.clone(),
         active: true,
+        role_rank: 0,
     };
     let proposed_entity = forge_user_to_user_entity(&proposed, policy_store.as_ref());
     let decision = authorize(
@@ -518,6 +544,148 @@ pub async fn delete_user(
 
     auth_store.delete_user(&username).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /users/:username` — update a user's roles, display name, and/or
+/// active flag. Password changes go through `POST /users/:username/password`.
+///
+/// Cedar enforces the rank guard twice:
+///
+/// 1. Against the **current** target — a manager cannot edit a user who
+///    already outranks them (`UpdateUser` on the resolved entity).
+/// 2. Against a **synthetic post-update** target carrying the proposed
+///    role set — so a caller can't promote a user to a rank they don't
+///    themselves hold (same `UpdateUser` action, separate evaluation).
+///
+/// The "no upward escalation" rule mirrors `create_user`'s synthetic check.
+/// Refuses to demote the last `platform_admin` (drop the role from the
+/// only one) with `409 Conflict { reason: "last_platform_admin" }` —
+/// same defense-in-depth as `delete_user`.
+#[instrument(skip_all)]
+pub async fn update_user(
+    State(state): State<AppState<SchemaForgeConfig>>,
+    Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
+    Path(username): Path<String>,
+    OptionalClaims(claims): OptionalClaims,
+    Json(body): Json<UpdateUserRequest>,
+) -> Result<impl IntoResponse, ForgeError> {
+    let claims = require_auth(&claims)?;
+    let user_schema = fetch_user_schema(&state).await?;
+    let policy_store = fetch_policy_store(&state).await?;
+
+    let current =
+        auth_store
+            .get_user(&username)
+            .await?
+            .ok_or_else(|| ForgeError::ValidationFailed {
+                details: vec![format!("user '{username}' not found")],
+            })?;
+
+    // Guard 1: caller can edit *this user as they exist now*.
+    let current_entity = forge_user_to_user_entity(&current, policy_store.as_ref());
+    let decision_existing = authorize(
+        &policy_store,
+        Some(claims),
+        ActionVerb::Update,
+        &user_schema,
+        Some(&current_entity),
+    )
+    .map_err(|e| ForgeError::Internal {
+        message: format!("authz engine error during update_user (existing): {e}"),
+    })?;
+    if !decision_existing.is_allow() {
+        return Err(ForgeError::Forbidden {
+            message: format!("not authorized to edit user '{username}'"),
+        });
+    }
+
+    // Resolve the proposed state. `None` on a field means "keep current".
+    let new_roles: Vec<String> = body
+        .roles
+        .clone()
+        .unwrap_or_else(|| current.roles.clone());
+    let new_display_name: String = body
+        .display_name
+        .clone()
+        .or_else(|| current.display_name.clone())
+        .unwrap_or_else(|| current.username.clone());
+    let new_active: bool = body.active.unwrap_or(current.active);
+
+    if body.roles.is_some() {
+        caller_can_grant_roles(claims, &new_roles)?;
+
+        // Guard 2: caller can edit *this user with the proposed roles*.
+        let proposed = ForgeUser {
+            username: current.username.clone(),
+            roles: new_roles.clone(),
+            display_name: Some(new_display_name.clone()),
+            active: new_active,
+            // Recomputed from the policy_store snapshot in
+            // `forge_user_to_user_entity`; placeholder here.
+            role_rank: 0,
+        };
+        let proposed_entity = forge_user_to_user_entity(&proposed, policy_store.as_ref());
+        let decision_proposed = authorize(
+            &policy_store,
+            Some(claims),
+            ActionVerb::Update,
+            &user_schema,
+            Some(&proposed_entity),
+        )
+        .map_err(|e| ForgeError::Internal {
+            message: format!("authz engine error during update_user (proposed): {e}"),
+        })?;
+        if !decision_proposed.is_allow() {
+            return Err(ForgeError::Forbidden {
+                message: format!(
+                    "updating '{username}' to roles {new_roles:?} would exceed caller's role_rank"
+                ),
+            });
+        }
+
+        // Last-platform_admin protection: refuse to demote the only one.
+        let was_platform_admin =
+            current.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
+        let still_platform_admin =
+            new_roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
+        if was_platform_admin && !still_platform_admin {
+            let all = auth_store.list_users().await?;
+            let count = all
+                .iter()
+                .filter(|u| u.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE))
+                .count();
+            if count <= 1 {
+                return Err(ForgeError::Conflict {
+                    reason: "last_platform_admin",
+                    message: format!(
+                        "cannot remove {PLATFORM_ADMIN_ROLE} from '{username}': would leave instance without one"
+                    ),
+                });
+            }
+        }
+    }
+
+    // Persist. `update_user` covers roles + display_name; `toggle_user_active`
+    // covers the active flag. We only call each store method when its
+    // governed field actually changed, so the audit trail stays clean.
+    let roles_or_name_changed =
+        body.roles.is_some() || body.display_name.is_some();
+    if roles_or_name_changed {
+        auth_store
+            .update_user(&username, &new_roles, &new_display_name)
+            .await?;
+    }
+    if body.active.is_some() && new_active != current.active {
+        auth_store.toggle_user_active(&username).await?;
+    }
+
+    let updated = auth_store
+        .get_user(&username)
+        .await?
+        .ok_or_else(|| ForgeError::Internal {
+            message: format!("updated user '{username}' not found on readback"),
+        })?;
+    Ok(Json(user_to_response(&updated)))
 }
 
 /// `POST /users/:username/password` — change a user's password.
@@ -648,6 +816,7 @@ mod tests {
             roles: vec!["platform_admin".to_string(), "hr".to_string()],
             display_name: Some("Alice".to_string()),
             active: true,
+            role_rank: 9_223_372_036_854_775_807,
         };
         let out = user_to_response(&src);
         assert_eq!(out.username, "alice");
@@ -657,6 +826,7 @@ mod tests {
         );
         assert_eq!(out.display_name.as_deref(), Some("Alice"));
         assert!(out.active);
+        assert_eq!(out.role_rank, 9_223_372_036_854_775_807);
     }
 
     #[test]

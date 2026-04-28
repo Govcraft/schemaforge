@@ -160,6 +160,12 @@ pub struct BootstrapAdminArgs {
         default_value = "Administrator"
     )]
     pub display_name: String,
+
+    /// Path to `role_ranks.toml` so the bootstrap user's `role_rank` is
+    /// computed against the same hierarchy `serve` will use. Missing file
+    /// is treated as the empty hierarchy.
+    #[arg(long = "role-ranks", default_value = "policies/role_ranks.toml")]
+    pub role_ranks: PathBuf,
 }
 
 /// Site generator subcommands.
@@ -445,6 +451,14 @@ pub struct ServeArgs {
     /// DO NOT use in production.
     #[arg(long = "dev-cors")]
     pub dev_cors: bool,
+
+    /// Path to a `role_ranks.toml` defining the role-name → numeric-rank
+    /// hierarchy. The runtime no-upward-visibility guard for user mgmt
+    /// (`principal.role_rank >= resource.role_rank`) reads from this file.
+    /// A missing file is treated as the empty hierarchy
+    /// (only `platform_admin` carries a rank).
+    #[arg(long = "role-ranks", default_value = "policies/role_ranks.toml")]
+    pub role_ranks: PathBuf,
 }
 
 /// Export subcommands.

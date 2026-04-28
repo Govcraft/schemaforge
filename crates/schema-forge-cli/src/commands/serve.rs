@@ -69,9 +69,21 @@ pub async fn run(
     let backend_arc = connected.backend.clone();
     let entity_store = connected.entity_store.clone();
 
+    // Load the role-rank hierarchy so the runtime no-upward-visibility
+    // guard runs against the operator-controlled file the same way
+    // `policies validate` does. Missing file → empty hierarchy
+    // (`platform_admin` only); invalid file aborts startup.
+    let role_ranks = schema_forge_acton::authz::RoleRanks::from_toml_file(&args.role_ranks)
+        .map_err(|e| CliError::Server {
+            message: format!(
+                "failed to load role ranks from {}: {e}",
+                args.role_ranks.display()
+            ),
+        })?;
+
     // 5. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
     let init_data =
-        SchemaForgeExtension::build_init(backend_arc.clone(), None, &storage_config)
+        SchemaForgeExtension::build_init(backend_arc.clone(), None, &storage_config, role_ranks)
             .await
             .map_err(|e| CliError::Server {
                 message: format!("failed to build ForgeActor init data: {e}"),
@@ -124,6 +136,19 @@ pub async fn run(
     } else {
         None
     };
+
+    // Recompile the Cedar policy bundle now that --schemas have been merged
+    // into the registry. `build_init` ran before the parsed schemas were
+    // applied, so its initial PolicyStore covers only the system schemas;
+    // without this step the runtime would reject every authz check against
+    // an app schema with "type X is not declared in the schema".
+    if let Some(policy_store) = &init_data.policy_store {
+        policy_store
+            .recompile_from_schemas(&all_schemas, None)
+            .map_err(|e| CliError::Server {
+                message: format!("Cedar policy recompile failed after schema apply: {e}"),
+            })?;
+    }
 
     let init_data = InitForgeData {
         registry,

@@ -279,6 +279,7 @@ impl EntityAuthStore {
             roles: extract_text_array(entity, ROLES_FIELD),
             display_name: extract_optional_text(entity, DISPLAY_NAME_FIELD),
             active: extract_boolean(entity, ACTIVE_FIELD).unwrap_or(true),
+            role_rank: extract_integer(entity, ROLE_RANK_FIELD).unwrap_or(0),
         }
     }
 
@@ -368,6 +369,13 @@ fn extract_text_array(entity: &Entity, field: &str) -> Vec<String> {
 fn extract_boolean(entity: &Entity, field: &str) -> Option<bool> {
     match entity.field(field) {
         Some(DynamicValue::Boolean(b)) => Some(*b),
+        _ => None,
+    }
+}
+
+fn extract_integer(entity: &Entity, field: &str) -> Option<i64> {
+    match entity.field(field) {
+        Some(DynamicValue::Integer(n)) => Some(*n),
         _ => None,
     }
 }

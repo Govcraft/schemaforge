@@ -1,4 +1,4 @@
-import { Link, Navigate, Route, Routes } from "react-router-dom"
+import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { Toaster } from "sonner"
 import { routeManifest, navEntries, defaultEntity } from "@/generated/route-manifest"
 import { LoginPage } from "@/pages/login"
@@ -7,6 +7,13 @@ import { RequireAuth } from "@/lib/require-auth"
 import { isAuthenticated, logout } from "@/lib/auth"
 
 export default function App() {
+  // Re-evaluate `isAuthenticated` on every navigation so the header
+  // appears immediately after login (without the user needing to refresh).
+  // The token lives in sessionStorage and isn't reactive on its own;
+  // subscribing to `useLocation` re-renders App when the LoginPage calls
+  // `navigate('/')` after a successful login, at which point the freshly
+  // stored token flips this branch on.
+  useLocation()
   const authed = isAuthenticated()
   return (
     <div className="min-h-screen flex flex-col">

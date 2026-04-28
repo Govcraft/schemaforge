@@ -47,11 +47,20 @@ pub async fn run(
     output.status(&format!("Connecting to backend at {}…", db_params.url()));
     let connected = connect(&db_params).await?;
 
+    let role_ranks = schema_forge_acton::authz::RoleRanks::from_toml_file(&args.role_ranks)
+        .map_err(|e| CliError::Server {
+            message: format!(
+                "failed to load role ranks from {}: {e}",
+                args.role_ranks.display()
+            ),
+        })?;
+
     output.status("Loading schemas and policy store…");
     let init_data = SchemaForgeExtension::build_init(
         connected.backend.clone(),
         None,
         &svc_config.custom.schema_forge.storage,
+        role_ranks,
     )
     .await
     .map_err(|e| CliError::Server {

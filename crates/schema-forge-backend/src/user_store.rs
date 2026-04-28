@@ -4,13 +4,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::BackendError;
 
-/// A user record from the `_forge_users` table (without password_hash).
+/// A user record (without password_hash).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForgeUser {
     pub username: String,
     pub roles: Vec<String>,
     pub display_name: Option<String>,
     pub active: bool,
+    /// Maximum rank across the user's `roles`, computed from the
+    /// operator-controlled `role_ranks.toml`. Read-only — populated
+    /// server-side on every mutation, never accepted from clients.
+    pub role_rank: i64,
 }
 
 /// Storage-agnostic trait for user authentication and management.
@@ -99,6 +103,7 @@ mod tests {
             roles: vec!["sales".to_string(), "marketing".to_string()],
             display_name: Some("Alice Chen".to_string()),
             active: true,
+            role_rank: 200,
         };
         let json = serde_json::to_string(&user).unwrap();
         let back: ForgeUser = serde_json::from_str(&json).unwrap();

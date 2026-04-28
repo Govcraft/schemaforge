@@ -3,9 +3,9 @@
 // The sidebar is driven by `listSchemas()` so it always reflects the live
 // catalog — no codegen. Nested routes cover the full CRUD surface for any
 // schema (browse, create, view, edit) plus the landing index.
-import { Link, Route, Routes, useLocation } from "react-router-dom"
+import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
-import { listSchemas } from "@/admin/api-client"
+import { listSchemas, isSystemSchema } from "@/admin/api-client"
 import { SchemasIndex } from "@/admin/schemas-index"
 import { AdminEntityList } from "@/admin/entity-list"
 import { AdminEntityDetail } from "@/admin/entity-detail"
@@ -22,6 +22,13 @@ export function AdminLayout() {
 
   const active = (path: string) =>
     location.pathname === path ? "font-semibold text-foreground" : ""
+
+  // Hide `@system` schemas (User, TenantMembership, WebhookSubscription)
+  // from the entity navigation. They're platform plumbing — the dedicated
+  // /admin/users page is the right path for user mgmt, and the rest are
+  // operator-internal. Operators who genuinely need raw access can still
+  // reach them through /admin (Schemas catalog).
+  const appSchemas = (schemas ?? []).filter((s) => !isSystemSchema(s))
 
   return (
     <div className="grid grid-cols-[220px_1fr] gap-6">
@@ -44,18 +51,20 @@ export function AdminLayout() {
             Entities
           </div>
           <nav className="flex flex-col gap-1">
-            {(schemas ?? []).map((s) => (
+            {appSchemas.map((s) => (
               <Link
                 key={s.name}
                 to={`/admin/${s.name}`}
                 className={active(`/admin/${s.name}`)}
               >
                 {s.name}
-                <span className="ml-2 text-xs text-muted-foreground">
-                  ({s.fields.length})
-                </span>
               </Link>
             ))}
+            {appSchemas.length === 0 && (
+              <span className="text-xs text-muted-foreground">
+                No application schemas yet.
+              </span>
+            )}
           </nav>
         </div>
       </aside>
@@ -65,6 +74,11 @@ export function AdminLayout() {
           <Route path="users" element={<UsersList />} />
           <Route path="users/new" element={<UsersEdit />} />
           <Route path="users/:username/edit" element={<UsersEdit />} />
+          {/* Redirect the generic User-schema CRUD path to the dedicated
+              user-mgmt page. There must be exactly one path to user mgmt;
+              hand-typed `/admin/User` URLs and stale bookmarks land here. */}
+          <Route path="User" element={<Navigate to="/admin/users" replace />} />
+          <Route path="User/*" element={<Navigate to="/admin/users" replace />} />
           <Route path=":schema" element={<AdminEntityList />} />
           <Route path=":schema/new" element={<AdminEntityEdit />} />
           <Route path=":schema/:id" element={<AdminEntityDetail />} />
