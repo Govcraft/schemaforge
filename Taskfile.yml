@@ -91,14 +91,24 @@ tasks:
         BASE_URL="{{.BASE_URL}}" bash scripts/seed-demo-data.sh
 
         echo ""
-        echo "Demo backend running at {{.BASE_URL}}"
-        echo "  health:    {{.BASE_URL}}/health"
-        echo "  meta:      {{.BASE_URL}}/api/v1/forge/meta"
+        echo "============================================================"
+        echo "  Demo backend running at {{.BASE_URL}}"
+        echo "============================================================"
         echo ""
-        echo "To launch the React admin/app site:"
-        echo "  task site:dev   # regenerates site/ and starts Vite on :{{.SITE_DEV_PORT}}"
+        echo "  Sign in:"
+        echo "    username:  admin"
+        echo "    password:  {{.ADMIN_PASSWORD}}"
         echo ""
-        echo "Press Ctrl+C to stop the backend."
+        echo "  Endpoints:"
+        echo "    health:    {{.BASE_URL}}/health"
+        echo "    meta:      {{.BASE_URL}}/api/v1/forge/meta"
+        echo "    schemas:   {{.BASE_URL}}/api/v1/forge/schemas"
+        echo ""
+        echo "  Launch the React admin/app site:"
+        echo "    task site:dev   # regenerates site/ and starts Vite on :{{.SITE_DEV_PORT}}"
+        echo ""
+        echo "  Press Ctrl+C to stop the backend."
+        echo "============================================================"
         wait $SERVER_PID
 
   site:
