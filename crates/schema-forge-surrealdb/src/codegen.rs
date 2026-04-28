@@ -122,7 +122,7 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         MigrationStep::SetDefault { field, value } => {
             let literal = default_value_to_surql(value);
             vec![format!(
-                "DEFINE FIELD OVERWRITE {field} ON {table} VALUE $value OR {literal};"
+                "DEFINE FIELD OVERWRITE {field} ON {table} DEFAULT {literal};"
             )]
         }
         MigrationStep::RemoveDefault { field } => {
@@ -249,11 +249,16 @@ fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
         stmt.push_str(&format!(" ASSERT {}", assertions.join(" AND ")));
     }
 
-    // Add default value if modifier present
+    // Add default value if modifier present.
+    //
+    // Use SurrealDB's `DEFAULT` clause (applied only when the field is omitted
+    // on CREATE) rather than `VALUE $value OR <literal>`. The latter is
+    // recomputed on every write, so a legitimate `false` (or `0`, `""`) gets
+    // silently overwritten by the default — see issue #49.
     for modifier in &field.modifiers {
         if let FieldModifier::Default { value } = modifier {
             let literal = default_value_to_surql(value);
-            stmt.push_str(&format!(" VALUE $value OR {literal}"));
+            stmt.push_str(&format!(" DEFAULT {literal}"));
         }
     }
 
@@ -470,7 +475,7 @@ mod tests {
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(
             stmts,
-            vec!["DEFINE FIELD status ON Contact TYPE option<string> VALUE $value OR 'active';"]
+            vec!["DEFINE FIELD status ON Contact TYPE option<string> DEFAULT 'active';"]
         );
     }
 

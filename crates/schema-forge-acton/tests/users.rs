@@ -567,3 +567,50 @@ async fn password_hash_never_appears_in_user_mgmt_responses() {
     assert_eq!(status, StatusCode::CREATED, "body: {create_body}");
     assert_no_password_hash(&create_body, "create");
 }
+
+/// Regression test for issue #49: `PUT /users/:username` with `active: false`
+/// must persist the disabled state. Previously the SurrealDB `default(true)`
+/// modifier was emitted as `VALUE $value OR true`, which is recomputed on
+/// every write — so `false OR true = true` silently rewrote the new value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_user_can_disable_and_re_enable_active_flag() {
+    let seeded = seed_backend("users_toggle_active").await;
+    seeded
+        .auth_store
+        .create_user("alice", "alicepass", &["sales".to_string()], "Alice")
+        .await
+        .unwrap();
+    let auth_store = seeded.auth_store.clone();
+
+    let app = users_router(seeded, make_claims("user:admin", &["platform_admin"])).await;
+
+    // Disable.
+    let (status, body) = json_request(
+        &app,
+        Method::PUT,
+        "/users/alice",
+        Some(serde_json::json!({ "active": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["active"], false, "PUT response should reflect disabled flag");
+
+    let read_back = auth_store.get_user("alice").await.unwrap().unwrap();
+    assert!(
+        !read_back.active,
+        "active=false must survive the round-trip through the SurrealDB UPDATE path"
+    );
+
+    // Re-enable, to confirm the toggle is symmetric.
+    let (status, body) = json_request(
+        &app,
+        Method::PUT,
+        "/users/alice",
+        Some(serde_json::json!({ "active": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["active"], true);
+    let read_back = auth_store.get_user("alice").await.unwrap().unwrap();
+    assert!(read_back.active);
+}
