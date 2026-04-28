@@ -200,10 +200,13 @@ pub async fn run(
     svc_config.service.port = args.port;
     svc_config.service.name = "schemaforge".to_string();
 
-    // Token auth public path: the JSON login endpoint must be reachable
-    // without a bearer token so clients can obtain one.
+    // Token auth public paths: both endpoints must be reachable without a
+    // bearer token. `/auth/login` so clients can obtain one; `/meta` so the
+    // login screen can display real backend / auth / build values before
+    // the user has any token at all.
     if let Some(acton_service::config::TokenConfig::Paseto(ref mut pc)) = svc_config.token {
         pc.public_paths.push("/api/v1/forge/auth/login".to_string());
+        pc.public_paths.push("/api/v1/forge/meta".to_string());
     }
 
     // Opt-in permissive CORS for local development. Warns loudly in logs.
@@ -225,8 +228,12 @@ pub async fn run(
     let paseto_generator = build_paseto_generator(&svc_config, output)?;
 
     // 8. Build versioned routes via acton-service for the JSON forge API.
+    //    Build a `MetaInfo` snapshot from the resolved DB params + the
+    //    login token TTL so `GET /api/v1/forge/meta` can surface honest
+    //    runtime posture to unauthenticated callers (the login screen).
     let login_auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = auth_store.clone();
-    let routes = build_versioned_routes(login_auth_store, paseto_generator);
+    let meta_info = build_meta_info(&db_params);
+    let routes = build_versioned_routes(login_auth_store, paseto_generator, meta_info);
 
     let bind_addr = format!("{}:{}", args.host, args.port);
     output.success(&format!(
@@ -537,11 +544,13 @@ fn build_paseto_generator(
 fn build_versioned_routes(
     auth_store: Arc<dyn schema_forge_acton::DynAuthStore>,
     paseto_generator: Arc<PasetoGenerator>,
+    meta_info: Arc<schema_forge_acton::MetaInfo>,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
     // Cloned into the add_version closure so the login handler can
     // extract them via axum::Extension.
     let auth_store_layer = auth_store;
     let generator_layer = paseto_generator;
+    let meta_layer = meta_info;
     VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
         .with_base_path("/api")
         .add_version(ApiVersion::V1, move |router| {
@@ -549,8 +558,27 @@ fn build_versioned_routes(
             SchemaForgeExtension::versioned_forge_routes(router)
                 .layer(Extension(auth_store_layer))
                 .layer(Extension(generator_layer))
+                .layer(Extension(meta_layer))
         })
         .build_routes()
+}
+
+/// Build a `MetaInfo` snapshot from the resolved DB params.
+///
+/// `backend` and `backend_label` are picked off the `DbParams` variant so
+/// the `/meta` endpoint reports the same backend the rest of the runtime
+/// is actually talking to (no separate config knob, no drift).
+fn build_meta_info(db_params: &DbParams) -> Arc<schema_forge_acton::MetaInfo> {
+    let (backend, label) = match db_params {
+        #[cfg(feature = "surrealdb")]
+        DbParams::Surrealdb(_) => ("surrealdb", "SurrealDB 2.x"),
+        #[cfg(feature = "postgres")]
+        DbParams::Postgres(_) => ("postgres", "PostgreSQL"),
+        #[allow(unreachable_patterns)]
+        _ => ("unknown", "Unknown backend"),
+    };
+    let ttl = schema_forge_acton::routes::auth::LOGIN_TOKEN_LIFETIME.as_secs();
+    Arc::new(schema_forge_acton::MetaInfo::new(backend, label, ttl))
 }
 
 /// Mem-backed SurrealDB is the only auth store we can stand up synchronously
@@ -637,6 +665,11 @@ mod tests {
             EntityAuthStore::new(entity_store, user_schema, resolver),
         );
 
-        let _routes = build_versioned_routes(auth_store, generator);
+        let meta = Arc::new(schema_forge_acton::MetaInfo::new(
+            "surrealdb",
+            "SurrealDB 2.x",
+            3600,
+        ));
+        let _routes = build_versioned_routes(auth_store, generator, meta);
     }
 }

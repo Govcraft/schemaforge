@@ -20,13 +20,6 @@ import {
   type UserRow,
 } from "@/admin/api-client"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 
 type FormState = {
@@ -120,7 +113,13 @@ export function UsersEdit() {
     },
   })
 
-  if (!isNew && existing.isLoading) return <p>Loading…</p>
+  if (!isNew && existing.isLoading) {
+    return (
+      <div className="page">
+        <div className="empty">Loading…</div>
+      </div>
+    )
+  }
 
   function onSubmit(ev: FormEvent) {
     ev.preventDefault()
@@ -146,107 +145,136 @@ export function UsersEdit() {
     !isNew && initialActive && !values.active && username === "admin"
 
   return (
-    <Card className="max-w-2xl">
-      <CardHeader>
-        <CardTitle>{isNew ? "New User" : `Edit User ${username}`}</CardTitle>
-        <CardDescription>
-          {isNew
-            ? "Create a user with an initial password and role set."
-            : "Leave the password blank to keep it unchanged."}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div className="grid grid-cols-[160px_1fr] gap-2 items-center">
-            <label className="text-sm">username</label>
-            <Input
-              value={values.username}
-              readOnly={!isNew}
-              onChange={(e) =>
-                setValues((prev) => ({ ...prev, username: e.target.value }))
-              }
-              placeholder="alice"
-            />
+    <div className="page-narrow">
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">USER · {isNew ? "NEW" : "EDIT"}</div>
+          <h1 className="page-title">
+            {isNew ? "New user" : `Edit ${username}`}
+          </h1>
+          <div className="page-sub">
+            {isNew
+              ? "Create a user with an initial password and role set."
+              : "Leave the password blank to keep it unchanged."}
           </div>
+        </div>
+      </div>
 
-          <div className="grid grid-cols-[160px_1fr] gap-2 items-center">
-            <label className="text-sm">display name</label>
-            <Input
-              value={values.displayName}
-              onChange={(e) =>
-                setValues((prev) => ({
-                  ...prev,
-                  displayName: e.target.value,
-                }))
-              }
-              placeholder="Alice Chen"
-            />
-          </div>
-
-          <div className="grid grid-cols-[160px_1fr] gap-2 items-center">
-            <label className="text-sm">
-              password
-              {isNew ? <span className="text-destructive"> *</span> : null}
-            </label>
-            <Input
-              type="password"
-              value={values.password}
-              onChange={(e) =>
-                setValues((prev) => ({ ...prev, password: e.target.value }))
-              }
-              placeholder={isNew ? "min 8 characters" : "leave blank to keep"}
-            />
-          </div>
-
-          <div className="grid grid-cols-[160px_1fr] gap-2 items-start">
-            <label className="text-sm pt-2">
-              roles
-              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                comma-separated
-              </div>
-            </label>
-            <Input
-              value={values.rolesCsv}
-              onChange={(e) =>
-                setValues((prev) => ({ ...prev, rolesCsv: e.target.value }))
-              }
-              placeholder="admin, sales"
-            />
-          </div>
-
-          <div className="grid grid-cols-[160px_1fr] gap-2 items-center">
-            <label className="text-sm">active</label>
-            <label className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={values.active}
+      <form onSubmit={onSubmit}>
+        <div className="form-grid">
+          <div className="form-row">
+            <label className="form-label">username{isNew ? <span className="req">*</span> : null}</label>
+            <div className="form-field">
+              <Input
+                value={values.username}
+                readOnly={!isNew}
                 onChange={(e) =>
-                  setValues((prev) => ({ ...prev, active: e.target.checked }))
+                  setValues((prev) => ({ ...prev, username: e.target.value }))
                 }
+                placeholder="alice"
               />
-              {willDisableSelf ? (
-                <span className="text-[10px] text-destructive">
-                  warning: disabling the bootstrap admin will lock the instance
-                </span>
-              ) : null}
+            </div>
+          </div>
+
+          <div className="form-row">
+            <label className="form-label">display name</label>
+            <div className="form-field">
+              <Input
+                value={values.displayName}
+                onChange={(e) =>
+                  setValues((prev) => ({
+                    ...prev,
+                    displayName: e.target.value,
+                  }))
+                }
+                placeholder="Alice Chen"
+              />
+            </div>
+          </div>
+
+          <div className="form-row">
+            <label className="form-label">
+              password
+              {isNew ? <span className="req">*</span> : <span className="opt">optional</span>}
             </label>
+            <div className="form-field">
+              <Input
+                type="password"
+                value={values.password}
+                onChange={(e) =>
+                  setValues((prev) => ({ ...prev, password: e.target.value }))
+                }
+                placeholder={isNew ? "min 8 characters" : "leave blank to keep"}
+              />
+            </div>
           </div>
 
-          {formError ? (
-            <p className="text-destructive text-sm">{formError}</p>
-          ) : null}
-
-          <div className="flex gap-2 pt-2">
-            <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? "Saving…" : isNew ? "Create" : "Save"}
-            </Button>
-            <Button variant="outline" asChild>
-              <Link to="/admin/users">Cancel</Link>
-            </Button>
+          <div className="form-row">
+            <label className="form-label">
+              roles
+              <span className="opt">csv</span>
+            </label>
+            <div className="form-field">
+              <Input
+                value={values.rolesCsv}
+                onChange={(e) =>
+                  setValues((prev) => ({ ...prev, rolesCsv: e.target.value }))
+                }
+                placeholder="admin, sales"
+              />
+              <div className="help mono">comma-separated</div>
+            </div>
           </div>
-        </form>
-      </CardContent>
-    </Card>
+
+          <div className="form-row">
+            <label className="form-label">active</label>
+            <div className="form-field">
+              <label style={ { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={values.active}
+                  onChange={(e) =>
+                    setValues((prev) => ({ ...prev, active: e.target.checked }))
+                  }
+                />
+                <span>{values.active ? "Active" : "Disabled"}</span>
+              </label>
+              {willDisableSelf ? (
+                <div className="err mono" style={ { fontSize: 11 }}>
+                  warning: disabling the bootstrap admin will lock the instance
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        {formError ? (
+          <div
+            role="alert"
+            style={ {
+              marginTop: 16,
+              padding: "10px 14px",
+              borderLeft: "2px solid var(--gc-err-400)",
+              background: "rgba(180, 50, 26, 0.06)",
+              color: "var(--gc-err-400)",
+              fontSize: 13,
+              borderRadius: 2,
+            }}
+          >
+            {formError}
+          </div>
+        ) : null}
+
+        <div style={ { display: "flex", gap: 8, marginTop: 24 }}>
+          <Button type="submit" disabled={save.isPending}>
+            {save.isPending ? "Saving…" : isNew ? "Create user" : "Save changes"}
+          </Button>
+          <Button variant="outline" asChild>
+            <Link to="/admin/users">Cancel</Link>
+          </Button>
+        </div>
+      </form>
+    </div>
   )
 }
 

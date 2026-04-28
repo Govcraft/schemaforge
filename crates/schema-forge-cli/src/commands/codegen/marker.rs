@@ -44,7 +44,8 @@ impl CommentStyle {
             Some("css" | "scss") => Self::SlashStar,
             Some("toml" | "sh" | "yml" | "yaml" | "py") => Self::Hash,
             Some("md" | "html" | "htm") => Self::HtmlComment,
-            Some("json") => Self::None,
+            Some("json" | "svg" | "woff2" | "woff" | "ttf" | "otf" | "ico" | "png" | "jpg"
+            | "jpeg" | "webp" | "gif") => Self::None,
             _ => Self::Hash,
         }
     }

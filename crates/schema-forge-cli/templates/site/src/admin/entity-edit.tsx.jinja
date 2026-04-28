@@ -2,10 +2,10 @@
 // and `/admin/:schema/:id/edit`: when `:id` is present we prefill the form
 // from the server; otherwise we start empty and POST on submit.
 //
-// State is kept in a plain `Record<string, unknown>` driven by the field
-// renderer's `onChange` callbacks. React Hook Form isn't pulling its weight
-// here since every field is dynamic, so a controlled state dict keeps the
-// template tight.
+// Layout follows the Govcraft form-grid: 220px mono uppercase labels in
+// a left column, fields in a right column. State is a controlled value
+// dict — react-hook-form isn't pulling its weight when every field is
+// schema-driven.
 import { FormEvent, useEffect, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery } from "@tanstack/react-query"
@@ -20,13 +20,6 @@ import { toast } from "sonner"
 import { FieldRenderer, canReadField, canWriteField } from "@/admin/field-renderer"
 import { Button } from "@/components/ui/button"
 import { ErrorBlock } from "@/components/ui/error-block"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 
 export function AdminEntityEdit() {
   const { schema, id } = useParams<{ schema: string; id?: string }>()
@@ -71,14 +64,22 @@ export function AdminEntityEdit() {
   })
 
   if (!schema) return null
-  if (meta.isLoading || (!isNew && existing.isLoading)) return <p>Loading…</p>
+  if (meta.isLoading || (!isNew && existing.isLoading)) {
+    return (
+      <div className="page">
+        <div className="empty">Loading…</div>
+      </div>
+    )
+  }
   if (meta.error) {
     return (
-      <ErrorBlock
-        title="Failed to load schema"
-        error={meta.error}
-        onRetry={() => meta.refetch()}
-      />
+      <div className="page">
+        <ErrorBlock
+          title="Failed to load schema"
+          error={meta.error}
+          onRetry={() => meta.refetch()}
+        />
+      </div>
     )
   }
 
@@ -109,56 +110,73 @@ export function AdminEntityEdit() {
   }
 
   return (
-    <Card className="max-w-2xl">
-      <CardHeader>
-        <CardTitle>
-          {isNew ? `New ${schema}` : `Edit ${schema} ${id}`}
-        </CardTitle>
-        <CardDescription>
-          Generic admin form. Fields marked * are required.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={onSubmit} className="space-y-4">
-          {fields.map((f) => (
-            <div
-              key={f.name}
-              className="grid grid-cols-[160px_1fr] gap-2 items-start"
-            >
-              <label className="text-sm pt-2">
-                {f.name}
-                {f.required ? <span className="text-destructive"> *</span> : null}
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  {f.kind}
+    <div className="page-narrow">
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">{schema} · {isNew ? "NEW" : "EDIT"}</div>
+          <h1 className="page-title">
+            {isNew ? `New ${schema}` : `Edit ${schema}`}
+          </h1>
+          {!isNew ? <div className="page-sub mono">{id}</div> : null}
+        </div>
+      </div>
+
+      <form onSubmit={onSubmit}>
+        <div className="form-grid">
+          {fields.map((f) => {
+            const writable = canWriteField(f)
+            return (
+              <div className="form-row" key={f.name}>
+                <label className="form-label">
+                  {f.name}
+                  {f.required ? <span className="req">*</span> : null}
+                  {!writable ? <span className="opt">read-only</span> : null}
+                </label>
+                <div className="form-field">
+                  <FieldRenderer
+                    field={f}
+                    value={values[f.name]}
+                    readOnly={!writable}
+                    onChange={(next) =>
+                      setValues((prev) => ({ ...prev, [f.name]: next }))
+                    }
+                  />
+                  <div className="help mono">{f.kind}</div>
                 </div>
-              </label>
-              <div>
-                <FieldRenderer
-                  field={f}
-                  value={values[f.name]}
-                  onChange={(next) =>
-                    setValues((prev) => ({ ...prev, [f.name]: next }))
-                  }
-                />
               </div>
-            </div>
-          ))}
+            )
+          })}
+        </div>
 
-          {formError ? (
-            <p className="text-destructive text-sm">{formError}</p>
-          ) : null}
-
-          <div className="flex gap-2 pt-2">
-            <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? "Saving…" : isNew ? "Create" : "Save"}
-            </Button>
-            <Button variant="outline" asChild>
-              <Link to={`/admin/${schema}`}>Cancel</Link>
-            </Button>
+        {formError ? (
+          <div
+            role="alert"
+            style={ {
+              marginTop: 16,
+              padding: "10px 14px",
+              borderLeft: "2px solid var(--gc-err-400)",
+              background: "rgba(180, 50, 26, 0.06)",
+              color: "var(--gc-err-400)",
+              fontSize: 13,
+              borderRadius: 2,
+            }}
+          >
+            {formError}
           </div>
-        </form>
-      </CardContent>
-    </Card>
+        ) : null}
+
+        <div style={ { display: "flex", gap: 8, marginTop: 24 }}>
+          <Button type="submit" disabled={save.isPending}>
+            {save.isPending ? "Saving…" : isNew ? "Create" : "Save changes"}
+          </Button>
+          <Button variant="outline" asChild>
+            <Link to={isNew ? `/admin/${schema}` : `/admin/${schema}/${id}`}>
+              Cancel
+            </Link>
+          </Button>
+        </div>
+      </form>
+    </div>
   )
 }
 

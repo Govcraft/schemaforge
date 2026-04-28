@@ -1,6 +1,6 @@
-// Read-only entity detail. Fetches the schema metadata + the record and
-// renders each field via `FieldRenderer` in read-only mode. Edit / Delete
-// actions live in the header.
+// Read-only entity detail rendered as a Govcraft "spec sheet": numbered
+// margin column (§ 01, § 02, …), mono uppercase field labels, hairline
+// row dividers. Edit / Delete / Back actions live in the page header.
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -9,16 +9,9 @@ import {
   describeSchema,
   getEntity,
 } from "@/admin/api-client"
-import { FieldRenderer } from "@/admin/field-renderer"
+import { FieldRenderer, canReadField } from "@/admin/field-renderer"
 import { Button } from "@/components/ui/button"
 import { ErrorBlock } from "@/components/ui/error-block"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
 
 export function AdminEntityDetail() {
   const { schema, id } = useParams<{ schema: string; id: string }>()
@@ -44,48 +37,44 @@ export function AdminEntityDetail() {
   })
 
   if (!schema || !id) return null
-  if (meta.isLoading || entity.isLoading) return <p>Loading…</p>
+  if (meta.isLoading || entity.isLoading) {
+    return (
+      <div className="page">
+        <div className="empty">Loading…</div>
+      </div>
+    )
+  }
   if (meta.error || entity.error || !entity.data) {
     const err = meta.error ?? entity.error ?? new Error("record not found")
     return (
-      <ErrorBlock
-        title="Failed to load record"
-        error={err}
-        onRetry={() => {
-          meta.refetch()
-          entity.refetch()
-        }}
-      />
+      <div className="page">
+        <ErrorBlock
+          title="Failed to load record"
+          error={err}
+          onRetry={() => {
+            meta.refetch()
+            entity.refetch()
+          }}
+        />
+      </div>
     )
   }
 
-  const fields = meta.data?.fields ?? []
+  const fields = (meta.data?.fields ?? []).filter(canReadField)
   const data = entity.data
 
   return (
-    <Card className="max-w-2xl">
-      <CardHeader>
-        <CardTitle>
-          {schema} — {data.id}
-        </CardTitle>
-        <CardDescription>
-          Read-only view. Use Edit to modify, Delete to remove.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {fields.map((f) => (
-          <div
-            key={f.name}
-            className="grid grid-cols-[160px_1fr] gap-2 text-sm items-start"
-          >
-            <span className="text-muted-foreground">{f.name}</span>
-            <span>
-              <FieldRenderer field={f} value={data[f.name]} readOnly />
-            </span>
-          </div>
-        ))}
-
-        <div className="pt-4 flex gap-2">
+    <div className="page-narrow">
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">{schema} · RECORD</div>
+          <h1 className="page-title">{shortLabel(data)}</h1>
+          <div className="page-sub mono">{data.id}</div>
+        </div>
+        <div style={ { display: "flex", gap: 8 }}>
+          <Button variant="outline" asChild>
+            <Link to={`/admin/${schema}`}>Back</Link>
+          </Button>
           <Button asChild>
             <Link to={`/admin/${schema}/${data.id}/edit`}>Edit</Link>
           </Button>
@@ -100,12 +89,44 @@ export function AdminEntityDetail() {
           >
             Delete
           </Button>
-          <Button variant="outline" asChild>
-            <Link to={`/admin/${schema}`}>Back</Link>
-          </Button>
         </div>
+      </div>
 
-      </CardContent>
-    </Card>
+      <div className="spec">
+        {fields.map((f, i) => {
+          const value = data[f.name]
+          const num = String(i + 1).padStart(2, "0")
+          const isEmpty = value === null || value === undefined || value === ""
+          return (
+            <div className="spec-row" key={f.name}>
+              <div className="spec-num">§ {num}</div>
+              <div className="spec-key">
+                <span>{f.name}</span>
+                {f.required ? <span className="req">*</span> : null}
+              </div>
+              <div className="spec-val">
+                {isEmpty ? (
+                  <span className="empty">— empty</span>
+                ) : (
+                  <FieldRenderer field={f} value={value} readOnly />
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
+}
+
+function shortLabel(data: Record<string, unknown>): string {
+  // Pick the most "human" field for the page title — name/title/label first,
+  // otherwise fall back to the id. Keeps the spec sheet feeling like a
+  // record, not a UUID.
+  const candidates = ["name", "title", "label", "subject", "username", "email"]
+  for (const k of candidates) {
+    const v = data[k]
+    if (typeof v === "string" && v.trim()) return v
+  }
+  return String(data.id ?? "Record")
 }

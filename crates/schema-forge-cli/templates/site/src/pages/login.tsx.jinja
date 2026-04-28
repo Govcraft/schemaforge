@@ -1,29 +1,26 @@
 // Scaffolded once by `schema-forge site generate` — edit freely.
 //
-// Login page for the generated {{ project_name }} site. Exchanges credentials
-// for a PASETO token at /api/v1/forge/auth/login via the tokenStore helper.
-import { useState } from "react"
+// Login page for the generated {{ project_name }} site. Split layout
+// per the Govcraft DS:
+//
+// - Left: always-inked identity panel. The Govcraft brand mark in the
+//   top-left, the SchemaForge product wordmark + tagline in the middle,
+//   four-key posture readout (API / Backend / Auth / Build) at the foot,
+//   and a 5%-opacity wallpaper of the same mark behind everything.
+// - Right: paper credentials form (theme-aware) — `§ 01 / Sign in`
+//   eyebrow, `Sign in to {project}` heading, the seeded-admin help line,
+//   inputs with mono uppercase labels, an accent "Sign in" button, and a
+//   mono `POST /auth/login` telemetry footer.
+//
+// Exchanges credentials for a PASETO token at /api/v1/forge/auth/login
+// via the auth helper.
+import { useEffect, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { login } from "@/lib/auth"
-import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form"
-import { Input } from "@/components/ui/input"
+import { getMeta, type MetaResponse } from "@/admin/api-client"
 
 const loginSchema = z.object({
   username: z.string().min(1, "Username is required"),
@@ -32,13 +29,47 @@ const loginSchema = z.object({
 
 type LoginFormValues = z.infer<typeof loginSchema>
 
+function formatTtl(seconds: number | undefined): string {
+  // Render the auth TTL the way an operator would say it: minutes when
+  // sub-hour, hours otherwise. Falls back to a literal seconds count if
+  // the value is unexpected (negative, zero, NaN).
+  if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return "—"
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m TTL`
+  const hours = seconds / 3600
+  return Number.isInteger(hours) ? `${hours}h TTL` : `${hours.toFixed(1)}h TTL`
+}
+
 export function LoginPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [meta, setMeta] = useState<MetaResponse | null>(null)
 
-  const form = useForm<LoginFormValues>({
+  // Fire-and-forget: pull the runtime posture so the left panel shows
+  // real backend / auth / build values. Failure is non-fatal — fall back
+  // to ellipses so the layout stays stable.
+  useEffect(() => {
+    let cancelled = false
+    getMeta()
+      .then((m) => {
+        if (!cancelled) setMeta(m)
+      })
+      .catch(() => {
+        // Server may be reachable for /auth/login but not /meta in older
+        // builds. Swallow so we don't paint a misleading error on the
+        // login screen — the form still works regardless.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
     defaultValues: { username: "", password: "" },
   })
@@ -58,55 +89,191 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-[60vh] items-center justify-center">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle>Sign in to {{ project_name }}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-              <FormField
-                control={form.control}
-                name="username"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Username</FormLabel>
-                    <FormControl>
-                      <Input autoComplete="username" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
+    <div className="login-stage">
+      <aside className="login-left">
+        <div className="login-bg" />
+
+        <div style={ { position: "relative", zIndex: 1 }}>
+          <img
+            src="/logo-mark-white.svg"
+            alt="Govcraft"
+            style={ { width: 84, height: "auto", display: "block" }}
+          />
+        </div>
+
+        <div style={ { position: "relative", zIndex: 1 }}>
+          <div
+            style={ {
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: "var(--app-rail-fg-2)",
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              marginBottom: 12,
+            }}
+          >
+            Govcraft · Admin Console
+          </div>
+          <h1 className="login-hero">SchemaForge</h1>
+          <p className="login-tagline" style={ { marginTop: 18 }}>
+            One schema file. Migrations, CRUD, validation, audit — generated.
+            The same source of truth, all the way down.
+          </p>
+        </div>
+
+        <dl className="login-foot" style={ { position: "relative", zIndex: 1 }}>
+          <div>
+            <dt>API</dt>
+            <dd>v1 · /api/v1/forge</dd>
+          </div>
+          <div>
+            <dt>Backend</dt>
+            <dd>{meta?.backend_label ?? "…"}</dd>
+          </div>
+          <div>
+            <dt>Auth</dt>
+            <dd>
+              {meta
+                ? `${meta.auth.kind.toUpperCase()} · ${formatTtl(meta.auth.ttl_seconds)}`
+                : "…"}
+            </dd>
+          </div>
+          <div>
+            <dt>Build</dt>
+            <dd>{meta?.build.version ? `v${meta.build.version}` : "…"}</dd>
+          </div>
+        </dl>
+      </aside>
+
+      <section className="login-right">
+        <form className="login-form-wrap" onSubmit={handleSubmit(onSubmit)}>
+          <div className="eyebrow" style={ { marginBottom: 8 }}>§ 01 / Sign in</div>
+          <h2
+            style={ {
+              fontSize: 26,
+              fontWeight: 600,
+              margin: "0 0 4px",
+              letterSpacing: "-0.01em",
+              color: "var(--app-fg-1)",
+            }}
+          >
+            Sign in to {{ project_name }}
+          </h2>
+          <p
+            style={ {
+              fontSize: 13,
+              color: "var(--app-fg-3)",
+              margin: "0 0 24px",
+            }}
+          >
+            Use the credentials seeded by{" "}
+            <code
+              style={ {
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                background: "var(--app-bg-2)",
+                padding: "1px 5px",
+                borderRadius: 2,
+              }}
+            >
+              schemaforge serve --admin-user
+            </code>
+            .
+          </p>
+
+          <div style={ { display: "flex", flexDirection: "column", gap: 14 }}>
+            <div>
+              <label className="eyebrow" style={ { display: "block", marginBottom: 6 }}>
+                Username
+              </label>
+              <input
+                className={"input" + (errors.username ? " invalid" : "")}
+                autoComplete="username"
+                autoFocus
+                {...register("username")}
               />
-              <FormField
-                control={form.control}
-                name="password"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Password</FormLabel>
-                    <FormControl>
-                      <Input type="password" autoComplete="current-password" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              {error && (
+              {errors.username ? (
                 <div
-                  role="alert"
-                  className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                  className="err"
+                  style={ {
+                    marginTop: 4,
+                    fontSize: 12,
+                    color: "var(--gc-err-400)",
+                  }}
                 >
-                  {error}
+                  {errors.username.message}
                 </div>
-              )}
-              <Button type="submit" className="w-full" disabled={submitting}>
-                {submitting ? "Signing in…" : "Sign in"}
-              </Button>
-            </form>
-          </Form>
-        </CardContent>
-      </Card>
+              ) : null}
+            </div>
+
+            <div>
+              <label className="eyebrow" style={ { display: "block", marginBottom: 6 }}>
+                Password
+              </label>
+              <input
+                type="password"
+                className={"input" + (errors.password ? " invalid" : "")}
+                autoComplete="current-password"
+                {...register("password")}
+              />
+              {errors.password ? (
+                <div
+                  className="err"
+                  style={ {
+                    marginTop: 4,
+                    fontSize: 12,
+                    color: "var(--gc-err-400)",
+                  }}
+                >
+                  {errors.password.message}
+                </div>
+              ) : null}
+            </div>
+
+            <button
+              type="submit"
+              className="btn btn-accent"
+              style={ { marginTop: 6, padding: "9px 14px", justifyContent: "center" }}
+              disabled={submitting}
+            >
+              {submitting ? "Signing in…" : "Sign in →"}
+            </button>
+
+            {error ? (
+              <div
+                role="alert"
+                style={ {
+                  padding: "10px 14px",
+                  borderLeft: "2px solid var(--gc-err-400)",
+                  background: "rgba(180, 50, 26, 0.06)",
+                  color: "var(--gc-err-400)",
+                  fontSize: 13,
+                  borderRadius: 2,
+                }}
+              >
+                {error}
+              </div>
+            ) : null}
+          </div>
+
+          <div
+            style={ {
+              marginTop: 28,
+              paddingTop: 16,
+              borderTop: "1px solid var(--app-border)",
+              display: "flex",
+              justifyContent: "space-between",
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: "var(--app-fg-3)",
+              letterSpacing: "0.06em",
+            }}
+          >
+            <span>POST /api/v1/forge/auth/login</span>
+            <span>200 · 18ms</span>
+          </div>
+        </form>
+      </section>
     </div>
   )
 }

@@ -1,13 +1,151 @@
+// App shell. The sidebar + topbar baseline lives here so every authed
+// route shares one chrome — admin pages and per-entity /app pages alike
+// — instead of double-stacking with AdminLayout. /login is the only
+// route rendered outside the shell.
+import { useEffect, useState } from "react"
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
+import { useQuery } from "@tanstack/react-query"
 import { Toaster } from "sonner"
 import { routeManifest, navEntries, defaultEntity } from "@/generated/route-manifest"
 import { LoginPage } from "@/pages/login"
 import { AdminLayout } from "@/admin/layout"
 import { RequireAuth } from "@/lib/require-auth"
 import { isAuthenticated, logout } from "@/lib/auth"
+import { listSchemas, isSystemSchema, type SchemaResponse } from "@/admin/api-client"
+
+const THEME_KEY = "{{ project_name | lower }}.theme"
+type Theme = "light" | "dark"
+
+function readTheme(): Theme {
+  if (typeof window === "undefined") return "light"
+  const stored = window.localStorage.getItem(THEME_KEY)
+  if (stored === "dark" || stored === "light") return stored
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+}
+
+function useTheme(): [Theme, () => void] {
+  const [theme, setTheme] = useState<Theme>(() => readTheme())
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme)
+    window.localStorage.setItem(THEME_KEY, theme)
+  }, [theme])
+  return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))]
+}
+
+function ProductMark({ size = 22 }: { size?: number }) {
+  // Govcraft brand mark, white-on-ink. Vendored at /logo-mark-white.svg
+  // by the site generator (see vendor::LOGO_MARK_WHITE_SVG). Always served
+  // on the inked rail, so the white fill is correct in both themes.
+  return (
+    <img
+      src="/logo-mark-white.svg"
+      alt="Govcraft"
+      style={ { width: size, height: "auto", display: "block" }}
+      aria-hidden
+    />
+  )
+}
+
+function Sidebar() {
+  const location = useLocation()
+  const { data: schemas } = useQuery({
+    queryKey: ["admin", "schemas"],
+    queryFn: () => listSchemas(),
+  })
+  const appSchemas = (schemas ?? []).filter((s: SchemaResponse) => !isSystemSchema(s))
+
+  const isActive = (prefix: string) => location.pathname === prefix || location.pathname.startsWith(prefix + "/")
+
+  return (
+    <aside className="shell-rail">
+      <div className="rail-head">
+        <span className="rail-mark"><ProductMark size={22} /></span>
+        <div>
+          <div className="rail-title">{{ project_name }}</div>
+          <div className="rail-sub">Schema Forge · Admin</div>
+        </div>
+      </div>
+
+      <div className="rail-section">
+        <div className="rail-section-label">Admin</div>
+        <Link to="/admin" className={"rail-link" + (location.pathname === "/admin" ? " active" : "")}>
+          <span className="dot" />
+          <span>Schemas</span>
+        </Link>
+        <Link to="/admin/users" className={"rail-link" + (isActive("/admin/users") ? " active" : "")}>
+          <span className="dot" />
+          <span>Users</span>
+        </Link>
+      </div>
+
+      <div className="rail-section" style={ { flex: 1, minHeight: 0, overflow: "auto" }}>
+        <div className="rail-section-label">
+          <span>Entities</span>
+          <span className="mono">{appSchemas.length}</span>
+        </div>
+        {navEntries.map((n) => (
+          <Link
+            key={n.kebab}
+            to={`/app/${n.kebab}`}
+            className={"rail-link" + (isActive(`/app/${n.kebab}`) ? " active" : "")}
+          >
+            <span className="dot" />
+            <span>{n.title}</span>
+          </Link>
+        ))}
+        {appSchemas.length === 0 && navEntries.length === 0 ? (
+          <div style={ { padding: "4px 8px", color: "var(--app-rail-fg-3)", fontSize: 12 }}>
+            No application schemas yet.
+          </div>
+        ) : null}
+      </div>
+
+      <div className="rail-foot">
+        <div className="rail-foot-line">
+          <span>SCHEMA-FORGE</span>
+          <span>v1</span>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+function Topbar({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }) {
+  const location = useLocation()
+  // Build a tiny breadcrumb from the path. "/admin/Contact/abc/edit" →
+  // Admin · Contact · Edit. Plain CSS, no dependency on the route table.
+  const segs = location.pathname.split("/").filter(Boolean)
+  const crumbs = segs.length === 0 ? ["Home"] : segs
+
+  return (
+    <header className="shell-topbar">
+      <nav className="crumbs" aria-label="breadcrumb">
+        {crumbs.map((c, i) => (
+          <span key={i} style={ { display: "inline-flex", alignItems: "center", gap: 6 }}>
+            {i > 0 ? <span className="sep">/</span> : null}
+            <span className={i === crumbs.length - 1 ? "now" : ""}>{c}</span>
+          </span>
+        ))}
+      </nav>
+
+      <button type="button" className="topbar-action" onClick={toggleTheme} title="Toggle theme">
+        <span className="mono">{theme === "dark" ? "DARK" : "LIGHT"}</span>
+      </button>
+
+      <button
+        type="button"
+        className="topbar-action"
+        onClick={logout}
+        title="Sign out"
+      >
+        <span className="mono">SIGN OUT</span>
+      </button>
+    </header>
+  )
+}
 
 export default function App() {
-  // Re-evaluate `isAuthenticated` on every navigation so the header
+  // Re-evaluate `isAuthenticated` on every navigation so the chrome
   // appears immediately after login (without the user needing to refresh).
   // The token lives in sessionStorage and isn't reactive on its own;
   // subscribing to `useLocation` re-renders App when the LoginPage calls
@@ -15,37 +153,32 @@ export default function App() {
   // stored token flips this branch on.
   useLocation()
   const authed = isAuthenticated()
+  const [theme, toggleTheme] = useTheme()
+
+  if (!authed) {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="*"
+          element={
+            <RequireAuth>
+              <Navigate to={`/app/${defaultEntity}`} replace />
+            </RequireAuth>
+          }
+        />
+      </Routes>
+    )
+  }
+
   return (
-    <div className="min-h-screen flex flex-col">
-      {authed && (
-        <header className="border-b px-6 py-4 flex items-center gap-6">
-          <Link to="/" className="font-semibold">{{ project_name }}</Link>
-          <nav className="flex gap-4 text-sm text-muted-foreground">
-            {navEntries.map((n) => (
-              <Link key={n.kebab} to={`/app/${n.kebab}`}>
-                {n.title}
-              </Link>
-            ))}
-            <Link to="/admin" className="font-medium">
-              Admin
-            </Link>
-          </nav>
-          <div className="ml-auto">
-            <button
-              type="button"
-              onClick={logout}
-              className="text-sm text-muted-foreground hover:text-foreground"
-            >
-              Sign out
-            </button>
-          </div>
-        </header>
-      )}
-      <main className="flex-1 p-6">
+    <div className="shell">
+      <Sidebar />
+      <Topbar theme={theme} toggleTheme={toggleTheme} />
+      <main className="shell-main">
         <Routes>
           <Route path="/login" element={<LoginPage />} />
 
-          {/* Landing: bounce into /app/<first entity> by default. */}
           <Route
             path="/"
             element={
@@ -79,7 +212,7 @@ export default function App() {
           />
         </Routes>
       </main>
-      <Toaster position="top-right" richColors closeButton />
+      <Toaster position="bottom-right" richColors closeButton />
     </div>
   )
 }

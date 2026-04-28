@@ -1,50 +1,66 @@
-// Admin landing page: grid of every schema the authenticated user can see,
-// with a field count and a link into its generic CRUD surface.
+// Admin landing page. Stat tiles derived from the schema registry +
+// schema cards grouped by application / system. Counts come straight
+// from the catalog so the dashboard is honest about what it can show
+// without paying for per-schema record-count round trips.
 import { Link } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
-import { listSchemas, isSystemSchema, type SchemaResponse } from "@/admin/api-client"
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+  listSchemas,
+  isSystemSchema,
+  type SchemaResponse,
+  type FieldResponse,
+} from "@/admin/api-client"
 import { ErrorBlock } from "@/components/ui/error-block"
 
+function isRelationField(f: FieldResponse): boolean {
+  return f.field_type?.type === "Relation"
+}
+
+function fieldTypeLabel(f: FieldResponse): string {
+  const t = f.field_type?.type ?? "?"
+  if (t === "Relation") {
+    const data = f.field_type?.data as { target?: string; cardinality?: string } | undefined
+    return data?.target ? `→ ${data.target}` : "→ ?"
+  }
+  return t.toLowerCase()
+}
+
 function SchemaCard({ schema }: { schema: SchemaResponse }) {
-  const system = isSystemSchema(schema)
+  const fieldCount = schema.fields.length
+  const relCount = schema.fields.filter(isRelationField).length
+  const preview = schema.fields.slice(0, 4)
   return (
-    <Link to={`/admin/${schema.name}`} className="block">
-      <Card className="hover:border-primary transition-colors">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            {schema.name}
-            {system && (
-              <span className="text-[10px] uppercase tracking-wide bg-muted text-muted-foreground rounded px-1.5 py-0.5">
-                System
-              </span>
-            )}
-          </CardTitle>
-          <CardDescription>
-            {schema.fields.length} field{schema.fields.length === 1 ? "" : "s"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ul className="text-xs text-muted-foreground space-y-0.5">
-            {schema.fields.slice(0, 5).map((f) => (
-              <li key={f.name}>
-                <span className="font-mono">{f.name}</span>
-                <span className="ml-2">{f.field_type.type}</span>
-              </li>
-            ))}
-            {schema.fields.length > 5 ? (
-              <li>… and {schema.fields.length - 5} more</li>
-            ) : null}
-          </ul>
-        </CardContent>
-      </Card>
+    <Link to={`/admin/${schema.name}`} className="schema-card">
+      <div className="schema-card-head">
+        <h3>{schema.name}</h3>
+        <span className="meta">
+          {fieldCount}F · {relCount}R
+        </span>
+      </div>
+      <ul className="field-list">
+        {preview.map((f) => (
+          <li key={f.name}>
+            <span>{f.name}</span>
+            <span className="t">{fieldTypeLabel(f)}</span>
+          </li>
+        ))}
+        {fieldCount > preview.length ? (
+          <li>
+            <span style={ { color: "var(--app-fg-4)" }}>… +{fieldCount - preview.length} more</span>
+          </li>
+        ) : null}
+      </ul>
     </Link>
+  )
+}
+
+function Stat({ k, v, d }: { k: string; v: string | number; d?: string }) {
+  return (
+    <div className="stat">
+      <div className="k">{k}</div>
+      <div className="v">{v}</div>
+      {d ? <div className="d">{d}</div> : null}
+    </div>
   )
 }
 
@@ -55,14 +71,22 @@ export function SchemasIndex() {
   })
   const { data, isLoading, error } = query
 
-  if (isLoading) return <p>Loading schemas…</p>
+  if (isLoading) {
+    return (
+      <div className="page">
+        <div className="empty">Loading schemas…</div>
+      </div>
+    )
+  }
   if (error) {
     return (
-      <ErrorBlock
-        title="Failed to load schemas"
-        error={error}
-        onRetry={() => query.refetch()}
-      />
+      <div className="page">
+        <ErrorBlock
+          title="Failed to load schemas"
+          error={error}
+          onRetry={() => query.refetch()}
+        />
+      </div>
     )
   }
 
@@ -76,35 +100,59 @@ export function SchemasIndex() {
     (s) => isSystemSchema(s) && s.name !== "User",
   )
 
+  const totalFields = schemas.reduce((acc, s) => acc + s.fields.length, 0)
+  const totalRelations = schemas.reduce(
+    (acc, s) => acc + s.fields.filter(isRelationField).length,
+    0,
+  )
+
   if (schemas.length === 0) {
     return (
-      <div className="space-y-2">
-        <h1 className="text-2xl font-semibold">Schemas</h1>
-        <p className="text-muted-foreground">
-          No schemas visible. Either the catalog is empty or your account
-          lacks read permission.
-        </p>
+      <div className="page">
+        <div className="page-head">
+          <div>
+            <div className="eyebrow">SCHEMAS</div>
+            <h1 className="page-title">Catalog</h1>
+            <div className="page-sub">
+              No schemas visible. Either the catalog is empty or your account
+              lacks read permission.
+            </div>
+          </div>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold">Schemas</h1>
-        <p className="text-sm text-muted-foreground">
-          Application schemas you defined. System schemas (User,
-          TenantMembership, WebhookSubscription) are platform plumbing —
-          managed via the dedicated routes when possible.
-        </p>
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">DASHBOARD</div>
+          <h1 className="page-title">Schema catalog</h1>
+          <div className="page-sub">
+            Application schemas you defined. System schemas are platform
+            plumbing — managed via the dedicated routes when possible.
+          </div>
+        </div>
+      </div>
+
+      <div className="stat-grid mb-16" style={ { marginBottom: 16 }}>
+        <Stat k="Schemas" v={schemas.length} d={`${appSchemas.length} application`} />
+        <Stat k="Fields" v={totalFields} d="across all schemas" />
+        <Stat k="Relations" v={totalRelations} d={`${(totalRelations / Math.max(schemas.length, 1)).toFixed(1)} avg`} />
+        <Stat k="System" v={systemSchemas.length + 1} d="incl. User" />
       </div>
 
       {appSchemas.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            Application
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <section style={ { marginBottom: 24 }}>
+          <div className="eyebrow" style={ { marginBottom: 8 }}>Application</div>
+          <div
+            style={ {
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+              gap: 12,
+            }}
+          >
             {appSchemas.map((s) => (
               <SchemaCard key={s.name} schema={s} />
             ))}
@@ -113,11 +161,15 @@ export function SchemasIndex() {
       )}
 
       {systemSchemas.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            System
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <section>
+          <div className="eyebrow" style={ { marginBottom: 8 }}>System</div>
+          <div
+            style={ {
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+              gap: 12,
+            }}
+          >
             {systemSchemas.map((s) => (
               <SchemaCard key={s.name} schema={s} />
             ))}

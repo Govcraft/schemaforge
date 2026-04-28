@@ -26,6 +26,7 @@ pub use error::ForgeError;
 pub use extension::{InitForgeData, SchemaForgeExtension};
 pub use hooks::HookDispatchActor;
 pub use messages::{InitForge, ReplyChannel};
+pub use routes::{MetaAuth, MetaBuild, MetaInfo};
 pub use state::{
     DynAuthStore, DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry,
 };

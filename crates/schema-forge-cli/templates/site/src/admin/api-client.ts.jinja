@@ -374,6 +374,44 @@ export async function listSchemas(): Promise<SchemaResponse[]> {
   return res.schemas
 }
 
+// ---------------------------------------------------------------------------
+// Runtime posture (`/meta`)
+// ---------------------------------------------------------------------------
+
+/** Wire shape of `GET /api/v1/forge/meta`. The endpoint is unauthenticated
+ *  so the login screen can render real backend / auth / build values
+ *  without first having a token. */
+export type MetaResponse = {
+  /** Stable lowercase backend kind (`"surrealdb"`, `"postgres"`, `"turso"`). */
+  backend: string
+  /** Human-readable backend label (`"SurrealDB 2.x"`). */
+  backend_label: string
+  auth: {
+    /** Token scheme — `"paseto"` today. */
+    kind: string
+    /** Login token TTL, in seconds. The login screen formats this as
+     *  `60m TTL` etc. */
+    ttl_seconds: number
+  }
+  build: {
+    /** Crate version of the running schema-forge-acton. */
+    version: string
+  }
+}
+
+/** Fetch the runtime meta snapshot. Public endpoint — no token required.
+ *  Bypasses the auth-aware `request()` helper so a fetch failure on the
+ *  login screen doesn't trigger a redirect-to-login loop. */
+export async function getMeta(): Promise<MetaResponse> {
+  const res = await fetch(`${API_BASE}${FORGE_API_PREFIX}/meta`, {
+    headers: { "Content-Type": "application/json" },
+  })
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: ${await res.text()}`)
+  }
+  return res.json() as Promise<MetaResponse>
+}
+
 /** True when the schema carries the `@system` annotation. System schemas
  *  (User, TenantMembership, WebhookSubscription) are platform plumbing
  *  and should be hidden from the user-facing entity navigation — they

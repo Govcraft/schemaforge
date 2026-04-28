@@ -476,7 +476,12 @@ impl SchemaForgeExtension {
     pub fn versioned_forge_routes(
         router: Router<AppState<SchemaForgeConfig>>,
     ) -> Router<AppState<SchemaForgeConfig>> {
-        router.nest("/forge", forge_routes().merge(auth_routes()))
+        router.nest(
+            "/forge",
+            forge_routes()
+                .merge(auth_routes())
+                .merge(crate::routes::meta_routes()),
+        )
     }
 
     /// Register GraphQL routes onto an existing Router.

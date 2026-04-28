@@ -254,6 +254,19 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
     ));
     plan.push(owned(".gitignore", vendor::GITIGNORE.to_string()));
 
+    // Brand marks. Vite serves `public/` at the URL root, so the templates
+    // can reference `/logo-mark-white.svg` and `/logo-mark.svg` directly
+    // without bundler involvement. The white mark sits on the inked rail
+    // and login left panel; the ink mark is the favicon.
+    plan.push(owned(
+        "public/logo-mark-white.svg",
+        vendor::LOGO_MARK_WHITE_SVG.to_string(),
+    ));
+    plan.push(owned(
+        "public/logo-mark.svg",
+        vendor::LOGO_MARK_INK_SVG.to_string(),
+    ));
+
     // ---- src/ scaffolding ----
     plan.push(owned("src/main.tsx", renderer.render("src/main.tsx", ctx)?));
     plan.push(owned("src/App.tsx", renderer.render("src/App.tsx", ctx)?));

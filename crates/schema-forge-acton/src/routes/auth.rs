@@ -30,7 +30,9 @@ use crate::state::DynAuthStore;
 ///
 /// The task spec calls for 1 hour explicitly; the acton-service default of
 /// 15 minutes is too short for the generated React site's current UX.
-const LOGIN_TOKEN_LIFETIME: Duration = Duration::from_secs(3600);
+///
+/// Public so `/meta` can surface the live TTL without duplicating the value.
+pub const LOGIN_TOKEN_LIFETIME: Duration = Duration::from_secs(3600);
 
 // ---------------------------------------------------------------------------
 // Request / response types

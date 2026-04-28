@@ -1,6 +1,6 @@
 // Admin users list. Mirrors `entity-list.tsx` but against the dedicated
 // `/api/v1/forge/users` endpoint instead of generic entity CRUD. The
-// User entity table is reachable through that path and only that path —
+// User entity table is reachable through this path and only this path —
 // the generic `/admin/User` route redirects here.
 import { Link, useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -8,14 +8,6 @@ import { toast } from "sonner"
 import { deleteUser, listUsers, type UserRow } from "@/admin/api-client"
 import { Button } from "@/components/ui/button"
 import { ErrorBlock } from "@/components/ui/error-block"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 
 export function UsersList() {
   const navigate = useNavigate()
@@ -34,93 +26,125 @@ export function UsersList() {
     },
   })
 
-  if (users.isLoading) return <p>Loading…</p>
+  if (users.isLoading) {
+    return (
+      <div className="page">
+        <div className="empty">Loading…</div>
+      </div>
+    )
+  }
   if (users.error) {
     return (
-      <ErrorBlock
-        title="Failed to load users"
-        error={users.error}
-        onRetry={() => users.refetch()}
-      />
+      <div className="page">
+        <ErrorBlock
+          title="Failed to load users"
+          error={users.error}
+          onRetry={() => users.refetch()}
+        />
+      </div>
     )
   }
 
   const rows = users.data ?? []
+  const activeCount = rows.filter((u) => u.active).length
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="page">
+      <div className="page-head">
         <div>
-          <h1 className="text-2xl font-semibold">Users</h1>
-          <p className="text-sm text-muted-foreground">{rows.length} total</p>
+          <div className="eyebrow">PEOPLE</div>
+          <h1 className="page-title">Users</h1>
+          <div className="page-sub">
+            <span className="mono">{rows.length}</span> total ·{" "}
+            <span className="mono">{activeCount}</span> active
+          </div>
         </div>
-        <Button onClick={() => navigate("/admin/users/new")}>New User</Button>
+        <Button onClick={() => navigate("/admin/users/new")}>New user</Button>
       </div>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>username</TableHead>
-            <TableHead>display name</TableHead>
-            <TableHead>roles</TableHead>
-            <TableHead className="text-right">role rank</TableHead>
-            <TableHead>active</TableHead>
-            <TableHead className="w-[160px] text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((u: UserRow) => (
-            <TableRow key={u.username}>
-              <TableCell>
-                <Link
-                  className="underline"
-                  to={`/admin/users/${encodeURIComponent(u.username)}/edit`}
-                >
-                  {u.username}
-                </Link>
-              </TableCell>
-              <TableCell className="text-muted-foreground">
-                {u.display_name ?? "—"}
-              </TableCell>
-              <TableCell>{u.roles.join(", ")}</TableCell>
-              <TableCell className="text-right font-mono text-xs">
-                {u.role_rank === Number.MAX_SAFE_INTEGER ||
-                u.role_rank >= 9_223_372_036_854_775_000
-                  ? "∞"
-                  : u.role_rank.toLocaleString()}
-              </TableCell>
-              <TableCell>{u.active ? "yes" : "no"}</TableCell>
-              <TableCell className="text-right space-x-2">
-                <Button variant="outline" size="sm" asChild>
+      <div className="table-wrap" style={ { borderRadius: 2 }}>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>username</th>
+              <th>display name</th>
+              <th>roles</th>
+              <th style={ { textAlign: "right" }}>rank</th>
+              <th>status</th>
+              <th className="actioncell" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((u: UserRow) => (
+              <tr key={u.username}>
+                <td className="id-cell">
                   <Link to={`/admin/users/${encodeURIComponent(u.username)}/edit`}>
-                    Edit
+                    {u.username}
                   </Link>
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  disabled={remove.isPending}
-                  onClick={() => {
-                    if (window.confirm(`Delete user '${u.username}'?`)) {
-                      remove.mutate(u.username)
-                    }
-                  }}
-                >
-                  Delete
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
-          {rows.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={6} className="text-center text-muted-foreground">
-                No users yet.
-              </TableCell>
-            </TableRow>
-          ) : null}
-        </TableBody>
-      </Table>
-
+                </td>
+                <td>{u.display_name ?? <span className="muted">—</span>}</td>
+                <td>
+                  <div style={ { display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+                    {u.roles.length === 0 ? (
+                      <span className="muted">no roles</span>
+                    ) : (
+                      u.roles.map((r) => (
+                        <span key={r} className="chip">
+                          {r}
+                        </span>
+                      ))
+                    )}
+                  </div>
+                </td>
+                <td className="num" style={ { textAlign: "right" }}>
+                  {u.role_rank === Number.MAX_SAFE_INTEGER ||
+                  u.role_rank >= 9_223_372_036_854_775_000
+                    ? "∞"
+                    : u.role_rank.toLocaleString()}
+                </td>
+                <td>
+                  {u.active ? (
+                    <span className="chip chip-ok">active</span>
+                  ) : (
+                    <span className="chip chip-err">disabled</span>
+                  )}
+                </td>
+                <td className="actioncell">
+                  <div className="row-actions">
+                    <Button variant="ghost" size="xs" asChild>
+                      <Link to={`/admin/users/${encodeURIComponent(u.username)}/edit`}>
+                        Edit
+                      </Link>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      disabled={remove.isPending}
+                      onClick={() => {
+                        if (window.confirm(`Delete user '${u.username}'?`)) {
+                          remove.mutate(u.username)
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={6}>
+                  <div className="empty">
+                    <h4>No users yet</h4>
+                    <div>Add the first operator to get started.</div>
+                  </div>
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

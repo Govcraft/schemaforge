@@ -1,9 +1,7 @@
-// Generic entity browser. Fetches the target schema's metadata + a page
-// of rows and renders them as a shadcn table. Row actions: View, Edit,
-// Delete (native confirm). Supports page-size, offset pagination,
-// single-column sort, and a column-targeted `contains` filter. The
-// filter is wired to the backend's `<field>__contains=<value>` query
-// param — extend to other operators as needed.
+// Generic entity browser. Compact 32px-row table with mono uppercase
+// column eyebrows, hairline borders, signal-orange accents on the active
+// sort column and selected rows. Sort, contains-filter, and offset pager
+// drive the backend's standard query params.
 import { useEffect, useState, type ReactNode } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -18,15 +16,6 @@ import { canReadField } from "@/admin/field-renderer"
 import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
 import { ErrorBlock } from "@/components/ui/error-block"
-import { Input } from "@/components/ui/input"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 
 const PAGE_SIZES = [25, 50, 100, 200] as const
 type SortDir = "asc" | "desc"
@@ -105,14 +94,22 @@ export function AdminEntityList() {
   })
 
   if (!schema) return null
-  if (meta.isLoading) return <p>Loading…</p>
+  if (meta.isLoading) {
+    return (
+      <div className="page">
+        <div className="empty">Loading…</div>
+      </div>
+    )
+  }
   if (meta.error) {
     return (
-      <ErrorBlock
-        title={`Failed to load ${schema}`}
-        error={meta.error}
-        onRetry={() => meta.refetch()}
-      />
+      <div className="page">
+        <ErrorBlock
+          title={`Failed to load ${schema}`}
+          error={meta.error}
+          onRetry={() => meta.refetch()}
+        />
+      </div>
     )
   }
 
@@ -141,151 +138,157 @@ export function AdminEntityList() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
+    <div className="page">
+      <div className="page-head">
         <div>
-          <h1 className="text-2xl font-semibold">{schema}</h1>
-          <p className="text-sm text-muted-foreground">{total} total</p>
+          <div className="eyebrow">ENTITY</div>
+          <h1 className="page-title">{schema}</h1>
+          <div className="page-sub">
+            <span className="mono">{total.toLocaleString()}</span> total
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {filterableFields.length > 0 ? (
-            <>
-              <select
-                className="rounded border bg-background px-2 py-1 text-sm"
-                value={effectiveFilterField}
-                onChange={(e) => setFilterField(e.target.value)}
-              >
-                {filterableFields.map((f) => (
-                  <option key={f.name} value={f.name}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-              <Input
-                placeholder="Contains…"
-                className="w-56"
-                value={filterInput}
-                onChange={(e) => setFilterInput(e.target.value)}
-              />
-            </>
-          ) : null}
+        <div style={ { display: "flex", gap: 8 }}>
           <Button onClick={() => navigate(`/admin/${schema}/new`)}>
             New {schema}
           </Button>
         </div>
       </div>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>id</TableHead>
-            {fields.map((f) => {
-              const active = sortField === f.name
-              const arrow = active ? (sortDir === "asc" ? " ▲" : " ▼") : ""
-              return (
-                <TableHead key={f.name}>
-                  <button
-                    type="button"
-                    className="font-medium hover:underline"
-                    onClick={() => toggleSort(f.name)}
-                  >
-                    {f.name}
-                    {arrow}
-                  </button>
-                </TableHead>
-              )
-            })}
-            <TableHead className="w-[160px] text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.isLoading && !rows.data ? (
-            <TableRow>
-              <TableCell
-                colSpan={fields.length + 2}
-                className="text-center text-muted-foreground"
-              >
-                Loading…
-              </TableCell>
-            </TableRow>
-          ) : null}
-          {rows.error && !rows.data ? (
-            <TableRow>
-              <TableCell colSpan={fields.length + 2}>
-                <ErrorBlock
-                  title="Failed to load"
-                  error={rows.error}
-                  onRetry={() => rows.refetch()}
-                />
-              </TableCell>
-            </TableRow>
-          ) : null}
-          {(rows.data?.rows ?? []).map((row) => (
-            <TableRow key={row.id}>
-              <TableCell>
-                <Link className="underline" to={`/admin/${schema}/${row.id}`}>
-                  {row.id}
-                </Link>
-              </TableCell>
-              {fields.map((f) => (
-                <TableCell key={f.name}>{renderCell(f, row[f.name])}</TableCell>
+      <div className="toolbar">
+        {filterableFields.length > 0 ? (
+          <>
+            <select
+              className="toolbar-select"
+              value={effectiveFilterField}
+              onChange={(e) => setFilterField(e.target.value)}
+            >
+              {filterableFields.map((f) => (
+                <option key={f.name} value={f.name}>
+                  {f.name}
+                </option>
               ))}
-              <TableCell className="text-right space-x-2">
-                <Button variant="outline" size="sm" asChild>
-                  <Link to={`/admin/${schema}/${row.id}/edit`}>Edit</Link>
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  disabled={remove.isPending}
-                  onClick={() => {
-                    if (window.confirm(`Delete ${schema} ${row.id}?`)) {
-                      remove.mutate(row.id)
-                    }
-                  }}
-                >
-                  Delete
-                </Button>
-              </TableCell>
-            </TableRow>
+            </select>
+            <div className="toolbar-input" style={ { flex: "0 1 320px" }}>
+              <span className="mono" style={ { color: "var(--app-fg-4)", fontSize: 11 }}>
+                contains
+              </span>
+              <input
+                placeholder="filter…"
+                value={filterInput}
+                onChange={(e) => setFilterInput(e.target.value)}
+              />
+            </div>
+          </>
+        ) : null}
+        <span className="grow" />
+        <select
+          className="toolbar-select"
+          value={limit}
+          onChange={(e) => {
+            setLimit(Number(e.target.value))
+            setOffset(0)
+          }}
+          aria-label="Rows per page"
+        >
+          {PAGE_SIZES.map((size) => (
+            <option key={size} value={size}>
+              {size} / page
+            </option>
           ))}
-          {!rows.isLoading &&
-          !rows.error &&
-          (rows.data?.rows ?? []).length === 0 ? (
-            <TableRow>
-              <TableCell
-                colSpan={fields.length + 2}
-                className="text-center text-muted-foreground"
-              >
-                No entities match.
-              </TableCell>
-            </TableRow>
-          ) : null}
-        </TableBody>
-      </Table>
+        </select>
+      </div>
 
-      <div className="flex items-center justify-between text-sm">
-        <div className="flex items-center gap-2">
-          <label className="text-muted-foreground">Rows per page</label>
-          <select
-            className="rounded border bg-background px-2 py-1"
-            value={limit}
-            onChange={(e) => {
-              setLimit(Number(e.target.value))
-              setOffset(0)
-            }}
-          >
-            {PAGE_SIZES.map((size) => (
-              <option key={size} value={size}>
-                {size}
-              </option>
+      <div className="table-wrap">
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>id</th>
+              {fields.map((f) => {
+                const active = sortField === f.name
+                const arrow = active ? (sortDir === "asc" ? " ↑" : " ↓") : ""
+                return (
+                  <th key={f.name}>
+                    <button type="button" onClick={() => toggleSort(f.name)}>
+                      {f.name}
+                      {active ? <span className="sort-arrow">{arrow}</span> : null}
+                    </button>
+                  </th>
+                )
+              })}
+              <th className="actioncell" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.isLoading && !rows.data ? (
+              <tr>
+                <td colSpan={fields.length + 2}>
+                  <div className="empty">Loading…</div>
+                </td>
+              </tr>
+            ) : null}
+            {rows.error && !rows.data ? (
+              <tr>
+                <td colSpan={fields.length + 2}>
+                  <ErrorBlock
+                    title="Failed to load"
+                    error={rows.error}
+                    onRetry={() => rows.refetch()}
+                  />
+                </td>
+              </tr>
+            ) : null}
+            {(rows.data?.rows ?? []).map((row) => (
+              <tr key={row.id}>
+                <td className="id-cell">
+                  <Link to={`/admin/${schema}/${row.id}`}>{shortId(row.id)}</Link>
+                </td>
+                {fields.map((f) => (
+                  <td key={f.name}>{renderCell(f, row[f.name])}</td>
+                ))}
+                <td className="actioncell">
+                  <div className="row-actions">
+                    <Button variant="ghost" size="xs" asChild>
+                      <Link to={`/admin/${schema}/${row.id}/edit`}>Edit</Link>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      disabled={remove.isPending}
+                      onClick={() => {
+                        if (window.confirm(`Delete ${schema} ${row.id}?`)) {
+                          remove.mutate(row.id)
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </td>
+              </tr>
             ))}
-          </select>
+            {!rows.isLoading &&
+            !rows.error &&
+            (rows.data?.rows ?? []).length === 0 ? (
+              <tr>
+                <td colSpan={fields.length + 2}>
+                  <div className="empty">
+                    <h4>No {schema} records</h4>
+                    <div>Create one to get started, or relax your filter.</div>
+                  </div>
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="pager">
+        <div className="group">
+          <span className="mono">
+            {total === 0 ? "0 of 0" : `${pageStart}–${pageEnd} of ${total}`}
+          </span>
         </div>
-        <div className="text-muted-foreground">
-          {total === 0 ? "0 of 0" : `${pageStart}–${pageEnd} of ${total}`}
-        </div>
-        <div className="flex items-center gap-2">
+        <div className="group">
           <Button
             variant="outline"
             size="sm"
@@ -304,14 +307,23 @@ export function AdminEntityList() {
           </Button>
         </div>
       </div>
-
     </div>
   )
+}
+
+function shortId(id: string): string {
+  // Trim long surreal-style IDs ("table:abc-def-…") to keep the column tight.
+  if (id.length <= 18) return id
+  return id.slice(0, 8) + "…" + id.slice(-6)
 }
 
 function renderCell(field: FieldMeta, value: unknown): ReactNode {
   // Keep list cells terse — use the formatter's narrower kind vocabulary.
   const kind =
     field.kind === "unknown" || field.kind === "composite" ? "text" : field.kind
-  return formatFieldValue(value, { kind: kind as never })
+  const out = formatFieldValue(value, { kind: kind as never })
+  if (value === null || value === undefined || value === "") {
+    return <span className="muted">—</span>
+  }
+  return out
 }

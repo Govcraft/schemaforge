@@ -1,11 +1,13 @@
 pub mod auth;
 pub mod entities;
 pub mod files;
+pub mod meta;
 pub mod query_params;
 pub mod schemas;
 pub mod users;
 
 pub use auth::auth_routes;
+pub use meta::{meta_routes, MetaAuth, MetaBuild, MetaInfo};
 
 use axum::routing::{delete, get, post};
 use axum::Router;
