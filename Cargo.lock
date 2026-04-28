@@ -59,6 +59,8 @@ dependencies = [
 [[package]]
 name = "acton-service"
 version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcb4169d105e4d8c1405cfe64f016b406866baaa39ffd779c9d99309ded9c635"
 dependencies = [
  "acton-reactive",
  "anyhow",
@@ -6329,7 +6331,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.23.1"
+version = "0.23.2"
 dependencies = [
  "acton-service",
  "assert_cmd",
