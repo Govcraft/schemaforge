@@ -1059,17 +1059,39 @@ body {
 .crumbs a { color: inherit; text-decoration: none; cursor: pointer; }
 .crumbs a:hover { color: var(--app-fg-1); }
 
-.topbar-action {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 10px;
+.topbar-search {
+  display: flex; align-items: center; gap: 8px;
+  width: 320px; max-width: 30vw;
+  padding: 6px 10px;
   border: 1px solid var(--app-border);
   border-radius: 2px;
   background: var(--app-bg-2);
-  color: var(--app-fg-2);
-  font-size: 12px;
+  color: var(--app-fg-3);
+  font-size: 13px;
   cursor: pointer;
+  font-family: inherit;
 }
-.topbar-action:hover { color: var(--app-fg-1); border-color: var(--app-border-2); }
+.topbar-search:hover { border-color: var(--app-border-2); color: var(--app-fg-2); }
+.topbar-search .grow { flex: 1; text-align: left; }
+
+.topbar-user {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px 4px 4px;
+  border-radius: 2px;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  color: var(--app-fg-1);
+  font-family: inherit;
+  font-size: 13px;
+}
+.topbar-user:hover { background: var(--app-row-hover); }
+
+.btn-icon {
+  width: 28px; height: 28px;
+  padding: 0;
+  justify-content: center;
+}
 
 .avatar {
   width: 24px; height: 24px;

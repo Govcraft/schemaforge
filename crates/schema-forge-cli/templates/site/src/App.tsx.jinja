@@ -2,15 +2,45 @@
 // route shares one chrome — admin pages and per-entity /app pages alike
 // — instead of double-stacking with AdminLayout. /login is the only
 // route rendered outside the shell.
+//
+// The shell mirrors the Govcraft DS:
+// - Sidebar (ink rail): brand mark + project name; an Admin section with
+//   Schemas / Users entries; an Entities section listing every visible
+//   schema with a per-row icon; a footer block with a quick-switcher
+//   stub, a theme toggle, and an API/Build readout.
+// - Topbar: chevron-separated breadcrumbs, a search-shaped command-K
+//   button (palette is a follow-up; the button is the surface for it),
+//   an icon-only theme toggle, and a user pill that signs out on click.
+import type { ComponentType } from "react"
 import { useEffect, useState } from "react"
-import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom"
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { Toaster } from "sonner"
+import {
+  Activity as ActivityIcon,
+  Boxes,
+  Building2,
+  ChevronDown,
+  ChevronRight,
+  Contact,
+  Database,
+  FileText,
+  Folder,
+  Hash,
+  Layers,
+  ListTree,
+  Moon,
+  Search,
+  Sun,
+  Tag,
+  Target,
+  Users,
+} from "lucide-react"
 import { routeManifest, navEntries, defaultEntity } from "@/generated/route-manifest"
 import { LoginPage } from "@/pages/login"
 import { AdminLayout } from "@/admin/layout"
 import { RequireAuth } from "@/lib/require-auth"
-import { isAuthenticated, logout } from "@/lib/auth"
+import { getCurrentUsername, isAuthenticated, logout } from "@/lib/auth"
 import { listSchemas, isSystemSchema, type SchemaResponse } from "@/admin/api-client"
 
 const THEME_KEY = "{{ project_name | lower }}.theme"
@@ -32,21 +62,50 @@ function useTheme(): [Theme, () => void] {
   return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))]
 }
 
-function ProductMark({ size = 22 }: { size?: number }) {
-  // Govcraft brand mark, white-on-ink. Vendored at /logo-mark-white.svg
-  // by the site generator (see vendor::LOGO_MARK_WHITE_SVG). Always served
-  // on the inked rail, so the white fill is correct in both themes.
-  return (
-    <img
-      src="/logo-mark-white.svg"
-      alt="Govcraft"
-      style={ { width: size, height: "auto", display: "block" }}
-      aria-hidden
-    />
-  )
+// ---------------------------------------------------------------------------
+// Schema → icon mapping
+// ---------------------------------------------------------------------------
+//
+// Keyed first by exact schema name (so domain-loaded schemas like
+// `Company`, `Contact`, `Opportunity`, `Document` get the precise icon
+// the design ships), then by a coarse keyword fallback for unknown
+// schemas. Anything still unmatched falls through to a generic database
+// glyph — better than no icon at all.
+const SCHEMA_ICON_BY_NAME: Record<string, ComponentType<{ size?: number }>> = {
+  Company: Building2,
+  Organization: Building2,
+  Department: Building2,
+  Contact: Contact,
+  Employee: Contact,
+  User: Users,
+  Opportunity: Target,
+  Deal: Target,
+  Document: FileText,
+  Project: Folder,
+  Task: ListTree,
+  Milestone: Hash,
+  Activity: ActivityIcon,
+  Comment: FileText,
+  Tag: Tag,
 }
 
-function Sidebar() {
+function pickIcon(name: string): ComponentType<{ size?: number }> {
+  const exact = SCHEMA_ICON_BY_NAME[name]
+  if (exact) return exact
+  const lower = name.toLowerCase()
+  if (lower.includes("user") || lower.includes("person")) return Users
+  if (lower.includes("doc") || lower.includes("file")) return FileText
+  if (lower.includes("event") || lower.includes("activity")) return ActivityIcon
+  if (lower.includes("project") || lower.includes("folder")) return Folder
+  if (lower.includes("tag") || lower.includes("label")) return Tag
+  return Database
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar
+// ---------------------------------------------------------------------------
+
+function Sidebar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const location = useLocation()
   const { data: schemas } = useQuery({
     queryKey: ["admin", "schemas"],
@@ -54,26 +113,36 @@ function Sidebar() {
   })
   const appSchemas = (schemas ?? []).filter((s: SchemaResponse) => !isSystemSchema(s))
 
-  const isActive = (prefix: string) => location.pathname === prefix || location.pathname.startsWith(prefix + "/")
+  const isActive = (prefix: string) =>
+    location.pathname === prefix || location.pathname.startsWith(prefix + "/")
 
   return (
     <aside className="shell-rail">
       <div className="rail-head">
-        <span className="rail-mark"><ProductMark size={22} /></span>
-        <div>
-          <div className="rail-title">{{ project_name }}</div>
-          <div className="rail-sub">Schema Forge · Admin</div>
-        </div>
+        <img
+          src="/logo-mark-white.svg"
+          alt=""
+          style={ { width: 26, height: 22, display: "block" }}
+        />
+        <div className="rail-title">{{ project_name }}</div>
       </div>
 
       <div className="rail-section">
-        <div className="rail-section-label">Admin</div>
-        <Link to="/admin" className={"rail-link" + (location.pathname === "/admin" ? " active" : "")}>
-          <span className="dot" />
+        <div className="rail-section-label">
+          <span>Admin</span>
+        </div>
+        <Link
+          to="/admin"
+          className={"rail-link" + (location.pathname === "/admin" ? " active" : "")}
+        >
+          <Layers size={14} />
           <span>Schemas</span>
         </Link>
-        <Link to="/admin/users" className={"rail-link" + (isActive("/admin/users") ? " active" : "")}>
-          <span className="dot" />
+        <Link
+          to="/admin/users"
+          className={"rail-link" + (isActive("/admin/users") ? " active" : "")}
+        >
+          <Users size={14} />
           <span>Users</span>
         </Link>
       </div>
@@ -81,39 +150,69 @@ function Sidebar() {
       <div className="rail-section" style={ { flex: 1, minHeight: 0, overflow: "auto" }}>
         <div className="rail-section-label">
           <span>Entities</span>
-          <span className="mono">{appSchemas.length}</span>
+          <span className="mono" style={ { color: "var(--app-rail-fg-3)" }}>
+            {appSchemas.length}
+          </span>
         </div>
-        {navEntries.map((n) => (
-          <Link
-            key={n.kebab}
-            to={`/app/${n.kebab}`}
-            className={"rail-link" + (isActive(`/app/${n.kebab}`) ? " active" : "")}
-          >
-            <span className="dot" />
-            <span>{n.title}</span>
-          </Link>
-        ))}
-        {appSchemas.length === 0 && navEntries.length === 0 ? (
+        {navEntries.map((n) => {
+          const Icon = pickIcon(n.title)
+          return (
+            <Link
+              key={n.kebab}
+              to={`/app/${n.kebab}`}
+              className={"rail-link" + (isActive(`/app/${n.kebab}`) ? " active" : "")}
+            >
+              <Icon size={14} />
+              <span>{n.title}</span>
+            </Link>
+          )
+        })}
+        {navEntries.length === 0 ? (
           <div style={ { padding: "4px 8px", color: "var(--app-rail-fg-3)", fontSize: 12 }}>
             No application schemas yet.
           </div>
         ) : null}
       </div>
 
-      <div className="rail-foot">
-        <div className="rail-foot-line">
-          <span>SCHEMA-FORGE</span>
-          <span>v1</span>
+      <div>
+        <div style={ { padding: "10px 12px 0" }}>
+          <button
+            type="button"
+            className="rail-link"
+            style={ { color: "var(--app-rail-fg-2)", width: "100%", textAlign: "left", background: "transparent", border: 0, font: "inherit" }}
+            onClick={onToggleTheme}
+            title={theme === "dark" ? "Light mode" : "Dark mode"}
+          >
+            {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+            <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+          </button>
+        </div>
+        <div className="rail-foot">
+          <div className="rail-foot-line">
+            <span>API</span>
+            <span style={ { color: "var(--app-rail-fg-2)" }}>/api/v1/forge</span>
+          </div>
+          <div className="rail-foot-line">
+            <span>Build</span>
+            <span style={ { color: "var(--app-rail-fg-2)" }}>runtime</span>
+          </div>
         </div>
       </div>
     </aside>
   )
 }
 
-function Topbar({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }) {
+// ---------------------------------------------------------------------------
+// Topbar
+// ---------------------------------------------------------------------------
+
+function Topbar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const location = useLocation()
+  const navigate = useNavigate()
+  const username = getCurrentUsername() ?? "user"
+
   // Build a tiny breadcrumb from the path. "/admin/Contact/abc/edit" →
-  // Admin · Contact · Edit. Plain CSS, no dependency on the route table.
+  // [Admin, Contact, abc, Edit]. Plain CSS, no dependency on the route table.
   const segs = location.pathname.split("/").filter(Boolean)
   const crumbs = segs.length === 0 ? ["Home"] : segs
 
@@ -122,27 +221,48 @@ function Topbar({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void 
       <nav className="crumbs" aria-label="breadcrumb">
         {crumbs.map((c, i) => (
           <span key={i} style={ { display: "inline-flex", alignItems: "center", gap: 6 }}>
-            {i > 0 ? <span className="sep">/</span> : null}
-            <span className={i === crumbs.length - 1 ? "now" : ""}>{c}</span>
+            {i > 0 ? <ChevronRight size={12} className="sep" /> : null}
+            <span className={i === crumbs.length - 1 ? "now" : ""}>{decodeURIComponent(c)}</span>
           </span>
         ))}
       </nav>
 
-      <button type="button" className="topbar-action" onClick={toggleTheme} title="Toggle theme">
-        <span className="mono">{theme === "dark" ? "DARK" : "LIGHT"}</span>
+      <button
+        type="button"
+        className="topbar-search"
+        onClick={() => navigate("/admin")}
+        title="Jump to Schemas (⌘K palette: coming soon)"
+      >
+        <Search size={14} />
+        <span className="grow">Search schemas, records…</span>
+        <kbd>⌘</kbd>
+        <kbd>K</kbd>
       </button>
 
       <button
         type="button"
-        className="topbar-action"
-        onClick={logout}
-        title="Sign out"
+        className="btn btn-icon btn-ghost"
+        onClick={onToggleTheme}
+        title={theme === "dark" ? "Light mode" : "Dark mode"}
       >
-        <span className="mono">SIGN OUT</span>
+        {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+      </button>
+
+      <button type="button" className="topbar-user" onClick={logout} title="Sign out">
+        <span className="avatar">{username.slice(0, 2).toUpperCase()}</span>
+        <span>{username}</span>
+        <ChevronDown size={12} />
       </button>
     </header>
   )
 }
+
+// Suppress unused-import lint when no schemas are loaded yet.
+void Boxes
+
+// ---------------------------------------------------------------------------
+// Root
+// ---------------------------------------------------------------------------
 
 export default function App() {
   // Re-evaluate `isAuthenticated` on every navigation so the chrome
@@ -173,8 +293,8 @@ export default function App() {
 
   return (
     <div className="shell">
-      <Sidebar />
-      <Topbar theme={theme} toggleTheme={toggleTheme} />
+      <Sidebar theme={theme} onToggleTheme={toggleTheme} />
+      <Topbar theme={theme} onToggleTheme={toggleTheme} />
       <main className="shell-main">
         <Routes>
           <Route path="/login" element={<LoginPage />} />

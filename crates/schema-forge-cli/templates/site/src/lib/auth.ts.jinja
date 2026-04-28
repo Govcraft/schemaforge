@@ -18,6 +18,7 @@
 const TOKEN_KEY = "schemaforge.token"
 const EXPIRES_KEY = "schemaforge.token_expires_at"
 const ROLES_KEY = "schemaforge.roles"
+const USERNAME_KEY = "schemaforge.username"
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
 const LOGIN_PATH = "/api/v1/forge/auth/login"
@@ -84,12 +85,29 @@ export const tokenStore = {
       return null
     }
   },
+  setUsername(username: string): void {
+    if (typeof window === "undefined") return
+    try {
+      window.sessionStorage.setItem(USERNAME_KEY, username)
+    } catch {
+      // sessionStorage quota / private mode: silently drop.
+    }
+  },
+  getUsername(): string | null {
+    if (typeof window === "undefined") return null
+    try {
+      return window.sessionStorage.getItem(USERNAME_KEY)
+    } catch {
+      return null
+    }
+  },
   clear(): void {
     if (typeof window === "undefined") return
     try {
       window.sessionStorage.removeItem(TOKEN_KEY)
       window.sessionStorage.removeItem(EXPIRES_KEY)
       window.sessionStorage.removeItem(ROLES_KEY)
+      window.sessionStorage.removeItem(USERNAME_KEY)
     } catch {
       // Ignore — clear is best-effort.
     }
@@ -140,7 +158,14 @@ export async function login(
     throw new Error(`Login failed: ${res.status}`)
   }
   const body = (await res.json()) as LoginResponse
+  tokenStore.setUsername(username)
   return storeAndSchedule(body)
+}
+
+/** Currently-signed-in username (mirror of the value used to obtain the
+ *  PASETO). `null` when the user is signed out. */
+export function getCurrentUsername(): string | null {
+  return tokenStore.getUsername()
 }
 
 /**
