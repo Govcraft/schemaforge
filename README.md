@@ -115,6 +115,36 @@ Verify the install:
 schemaforge --version
 ```
 
+### Verify Release Authenticity
+
+Every release ships a `SHA256SUMS` manifest plus a Sigstore keyless signature (`SHA256SUMS.sig` + `SHA256SUMS.pem`). The signing certificate is bound via OIDC to the `release.yml` workflow on a tag in this repo and logged to the public Rekor transparency log — no long-lived signing keys are involved.
+
+For production or audited deployments, verify before running the binary:
+
+```bash
+TAG=$(curl -fsSL https://api.github.com/repos/Govcraft/schemaforge/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+BASE="https://github.com/Govcraft/schemaforge/releases/download/${TAG}"
+
+# 1. Download the tarball you want plus the manifest and signature
+curl -fsSLO "${BASE}/schemaforge-${TAG}-x86_64-unknown-linux-gnu-postgres.tar.gz"
+curl -fsSLO "${BASE}/SHA256SUMS"
+curl -fsSLO "${BASE}/SHA256SUMS.sig"
+curl -fsSLO "${BASE}/SHA256SUMS.pem"
+
+# 2. Verify the checksum matches
+sha256sum --ignore-missing -c SHA256SUMS
+
+# 3. Verify the signature was produced by this repo's release workflow
+cosign verify-blob \
+  --certificate SHA256SUMS.pem \
+  --signature SHA256SUMS.sig \
+  --certificate-identity-regexp "^https://github.com/Govcraft/schemaforge/\\.github/workflows/release\\.yml@refs/tags/" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+```
+
+A successful run prints `Verified OK`. The `cosign` binary is available from [sigstore/cosign](https://github.com/sigstore/cosign/releases) (single static binary, no daemon).
+
 ### Build from Source (alternative)
 
 If you need a different target triple, or want to track `main`:

@@ -68,13 +68,35 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
 
+      - name: Generate SHA256SUMS
+        run: sha256sum schemaforge-*.tar.gz > SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign SHA256SUMS (keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign-blob \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            SHA256SUMS
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: schemaforge-*
+          files: |
+            schemaforge-*.tar.gz
+            SHA256SUMS
+            SHA256SUMS.sig
+            SHA256SUMS.pem
