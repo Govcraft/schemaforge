@@ -22,6 +22,8 @@ use std::fmt::Write;
 
 use schema_forge_core::types::{Cardinality, FieldAnnotation, FieldType, SchemaDefinition};
 
+use crate::authz::principal_claims::PrincipalClaimMappings;
+
 /// Errors raised while generating Cedar schema source.
 #[derive(Debug, thiserror::Error)]
 pub enum SchemaGenError {
@@ -30,19 +32,68 @@ pub enum SchemaGenError {
     Write(#[from] std::fmt::Error),
 }
 
-/// Generates Cedar schema source covering `schemas`.
+/// Inputs to the Cedar schema generator.
+///
+/// Bundled into a struct so callers don't need to thread additional positional
+/// arguments through every layer when new generator inputs are added (custom
+/// principal-claim attribute mappings, eventually entity-ref claim types,
+/// etc.).
+pub struct CedarSchemaInputs<'a> {
+    /// Application schemas to emit.
+    pub schemas: &'a [SchemaDefinition],
+    /// Operator-defined principal-claim → Cedar attribute mappings. Each
+    /// entry produces one optional attribute on `Forge::Principal`.
+    pub principal_claims: &'a PrincipalClaimMappings,
+}
+
+impl<'a> CedarSchemaInputs<'a> {
+    /// Inputs covering `schemas` with no principal-claim mappings. Matches
+    /// pre-#50 behaviour byte-for-byte.
+    pub fn new(schemas: &'a [SchemaDefinition]) -> Self {
+        // Borrows a shared empty mapping so the schema fragment is empty and
+        // no attribute lines are spliced in.
+        Self {
+            schemas,
+            principal_claims: empty_principal_claims(),
+        }
+    }
+}
+
+/// Returns a static reference to a shared empty `PrincipalClaimMappings` so
+/// callers can build a `CedarSchemaInputs` without owning the mappings.
+fn empty_principal_claims() -> &'static PrincipalClaimMappings {
+    use std::sync::OnceLock;
+    static EMPTY: OnceLock<PrincipalClaimMappings> = OnceLock::new();
+    EMPTY.get_or_init(PrincipalClaimMappings::default)
+}
+
+/// Generates Cedar schema source covering `schemas` with no extra inputs.
+///
+/// Convenience wrapper around [`generate_cedar_schema_with_inputs`]; equivalent
+/// to passing `CedarSchemaInputs::new(schemas)`. Output is byte-identical to
+/// the pre-#50 generator when no principal-claim mappings are configured.
+pub fn generate_cedar_schema(schemas: &[SchemaDefinition]) -> Result<String, SchemaGenError> {
+    generate_cedar_schema_with_inputs(CedarSchemaInputs::new(schemas))
+}
+
+/// Generates Cedar schema source from full `inputs`.
 ///
 /// The returned string is a complete `cedarschema` document. It always
 /// declares the `Forge::` namespace (Principal/Group/Tenant/Schema), the
 /// schema-administration actions, and one entity-type plus CRUD action set
-/// per entry in `schemas`. Per-field `ReadField{Schema}_{field}` /
+/// per entry in `inputs.schemas`. Per-field `ReadField{Schema}_{field}` /
 /// `WriteField{Schema}_{field}` actions are emitted only for fields with
 /// a `@field_access` annotation, keeping the action namespace bounded.
-pub fn generate_cedar_schema(schemas: &[SchemaDefinition]) -> Result<String, SchemaGenError> {
+/// Operator-supplied `inputs.principal_claims` are emitted as **optional**
+/// attributes on `Forge::Principal`; custom policies must guard them with
+/// `principal has X && ...` per Cedar 4.x strict-mode semantics.
+pub fn generate_cedar_schema_with_inputs(
+    inputs: CedarSchemaInputs<'_>,
+) -> Result<String, SchemaGenError> {
     let mut out = String::new();
-    write_forge_namespace(&mut out)?;
+    write_forge_namespace(&mut out, inputs.principal_claims)?;
 
-    for schema in schemas {
+    for schema in inputs.schemas {
         write_schema_entity(&mut out, schema)?;
         write_schema_actions(&mut out, schema)?;
         write_per_field_actions(&mut out, schema)?;
@@ -51,7 +102,11 @@ pub fn generate_cedar_schema(schemas: &[SchemaDefinition]) -> Result<String, Sch
     Ok(out)
 }
 
-fn write_forge_namespace(out: &mut String) -> Result<(), SchemaGenError> {
+fn write_forge_namespace(
+    out: &mut String,
+    principal_claims: &PrincipalClaimMappings,
+) -> Result<(), SchemaGenError> {
+    let principal_extras = principal_claims.cedar_schema_fragment();
     writeln!(
         out,
         r#"namespace Forge {{
@@ -73,7 +128,7 @@ fn write_forge_namespace(out: &mut String) -> Result<(), SchemaGenError> {
         id: String,
         role_rank: Long,
         roles: Set<String>,
-    }};
+{principal_extras}    }};
 }}
 
 action UpdateSchema, DeleteSchema appliesTo {{
@@ -322,6 +377,116 @@ mod tests {
             "generated Cedar schema must parse:\n{}\nError: {:?}",
             src,
             result.err()
+        );
+    }
+
+    fn principal_claims_for_test() -> PrincipalClaimMappings {
+        use crate::authz::principal_claims::{
+            PrincipalClaimConfigEntry, PrincipalClaimType, PrincipalClaimsConfig,
+        };
+        let mut cfg = PrincipalClaimsConfig::new();
+        cfg.insert(
+            "client_org_id".into(),
+            PrincipalClaimConfigEntry {
+                claim: None,
+                claim_type: PrincipalClaimType::String,
+                required: false,
+                default: None,
+            },
+        );
+        cfg.insert(
+            "team_ids".into(),
+            PrincipalClaimConfigEntry {
+                claim: None,
+                claim_type: PrincipalClaimType::SetOfString,
+                required: false,
+                default: None,
+            },
+        );
+        PrincipalClaimMappings::from_config(&cfg).unwrap()
+    }
+
+    #[test]
+    fn empty_mappings_yield_byte_identical_principal_block() {
+        // Regression guard: an unconfigured deployment must produce the same
+        // schema source as before issue #50. Compares the namespace block
+        // byte-for-byte against the pre-#50 expected output.
+        let src = generate_cedar_schema(&[contact_schema()]).unwrap();
+        let expected_principal = "    entity Principal in [Group, Tenant] = {\n\
+                                  \x20       id: String,\n\
+                                  \x20       role_rank: Long,\n\
+                                  \x20       roles: Set<String>,\n\
+                                  \x20   };";
+        assert!(
+            src.contains(expected_principal),
+            "expected pre-#50 Principal block, got:\n{src}",
+        );
+    }
+
+    #[test]
+    fn principal_claim_mappings_emit_optional_attributes_in_order() {
+        let inputs = CedarSchemaInputs {
+            schemas: &[contact_schema()],
+            principal_claims: &principal_claims_for_test(),
+        };
+        let src = generate_cedar_schema_with_inputs(inputs).unwrap();
+        // Both attributes appear, marked optional, after the intrinsic ones,
+        // and the BTreeMap-keyed iterator gives stable lexical ordering.
+        let principal_start = src.find("entity Principal").expect("principal block");
+        let principal_block = &src[principal_start..];
+        let order = [
+            "id: String",
+            "role_rank: Long",
+            "roles: Set<String>",
+            "\"client_org_id\"?: String",
+            "\"team_ids\"?: Set<String>",
+        ];
+        let mut last = 0usize;
+        for needle in order {
+            let pos = principal_block[last..]
+                .find(needle)
+                .unwrap_or_else(|| panic!("missing or out-of-order: {needle}\n{src}"));
+            last += pos + needle.len();
+        }
+    }
+
+    #[test]
+    fn output_with_principal_claims_parses_and_strict_validates_with_has_guarded_policy() {
+        use cedar_policy::{ValidationMode, Validator};
+
+        let inputs = CedarSchemaInputs {
+            schemas: &[contact_schema()],
+            principal_claims: &principal_claims_for_test(),
+        };
+        let schema_src = generate_cedar_schema_with_inputs(inputs).unwrap();
+        let (schema, _warnings) = cedar_policy::Schema::from_cedarschema_str(&schema_src)
+            .expect("schema must parse");
+
+        // A custom policy that reads the operator-supplied attribute, guarded
+        // with `has` so strict mode is happy.
+        let policy_src = r#"
+permit (
+    principal,
+    action == Action::"ReadContact",
+    resource is Contact
+)
+when {
+    principal has client_org_id &&
+    principal.client_org_id == "org-42"
+};
+"#;
+        let policy_set: cedar_policy::PolicySet = policy_src.parse().expect("policy must parse");
+        let validator = Validator::new(schema);
+        let result = validator.validate(&policy_set, ValidationMode::Strict);
+        assert!(
+            result.validation_passed(),
+            "strict-mode validation must accept guarded references to operator-mapped \
+             principal attributes.\nErrors:\n{}\nSchema:\n{schema_src}\nPolicy:\n{policy_src}",
+            result
+                .validation_errors()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 }
