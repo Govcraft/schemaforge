@@ -121,6 +121,7 @@ fn configure_init(actor: &mut ManagedActor<Idle, ForgeActor>) {
                 &schemas,
                 None,
                 crate::authz::role_ranks::RoleRanks::empty(),
+                crate::authz::principal_claims::PrincipalClaimMappings::default(),
             ) {
                 Ok(snapshot) => Some(Arc::new(crate::authz::PolicyStore::new(snapshot))),
                 Err(e) => {

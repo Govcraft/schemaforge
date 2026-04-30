@@ -102,13 +102,19 @@ async fn precheck_policy_bundle(
     }
 
     let policy_store = fetch_policy_store(state).await?;
-    let role_ranks = policy_store.current().role_ranks.clone();
+    let snapshot = policy_store.current();
+    let role_ranks = snapshot.role_ranks.clone();
+    let principal_claims = snapshot.principal_claims.clone();
 
-    crate::authz::store::PolicyStoreSnapshot::from_schemas(&proposed, None, role_ranks).map_err(
-        |e| ForgeError::ValidationFailed {
-            details: vec![format!("Cedar policy validation failed for proposed schema: {e}")],
-        },
-    )?;
+    crate::authz::store::PolicyStoreSnapshot::from_schemas(
+        &proposed,
+        None,
+        role_ranks,
+        principal_claims,
+    )
+    .map_err(|e| ForgeError::ValidationFailed {
+        details: vec![format!("Cedar policy validation failed for proposed schema: {e}")],
+    })?;
 
     Ok(())
 }

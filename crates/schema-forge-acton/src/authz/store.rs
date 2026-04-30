@@ -14,8 +14,12 @@ use schema_forge_core::types::SchemaDefinition;
 use sha2::{Digest, Sha256};
 
 use crate::authz::loader::{load_custom_policies, LoaderError};
+use crate::authz::principal_claims::PrincipalClaimMappings;
 use crate::authz::role_ranks::{RoleRanks, RoleRanksError};
-use crate::cedar::{generate_cedar_schema, policy_gen::generate_full_policy_set, SchemaGenError};
+use crate::cedar::schema_gen::CedarSchemaInputs;
+use crate::cedar::{
+    generate_cedar_schema_with_inputs, policy_gen::generate_full_policy_set, SchemaGenError,
+};
 
 /// Errors raised while compiling or installing a policy bundle.
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +53,10 @@ pub struct PolicyStoreSnapshot {
     pub schema: Schema,
     /// Role-name → rank mapping consulted during principal construction.
     pub role_ranks: RoleRanks,
+    /// Operator-defined PASETO custom-claim → `Forge::Principal` attribute
+    /// mappings. Empty by default; populated only when the operator
+    /// configures `[schema_forge.authz.principal_claims]`.
+    pub principal_claims: PrincipalClaimMappings,
     /// SHA-256 of the canonical PolicySet rendering, surfaced via audit.
     pub policy_hash: String,
     /// Total number of policies in the set.
@@ -92,8 +100,15 @@ impl PolicyStore {
         schemas: &[SchemaDefinition],
         custom_dir: Option<&Path>,
     ) -> Result<(), PolicyStoreError> {
-        let role_ranks = self.current().role_ranks.clone();
-        let next = PolicyStoreSnapshot::from_schemas(schemas, custom_dir, role_ranks)?;
+        let current = self.current();
+        let role_ranks = current.role_ranks.clone();
+        let principal_claims = current.principal_claims.clone();
+        let next = PolicyStoreSnapshot::from_schemas(
+            schemas,
+            custom_dir,
+            role_ranks,
+            principal_claims,
+        )?;
         self.swap(next);
         Ok(())
     }
@@ -114,8 +129,12 @@ impl PolicyStoreSnapshot {
         schemas: &[SchemaDefinition],
         custom_dir: Option<&Path>,
         role_ranks: RoleRanks,
+        principal_claims: PrincipalClaimMappings,
     ) -> Result<Self, PolicyStoreError> {
-        let schema_src = generate_cedar_schema(schemas)?;
+        let schema_src = generate_cedar_schema_with_inputs(CedarSchemaInputs {
+            schemas,
+            principal_claims: &principal_claims,
+        })?;
 
         let generated = generate_full_policy_set(schemas);
         let mut policies_src = generated
@@ -132,7 +151,7 @@ impl PolicyStoreSnapshot {
             }
         }
 
-        Self::compile(&schema_src, &policies_src, role_ranks)
+        Self::compile(&schema_src, &policies_src, role_ranks, principal_claims)
     }
 
     /// Builds and validates a snapshot from raw Cedar source plus metadata.
@@ -146,6 +165,7 @@ impl PolicyStoreSnapshot {
         schema_src: &str,
         policies_src: &str,
         role_ranks: RoleRanks,
+        principal_claims: PrincipalClaimMappings,
     ) -> Result<Self, PolicyStoreError> {
         let (schema, schema_warnings): (Schema, _) = Schema::from_cedarschema_str(schema_src)
             .map_err(|e| PolicyStoreError::Schema(e.to_string()))?;
@@ -178,6 +198,7 @@ impl PolicyStoreSnapshot {
             policy_set,
             schema,
             role_ranks,
+            principal_claims,
             policy_hash,
             policy_count,
         })
@@ -225,7 +246,12 @@ mod tests {
     #[test]
     fn compile_succeeds_for_validated_bundle() {
         let snap =
-            PolicyStoreSnapshot::compile(MINIMAL_SCHEMA, MINIMAL_POLICY, RoleRanks::empty())
+            PolicyStoreSnapshot::compile(
+                MINIMAL_SCHEMA,
+                MINIMAL_POLICY,
+                RoleRanks::empty(),
+                PrincipalClaimMappings::default(),
+            )
                 .unwrap();
         assert_eq!(snap.policy_count, 1);
         assert_eq!(snap.policy_hash.len(), 64);
@@ -234,19 +260,35 @@ mod tests {
     #[test]
     fn compile_rejects_policy_referencing_unknown_action() {
         let bad = r#"permit(principal, action == Action::"GhostAction", resource);"#;
-        let err = PolicyStoreSnapshot::compile(MINIMAL_SCHEMA, bad, RoleRanks::empty()).unwrap_err();
+        let err = PolicyStoreSnapshot::compile(
+            MINIMAL_SCHEMA,
+            bad,
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap_err();
         assert!(matches!(err, PolicyStoreError::Validation(_)));
     }
 
     #[test]
     fn store_swap_makes_new_snapshot_visible() {
         let s1 =
-            PolicyStoreSnapshot::compile(MINIMAL_SCHEMA, MINIMAL_POLICY, RoleRanks::empty())
+            PolicyStoreSnapshot::compile(
+                MINIMAL_SCHEMA,
+                MINIMAL_POLICY,
+                RoleRanks::empty(),
+                PrincipalClaimMappings::default(),
+            )
                 .unwrap();
         let store = PolicyStore::new(s1);
         let h1 = store.current().policy_hash.clone();
         let s2 =
-            PolicyStoreSnapshot::compile(MINIMAL_SCHEMA, MINIMAL_POLICY, RoleRanks::empty())
+            PolicyStoreSnapshot::compile(
+                MINIMAL_SCHEMA,
+                MINIMAL_POLICY,
+                RoleRanks::empty(),
+                PrincipalClaimMappings::default(),
+            )
                 .unwrap();
         store.swap(s2);
         assert_eq!(store.current().policy_hash, h1);
@@ -277,6 +319,7 @@ mod tests {
             &[schema_named("Alpha")],
             None,
             RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
         )
         .unwrap();
         let initial_count = s1.policy_count;
@@ -306,9 +349,13 @@ mod tests {
         // directory whose Cedar source fails to validate. The store must
         // keep serving the original snapshot instead of dropping into a
         // half-broken state.
-        let s1 =
-            PolicyStoreSnapshot::from_schemas(&[schema_named("Alpha")], None, RoleRanks::empty())
-                .unwrap();
+        let s1 = PolicyStoreSnapshot::from_schemas(
+            &[schema_named("Alpha")],
+            None,
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap();
         let original_hash = s1.policy_hash.clone();
         let store = PolicyStore::new(s1);
 
@@ -335,5 +382,119 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn principal_claims_with_org() -> PrincipalClaimMappings {
+        use crate::authz::principal_claims::{
+            PrincipalClaimConfigEntry, PrincipalClaimType, PrincipalClaimsConfig,
+        };
+        let mut cfg = PrincipalClaimsConfig::new();
+        cfg.insert(
+            "client_org_id".into(),
+            PrincipalClaimConfigEntry {
+                claim: None,
+                claim_type: PrincipalClaimType::String,
+                required: false,
+                default: None,
+            },
+        );
+        PrincipalClaimMappings::from_config(&cfg).unwrap()
+    }
+
+    #[test]
+    fn from_schemas_accepts_custom_policy_reading_configured_principal_attribute() {
+        // The mapping declares `client_org_id` as an optional String. A
+        // has-guarded custom policy that reads it must validate. This is the
+        // contract the spike pinned, exercised end-to-end through the store.
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_dir = tmp.path().join("custom");
+        std::fs::create_dir_all(&custom_dir).unwrap();
+        std::fs::write(
+            custom_dir.join("guard.cedar"),
+            r#"
+forbid (
+    principal,
+    action,
+    resource is Alpha
+)
+when {
+    principal has client_org_id &&
+    principal.client_org_id == "blocked"
+};
+"#,
+        )
+        .unwrap();
+
+        let snap = PolicyStoreSnapshot::from_schemas(
+            &[schema_named("Alpha")],
+            Some(&custom_dir),
+            RoleRanks::empty(),
+            principal_claims_with_org(),
+        )
+        .expect("strict-mode validation should accept guarded reads of mapped attributes");
+        assert!(snap.principal_claims.iter().any(|m| m.attribute_name == "client_org_id"));
+    }
+
+    #[test]
+    fn from_schemas_rejects_unguarded_reference_to_unmapped_principal_attribute() {
+        // Strict-mode safety contract: a custom policy that *unconditionally*
+        // dereferences an unmapped principal attribute (no `has` guard) must
+        // be rejected by the validator. With the guard in place Cedar 4.x
+        // accepts the policy and `has` simply returns false at runtime —
+        // that case is covered by the spike at
+        // tests/cedar_optional_principal_attr_spike.rs. This test pins the
+        // conservative path operators get when they forget the guard.
+        let tmp = tempfile::tempdir().unwrap();
+        let custom_dir = tmp.path().join("custom");
+        std::fs::create_dir_all(&custom_dir).unwrap();
+        std::fs::write(
+            custom_dir.join("unguarded.cedar"),
+            r#"
+forbid (
+    principal,
+    action,
+    resource is Alpha
+)
+when {
+    principal.client_org_id == "blocked"
+};
+"#,
+        )
+        .unwrap();
+
+        let err = PolicyStoreSnapshot::from_schemas(
+            &[schema_named("Alpha")],
+            Some(&custom_dir),
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .expect_err("unguarded reference to unmapped attribute must fail strict validation");
+        assert!(
+            matches!(err, PolicyStoreError::Validation(_)),
+            "expected Validation error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn recompile_preserves_principal_claims() {
+        // The current snapshot's mappings must propagate through a recompile
+        // — operators don't expect a schema mutation to silently drop their
+        // claim configuration.
+        let s1 = PolicyStoreSnapshot::from_schemas(
+            &[schema_named("Alpha")],
+            None,
+            RoleRanks::empty(),
+            principal_claims_with_org(),
+        )
+        .unwrap();
+        let store = PolicyStore::new(s1);
+        store
+            .recompile_from_schemas(&[schema_named("Alpha"), schema_named("Beta")], None)
+            .unwrap();
+        assert!(store
+            .current()
+            .principal_claims
+            .iter()
+            .any(|m| m.attribute_name == "client_org_id"));
     }
 }

@@ -55,12 +55,20 @@ pub async fn run(
             ),
         })?;
 
+    let principal_claims = schema_forge_acton::authz::PrincipalClaimMappings::from_config(
+        &svc_config.custom.schema_forge.authz.principal_claims,
+    )
+    .map_err(|e| CliError::Server {
+        message: format!("invalid [schema_forge.authz.principal_claims]: {e}"),
+    })?;
+
     output.status("Loading schemas and policy store…");
     let init_data = SchemaForgeExtension::build_init(
         connected.backend.clone(),
         None,
         &svc_config.custom.schema_forge.storage,
         role_ranks,
+        principal_claims,
     )
     .await
     .map_err(|e| CliError::Server {

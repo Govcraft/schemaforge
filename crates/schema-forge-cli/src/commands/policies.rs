@@ -162,8 +162,18 @@ async fn run_validate(
     })?;
 
     let custom_dir = args.custom_dir.as_deref();
-    let snapshot = PolicyStoreSnapshot::from_schemas(&schemas, custom_dir, role_ranks)
-        .map_err(|e| CliError::Other(format!("Cedar policy validation failed:\n{e}")))?;
+    let snapshot = PolicyStoreSnapshot::from_schemas(
+        &schemas,
+        custom_dir,
+        role_ranks,
+        // Lint runs without the operator's runtime config; an empty mapping
+        // exercises the same strict-mode pipeline the daemon uses minus the
+        // operator-configured principal attributes. Custom policies that
+        // reference operator-mapped attributes will surface as validation
+        // errors here, which is the conservative bias for a pre-flight lint.
+        schema_forge_acton::authz::PrincipalClaimMappings::default(),
+    )
+    .map_err(|e| CliError::Other(format!("Cedar policy validation failed:\n{e}")))?;
 
     match output.mode {
         OutputMode::Json => {

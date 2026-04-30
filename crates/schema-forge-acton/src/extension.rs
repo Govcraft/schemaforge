@@ -66,6 +66,7 @@ pub struct SchemaForgeExtensionBuilder {
     webhook_config: crate::webhook::WebhookConfig,
     storage_config: StorageConfig,
     role_ranks: crate::authz::role_ranks::RoleRanks,
+    principal_claims: crate::authz::principal_claims::PrincipalClaimMappings,
 }
 
 impl SchemaForgeExtensionBuilder {
@@ -79,7 +80,22 @@ impl SchemaForgeExtensionBuilder {
             webhook_config: crate::webhook::WebhookConfig::default(),
             storage_config: StorageConfig::default(),
             role_ranks: crate::authz::role_ranks::RoleRanks::empty(),
+            principal_claims: crate::authz::principal_claims::PrincipalClaimMappings::default(),
         }
+    }
+
+    /// Set the operator-defined PASETO custom-claim → `Forge::Principal`
+    /// attribute mappings used by hand-written Cedar policies. Defaults to
+    /// the empty mapping (no operator-supplied attributes); embedders
+    /// typically construct one via
+    /// [`PrincipalClaimMappings::from_config`](crate::authz::principal_claims::PrincipalClaimMappings::from_config)
+    /// from `[schema_forge.authz.principal_claims]`.
+    pub fn with_principal_claims(
+        mut self,
+        mappings: crate::authz::principal_claims::PrincipalClaimMappings,
+    ) -> Self {
+        self.principal_claims = mappings;
+        self
     }
 
     /// Set the role-name → numeric-rank hierarchy used by the Cedar
@@ -259,6 +275,7 @@ impl SchemaForgeExtensionBuilder {
                 &all_schemas,
                 None,
                 self.role_ranks,
+                self.principal_claims,
             )
             .map_err(|e| ForgeError::Internal {
                 message: format!("Cedar policy compilation failed at startup: {e}"),
@@ -356,6 +373,7 @@ impl SchemaForgeExtension {
         record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
         storage_config: &StorageConfig,
         role_ranks: crate::authz::role_ranks::RoleRanks,
+        principal_claims: crate::authz::principal_claims::PrincipalClaimMappings,
     ) -> Result<InitForgeData, ForgeError> {
         // Load existing schemas from the backend into a HashMap
         let stored_schemas = backend
@@ -419,6 +437,7 @@ impl SchemaForgeExtension {
                 &all_schemas,
                 None,
                 role_ranks,
+                principal_claims,
             )
             .map_err(|e| ForgeError::Internal {
                 message: format!("Cedar policy compilation failed at startup: {e}"),

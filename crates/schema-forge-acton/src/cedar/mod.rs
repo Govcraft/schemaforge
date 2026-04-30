@@ -11,4 +11,6 @@ pub mod policy_gen;
 pub mod schema_gen;
 
 pub use policy_gen::{generate_cedar_policies, CedarPolicy};
-pub use schema_gen::{generate_cedar_schema, SchemaGenError};
+pub use schema_gen::{
+    generate_cedar_schema, generate_cedar_schema_with_inputs, CedarSchemaInputs, SchemaGenError,
+};

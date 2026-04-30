@@ -100,7 +100,7 @@ pub fn authorize(
 
     let (principal_uid_value, principal_entities) = match claims {
         Some(c) => {
-            let entities = build_principal_entities(c, &snapshot.role_ranks)?;
+            let entities = build_principal_entities(c, &snapshot.role_ranks, &snapshot.principal_claims)?;
             let uid = principal_uid(c)?;
             (uid, entities)
         }
@@ -209,7 +209,7 @@ pub fn authorize_field(
 
     let (principal_uid_value, principal_entities) = match claims {
         Some(c) => {
-            let entities = build_principal_entities(c, &snapshot.role_ranks)?;
+            let entities = build_principal_entities(c, &snapshot.role_ranks, &snapshot.principal_claims)?;
             let uid = principal_uid(c)?;
             (uid, entities)
         }

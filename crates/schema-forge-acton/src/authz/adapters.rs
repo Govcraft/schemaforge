@@ -30,6 +30,7 @@ use schema_forge_core::types::{Cardinality, DynamicValue, FieldType, SchemaDefin
 use crate::authz::namespace::{
     action_uid, ActionVerb, GROUP_TYPE, PRINCIPAL_TYPE, SCHEMA_TYPE, TENANT_TYPE,
 };
+use crate::authz::principal_claims::PrincipalClaimMappings;
 use crate::authz::role_ranks::{RoleRanks, PLATFORM_ADMIN_ROLE};
 
 /// Errors raised while converting domain types to Cedar entities.
@@ -80,6 +81,7 @@ pub fn principal_uid(claims: &Claims) -> Result<EntityUid, AdapterError> {
 pub fn build_principal_entities(
     claims: &Claims,
     role_ranks: &RoleRanks,
+    principal_claims: &PrincipalClaimMappings,
 ) -> Result<Vec<CedarEntity>, AdapterError> {
     let principal_uid_value = principal_uid(claims)?;
     let id = user_id_from_sub(&claims.sub);
@@ -99,6 +101,14 @@ pub fn build_principal_entities(
         "roles".into(),
         RestrictedExpression::new_set(role_set),
     );
+
+    // Operator-supplied principal-claim attributes are populated next.
+    // Required-claim absence and type mismatches both surface as
+    // `AdapterError::UnrepresentableValue`, which `engine::authorize` maps to
+    // an authz error → 401, before any policy is evaluated. Optional claims
+    // with no token entry (and no default) are simply omitted; custom Cedar
+    // policies must guard them with `principal has X && ...`.
+    principal_claims.extract_into(claims, &mut attrs)?;
 
     // Tenant chain: deepest tenant goes into a `tenant` attribute; the
     // full chain populates the principal's `parents` so policies can
@@ -364,4 +374,157 @@ pub fn type_name_of(uid: &EntityUid) -> EntityTypeName {
 /// Returns the id segment of a Cedar entity (e.g. `"alice"`).
 pub fn id_of(uid: &EntityUid) -> &EntityId {
     uid.id()
+}
+
+#[cfg(test)]
+mod principal_claim_tests {
+    //! Adapter-level tests for the principal-claim → Cedar attribute path.
+    //!
+    //! Pure tests covering the contract between [`build_principal_entities`]
+    //! and [`PrincipalClaimMappings`] without spinning up the full Cedar
+    //! authorizer. Population of intrinsic attributes is already covered by
+    //! existing tests elsewhere; these tests focus on the new wiring.
+
+    use super::*;
+    use crate::authz::principal_claims::{
+        PrincipalClaimConfigEntry, PrincipalClaimMappings, PrincipalClaimType,
+        PrincipalClaimsConfig,
+    };
+
+    fn claims_with(custom: HashMap<String, serde_json::Value>) -> Claims {
+        Claims {
+            sub: "user:alice".into(),
+            email: None,
+            username: None,
+            roles: vec!["editor".into()],
+            perms: vec![],
+            exp: 9_999_999_999,
+            iat: None,
+            jti: None,
+            iss: None,
+            aud: None,
+            custom,
+        }
+    }
+
+    fn mappings(entries: &[(&str, PrincipalClaimType, bool, Option<serde_json::Value>)]) -> PrincipalClaimMappings {
+        let mut cfg = PrincipalClaimsConfig::new();
+        for (name, t, required, default) in entries {
+            cfg.insert(
+                (*name).to_string(),
+                PrincipalClaimConfigEntry {
+                    claim: None,
+                    claim_type: *t,
+                    required: *required,
+                    default: default.clone(),
+                },
+            );
+        }
+        PrincipalClaimMappings::from_config(&cfg).unwrap()
+    }
+
+    fn principal_attr_keys(entities: &[CedarEntity]) -> Vec<String> {
+        // The principal entity is always the first element by construction.
+        let principal = entities
+            .iter()
+            .find(|e| e.uid().type_name().to_string() == PRINCIPAL_TYPE)
+            .expect("principal must be present");
+        principal
+            .attrs()
+            .map(|(k, _v)| k.to_string())
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn empty_mapping_yields_only_intrinsic_attributes() {
+        let claims = claims_with(HashMap::from([(
+            "client_org_id".into(),
+            serde_json::json!("org-42"),
+        )]));
+        let entities =
+            build_principal_entities(&claims, &RoleRanks::empty(), &PrincipalClaimMappings::default())
+                .unwrap();
+        let mut keys = principal_attr_keys(&entities);
+        keys.sort();
+        assert_eq!(keys, vec!["id", "role_rank", "roles"]);
+    }
+
+    #[test]
+    fn string_claim_populates_attribute_when_present() {
+        let m = mappings(&[("client_org_id", PrincipalClaimType::String, false, None)]);
+        let claims = claims_with(HashMap::from([(
+            "client_org_id".into(),
+            serde_json::json!("org-42"),
+        )]));
+        let entities = build_principal_entities(&claims, &RoleRanks::empty(), &m).unwrap();
+        let mut keys = principal_attr_keys(&entities);
+        keys.sort();
+        assert_eq!(keys, vec!["client_org_id", "id", "role_rank", "roles"]);
+    }
+
+    #[test]
+    fn set_of_string_claim_populates_from_array() {
+        let m = mappings(&[("team_ids", PrincipalClaimType::SetOfString, false, None)]);
+        let claims = claims_with(HashMap::from([(
+            "team_ids".into(),
+            serde_json::json!(["t-1", "t-2"]),
+        )]));
+        let entities = build_principal_entities(&claims, &RoleRanks::empty(), &m).unwrap();
+        let keys = principal_attr_keys(&entities);
+        assert!(keys.iter().any(|k| k == "team_ids"));
+    }
+
+    #[test]
+    fn long_claim_populates_from_number() {
+        let m = mappings(&[("level", PrincipalClaimType::Long, false, None)]);
+        let claims = claims_with(HashMap::from([("level".into(), serde_json::json!(7))]));
+        let entities = build_principal_entities(&claims, &RoleRanks::empty(), &m).unwrap();
+        let keys = principal_attr_keys(&entities);
+        assert!(keys.iter().any(|k| k == "level"));
+    }
+
+    #[test]
+    fn required_claim_missing_returns_unrepresentable() {
+        let m = mappings(&[("client_org_id", PrincipalClaimType::String, true, None)]);
+        let claims = claims_with(HashMap::new());
+        let err = build_principal_entities(&claims, &RoleRanks::empty(), &m).unwrap_err();
+        assert!(
+            matches!(err, AdapterError::UnrepresentableValue { .. }),
+            "expected UnrepresentableValue, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn type_mismatch_returns_unrepresentable() {
+        let m = mappings(&[("level", PrincipalClaimType::Long, false, None)]);
+        let claims = claims_with(HashMap::from([(
+            "level".into(),
+            serde_json::json!("not-a-number"),
+        )]));
+        let err = build_principal_entities(&claims, &RoleRanks::empty(), &m).unwrap_err();
+        assert!(matches!(err, AdapterError::UnrepresentableValue { .. }));
+    }
+
+    #[test]
+    fn optional_claim_missing_with_default_uses_default() {
+        let m = mappings(&[(
+            "client_org_id",
+            PrincipalClaimType::String,
+            false,
+            Some(serde_json::json!("fallback-org")),
+        )]);
+        let claims = claims_with(HashMap::new());
+        let entities = build_principal_entities(&claims, &RoleRanks::empty(), &m).unwrap();
+        let keys = principal_attr_keys(&entities);
+        assert!(keys.iter().any(|k| k == "client_org_id"));
+    }
+
+    #[test]
+    fn optional_claim_missing_without_default_is_omitted() {
+        let m = mappings(&[("client_org_id", PrincipalClaimType::String, false, None)]);
+        let claims = claims_with(HashMap::new());
+        let entities = build_principal_entities(&claims, &RoleRanks::empty(), &m).unwrap();
+        let keys = principal_attr_keys(&entities);
+        assert!(!keys.iter().any(|k| k == "client_org_id"));
+    }
 }

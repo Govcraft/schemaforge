@@ -81,13 +81,29 @@ pub async fn run(
             ),
         })?;
 
+    // 4b. Resolve operator-defined PASETO custom-claim → Cedar principal
+    //     attribute mappings from `[schema_forge.authz.principal_claims]`.
+    //     Empty when the operator has not configured the section, preserving
+    //     pre-#50 behaviour.
+    let principal_claims = schema_forge_acton::authz::PrincipalClaimMappings::from_config(
+        &svc_config.custom.schema_forge.authz.principal_claims,
+    )
+    .map_err(|e| CliError::Server {
+        message: format!("invalid [schema_forge.authz.principal_claims]: {e}"),
+    })?;
+
     // 5. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
-    let init_data =
-        SchemaForgeExtension::build_init(backend_arc.clone(), None, &storage_config, role_ranks)
-            .await
-            .map_err(|e| CliError::Server {
-                message: format!("failed to build ForgeActor init data: {e}"),
-            })?;
+    let init_data = SchemaForgeExtension::build_init(
+        backend_arc.clone(),
+        None,
+        &storage_config,
+        role_ranks,
+        principal_claims,
+    )
+    .await
+    .map_err(|e| CliError::Server {
+        message: format!("failed to build ForgeActor init data: {e}"),
+    })?;
 
     // 5. Apply parsed schemas (using the backend directly, before actor spawning)
     let mut registry = init_data.registry;
@@ -177,10 +193,24 @@ pub async fn run(
     //    no longer mounts any routes; the JSON forge router is mounted
     //    directly by `build_versioned_routes()` below.
     if args.admin_password.is_some() {
+        // Re-resolve the principal-claim mappings for the bootstrap builder so
+        // its internal Cedar compile sees the same attribute set as the daemon
+        // — otherwise a custom policy referencing an operator-mapped attribute
+        // would fail strict validation here even though the running server is
+        // configured to accept it.
+        let bootstrap_principal_claims =
+            schema_forge_acton::authz::PrincipalClaimMappings::from_config(
+                &svc_config.custom.schema_forge.authz.principal_claims,
+            )
+            .map_err(|e| CliError::Server {
+                message: format!("invalid [schema_forge.authz.principal_claims]: {e}"),
+            })?;
+
         let builder = SchemaForgeExtension::builder()
             .with_backend_arc(init_data.backend.clone())
             .with_auth_store_arc(auth_store.clone())
             .with_storage_config(svc_config.custom.schema_forge.storage.clone())
+            .with_principal_claims(bootstrap_principal_claims)
             .with_admin_credentials(
                 args.admin_user.clone(),
                 args.admin_password.clone().unwrap_or_default(),
