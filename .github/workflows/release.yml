@@ -36,7 +36,7 @@ jobs:
       TAG_NAME: ${{ github.ref_name }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -60,7 +60,7 @@ jobs:
           cd ../..
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: schemaforge-${{ matrix.target }}-${{ matrix.suffix }}
           path: schemaforge-${{ github.ref_name }}-${{ matrix.target }}-${{ matrix.suffix }}.tar.gz
@@ -72,7 +72,7 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
 
