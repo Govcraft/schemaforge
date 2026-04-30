@@ -643,6 +643,7 @@ SchemaForge is under active development. All seven crates compile and pass 1123 
 - Schema-level and field-level access control via `@access` and `@field_access` annotations
 - Record-level ownership-based access control
 - Multi-tenant support via `@tenant` annotations
+- Operator-defined PASETO custom-claim → Cedar principal attributes for hand-written policies (see `docs/principal-claims-reference.md`)
 - Webhook notifications for entity CRUD events
 - OpenAPI spec generation from the schema registry
 - OpenTelemetry tracing and metrics integration
