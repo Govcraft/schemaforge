@@ -41,6 +41,11 @@ pub struct InitForgeData {
     /// Compiled Cedar policy bundle. The single source of truth for every
     /// authorization decision the actor will make once initialized.
     pub policy_store: Option<Arc<crate::authz::PolicyStore>>,
+    /// Phase-2 resolved principal-claim mappings. Carries the same content
+    /// the policy bundle was compiled against — surfaced here so the login
+    /// route layer can project User columns into PASETO `custom` claims at
+    /// request time without re-parsing the config.
+    pub principal_claims: Arc<crate::authz::principal_claims::PrincipalClaimMappings>,
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +275,12 @@ impl SchemaForgeExtensionBuilder {
         // the single source of truth for every authorization decision the
         // server will make. Invalid or non-validating bundles fail startup —
         // partial installs are not acceptable for a gov-audit posture.
+        //
+        // Phase-2 principal-claim validation (resolving `source.user_field`
+        // against the loaded User schema) is the caller's responsibility:
+        // the legacy builder path does not run the IN-side login handler,
+        // so unresolved sources here are inert. `serve` resolves explicitly
+        // before wiring the route layer.
         let policy_store = crate::authz::PolicyStore::new(
             crate::authz::store::PolicyStoreSnapshot::from_schemas(
                 &all_schemas,
@@ -432,6 +443,7 @@ impl SchemaForgeExtension {
         // Compile the Cedar policy bundle from the registered schemas. Same
         // contract as the standalone build path: validation failures abort
         // initialization rather than producing a partial install.
+        let principal_claims_arc = Arc::new(principal_claims.clone());
         let policy_store = crate::authz::PolicyStore::new(
             crate::authz::store::PolicyStoreSnapshot::from_schemas(
                 &all_schemas,
@@ -453,6 +465,7 @@ impl SchemaForgeExtension {
             hook_dispatcher: None,
             storage_registry,
             policy_store,
+            principal_claims: principal_claims_arc,
         })
     }
 

@@ -2,6 +2,7 @@ use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 
+use crate::entity::Entity;
 use crate::error::BackendError;
 
 /// A user record (without password_hash).
@@ -44,6 +45,19 @@ pub trait AuthStore: Send + Sync {
         &self,
         username: &str,
     ) -> impl Future<Output = Result<Option<ForgeUser>, BackendError>> + Send;
+
+    /// Get the raw User entity row by username, including any operator-defined
+    /// columns (e.g. `client_org_id`) declared via the `User` schema.
+    ///
+    /// Used by the IN-side login/refresh path to project columns into PASETO
+    /// `custom` claims per `[schema_forge.authz.principal_claims]`. Returns
+    /// `None` when the user does not exist; the entity is otherwise returned
+    /// verbatim — `@hidden` fields like `password_hash` are stripped at the
+    /// API boundary, not here.
+    fn get_user_entity(
+        &self,
+        username: &str,
+    ) -> impl Future<Output = Result<Option<Entity>, BackendError>> + Send;
 
     /// Create a new user with a plaintext password (will be hashed by the implementation).
     fn create_user(

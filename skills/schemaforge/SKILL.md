@@ -1,6 +1,6 @@
 ---
 name: schemaforge
-description: Use when writing, creating, editing, or reviewing SchemaForge .schema files. Use when defining data models, entity schemas, field types, relations, access control, or multi-tenant hierarchies in the SchemaForge DSL syntax. Use when declaring `file` fields backed by S3-compatible storage (MinIO, AWS S3, R2, Wasabi), configuring `[schema_forge.storage]` backends, or wiring upload/download/scan flows. Use when scaffolding or regenerating the React site with `schema-forge site generate`, wiring the `/app/*` per-entity pages or the runtime-dynamic `/admin/*` shell, or iterating with the `--templates-dir` override loader. Use when querying entities via the REST API, filtering, sorting, pagination, or building query parameters. Use when declaring lifecycle hooks via @hook annotations (including `before_upload`, `after_upload`, `on_scan_complete` for file fields), scaffolding hook gRPC services with `schema-forge hooks generate`, configuring [schema_forge.hooks] bindings, or auditing hooks with `hooks list` / `hooks diff`. Use when hitting `/api/v1/forge/auth/login`, `/auth/refresh`, or `/api/v1/forge/users` for the PASETO bootstrap and user management flows. Use when mapping PASETO custom claims onto Cedar `Forge::Principal` attributes via `[schema_forge.authz.principal_claims]` so hand-written custom Cedar policies can read per-bearer values like `principal.client_org_id`.
+description: Use when writing, creating, editing, or reviewing SchemaForge .schema files. Use when defining data models, entity schemas, field types, relations, access control, or multi-tenant hierarchies in the SchemaForge DSL syntax. Use when declaring `file` fields backed by S3-compatible storage (MinIO, AWS S3, R2, Wasabi), configuring `[schema_forge.storage]` backends, or wiring upload/download/scan flows. Use when scaffolding or regenerating the React site with `schema-forge site generate`, wiring the `/app/*` per-entity pages or the runtime-dynamic `/admin/*` shell, or iterating with the `--templates-dir` override loader. Use when querying entities via the REST API, filtering, sorting, pagination, or building query parameters. Use when declaring lifecycle hooks via @hook annotations (including `before_upload`, `after_upload`, `on_scan_complete` for file fields), scaffolding hook gRPC services with `schema-forge hooks generate`, configuring [schema_forge.hooks] bindings, or auditing hooks with `hooks list` / `hooks diff`. Use when hitting `/api/v1/forge/auth/login`, `/auth/refresh`, or `/api/v1/forge/users` for the PASETO bootstrap and user management flows. Use when mapping PASETO custom claims onto Cedar `Forge::Principal` attributes via `[schema_forge.authz.principal_claims]` so hand-written custom Cedar policies can read per-bearer values like `principal.client_org_id`, including the IN-side `source = { user_field = "<f>" }` projection that populates those claims from User columns at login/refresh time.
 ---
 
 # SchemaForge — Schema Authoring & CLI Guide
@@ -47,7 +47,7 @@ SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `
 - Declaring `file` fields, configuring `[schema_forge.storage.backends.<name>]`, or wiring the three-endpoint upload flow (`/upload-url` → S3 PUT → `/confirm-upload`)
 - Plugging in a scanner / AV / OCR pipeline via `@hook(on_scan_complete)` and the `/scan-complete` callback
 - Hitting `/api/v1/forge/auth/login`, `/auth/refresh`, or `/api/v1/forge/users` for PASETO bootstrap and user management
-- Configuring `[schema_forge.authz.principal_claims]` to expose PASETO custom claims as attributes on `Forge::Principal` so hand-written Cedar policies can compare e.g. `principal.client_org_id` against a resource field
+- Configuring `[schema_forge.authz.principal_claims]` to expose PASETO custom claims as attributes on `Forge::Principal` so hand-written Cedar policies can compare e.g. `principal.client_org_id` against a resource field — including the **IN-side** `source = { user_field = "<f>" }` declaration that projects a User column into the token at every login/refresh
 
 ## CLI Reference
 
@@ -443,14 +443,18 @@ presign_ttl_secs = 300
 # an optional attribute on `Forge::Principal`; custom Cedar policies must
 # guard reads with `principal has X && ...`. See principal-claims-reference.md.
 [schema_forge.authz.principal_claims.client_org_id]
-type = "string"
+type     = "string"
+required = true                           # daemon must populate or refuse login
+source   = { user_field = "client_org_id" }   # IN-side: project User column at login
 
 [schema_forge.authz.principal_claims.team_ids]
-type = "set_of_string"
+type   = "set_of_string"
+source = { user_field = "team_ids" }      # text[] on User → set_of_string in token
 
 [schema_forge.authz.principal_claims.tier]
 type     = "long"
 required = true                           # token missing this claim → 401
+# no `source` — bearer/CLI supplies it out-of-band
 ```
 
 **Backend selection** is by section: `[database]` → PostgreSQL, `[surrealdb]` → SurrealDB. Declaring both is a startup error (the operator must remove one or override with `--db-url`). Neither declared falls back to a dev SurrealDB at `ws://localhost:8000` for zero-config development.
@@ -716,6 +720,7 @@ From a `.schema` file, SchemaForge produces:
 - **`platform_admin` is hardcoded.** Reserved role name `platform_admin` is rank `i64::MAX`. The `role_ranks.toml` loader rejects any attempt to redefine it. All other role names are application-defined and ranked in the operator-controlled file.
 - **Cedar entities exclude `@hidden`.** Hidden fields are stripped before resource attributes are built — Cedar policies cannot reference them, even by mistake.
 - **Operator-defined principal attributes.** `[schema_forge.authz.principal_claims]` maps PASETO `custom` claims onto optional `Forge::Principal` attributes (`string`, `long`, `bool`, `set_of_string`). Custom Cedar policies must guard reads with `principal has X && ...`; unguarded references fail strict validation. `required = true` mappings reject tokens missing the claim with 401 before any policy runs. Mappings require a daemon restart — schema mutations recompile against the current mappings, not re-read TOML. See [principal-claims-reference.md](principal-claims-reference.md).
+- **IN-side: project User columns into the token at login.** Add `source = { user_field = "<f>" }` to a mapping and the daemon reads that column off the User row at every `/auth/login` and `/auth/refresh`, populating the `custom` claim before the token is signed. Closes the loop with the OUT-side: `required = true` deployments no longer 401 every login. Projection vocabulary: `text → string`, `integer → long`, `boolean → bool`, `text[] → set_of_string`, `-> Target → string` (target id), `-> Target[] → set_of_string`. Other DSL types (richtext/json/file/datetime/enum/composite/integer[]) abort startup with a clear error. `@hidden` source fields are refused at config load. Refresh re-reads on every call — no claim copy-forward, so role/org reassignments take effect on next refresh. Required + null source field → 401. CLI counterpart: `schemaforge token generate --custom-claim-{string,long,bool,set-string} k=v` for out-of-band issuance. See [principal-claims-reference.md](principal-claims-reference.md) §9.
 
 ## Common Mistakes
 
@@ -742,4 +747,4 @@ For complete details, load these supporting files:
 - For **query API** including filtering, sorting, pagination, query-string operators, JSON body queries, type coercion, and access control, see [query-api-reference.md](query-api-reference.md)
 - For **lifecycle hooks** including the `@hook` annotation, all lifecycle events, dispatch flow diagrams, the hook-service scaffold layout, wire format contract, config bindings, failure-mode matrix, and `hooks list` / `hooks diff` evolution, see [hooks-reference.md](hooks-reference.md)
 - For **`file` fields and S3 storage** — DSL syntax (`bucket`, `max_size`, `mime`, `access`), `[schema_forge.storage]` config for MinIO / AWS / R2 / Wasabi, the three-endpoint upload flow, `pending → uploaded → scanning → available|quarantined|rejected` state machine, scanner integration via `before_upload` / `after_upload` / `on_scan_complete` hooks and the `/scan-complete` callback, bucket layout, and operational failure modes, see [storage-reference.md](storage-reference.md)
-- For **operator-defined principal attributes** — the `[schema_forge.authz.principal_claims]` config surface, mapping PASETO custom claims onto optional `Forge::Principal` attributes, the `principal has X && ...` guard requirement under Cedar 4.x strict mode, the 401 path for `required = true` mappings, the four-type vocabulary (`string`, `long`, `bool`, `set_of_string`), validation rules, restart-required hot-reload limitation, and a worked per-org file-scoping example, see [principal-claims-reference.md](principal-claims-reference.md)
+- For **operator-defined principal attributes** — the `[schema_forge.authz.principal_claims]` config surface, mapping PASETO custom claims onto optional `Forge::Principal` attributes (OUT-side), the `principal has X && ...` guard requirement under Cedar 4.x strict mode, the 401 path for `required = true` mappings, the four-type vocabulary (`string`, `long`, `bool`, `set_of_string`), validation rules, restart-required hot-reload limitation, the **IN-side** `source = { user_field = "<f>" }` projection at login/refresh (full DSL-type → claim-type table, refresh re-read semantics, `@hidden`-rejection rule, startup validation contract), the CLI's `--custom-claim-{string,long,bool,set-string}` flags for out-of-band issuance, and worked per-org file-scoping examples (both bearer-supplied and User-row-driven), see [principal-claims-reference.md](principal-claims-reference.md)

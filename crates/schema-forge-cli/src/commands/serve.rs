@@ -166,6 +166,23 @@ pub async fn run(
             })?;
     }
 
+    // Phase-2 principal-claim validation: bind every `source.user_field`
+    // declaration to the *effective* User schema in the registry, after any
+    // operator override from the parsed schemas has been merged. Misconfigured
+    // mappings abort startup — refuse to silently drop a deployment-declared
+    // contract.
+    let mut resolved_principal_claims = (*init_data.principal_claims).clone();
+    let user_schema = registry.get("User").ok_or_else(|| CliError::Server {
+        message: "User schema is not registered; cannot validate principal-claim sources"
+            .to_string(),
+    })?;
+    resolved_principal_claims
+        .resolve_user_field_sources(user_schema)
+        .map_err(|e| CliError::Server {
+            message: format!("invalid [schema_forge.authz.principal_claims] source binding: {e}"),
+        })?;
+    let resolved_principal_claims = Arc::new(resolved_principal_claims);
+
     let init_data = InitForgeData {
         registry,
         backend: backend_arc.clone(),
@@ -174,6 +191,7 @@ pub async fn run(
         hook_dispatcher: None,
         storage_registry: init_data.storage_registry,
         policy_store: init_data.policy_store,
+        principal_claims: resolved_principal_claims.clone(),
     };
 
     // Build the canonical AuthStore from the User entity table. This
@@ -263,7 +281,12 @@ pub async fn run(
     //    runtime posture to unauthenticated callers (the login screen).
     let login_auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = auth_store.clone();
     let meta_info = build_meta_info(&db_params);
-    let routes = build_versioned_routes(login_auth_store, paseto_generator, meta_info);
+    let routes = build_versioned_routes(
+        login_auth_store,
+        paseto_generator,
+        meta_info,
+        resolved_principal_claims,
+    );
 
     let bind_addr = format!("{}:{}", args.host, args.port);
     output.success(&format!(
@@ -575,12 +598,14 @@ fn build_versioned_routes(
     auth_store: Arc<dyn schema_forge_acton::DynAuthStore>,
     paseto_generator: Arc<PasetoGenerator>,
     meta_info: Arc<schema_forge_acton::MetaInfo>,
+    principal_claims: Arc<schema_forge_acton::authz::PrincipalClaimMappings>,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
     // Cloned into the add_version closure so the login handler can
     // extract them via axum::Extension.
     let auth_store_layer = auth_store;
     let generator_layer = paseto_generator;
     let meta_layer = meta_info;
+    let principal_claims_layer = principal_claims;
     VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
         .with_base_path("/api")
         .add_version(ApiVersion::V1, move |router| {
@@ -589,6 +614,7 @@ fn build_versioned_routes(
                 .layer(Extension(auth_store_layer))
                 .layer(Extension(generator_layer))
                 .layer(Extension(meta_layer))
+                .layer(Extension(principal_claims_layer))
         })
         .build_routes()
 }
@@ -700,6 +726,7 @@ mod tests {
             "SurrealDB 2.x",
             3600,
         ));
-        let _routes = build_versioned_routes(auth_store, generator, meta);
+        let principal_claims = Arc::new(schema_forge_acton::authz::PrincipalClaimMappings::default());
+        let _routes = build_versioned_routes(auth_store, generator, meta, principal_claims);
     }
 }

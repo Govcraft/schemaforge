@@ -333,6 +333,69 @@ pub struct GenerateTokenArgs {
     /// Tenant chain as JSON (e.g. '[{"schema":"Organization","entity_id":"org-1"}]')
     #[arg(long)]
     pub tenant_chain: Option<String>,
+
+    /// String-typed custom claim: `--custom-claim-string key=value`. Repeatable.
+    ///
+    /// The companion to `[schema_forge.authz.principal_claims]` `type = "string"`.
+    /// Values are emitted into the PASETO `custom` map verbatim — no escape
+    /// sequences, no JSON parsing, no auto-coercion.
+    #[arg(long = "custom-claim-string", value_parser = parse_kv)]
+    pub custom_claim_string: Vec<(String, String)>,
+
+    /// Long (i64) custom claim: `--custom-claim-long key=N`. Repeatable.
+    #[arg(long = "custom-claim-long", value_parser = parse_kv_long)]
+    pub custom_claim_long: Vec<(String, i64)>,
+
+    /// Boolean custom claim: `--custom-claim-bool key=true|false`. Repeatable.
+    #[arg(long = "custom-claim-bool", value_parser = parse_kv_bool)]
+    pub custom_claim_bool: Vec<(String, bool)>,
+
+    /// Set-of-string custom claim: `--custom-claim-set-string key=a,b,c`. Repeatable.
+    ///
+    /// Comma-separated values are split into a JSON array of strings. Empty
+    /// values (`key=`) emit an empty array.
+    #[arg(long = "custom-claim-set-string", value_parser = parse_kv_set_string)]
+    pub custom_claim_set_string: Vec<(String, Vec<String>)>,
+}
+
+/// Parse `key=value` into `(String, String)`. Splits on the first `=` only
+/// so values may contain `=` characters.
+fn parse_kv(raw: &str) -> Result<(String, String), String> {
+    let (k, v) = raw
+        .split_once('=')
+        .ok_or_else(|| format!("expected key=value, got '{raw}'"))?;
+    if k.is_empty() {
+        return Err(format!("empty key in '{raw}'"));
+    }
+    Ok((k.to_string(), v.to_string()))
+}
+
+fn parse_kv_long(raw: &str) -> Result<(String, i64), String> {
+    let (k, v) = parse_kv(raw)?;
+    let n: i64 = v
+        .parse()
+        .map_err(|e| format!("invalid integer for '{k}': {e}"))?;
+    Ok((k, n))
+}
+
+fn parse_kv_bool(raw: &str) -> Result<(String, bool), String> {
+    let (k, v) = parse_kv(raw)?;
+    let b = match v.as_str() {
+        "true" => true,
+        "false" => false,
+        other => return Err(format!("invalid bool for '{k}': '{other}' (expected true/false)")),
+    };
+    Ok((k, b))
+}
+
+fn parse_kv_set_string(raw: &str) -> Result<(String, Vec<String>), String> {
+    let (k, v) = parse_kv(raw)?;
+    let items: Vec<String> = if v.is_empty() {
+        Vec::new()
+    } else {
+        v.split(',').map(|s| s.to_string()).collect()
+    };
+    Ok((k, items))
 }
 
 // ---------------------------------------------------------------------------

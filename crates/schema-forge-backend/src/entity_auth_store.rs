@@ -429,6 +429,10 @@ impl AuthStore for EntityAuthStore {
             .map(|e| self.entity_to_forge_user(&e)))
     }
 
+    async fn get_user_entity(&self, username: &str) -> Result<Option<Entity>, BackendError> {
+        self.find_entity_by_username(username).await
+    }
+
     async fn create_user(
         &self,
         username: &str,

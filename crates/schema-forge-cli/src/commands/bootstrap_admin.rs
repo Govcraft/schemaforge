@@ -75,6 +75,25 @@ pub async fn run(
         message: format!("failed to build init data: {e}"),
     })?;
 
+    // Phase-2 principal-claim validation: bind every `source.user_field`
+    // declaration to the loaded User schema. Bootstrap doesn't serve requests
+    // and therefore never exercises the IN-side projection, but a
+    // misconfigured deployment should still fail fast on bootstrap so
+    // operators don't ship broken configs to production.
+    let mut resolved_principal_claims = (*init_data.principal_claims).clone();
+    let user_schema = init_data
+        .registry
+        .get("User")
+        .ok_or_else(|| CliError::Server {
+            message: "User schema is not registered; cannot validate principal-claim sources"
+                .to_string(),
+        })?;
+    resolved_principal_claims
+        .resolve_user_field_sources(user_schema)
+        .map_err(|e| CliError::Server {
+            message: format!("invalid [schema_forge.authz.principal_claims] source binding: {e}"),
+        })?;
+
     let auth_store = build_auth_store(&init_data, connected.entity_store)?;
 
     schema_forge_acton::shared_auth::bootstrap_admin_with_display_name(

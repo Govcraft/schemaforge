@@ -260,3 +260,161 @@ when {
 The intrinsic tenant guard still runs alongside this rule, so a request
 crossing a tenant boundary is rejected even if the org id matches by
 coincidence.
+
+---
+
+## 9. IN-side: projecting User columns into the token at login
+
+Sections 1-8 cover the **OUT-side** (token → Cedar attribute). The
+companion **IN-side** is how the daemon *populates* a custom claim at
+login time by reading a column off the User entity row, so a deployment
+that declares `required = true` doesn't 401 every login.
+
+### 9.1 Syntax
+
+Add an optional `source` block to the mapping:
+
+```toml
+[schema_forge.authz.principal_claims.client_org_id]
+type     = "string"
+required = true
+source   = { user_field = "client_org_id" }   # NEW (issue #51)
+```
+
+`source = { user_field = "<f>" }` means: at every `/auth/login` and
+`/auth/refresh`, read the named column off the User entity row and write
+its value into the PASETO `custom.<claim>` map. The OUT-side adapter
+then projects it onto `Forge::Principal` as before — both ends of the
+loop are now closed inside the daemon.
+
+A mapping with no `source` keeps the pre-#51 behaviour: the bearer is
+expected to supply the claim out-of-band (CLI-issued token, external
+IdP, etc.).
+
+### 9.2 Field-type → claim-type projection table
+
+The DSL field type on the User schema and the declared `type` on the
+mapping must form one of the rows below. Anything else aborts startup
+with a `principal claim '<name>': source.user_field '<f>'` error.
+
+| User field type     | Declared `type`     | Projection                          |
+|---------------------|---------------------|-------------------------------------|
+| `text`              | `string`            | as-is                               |
+| `integer`           | `long`              | as-is                               |
+| `boolean`           | `bool`              | as-is                               |
+| `text[]`            | `set_of_string`     | as-is                               |
+| `-> Target` (one)   | `string`            | target entity id (string)           |
+| `-> Target[]` (many)| `set_of_string`     | set of target entity ids            |
+
+**Rejected at config load:** `richtext`, `json`, `file`, `datetime`,
+`enum`, `composite`, `integer[]`, and float types. These have no
+canonical lossless projection — instead of guessing, the daemon refuses
+to start. (For `datetime` and `enum`, declare an explicit string-typed
+helper column on User if you need them; that's an open follow-up.)
+
+### 9.3 Refresh re-reads the User row
+
+Every `/auth/refresh` re-reads the User entity row before minting the
+new token. There is **no claim copy-forward** from the previous PASETO
+— a row mutated since the last login (role change, `client_org_id`
+reassignment, etc.) takes effect on the next refresh, not on next login.
+
+This is load-bearing for per-record scoping: stale claims defeat the
+isolation the feature exists to provide. If you need stricter
+invalidation than the 1-hour token TTL, force a fresh login from the
+client side (sign out + sign in).
+
+### 9.4 `@hidden` fields are refused
+
+A `source.user_field` may not point at a `@hidden` field on the User
+schema (e.g. `password_hash`). Configuring this aborts startup with a
+clear error — refusing to leak a `@hidden` value into a token, even if
+the operator opted in. `@hidden` exists precisely to keep these values
+off the wire; the IN-side projection respects that contract.
+
+### 9.5 Required + null source field → 401
+
+When a mapping declares `required = true` and its `source.user_field`
+resolves to `null`/missing on the user row at login, the response is
+**401** with the standard `invalid credentials` envelope (not 500).
+This matches the OUT-side `required` failure mode: the contract isn't
+satisfied, the user can't sign in, and the client doesn't have to
+special-case a third login outcome.
+
+### 9.6 Startup-time validation is the contract
+
+The daemon refuses to start when any `source.user_field` declaration:
+
+- references a field that doesn't exist on the loaded User schema
+- references a `@hidden` field
+- has a DSL type outside the projection vocabulary above
+- pairs a User field type with an incompatible `type` (e.g. `text` and
+  `long`)
+
+There is no runtime-500 fallback. A misconfigured deployment fails fast
+on boot — the error message names the offending claim and field.
+
+### 9.7 CLI: out-of-band token issuance
+
+For CI / operations / replay scenarios where the daemon doesn't mint
+the token, `schemaforge token generate` accepts one flag per claim
+type (no auto-coercion):
+
+```sh
+schemaforge token generate \
+    --sub user:alice \
+    --custom-claim-string client_org_id=org-42 \
+    --custom-claim-long tier=2 \
+    --custom-claim-bool internal=true \
+    --custom-claim-set-string regions=us,eu
+```
+
+Each flag is repeatable. Type tags are explicit so a deployment
+declaring `type = "string"` for `phone` doesn't silently accept
+`phone=5551212` as a `long` — pick the flag that matches the declared
+mapping.
+
+### 9.8 Worked example, end to end
+
+Same goal as §8 — per-`ClientOrg` file scoping inside a `Firm` tenant —
+but operator-driven on both sides:
+
+**User schema** (deployment override, via `@access(admin)`):
+
+```
+@access(admin)
+schema User {
+    email:         text(max: 512) required indexed
+    display_name:  text(max: 255) required
+    roles:         text[]
+    role_rank:     integer required
+    active:        boolean default(true)
+    password_hash: text(max: 512) @hidden
+    client_org_id: text(max: 64)
+}
+```
+
+**`config.toml`:**
+
+```toml
+[schema_forge.authz.principal_claims.client_org_id]
+type     = "string"
+required = true
+source   = { user_field = "client_org_id" }
+```
+
+**`policies/custom/per_org_files.cedar`** — same as §8.
+
+**Behaviour:**
+
+- `POST /auth/login` reads alice's `client_org_id` column → mints token
+  with `custom.client_org_id = "org-42"`. ⇒ 200.
+- Workspace file with `client_org == "org-42"`: `forbid` does not fire.
+  ⇒ 200 (or whatever access otherwise grants).
+- Workspace file with `client_org == "org-13"`: `forbid` fires. ⇒ 403.
+- Bob's `client_org_id` column is `NULL`: login responds 401. The token
+  is never minted; no Cedar evaluation happens; Bob fixes his account
+  state out-of-band.
+- Operator reassigns alice from `org-42` to `org-99`: alice's existing
+  token still carries `org-42` until expiry. On her next `/auth/refresh`
+  (or fresh login) the new token carries `org-99`.

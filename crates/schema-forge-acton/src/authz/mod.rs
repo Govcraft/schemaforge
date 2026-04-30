@@ -39,8 +39,9 @@ pub mod store;
 pub use engine::{authorize, authorize_field, AuthzDecision, AuthzError, FieldDirection};
 pub use loader::{load_custom_policies, CustomPolicySource};
 pub use principal_claims::{
-    PrincipalClaimConfigEntry, PrincipalClaimMapping, PrincipalClaimMappings, PrincipalClaimType,
-    PrincipalClaimsConfig, PrincipalClaimsError,
+    PrincipalClaimConfigEntry, PrincipalClaimMapping, PrincipalClaimMappings,
+    PrincipalClaimSourceConfig, PrincipalClaimType, PrincipalClaimsConfig, PrincipalClaimsError,
+    ResolvedClaimSource, UserFieldProjection,
 };
 pub use record_policy::CedarRecordPolicy;
 pub use role_ranks::{RoleRank, RoleRanks, PLATFORM_ADMIN_RANK};

@@ -10,6 +10,7 @@
 //! `Extension`s; `commands::serve` constructs both once at boot and layers
 //! them onto the versioned router.
 
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,9 +22,11 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::Utc;
+use schema_forge_backend::Entity;
 use serde::{Deserialize, Serialize};
 
 use crate::access::OptionalClaims;
+use crate::authz::principal_claims::{PrincipalClaimMappings, PrincipalClaimsError};
 use crate::state::DynAuthStore;
 
 /// Default expiry for tokens minted by this endpoint (1 hour).
@@ -92,6 +95,7 @@ struct LoginErrorBody {
 pub async fn login(
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Extension(generator): Extension<Arc<PasetoGenerator>>,
+    Extension(principal_claims): Extension<Arc<PrincipalClaimMappings>>,
     Json(req): Json<LoginRequest>,
 ) -> Response {
     let user = match auth_store
@@ -103,10 +107,22 @@ pub async fn login(
         Err(e) => return internal_error_response(format!("auth store error: {e}")),
     };
 
-    let claims = match build_login_claims(&user.username, &user.roles) {
-        Ok(c) => c,
-        Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
+    let user_entity = if principal_claims.has_user_field_sources() {
+        match auth_store.get_user_entity(&user.username).await {
+            Ok(Some(e)) => Some(e),
+            Ok(None) => return unauthorized_response(),
+            Err(e) => return internal_error_response(format!("auth store error: {e}")),
+        }
+    } else {
+        None
     };
+
+    let claims =
+        match build_login_claims(&user.username, &user.roles, user_entity.as_ref(), &principal_claims) {
+            Ok(c) => c,
+            Err(BuildLoginClaimsError::NullRequired(_)) => return unauthorized_response(),
+            Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
+        };
 
     let token = match generator.generate_token_with_expiry(&claims, LOGIN_TOKEN_LIFETIME) {
         Ok(t) => t,
@@ -133,7 +149,9 @@ pub async fn login(
 /// login screen without hitting a ginned-up internal error.
 pub async fn refresh(
     OptionalClaims(claims): OptionalClaims,
+    Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Extension(generator): Extension<Arc<PasetoGenerator>>,
+    Extension(principal_claims): Extension<Arc<PrincipalClaimMappings>>,
 ) -> Response {
     let Some(claims) = claims else {
         return unauthorized_response();
@@ -144,10 +162,33 @@ pub async fn refresh(
         .clone()
         .unwrap_or_else(|| claims.sub.trim_start_matches("user:").to_string());
 
-    let next_claims = match build_login_claims(&username, &claims.roles) {
-        Ok(c) => c,
-        Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
+    // Re-read the User row on every refresh — no claim copy-forward. A row
+    // mutated since the original login (e.g., role change, client_org
+    // reassignment) takes effect immediately on the next refresh, which is
+    // load-bearing for per-record scoping that depends on `principal.*`
+    // attributes derived from User columns.
+    let user = match auth_store.get_user(&username).await {
+        Ok(Some(u)) if u.active => u,
+        Ok(_) => return unauthorized_response(),
+        Err(e) => return internal_error_response(format!("auth store error: {e}")),
     };
+
+    let user_entity = if principal_claims.has_user_field_sources() {
+        match auth_store.get_user_entity(&username).await {
+            Ok(Some(e)) => Some(e),
+            Ok(None) => return unauthorized_response(),
+            Err(e) => return internal_error_response(format!("auth store error: {e}")),
+        }
+    } else {
+        None
+    };
+
+    let next_claims =
+        match build_login_claims(&user.username, &user.roles, user_entity.as_ref(), &principal_claims) {
+            Ok(c) => c,
+            Err(BuildLoginClaimsError::NullRequired(_)) => return unauthorized_response(),
+            Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
+        };
 
     let token = match generator.generate_token_with_expiry(&next_claims, LOGIN_TOKEN_LIFETIME) {
         Ok(t) => t,
@@ -159,7 +200,7 @@ pub async fn refresh(
     let body = LoginResponse {
         token,
         expires_at: expires_at.to_rfc3339(),
-        roles: claims.roles.clone(),
+        roles: user.roles.clone(),
     };
     (StatusCode::OK, Json(body)).into_response()
 }
@@ -170,15 +211,77 @@ pub async fn refresh(
 
 /// Build the PASETO claims for a successful login.
 ///
-/// Pure function: no I/O, no state. Used by the handler and by the unit
-/// tests that exercise the claim shape without needing a live generator.
-pub(crate) fn build_login_claims(username: &str, roles: &[String]) -> Result<Claims, ActonError> {
+/// Pure function: no I/O, no state. Sets the standard subject/username/role
+/// claims and projects every operator-declared `source = { user_field = ... }`
+/// principal-claim mapping into the PASETO `custom` map.
+///
+/// Returns [`BuildLoginClaimsError::NullRequired`] when a `required`
+/// principal-claim's user-field is null/missing — the caller maps this to a
+/// 401 response with the standard invalid-credentials envelope.
+pub(crate) fn build_login_claims(
+    username: &str,
+    roles: &[String],
+    user_entity: Option<&Entity>,
+    principal_claims: &PrincipalClaimMappings,
+) -> Result<Claims, BuildLoginClaimsError> {
     let mut builder = ClaimsBuilder::new().user(username).username(username);
     for role in roles {
         builder = builder.role(role);
     }
     builder = builder.issuer("schemaforge");
-    builder.build()
+
+    if principal_claims.has_user_field_sources() {
+        let entity = user_entity.ok_or(BuildLoginClaimsError::MissingUserEntity)?;
+        let projected = principal_claims
+            .project_user_fields(entity)
+            .map_err(|e| match e {
+                PrincipalClaimsError::NullRequiredUserField { .. } => {
+                    BuildLoginClaimsError::NullRequired(e)
+                }
+                other => BuildLoginClaimsError::PrincipalClaim(other),
+            })?;
+        for (k, v) in projected {
+            builder = builder.custom_claim(k, v);
+        }
+    }
+
+    builder.build().map_err(BuildLoginClaimsError::Acton)
+}
+
+/// Errors raised while building PASETO claims for login or refresh.
+#[derive(Debug)]
+pub(crate) enum BuildLoginClaimsError {
+    /// The principal-claim config requires a User entity row, but the caller
+    /// did not provide one. Indicates a wiring bug, not a user-facing fault.
+    MissingUserEntity,
+    /// A `required` source field resolved to null/missing — surfaces as 401.
+    NullRequired(PrincipalClaimsError),
+    /// Other principal-claim projection failure (e.g. type mismatch at runtime).
+    PrincipalClaim(PrincipalClaimsError),
+    /// `acton-service` failed to assemble the claim envelope.
+    Acton(ActonError),
+}
+
+impl fmt::Display for BuildLoginClaimsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingUserEntity => f.write_str(
+                "principal-claim sources are configured but no user entity row was provided",
+            ),
+            Self::NullRequired(e) | Self::PrincipalClaim(e) => write!(f, "{e}"),
+            Self::Acton(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for BuildLoginClaimsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MissingUserEntity => None,
+            Self::NullRequired(e) | Self::PrincipalClaim(e) => Some(e),
+            Self::Acton(e) => Some(e),
+        }
+    }
 }
 
 fn unauthorized_response() -> Response {
@@ -225,7 +328,14 @@ mod tests {
 
     #[test]
     fn build_login_claims_sets_subject_and_roles() {
-        let claims = build_login_claims("alice", &["admin".to_string(), "hr".to_string()]).unwrap();
+        let mappings = PrincipalClaimMappings::default();
+        let claims = build_login_claims(
+            "alice",
+            &["admin".to_string(), "hr".to_string()],
+            None,
+            &mappings,
+        )
+        .unwrap();
         assert_eq!(claims.sub, "user:alice");
         assert_eq!(claims.roles, vec!["admin".to_string(), "hr".to_string()]);
         assert_eq!(claims.username.as_deref(), Some("alice"));
@@ -234,7 +344,8 @@ mod tests {
 
     #[test]
     fn build_login_claims_with_no_roles() {
-        let claims = build_login_claims("bob", &[]).unwrap();
+        let mappings = PrincipalClaimMappings::default();
+        let claims = build_login_claims("bob", &[], None, &mappings).unwrap();
         assert_eq!(claims.sub, "user:bob");
         assert!(claims.roles.is_empty());
     }

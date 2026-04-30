@@ -85,6 +85,7 @@ fn mappings_with_client_org(required: bool) -> PrincipalClaimMappings {
             claim_type: PrincipalClaimType::String,
             required,
             default: None,
+            source: None,
         },
     );
     PrincipalClaimMappings::from_config(&cfg).unwrap()

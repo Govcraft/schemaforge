@@ -136,6 +136,30 @@ fn generate(args: GenerateTokenArgs, output: &OutputContext) -> Result<(), CliEr
         builder = builder.custom_claim("tenant_chain", tenant_chain);
     }
 
+    // Operator-defined custom claims, one flag per type. The split keeps
+    // value semantics explicit — `--custom-claim-string phone=5551212` and
+    // `--custom-claim-long phone=5551212` produce different token shapes,
+    // and a deployment that declares `type = "string"` for `phone` rejects
+    // the wrong flag at use time. (We do not load the config here; the
+    // server-side OUT-side adapter raises the type-mismatch error if a
+    // misconfigured token reaches it.)
+    for (k, v) in &args.custom_claim_string {
+        builder = builder.custom_claim(k.clone(), serde_json::Value::String(v.clone()));
+    }
+    for (k, n) in &args.custom_claim_long {
+        builder = builder.custom_claim(k.clone(), serde_json::Value::Number((*n).into()));
+    }
+    for (k, b) in &args.custom_claim_bool {
+        builder = builder.custom_claim(k.clone(), serde_json::Value::Bool(*b));
+    }
+    for (k, items) in &args.custom_claim_set_string {
+        let arr = items
+            .iter()
+            .map(|s| serde_json::Value::String(s.clone()))
+            .collect();
+        builder = builder.custom_claim(k.clone(), serde_json::Value::Array(arr));
+    }
+
     let claims = builder.build().map_err(|e| CliError::Config {
         message: format!("failed to build claims: {e}"),
     })?;

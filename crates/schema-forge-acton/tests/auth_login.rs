@@ -100,13 +100,17 @@ fn build_test_generator() -> (Arc<PasetoGenerator>, NamedTempFile) {
     (Arc::new(generator), tmp)
 }
 
-/// Build a router that mounts only `/auth/login` with the two Extensions.
+/// Build a router that mounts only `/auth/login` with the Extensions the
+/// login handler now depends on.
 async fn login_app() -> (Router, NamedTempFile) {
     let auth_store = seeded_auth_store().await;
     let (generator, key_tmp) = build_test_generator();
+    let principal_claims =
+        Arc::new(schema_forge_acton::authz::PrincipalClaimMappings::default());
     let router = auth_routes()
         .layer(Extension(auth_store))
         .layer(Extension(generator))
+        .layer(Extension(principal_claims))
         .with_state(acton_service::state::AppState::<
             schema_forge_acton::SchemaForgeConfig,
         >::default());

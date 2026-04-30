@@ -249,6 +249,13 @@ pub trait DynAuthStore: Send + Sync {
         username: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<ForgeUser>, BackendError>> + Send + 'a>>;
 
+    /// Get the raw User entity row by username, including operator-defined
+    /// columns (used by the IN-side principal-claim projection at login time).
+    fn get_user_entity<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Entity>, BackendError>> + Send + 'a>>;
+
     /// Create a new user with a plaintext password (will be hashed by the implementation).
     fn create_user<'a>(
         &'a self,
@@ -311,6 +318,13 @@ impl<T: AuthStore + 'static> DynAuthStore for T {
         username: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<ForgeUser>, BackendError>> + Send + 'a>> {
         Box::pin(AuthStore::get_user(self, username))
+    }
+
+    fn get_user_entity<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Entity>, BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::get_user_entity(self, username))
     }
 
     fn create_user<'a>(

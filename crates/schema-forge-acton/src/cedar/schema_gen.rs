@@ -392,6 +392,7 @@ mod tests {
                 claim_type: PrincipalClaimType::String,
                 required: false,
                 default: None,
+                source: None,
             },
         );
         cfg.insert(
@@ -401,6 +402,7 @@ mod tests {
                 claim_type: PrincipalClaimType::SetOfString,
                 required: false,
                 default: None,
+                source: None,
             },
         );
         PrincipalClaimMappings::from_config(&cfg).unwrap()

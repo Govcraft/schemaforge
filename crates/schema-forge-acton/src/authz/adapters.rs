@@ -417,6 +417,7 @@ mod principal_claim_tests {
                     claim_type: *t,
                     required: *required,
                     default: default.clone(),
+                    source: None,
                 },
             );
         }
