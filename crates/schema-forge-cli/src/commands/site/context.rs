@@ -149,6 +149,11 @@ pub struct EntityView {
     /// JSON field exists the parameter is renamed to `_form` to satisfy
     /// `noUnusedParameters`.
     pub has_json_field: bool,
+    /// `true` iff any top-level field is `kind == "file"`. The edit and
+    /// detail templates only import the `<FileUpload>` / `<AttachmentDownload>`
+    /// components when the entity actually has a file field, otherwise
+    /// `noUnusedLocals` rejects the generated file.
+    pub has_file_field: bool,
 }
 
 impl EntityView {
@@ -179,6 +184,7 @@ impl EntityView {
                 && f.relation_display_field.is_some()
         });
         let has_json_field = fields.iter().any(|f| f.kind == "json");
+        let has_file_field = fields.iter().any(|f| f.kind == "file");
         let display_field = def.display_field().map(|s| s.to_string());
 
         // `@display("field")` auto-promotes to `primary` when no explicit
@@ -207,6 +213,7 @@ impl EntityView {
             has_relation_one,
             has_relation_link,
             has_json_field,
+            has_file_field,
         })
     }
 }
@@ -378,9 +385,8 @@ pub fn make_field_view(
 /// everything else renders as a column.
 fn default_list_placement(kind: &str) -> &'static str {
     match kind {
-        "rich_text" | "composite" | "array" | "relation_one" | "relation_many" | "json" => {
-            "hidden"
-        }
+        "rich_text" | "composite" | "array" | "relation_one" | "relation_many" | "json"
+        | "file" => "hidden",
         _ => "column",
     }
 }

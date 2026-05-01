@@ -12,6 +12,9 @@
 {%- if entity.has_relation_link %}
 import { Link } from "react-router-dom"
 {%- endif %}
+{%- if entity.has_file_field %}
+import { AttachmentDownload, type FileAttachment } from "@/components/ui/file-upload"
+{%- endif %}
 import type { {{ entity.pascal }} } from "@/generated/entity-types"
 import { formatFieldValue } from "@/generated/formatters"
 
@@ -74,6 +77,26 @@ export function {{ entity.pascal }}DetailRows({ data }: { data: {{ entity.pascal
             </span>
 {%- endfor %}
           </div>
+        </div>
+      </div>
+{%- elif f.kind == "file" %}
+      <div className="spec-row">
+        <div className="spec-num">§ {specNum({{ num }})}</div>
+        <div className="spec-key">{{ f.label | upper }}</div>
+        <div className="spec-val">
+          {(() => {
+            const att = data.{{ f.leaf }} as FileAttachment | null | undefined
+            if (!att || !att.key) return <span className="empty">— empty</span>
+            return (
+              <AttachmentDownload
+                schema="{{ entity.schema_name }}"
+                entityId={data.id}
+                fieldName="{{ f.name }}"
+                attachment={att}
+                access="{{ f.file_meta.access }}"
+              />
+            )
+          })()}
         </div>
       </div>
 {%- elif f.kind == "relation_one" and f.relation_display_field %}

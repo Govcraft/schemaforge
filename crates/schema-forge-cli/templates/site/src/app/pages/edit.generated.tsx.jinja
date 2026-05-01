@@ -10,6 +10,9 @@ import { FormField } from "@/components/ui/form"
 {%- if entity.has_relation_one %}
 import { RelationSelect } from "@/components/ui/relation-select"
 {%- endif %}
+{%- if entity.has_file_field %}
+import { FileUpload, type FileAttachment } from "@/components/ui/file-upload"
+{%- endif %}
 import type { {{ entity.pascal }} } from "@/generated/entity-types"
 import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
 
@@ -116,6 +119,20 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
                 className={"textarea mono" + (fieldState.error ? " invalid" : "")}
                 style={ { fontSize: 12 }}
               />
+{%- elif f.kind == "file" %}
+              <FileUpload
+                schema="{{ entity.schema_name }}"
+                entityId={entityId}
+                fieldName="{{ f.name }}"
+                meta={ {
+                  maxSizeBytes: {{ f.file_meta.max_size_bytes }},
+                  maxSizeHuman: "{{ f.file_meta.max_size_human }}",
+                  mimeAllowlist: [{% for m in f.file_meta.mime_allowlist %}"{{ m }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+                  access: "{{ f.file_meta.access }}",
+                }}
+                value={field.value as FileAttachment | null | undefined}
+                onChange={field.onChange}
+              />
 {%- else %}
               <input
                 id={field.name}
@@ -138,11 +155,26 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
 // order. The preserve `edit.tsx` file composes this component inside its
 // `<form>` layout — wrap it, reorder, or inline individual fields instead
 // as your page evolves.
+//
+// `entityId` is the URL `:id` param when the form is in edit mode, or
+// `undefined` in create mode. File-upload fields use it to address the
+// per-entity upload endpoints; non-file forms ignore it. The preserve
+// `edit.tsx` should forward `id` from `useParams` directly.
+{%- if entity.has_file_field %}
+export function {{ entity.pascal }}FormFields({
+  form,
+  entityId,
+}: {
+  form: UseFormReturn<{{ entity.pascal }}FormValues>
+  entityId?: string
+}) {
+{%- else %}
 export function {{ entity.pascal }}FormFields({
   form,
 }: {
   form: UseFormReturn<{{ entity.pascal }}FormValues>
 }) {
+{%- endif %}
   return (
     <>
 {%- for f in entity.fields %}
@@ -273,6 +305,12 @@ export function normalize{{ entity.pascal }}Payload(
 {%- for f in entity.fields %}
 {%- if f.derived %}
   // Derived inverse collection — never writable.
+  delete payload["{{ f.leaf }}"]
+{%- elif f.kind == "file" %}
+  // File attachments are mutated via the dedicated upload flow
+  // (POST /upload-url → PUT bytes → POST /confirm-upload), not by entity PUT.
+  // Strip the field so the round-trip never resends the existing attachment
+  // and never tries to clear one through the wrong endpoint.
   delete payload["{{ f.leaf }}"]
 {%- elif f.kind == "datetime" %}
   if (payload["{{ f.leaf }}"]) {

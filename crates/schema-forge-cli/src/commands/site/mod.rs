@@ -317,6 +317,10 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         "src/components/ui/error-block.tsx",
         vendor::ERROR_BLOCK.to_string(),
     ));
+    plan.push(owned(
+        "src/components/ui/file-upload.tsx",
+        vendor::FILE_UPLOAD.to_string(),
+    ));
 
     // ---- Generated multi-entity code (shared across pages) ----
     plan.push(owned(
@@ -457,7 +461,8 @@ mod tests {
     use super::*;
     use schema_forge_core::types::{
         Annotation, EnumColor, EnumVariants, FieldAnnotation, FieldDefinition, FieldModifier,
-        FieldName, FieldType, IntegerConstraints, ListHint, SchemaId, SchemaName, TextConstraints,
+        FieldName, FieldType, FileAccess, FileConstraints, IntegerConstraints, ListHint,
+        MimePattern, SchemaId, SchemaName, TextConstraints,
     };
     use std::collections::BTreeMap;
 
@@ -704,5 +709,205 @@ mod tests {
         assert!(sortable_block.contains("\"pwin\""));
         assert!(!sortable_block.contains("\"description\""));
         assert!(!sortable_block.contains("\"internal_flag\""));
+    }
+
+    /// Schema with a single optional `file` field used to drive the codegen
+    /// branches added for issue #52.
+    fn document_schema_with_file() -> SchemaDefinition {
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Document").unwrap(),
+            vec![
+                FieldDefinition::with_modifiers(
+                    FieldName::new("name").unwrap(),
+                    FieldType::Text(TextConstraints::with_max_length(255)),
+                    vec![FieldModifier::Required],
+                ),
+                FieldDefinition::new(
+                    FieldName::new("attachment").unwrap(),
+                    FieldType::File(FileConstraints {
+                        bucket: "documents".into(),
+                        max_size_bytes: 10 * 1024 * 1024,
+                        mime_allowlist: vec![
+                            MimePattern::Exact("application/pdf".into()),
+                            MimePattern::Family("image".into()),
+                        ],
+                        access: FileAccess::Presigned,
+                    }),
+                ),
+            ],
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn document_entity() -> super::context::EntityView {
+        use super::context::{EntityView, SchemaMeta};
+        let schema = document_schema_with_file();
+        let mut catalog = BTreeMap::new();
+        catalog.insert("Document".to_string(), SchemaMeta::from_schema(&schema));
+        let output = crate::output::OutputContext {
+            mode: crate::output::OutputMode::Plain,
+            verbose: 0,
+            quiet: true,
+            use_color: false,
+        };
+        EntityView::from_schema(&schema, &catalog, &output).unwrap()
+    }
+
+    #[test]
+    fn edit_template_emits_file_upload_for_file_field() {
+        use super::context::PageContext;
+        use super::render::SiteRenderer;
+
+        let entity = document_entity();
+        // The flag is what gates the import + the FormFields prop signature.
+        assert!(
+            entity.has_file_field,
+            "file field on Document must set has_file_field"
+        );
+
+        let page_ctx = PageContext {
+            project_name: "demo".to_string(),
+            entity,
+        };
+        let renderer = SiteRenderer::new(None).unwrap();
+        let rendered = renderer
+            .render("src/app/pages/edit.generated.tsx", &page_ctx)
+            .expect("edit.generated must render");
+
+        // `<FileUpload>` is wired up with the right schema, field name, and
+        // file metadata. The earlier read-only stub is gone.
+        assert!(
+            rendered.contains("import { FileUpload, type FileAttachment }"),
+            "edit.generated must import FileUpload when entity has file field"
+        );
+        assert!(
+            rendered.contains("<FileUpload"),
+            "edit.generated must instantiate <FileUpload> for file fields"
+        );
+        assert!(
+            rendered.contains(r#"schema="Document""#),
+            "FileUpload must receive the schema name"
+        );
+        assert!(
+            rendered.contains(r#"fieldName="attachment""#),
+            "FileUpload must receive the field name"
+        );
+        assert!(
+            rendered.contains("entityId={entityId}"),
+            "FileUpload must thread the entity id from FormFields prop"
+        );
+        assert!(
+            rendered.contains(r#"access: "presigned""#),
+            "FileUpload meta must carry the access mode"
+        );
+        assert!(
+            rendered.contains("maxSizeBytes: 10485760"),
+            "FileUpload meta must carry the byte limit"
+        );
+        assert!(
+            rendered.contains("\"application/pdf\"")
+                && rendered.contains("\"image/*\""),
+            "FileUpload meta must carry the mime allowlist"
+        );
+
+        // FormFields now takes an `entityId?: string` prop.
+        assert!(
+            rendered.contains("entityId?: string"),
+            "FormFields must accept entityId for file-bearing entities"
+        );
+
+        // Entity update payload must NOT carry the file attachment — uploads
+        // go through the dedicated 3-endpoint flow, not entity PUT.
+        assert!(
+            rendered.contains(r#"delete payload["attachment"]"#),
+            "normalize<Pascal>Payload must strip file fields from entity PUT body"
+        );
+
+        // The pre-fix stub must be gone.
+        assert!(
+            !rendered.contains("upload via API"),
+            "old read-only stub message must be replaced by the upload widget"
+        );
+    }
+
+    #[test]
+    fn detail_template_emits_attachment_download_for_file_field() {
+        use super::context::PageContext;
+        use super::render::SiteRenderer;
+
+        let entity = document_entity();
+        let page_ctx = PageContext {
+            project_name: "demo".to_string(),
+            entity,
+        };
+        let renderer = SiteRenderer::new(None).unwrap();
+        let rendered = renderer
+            .render("src/app/pages/detail.generated.tsx", &page_ctx)
+            .expect("detail.generated must render");
+
+        assert!(
+            rendered.contains("import { AttachmentDownload, type FileAttachment }"),
+            "detail.generated must import AttachmentDownload"
+        );
+        assert!(
+            rendered.contains("<AttachmentDownload"),
+            "detail.generated must render <AttachmentDownload> for file fields"
+        );
+        assert!(
+            rendered.contains(r#"schema="Document""#),
+            "AttachmentDownload must receive schema name"
+        );
+        assert!(
+            rendered.contains(r#"fieldName="attachment""#),
+            "AttachmentDownload must receive field name"
+        );
+        assert!(
+            rendered.contains(r#"access="presigned""#),
+            "AttachmentDownload must receive access mode"
+        );
+    }
+
+    #[test]
+    fn list_template_hides_file_field_by_default() {
+        use super::context::PageContext;
+        use super::render::SiteRenderer;
+
+        let entity = document_entity();
+        // Sanity-check the placement before rendering so a regression in
+        // `default_list_placement` fails this test loudly.
+        let attachment = entity
+            .fields
+            .iter()
+            .find(|f| f.leaf == "attachment")
+            .expect("attachment field must be present");
+        assert_eq!(
+            attachment.list_placement, "hidden",
+            "file fields must default to hidden in lists (issue #52)"
+        );
+
+        let page_ctx = PageContext {
+            project_name: "demo".to_string(),
+            entity,
+        };
+        let renderer = SiteRenderer::new(None).unwrap();
+        let rendered = renderer
+            .render("src/app/pages/list.generated.tsx", &page_ctx)
+            .expect("list.generated must render");
+
+        assert!(
+            !rendered.contains("accessorKey: \"attachment\""),
+            "file field must not appear as a list column by default"
+        );
+        let sortable_block = rendered
+            .split("SORTABLE_FIELDS: readonly string[] = [")
+            .nth(1)
+            .and_then(|s| s.split(']').next())
+            .unwrap_or("");
+        assert!(
+            !sortable_block.contains("\"attachment\""),
+            "hidden file field must be excluded from SORTABLE_FIELDS"
+        );
     }
 }
