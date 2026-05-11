@@ -41,7 +41,7 @@ enum_variants   = STRING { "," STRING } ;
 file_params     = "bucket" ":" STRING "," "max_size" ":" size_literal "," "mime" ":" "[" STRING { "," STRING } "]" [ "," "access" ":" STRING ] ;
 size_literal    = INTEGER | STRING ;  (* string carries KB/MB/GB/KiB/MiB/GiB suffix *)
 
-modifier        = "required" | "indexed" | "default" "(" value ")" ;
+modifier        = "required" | "indexed" | "unique" | "default" "(" value ")" ;
 value           = STRING | INTEGER | FLOAT | "true" | "false" ;
 
 field_annotation = "@" field_annotation_name [ "(" field_annotation_params ")" ] ;
@@ -273,6 +273,40 @@ Field is indexed for fast lookups and queries.
 email: text required indexed
 slug: text(max: 100) required indexed
 ```
+
+### unique
+
+Field values must be unique. For schemas carrying `@tenant(root)` or
+`@tenant(parent: "...")`, uniqueness is enforced **per tenant**: two
+different tenants can each have an entity with the same value. For
+non-tenanted schemas it is a plain table-wide constraint.
+
+```
+email: text required unique
+slug: text(max: 100) required unique indexed
+ref_id: integer unique
+```
+
+Allowed types: `text`, `integer`, `float`, `datetime`, `enum`.
+Rejected types (parse error): `richtext`, `json`, `boolean`, arrays,
+`composite`, `relation`, `file`.
+
+Database mapping:
+- **Postgres (tenanted)**: `CREATE UNIQUE INDEX uq_{table}_{field} ON {table} (_tenant, {field});`
+- **Postgres (non-tenanted)**: `ALTER TABLE {table} ADD CONSTRAINT uq_{table}_{field} UNIQUE ({field});`
+- **SurrealDB (tenanted)**: `DEFINE INDEX uq_{table}_{field} ON {table} FIELDS _tenant, {field} UNIQUE;`
+- **SurrealDB (non-tenanted)**: `DEFINE INDEX uq_{table}_{field} ON {table} FIELDS {field} UNIQUE;`
+
+Migration safety: `AddUnique` is classified as `RequiresConfirmation`
+because adding a unique constraint to a column with pre-existing
+duplicate values will fail at apply time. Plan for data cleanup before
+running the migration.
+
+API behavior: a write that violates a unique constraint produces a
+`409 Conflict` with body
+`{ "error": "unique_violation", "schema": "...", "field": "..." }`.
+The generated React forms map this onto an inline error on the offending
+field via `react-hook-form`'s `setError`.
 
 ### default(value)
 
@@ -572,6 +606,9 @@ budget: float(precision: 2) @field_access(read: ["finance", "manager"], write: [
 | `file(access: ...)` must be exactly `"presigned"` or `"proxied"` | Parse error (`InvalidFileParam`) |
 | `file(...)` rejects unknown parameters | Parse error (`InvalidFileParam`: "unknown file parameter") |
 | `file(bucket: ...)` must resolve to a configured `[schema_forge.storage.backends.<name>]` | Startup error (`Internal`: "undeclared storage backends") |
+| `unique` modifier allowed only on `text`/`integer`/`float`/`datetime`/`enum` fields | Parse error (`UniqueOnUnsupportedType`) |
+| Adding `unique` to a column with duplicate existing rows | Migration apply error (`RequiresConfirmation` safety class — operator must clean data first) |
+| Write that collides with a `unique` field | API 409 (`unique_violation`) with `{ schema, field }` body |
 
 ## Round-Trip Fidelity
 

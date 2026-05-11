@@ -195,6 +195,12 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
                 "ALTER TABLE \"{table}\" ALTER COLUMN \"{field}\" DROP DEFAULT;"
             )]
         }
+        MigrationStep::AddUnique { field, per_tenant } => {
+            vec![add_unique_sql(table, field.as_ref(), *per_tenant)]
+        }
+        MigrationStep::RemoveUnique { field, per_tenant } => {
+            vec![remove_unique_sql(table, field.as_ref(), *per_tenant)]
+        }
         _ => {
             // Future MigrationStep variants -- produce a no-op comment.
             vec![format!(
@@ -202,6 +208,40 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
             )]
         }
     }
+}
+
+/// Build the DDL that introduces a unique constraint on `(field)` (or
+/// `(_tenant, field)` when tenanted). Per-tenant uniqueness is implemented
+/// as a unique index — Postgres has no way to express a composite
+/// constraint referencing a column that may not exist on every table
+/// path. Global uniqueness uses a named table constraint for catalog
+/// clarity.
+fn add_unique_sql(table: &str, field: &str, per_tenant: bool) -> String {
+    let constraint_name = unique_constraint_name(table, field);
+    if per_tenant {
+        format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"{constraint_name}\" ON \"{table}\" (\"_tenant\", \"{field}\");"
+        )
+    } else {
+        format!(
+            "ALTER TABLE \"{table}\" ADD CONSTRAINT \"{constraint_name}\" UNIQUE (\"{field}\");"
+        )
+    }
+}
+
+/// Inverse of [`add_unique_sql`]. The `per_tenant` flag must match what
+/// was used at create time so the right kind of object is dropped.
+fn remove_unique_sql(table: &str, field: &str, per_tenant: bool) -> String {
+    let constraint_name = unique_constraint_name(table, field);
+    if per_tenant {
+        format!("DROP INDEX IF EXISTS \"{constraint_name}\";")
+    } else {
+        format!("ALTER TABLE \"{table}\" DROP CONSTRAINT IF EXISTS \"{constraint_name}\";")
+    }
+}
+
+fn unique_constraint_name(table: &str, field: &str) -> String {
+    format!("uq_{table}_{field}")
 }
 
 /// Convert a `FieldType` to its PostgreSQL TYPE string.
@@ -850,5 +890,58 @@ mod tests {
     #[test]
     fn escape_single_quotes() {
         assert_eq!(escape_sql_string("it's"), "it''s");
+    }
+
+    #[test]
+    fn add_unique_global() {
+        let step = MigrationStep::AddUnique {
+            field: FieldName::new("email").unwrap(),
+            per_tenant: false,
+        };
+        let stmts = migration_step_to_sql("Contact", &step);
+        assert_eq!(
+            stmts,
+            vec![
+                "ALTER TABLE \"Contact\" ADD CONSTRAINT \"uq_Contact_email\" UNIQUE (\"email\");"
+            ]
+        );
+    }
+
+    #[test]
+    fn add_unique_per_tenant() {
+        let step = MigrationStep::AddUnique {
+            field: FieldName::new("email").unwrap(),
+            per_tenant: true,
+        };
+        let stmts = migration_step_to_sql("Contact", &step);
+        assert_eq!(
+            stmts,
+            vec![
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"uq_Contact_email\" ON \"Contact\" (\"_tenant\", \"email\");"
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_unique_global() {
+        let step = MigrationStep::RemoveUnique {
+            field: FieldName::new("email").unwrap(),
+            per_tenant: false,
+        };
+        let stmts = migration_step_to_sql("Contact", &step);
+        assert_eq!(
+            stmts,
+            vec!["ALTER TABLE \"Contact\" DROP CONSTRAINT IF EXISTS \"uq_Contact_email\";"]
+        );
+    }
+
+    #[test]
+    fn remove_unique_per_tenant() {
+        let step = MigrationStep::RemoveUnique {
+            field: FieldName::new("email").unwrap(),
+            per_tenant: true,
+        };
+        let stmts = migration_step_to_sql("Contact", &step);
+        assert_eq!(stmts, vec!["DROP INDEX IF EXISTS \"uq_Contact_email\";"]);
     }
 }

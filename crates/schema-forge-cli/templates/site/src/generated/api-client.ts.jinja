@@ -46,6 +46,44 @@ export type EntityPermissions = {
   delete: boolean
 }
 
+/** Structured error thrown by the request helper on any non-OK status.
+ *  Carries the parsed JSON body when the server returned one so callers
+ *  can branch on the stable `error` discriminator (e.g. `unique_violation`,
+ *  `validation_failed`, `forbidden`). Falls back to the raw text for
+ *  endpoints that don't return JSON. */
+export class ApiError extends Error {
+  readonly status: number
+  readonly body: unknown
+  readonly raw: string
+
+  constructor(status: number, body: unknown, raw: string) {
+    super(`API ${status}: ${raw || (body ? JSON.stringify(body) : "")}`)
+    this.status = status
+    this.body = body
+    this.raw = raw
+    this.name = "ApiError"
+  }
+
+  /** True when the response body matches the SchemaForge unique-violation
+   *  envelope. Used by edit forms to surface a 409 against the offending
+   *  field instead of toasting a generic error. */
+  isUniqueViolation(): boolean {
+    return (
+      this.status === 409 &&
+      typeof this.body === "object" &&
+      this.body !== null &&
+      (this.body as { error?: unknown }).error === "unique_violation"
+    )
+  }
+
+  /** When `isUniqueViolation()` is true, returns the offending field name. */
+  uniqueViolationField(): string | undefined {
+    if (!this.isUniqueViolation()) return undefined
+    const f = (this.body as { field?: unknown }).field
+    return typeof f === "string" ? f : undefined
+  }
+}
+
 export type ListResponse<T> = {
   /** Each item carries an optional `__permissions` companion field with
    *  the Cedar decision the server made for that row. */
@@ -78,7 +116,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error("API 401: unauthorized")
   }
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${await res.text()}`)
+    // Preserve the structured JSON body when present so the form layer can
+    // map error codes like `unique_violation` to inline field errors.
+    const raw = await res.text()
+    let body: unknown
+    try {
+      body = raw ? JSON.parse(raw) : undefined
+    } catch {
+      body = undefined
+    }
+    throw new ApiError(res.status, body, raw)
   }
   // 204 No Content: don't try to parse JSON.
   if (res.status === 204) {

@@ -26,6 +26,10 @@ pub enum ForgeError {
         reason: &'static str,
         message: String,
     },
+    /// A write violated a `unique` field constraint. Maps to 409 Conflict
+    /// with a structured body carrying the offending schema + field so the
+    /// client can surface an inline form error.
+    UniqueViolation { schema: String, field: String },
     /// Request body failed validation. Maps to 422.
     ValidationFailed { details: Vec<String> },
     /// Invalid schema name (not PascalCase). Maps to 400.
@@ -62,6 +66,12 @@ impl fmt::Display for ForgeError {
             }
             Self::Conflict { reason, message } => {
                 write!(f, "conflict ({reason}): {message}")
+            }
+            Self::UniqueViolation { schema, field } => {
+                write!(
+                    f,
+                    "unique constraint violated on field '{field}' of schema '{schema}'"
+                )
             }
             Self::ValidationFailed { details } => {
                 write!(f, "validation failed: {}", details.join("; "))
@@ -110,7 +120,9 @@ impl ForgeError {
     fn status_code(&self) -> StatusCode {
         match self {
             Self::SchemaNotFound { .. } | Self::EntityNotFound { .. } => StatusCode::NOT_FOUND,
-            Self::SchemaAlreadyExists { .. } | Self::Conflict { .. } => StatusCode::CONFLICT,
+            Self::SchemaAlreadyExists { .. }
+            | Self::Conflict { .. }
+            | Self::UniqueViolation { .. } => StatusCode::CONFLICT,
             Self::ValidationFailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::InvalidSchemaName { .. }
             | Self::InvalidEntityId { .. }
@@ -131,6 +143,7 @@ impl ForgeError {
             Self::EntityNotFound { .. } => "entity_not_found",
             Self::SchemaAlreadyExists { .. } => "schema_already_exists",
             Self::Conflict { .. } => "conflict",
+            Self::UniqueViolation { .. } => "unique_violation",
             Self::ValidationFailed { .. } => "validation_failed",
             Self::InvalidSchemaName { .. } => "invalid_schema_name",
             Self::InvalidEntityId { .. } => "invalid_entity_id",
@@ -153,6 +166,12 @@ impl IntoResponse for ForgeError {
                 "error": "conflict",
                 "reason": reason,
                 "message": message,
+            }),
+            Self::UniqueViolation { schema, field } => serde_json::json!({
+                "error": "unique_violation",
+                "schema": schema,
+                "field": field,
+                "message": self.to_string(),
             }),
             _ => serde_json::json!({
                 "error": self.error_kind(),
@@ -215,6 +234,9 @@ impl From<BackendError> for ForgeError {
             },
             BackendError::ConnectionError { message } => Self::BackendUnavailable { message },
             BackendError::QueryError { message } => Self::BackendUnavailable { message },
+            BackendError::UniqueViolation { schema, field } => {
+                Self::UniqueViolation { schema, field }
+            }
             BackendError::Internal { message } => Self::Internal { message },
             _ => Self::Internal {
                 message: err.to_string(),
@@ -552,5 +574,42 @@ mod tests {
         assert_eq!(json["error"], "conflict");
         assert_eq!(json["reason"], "last_platform_admin");
         assert_eq!(json["message"], "msg");
+    }
+
+    #[tokio::test]
+    async fn into_response_unique_violation_has_field_in_body() {
+        let err = ForgeError::UniqueViolation {
+            schema: "Contact".into(),
+            field: "email".into(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"], "unique_violation");
+        assert_eq!(json["schema"], "Contact");
+        assert_eq!(json["field"], "email");
+    }
+
+    #[test]
+    fn backend_unique_violation_maps_to_forge_unique_violation() {
+        let backend_err = BackendError::UniqueViolation {
+            schema: "Contact".into(),
+            field: "email".into(),
+        };
+        let forge_err: ForgeError = backend_err.into();
+        match forge_err {
+            ForgeError::UniqueViolation { schema, field } => {
+                assert_eq!(schema, "Contact");
+                assert_eq!(field, "email");
+            }
+            other => panic!("expected UniqueViolation, got {other:?}"),
+        }
     }
 }

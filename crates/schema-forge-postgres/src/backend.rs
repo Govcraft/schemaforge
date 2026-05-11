@@ -21,6 +21,43 @@ use crate::codegen::migration_step_to_sql;
 use crate::query::{aggregate_to_sql, count_to_sql, query_to_sql};
 use crate::value::{bind_dynamic_value, row_to_entity};
 
+/// Postgres SQLSTATE for a unique_violation. Defined here as a constant
+/// so the call sites read like prose.
+const PG_UNIQUE_VIOLATION: &str = "23505";
+
+/// Convert a write-time sqlx error into the right typed `BackendError`,
+/// promoting unique-constraint violations to `BackendError::UniqueViolation`
+/// so the HTTP layer can return a structured 409.
+///
+/// `schema` is the schema name the write targeted; the offending field is
+/// recovered from the constraint name (`uq_{table}_{field}`) when present,
+/// and otherwise falls back to the literal constraint identifier so the
+/// client still has *something* actionable to display.
+fn map_write_error(err: sqlx::Error, schema: &str, context: &str) -> BackendError {
+    if let sqlx::Error::Database(ref db_err) = err {
+        if db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION) {
+            let constraint = db_err.constraint().unwrap_or("");
+            let field = extract_field_from_unique_constraint(constraint, schema)
+                .unwrap_or_else(|| constraint.to_string());
+            return BackendError::UniqueViolation {
+                schema: schema.to_string(),
+                field,
+            };
+        }
+    }
+    BackendError::QueryError {
+        message: format!("{context}: {err}"),
+    }
+}
+
+/// Parse the field name out of our `uq_{table}_{field}` constraint naming
+/// convention. Returns `None` for any string that doesn't match — callers
+/// will fall back to the raw constraint name in that case.
+fn extract_field_from_unique_constraint(constraint: &str, table: &str) -> Option<String> {
+    let prefix = format!("uq_{table}_");
+    constraint.strip_prefix(&prefix).map(|s| s.to_string())
+}
+
 /// The schema metadata table name used to store `SchemaDefinition` records.
 const SCHEMA_META_TABLE: &str = "_schema_metadata";
 
@@ -516,9 +553,7 @@ impl EntityStore for PgBackend {
         let row: PgRow = sqlx::query_with(&sql, args)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| BackendError::QueryError {
-                message: format!("failed to create entity: {e}"),
-            })?;
+            .map_err(|e| map_write_error(e, entity.schema.as_str(), "failed to create entity"))?;
 
         row_to_entity(&row, &entity.schema, schema_def.as_ref())
     }
@@ -552,9 +587,7 @@ impl EntityStore for PgBackend {
         let row: Option<PgRow> = sqlx::query_with(&sql, args)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| BackendError::QueryError {
-                message: format!("failed to update entity: {e}"),
-            })?;
+            .map_err(|e| map_write_error(e, entity.schema.as_str(), "failed to update entity"))?;
 
         match row {
             None => Err(BackendError::EntityNotFound {
@@ -710,5 +743,38 @@ impl EntityStore for PgBackend {
         }
 
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod unique_constraint_tests {
+    use super::extract_field_from_unique_constraint;
+
+    #[test]
+    fn extracts_field_from_well_formed_constraint() {
+        assert_eq!(
+            extract_field_from_unique_constraint("uq_Contact_email", "Contact"),
+            Some("email".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_for_unknown_naming_pattern() {
+        assert_eq!(
+            extract_field_from_unique_constraint("some_other_idx", "Contact"),
+            None
+        );
+    }
+
+    #[test]
+    fn returns_none_when_table_does_not_match() {
+        // Defensive: we use the constraint only when its `uq_{table}_` prefix
+        // matches the table we just wrote to. A mismatched prefix points at
+        // a constraint from a different table, so we cannot trust the suffix
+        // as a field name.
+        assert_eq!(
+            extract_field_from_unique_constraint("uq_OtherTable_email", "Contact"),
+            None
+        );
     }
 }

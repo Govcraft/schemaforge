@@ -29,6 +29,10 @@ pub enum BackendError {
     ConnectionError { message: String },
     /// Query execution error.
     QueryError { message: String },
+    /// A write violated a unique constraint. `field` is the offending
+    /// field name when the backend reported a recognisable constraint;
+    /// otherwise it falls back to the literal constraint name.
+    UniqueViolation { schema: String, field: String },
     /// Internal or unexpected error.
     Internal { message: String },
 }
@@ -69,6 +73,12 @@ impl fmt::Display for BackendError {
             }
             Self::QueryError { message } => {
                 write!(f, "query execution error: {message}")
+            }
+            Self::UniqueViolation { schema, field } => {
+                write!(
+                    f,
+                    "unique constraint violated on field '{field}' of schema '{schema}'"
+                )
             }
             Self::Internal { message } => {
                 write!(f, "internal backend error: {message}")

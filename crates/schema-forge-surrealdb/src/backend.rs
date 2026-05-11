@@ -21,6 +21,40 @@ use crate::value::{entity_to_surreal_map, surreal_to_dynamic};
 /// The schema metadata table name used to store `SchemaDefinition` records.
 const SCHEMA_META_TABLE: &str = "_schema_metadata";
 
+/// Promote a generic SurrealDB query error to `BackendError::UniqueViolation`
+/// when the message signals a unique-index conflict. SurrealDB's unique
+/// indexes report failures with a message that includes the index name and
+/// the phrase "already contains" — we recognise our own `uq_{table}_{field}`
+/// naming convention and recover the field name from it.
+fn reclassify_unique_violation(err: BackendError, table: &str) -> BackendError {
+    let message = match &err {
+        BackendError::QueryError { message } => message,
+        _ => return err,
+    };
+
+    // SurrealDB error format (example):
+    //   "Database index `uq_Contact_email` already contains 'alice@x.com', \
+    //    with record `Contact:...`"
+    if !message.contains("already contains") {
+        return err;
+    }
+    let prefix = format!("uq_{table}_");
+    let Some(start) = message.find(&prefix) else {
+        return err;
+    };
+    let after = &message[start + prefix.len()..];
+    let field_end = after
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(after.len());
+    if field_end == 0 {
+        return err;
+    }
+    BackendError::UniqueViolation {
+        schema: table.to_string(),
+        field: after[..field_end].to_string(),
+    }
+}
+
 /// SurrealDB backend for SchemaForge.
 ///
 /// Wraps a connected `Surreal<Any>` client and implements both
@@ -342,7 +376,10 @@ impl EntityStore for SurrealBackend {
         let set_clause = self.build_field_assignments(entity).await?;
         let sql = format!("CREATE {table}:`{id_str}` SET {set_clause};");
 
-        let rows = self.execute_and_take_rows(&sql).await?;
+        let rows = self
+            .execute_and_take_rows(&sql)
+            .await
+            .map_err(|e| reclassify_unique_violation(e, table))?;
 
         if rows.is_empty() {
             return Err(BackendError::Internal {
@@ -377,7 +414,10 @@ impl EntityStore for SurrealBackend {
         let set_clause = self.build_field_assignments(entity).await?;
         let sql = format!("UPDATE {table}:`{id_str}` SET {set_clause};");
 
-        let rows = self.execute_and_take_rows(&sql).await?;
+        let rows = self
+            .execute_and_take_rows(&sql)
+            .await
+            .map_err(|e| reclassify_unique_violation(e, table))?;
 
         if rows.is_empty() {
             return Err(BackendError::EntityNotFound {
@@ -634,5 +674,42 @@ mod tests {
         let strand = surrealdb::sql::Strand::from("entity_abc123");
         let strand_val = surrealdb::sql::Value::Strand(strand);
         assert_eq!(extract_id_from_surreal(&strand_val), "entity_abc123");
+    }
+
+    #[test]
+    fn reclassify_recognises_unique_index_conflict() {
+        let err = BackendError::QueryError {
+            message: "Database index `uq_Contact_email` already contains 'alice@x.com', with record `Contact:abc`".into(),
+        };
+        let mapped = reclassify_unique_violation(err, "Contact");
+        match mapped {
+            BackendError::UniqueViolation { schema, field } => {
+                assert_eq!(schema, "Contact");
+                assert_eq!(field, "email");
+            }
+            other => panic!("expected UniqueViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reclassify_leaves_unrelated_query_errors_alone() {
+        let err = BackendError::QueryError {
+            message: "syntax error near SELECT".into(),
+        };
+        match reclassify_unique_violation(err, "Contact") {
+            BackendError::QueryError { .. } => {}
+            other => panic!("expected QueryError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reclassify_leaves_other_table_constraint_alone() {
+        let err = BackendError::QueryError {
+            message: "Database index `uq_Other_email` already contains 'x'".into(),
+        };
+        match reclassify_unique_violation(err, "Contact") {
+            BackendError::QueryError { .. } => {}
+            other => panic!("expected QueryError, got {other:?}"),
+        }
     }
 }

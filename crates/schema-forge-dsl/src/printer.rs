@@ -297,6 +297,7 @@ fn print_modifier(modifier: &FieldModifier, output: &mut String) {
     match modifier {
         FieldModifier::Required => output.push_str("required"),
         FieldModifier::Indexed => output.push_str("indexed"),
+        FieldModifier::Unique => output.push_str("unique"),
         FieldModifier::Default { value } => {
             output.push_str("default(");
             print_default_value(value, output);

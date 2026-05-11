@@ -139,6 +139,18 @@ fn round_trip_modifiers() {
 }
 
 #[test]
+fn round_trip_unique_modifier() {
+    assert_round_trip(
+        r#"schema S {
+            email: text unique
+            slug: text required unique
+            ref_id: text unique indexed
+            code: text required unique indexed default("draft")
+        }"#,
+    );
+}
+
+#[test]
 fn round_trip_annotations() {
     assert_round_trip(
         r#"@version(3)

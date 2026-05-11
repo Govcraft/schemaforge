@@ -138,6 +138,11 @@ pub enum DslError {
 
     /// A `max_size` literal in `file(...)` could not be parsed.
     InvalidSizeLiteral { text: String, span: Span },
+
+    /// The `unique` modifier was applied to a field type that cannot be
+    /// uniquely indexed (e.g. `richtext`, `json`, `boolean`, array, composite,
+    /// relation, or file).
+    UniqueOnUnsupportedType { field_type: String, span: Span },
 }
 
 impl fmt::Display for DslError {
@@ -290,6 +295,13 @@ impl fmt::Display for DslError {
                 write!(
                     f,
                     "invalid size literal '{text}' at {span}: expected integer bytes or \"<N>(B|KB|MB|GB|TB)\""
+                )
+            }
+            Self::UniqueOnUnsupportedType { field_type, span } => {
+                write!(
+                    f,
+                    "the 'unique' modifier at {span} cannot be applied to a {field_type} field; \
+                     allowed on text, integer, float, datetime, and enum fields"
                 )
             }
         }

@@ -33,6 +33,9 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
 {%- if f.required %}
               <span className="req">*</span>
 {%- endif %}
+{%- if f.unique %}
+              <span className="hint" title="Must be unique">unique</span>
+{%- endif %}
             </label>
             <div className="form-field">
 {%- if f.kind == "boolean" %}

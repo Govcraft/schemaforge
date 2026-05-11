@@ -80,6 +80,15 @@ impl SchemaDefinition {
             .any(|a| matches!(a, Annotation::System))
     }
 
+    /// Returns `true` if this schema participates in tenant isolation (i.e.
+    /// it carries an `@tenant(root)` or `@tenant(parent: ...)` annotation).
+    /// Per-tenant unique constraints key off this flag.
+    pub fn is_tenanted(&self) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::Tenant(_)))
+    }
+
     /// Returns the name of the field nominated by `@display("...")`, if any.
     ///
     /// This is the field clients should render in a UI to represent a row

@@ -169,6 +169,15 @@ pub enum MigrationStep {
     AddIndex { field: FieldName },
     /// Remove an index from a field.
     RemoveIndex { field: FieldName },
+    /// Add a unique constraint on a field. When `per_tenant` is true the
+    /// constraint is scoped to `(_tenant, field)`; otherwise it is a global
+    /// per-table uniqueness constraint on `(field)`.
+    AddUnique { field: FieldName, per_tenant: bool },
+    /// Remove a unique constraint from a field. The `per_tenant` flag
+    /// must match the one used when the constraint was added so backends
+    /// can target the right object (different DDL names/shapes are used
+    /// for per-tenant vs global constraints).
+    RemoveUnique { field: FieldName, per_tenant: bool },
     /// Add a relation field.
     AddRelation {
         name: FieldName,
@@ -224,6 +233,7 @@ impl MigrationStep {
             | Self::AddRelation { .. }
             | Self::RemoveIndex { .. }
             | Self::RemoveRequired { .. }
+            | Self::RemoveUnique { .. }
             | Self::SetDefault { .. }
             | Self::RemoveDefault { .. }
             | Self::AddHook { .. }
@@ -233,7 +243,8 @@ impl MigrationStep {
             Self::RenameField { .. }
             | Self::ChangeType { .. }
             | Self::BackfillRequired { .. }
-            | Self::AddRequired { .. } => MigrationSafety::RequiresConfirmation,
+            | Self::AddRequired { .. }
+            | Self::AddUnique { .. } => MigrationSafety::RequiresConfirmation,
 
             Self::DropSchema { .. } | Self::RemoveField { .. } | Self::RemoveRelation { .. } => {
                 MigrationSafety::Destructive
@@ -269,6 +280,16 @@ impl fmt::Display for MigrationStep {
             }
             Self::AddIndex { field } => write!(f, "ADD INDEX on '{field}'"),
             Self::RemoveIndex { field } => write!(f, "REMOVE INDEX on '{field}'"),
+            Self::AddUnique { field, per_tenant } => write!(
+                f,
+                "ADD UNIQUE on '{field}'{}",
+                if *per_tenant { " (per-tenant)" } else { "" }
+            ),
+            Self::RemoveUnique { field, per_tenant } => write!(
+                f,
+                "REMOVE UNIQUE on '{field}'{}",
+                if *per_tenant { " (per-tenant)" } else { "" }
+            ),
             Self::AddRelation {
                 name,
                 target,
@@ -484,6 +505,10 @@ impl DiffEngine {
     ///
     /// Derived fields (paired inverse collections) are excluded from the
     /// emitted `CreateSchema` step — they have no physical column.
+    ///
+    /// Unique constraints are emitted as follow-on `AddUnique` steps so
+    /// backends can choose between a per-tenant composite index and a
+    /// plain table-wide unique constraint based on the schema's tenancy.
     #[instrument(skip(schema), fields(schema = %schema.name.as_str()))]
     pub fn create_new(schema: &crate::types::SchemaDefinition) -> MigrationPlan {
         let fields: Vec<FieldDefinition> = schema
@@ -492,10 +517,19 @@ impl DiffEngine {
             .filter(|f| !f.is_derived())
             .cloned()
             .collect();
-        let steps = vec![MigrationStep::CreateSchema {
+        let per_tenant = schema.is_tenanted();
+        let unique_fields: Vec<FieldName> = fields
+            .iter()
+            .filter(|f| f.is_unique())
+            .map(|f| f.name.clone())
+            .collect();
+        let mut steps = vec![MigrationStep::CreateSchema {
             name: schema.name.clone(),
             fields,
         }];
+        for field in unique_fields {
+            steps.push(MigrationStep::AddUnique { field, per_tenant });
+        }
         MigrationPlan::new(schema.id.clone(), schema.name.clone(), steps)
     }
 
@@ -578,12 +612,13 @@ impl DiffEngine {
         }
 
         // Detect added fields — skip rename targets
+        let per_tenant = new.is_tenanted();
         for new_field in &new.fields {
             if rename_new_to_old.contains_key(new_field.name.as_str()) {
                 continue;
             }
             if old.field(new_field.name.as_str()).is_none() {
-                Self::emit_add_field(new_field, steps);
+                Self::emit_add_field(new_field, per_tenant, steps);
             }
         }
 
@@ -634,7 +669,7 @@ impl DiffEngine {
                 let old_type = &old_field.field_type;
                 let new_type = &new_field.field_type;
                 if old_type == new_type {
-                    Self::diff_field_modifiers(old_field, new_field, steps);
+                    Self::diff_field_modifiers(old_field, new_field, new.is_tenanted(), steps);
                 }
             }
         }
@@ -643,12 +678,15 @@ impl DiffEngine {
     fn diff_field_modifiers(
         old_field: &FieldDefinition,
         new_field: &FieldDefinition,
+        per_tenant: bool,
         steps: &mut Vec<MigrationStep>,
     ) {
         let old_required = old_field.is_required();
         let new_required = new_field.is_required();
         let old_indexed = old_field.is_indexed();
         let new_indexed = new_field.is_indexed();
+        let old_unique = old_field.is_unique();
+        let new_unique = new_field.is_unique();
         let old_default = Self::extract_default(&old_field.modifiers);
         let new_default = Self::extract_default(&new_field.modifiers);
 
@@ -671,6 +709,19 @@ impl DiffEngine {
         } else if old_indexed && !new_indexed {
             steps.push(MigrationStep::RemoveIndex {
                 field: new_field.name.clone(),
+            });
+        }
+
+        // Unique changes
+        if !old_unique && new_unique {
+            steps.push(MigrationStep::AddUnique {
+                field: new_field.name.clone(),
+                per_tenant,
+            });
+        } else if old_unique && !new_unique {
+            steps.push(MigrationStep::RemoveUnique {
+                field: new_field.name.clone(),
+                per_tenant,
             });
         }
 
@@ -724,7 +775,7 @@ impl DiffEngine {
         }
     }
 
-    fn emit_add_field(field: &FieldDefinition, steps: &mut Vec<MigrationStep>) {
+    fn emit_add_field(field: &FieldDefinition, per_tenant: bool, steps: &mut Vec<MigrationStep>) {
         // Derived inverse collections are resolved at read time — no
         // column is created, so we emit no migration step.
         if field.is_derived() {
@@ -743,6 +794,14 @@ impl DiffEngine {
         } else {
             steps.push(MigrationStep::AddField {
                 field: field.clone(),
+            });
+        }
+        // Unique constraint is emitted as a follow-on step so the backend
+        // can pick the right per-tenant vs global DDL shape.
+        if field.is_unique() {
+            steps.push(MigrationStep::AddUnique {
+                field: field.name.clone(),
+                per_tenant,
             });
         }
     }

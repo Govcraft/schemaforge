@@ -16,6 +16,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
+  ApiError,
   create{{ entity.pascal }},
   get{{ entity.pascal }},
   update{{ entity.pascal }},
@@ -65,6 +66,19 @@ export function {{ entity.pascal }}Edit() {
       toast.success(isEdit ? `Saved {{ entity.title }} ${saved.id}` : "Created {{ entity.title }}")
       queryClient.invalidateQueries({ queryKey: ["{{ entity.snake }}"] })
       navigate(`/app/{{ entity.kebab }}/${saved.id}`)
+    },
+    onError: (err: unknown) => {
+      if (err instanceof ApiError && err.isUniqueViolation()) {
+        const field = err.uniqueViolationField()
+        if (field) {
+          form.setError(field as never, {
+            type: "unique",
+            message: "Already in use",
+          })
+          return
+        }
+      }
+      toast.error(err instanceof Error ? err.message : "Save failed")
     },
   })
 

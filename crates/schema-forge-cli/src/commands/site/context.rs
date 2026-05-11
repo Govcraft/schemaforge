@@ -240,6 +240,11 @@ pub struct FieldView {
     pub label: String,
     /// `true` if the source field carries the `Required` modifier.
     pub required: bool,
+    /// `true` if the source field carries the `Unique` modifier. The
+    /// generated form runs an async availability check against
+    /// `/api/v1/forge/{schema}/_check_unique` and, on submit, surfaces any
+    /// 409 `unique_violation` against this field.
+    pub unique: bool,
     /// TypeScript type expression — `"string"`, `"number"`, `"\"a\" | \"b\""`, etc.
     pub ts_type: String,
     /// Zod schema expression — `z.string().max(255).optional()`.
@@ -347,6 +352,7 @@ pub fn make_field_view(
         camel: camel_of(&leaf),
         label: label_of(&leaf),
         required: field.is_required(),
+        unique: field.is_unique(),
         ts_type,
         zod,
         is_relation,

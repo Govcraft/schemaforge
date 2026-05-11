@@ -9,6 +9,7 @@ use super::default_value::DefaultValue;
 pub enum FieldModifier {
     Required,
     Indexed,
+    Unique,
     Default { value: DefaultValue },
 }
 
@@ -17,6 +18,7 @@ impl std::fmt::Display for FieldModifier {
         match self {
             Self::Required => write!(f, "required"),
             Self::Indexed => write!(f, "indexed"),
+            Self::Unique => write!(f, "unique"),
             Self::Default { value } => write!(f, "default({value})"),
         }
     }
@@ -30,6 +32,7 @@ mod tests {
     fn display() {
         assert_eq!(FieldModifier::Required.to_string(), "required");
         assert_eq!(FieldModifier::Indexed.to_string(), "indexed");
+        assert_eq!(FieldModifier::Unique.to_string(), "unique");
         assert_eq!(
             FieldModifier::Default {
                 value: DefaultValue::Integer(42)
@@ -44,6 +47,7 @@ mod tests {
         let modifiers = vec![
             FieldModifier::Required,
             FieldModifier::Indexed,
+            FieldModifier::Unique,
             FieldModifier::Default {
                 value: DefaultValue::Boolean(true),
             },

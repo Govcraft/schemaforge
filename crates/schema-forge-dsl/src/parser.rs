@@ -447,7 +447,7 @@ impl Parser {
         self.expect(&Token::Colon)?;
 
         let field_type = self.parse_type()?;
-        let modifiers = self.parse_modifiers()?;
+        let modifiers = self.parse_modifiers(&field_type)?;
         let field_annotations = self.parse_field_annotations(&field_type)?;
 
         if field_annotations.is_empty() {
@@ -1045,7 +1045,7 @@ impl Parser {
     }
 
     /// modifier* (zero or more trailing modifiers)
-    fn parse_modifiers(&mut self) -> Result<Vec<FieldModifier>, DslError> {
+    fn parse_modifiers(&mut self, field_type: &FieldType) -> Result<Vec<FieldModifier>, DslError> {
         let mut modifiers = Vec::new();
 
         loop {
@@ -1057,6 +1057,17 @@ impl Parser {
                 Some(Token::Indexed) => {
                     self.advance();
                     modifiers.push(FieldModifier::Indexed);
+                }
+                Some(Token::Unique) => {
+                    let span = self.current_span();
+                    self.advance();
+                    if !field_type_supports_unique(field_type) {
+                        return Err(DslError::UniqueOnUnsupportedType {
+                            field_type: describe_field_type_for_error(field_type),
+                            span,
+                        });
+                    }
+                    modifiers.push(FieldModifier::Unique);
                 }
                 Some(Token::Default) => {
                     self.advance();
@@ -1187,8 +1198,52 @@ fn is_contextual_ident(token: &Token) -> bool {
             | Token::Default
             | Token::Required
             | Token::Indexed
+            | Token::Unique
             | Token::Schema
     )
+}
+
+/// Returns `true` when a `unique` modifier is meaningful on this field type.
+///
+/// Disallowed:
+/// - `richtext`, `json`, `composite`: large/structured payloads where
+///   uniqueness has no clear semantics and most DBs cannot index them.
+/// - `boolean`: uniqueness would cap rows at two — almost always a bug.
+/// - `array`: multi-valued; SQL uniqueness on the array as a whole is
+///   rarely what users want.
+/// - `relation`: relations are pointers; for 1:1 enforcement prefer schema-
+///   level modeling.
+/// - `file`: identified by storage key, not by value.
+fn field_type_supports_unique(ft: &FieldType) -> bool {
+    matches!(
+        ft,
+        FieldType::Text(_)
+            | FieldType::Integer(_)
+            | FieldType::Float(_)
+            | FieldType::DateTime
+            | FieldType::Enum(_)
+    )
+}
+
+/// Short human-readable label for the disallowed-type diagnostic.
+fn describe_field_type_for_error(ft: &FieldType) -> String {
+    match ft {
+        FieldType::Text(_) => "text".to_string(),
+        FieldType::RichText => "richtext".to_string(),
+        FieldType::Integer(_) => "integer".to_string(),
+        FieldType::Float(_) => "float".to_string(),
+        FieldType::Boolean => "boolean".to_string(),
+        FieldType::DateTime => "datetime".to_string(),
+        FieldType::Enum(_) => "enum".to_string(),
+        FieldType::Json => "json".to_string(),
+        FieldType::Relation { .. } => "relation".to_string(),
+        FieldType::Array(_) => "array".to_string(),
+        FieldType::Composite(_) => "composite".to_string(),
+        FieldType::File(_) => "file".to_string(),
+        // FieldType is #[non_exhaustive]; any future variant is by default
+        // not unique-able until explicitly added to `field_type_supports_unique`.
+        _ => "unsupported".to_string(),
+    }
 }
 
 /// Strip the surrounding `"""` delimiters from a triple-quoted string literal.
@@ -1546,6 +1601,56 @@ mod tests {
         let schema = parse_one("schema S { email: text required indexed }");
         assert!(schema.fields[0].is_required());
         assert!(schema.fields[0].is_indexed());
+    }
+
+    #[test]
+    fn parse_unique() {
+        let schema = parse_one("schema S { email: text unique }");
+        assert!(schema.fields[0].is_unique());
+    }
+
+    #[test]
+    fn parse_unique_combined() {
+        let schema = parse_one("schema S { email: text required unique indexed }");
+        assert!(schema.fields[0].is_required());
+        assert!(schema.fields[0].is_unique());
+        assert!(schema.fields[0].is_indexed());
+    }
+
+    #[test]
+    fn parse_unique_rejects_boolean() {
+        let err = parse("schema S { active: boolean unique }").unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("UniqueOnUnsupportedType"),
+            "expected UniqueOnUnsupportedType, got {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_unique_rejects_json() {
+        let err = parse("schema S { meta: json unique }").unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("UniqueOnUnsupportedType"));
+    }
+
+    #[test]
+    fn parse_unique_rejects_array() {
+        let err = parse("schema S { tags: text[] unique }").unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("UniqueOnUnsupportedType"));
+    }
+
+    #[test]
+    fn parse_unique_allowed_on_enum() {
+        let schema = parse_one(r#"schema S { status: enum("a", "b", "c") unique }"#);
+        assert!(schema.fields[0].is_unique());
+    }
+
+    #[test]
+    fn parse_unique_allowed_on_integer() {
+        let schema = parse_one("schema S { ref_id: integer unique }");
+        assert!(schema.fields[0].is_unique());
     }
 
     #[test]

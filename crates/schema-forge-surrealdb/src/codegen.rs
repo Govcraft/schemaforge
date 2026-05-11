@@ -131,11 +131,34 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
                 "DEFINE FIELD OVERWRITE {field} ON {table} TYPE any;"
             )]
         }
+        MigrationStep::AddUnique { field, per_tenant } => {
+            vec![add_unique_surql(table, field.as_ref(), *per_tenant)]
+        }
+        MigrationStep::RemoveUnique { field, .. } => {
+            let idx = unique_index_name(table, field.as_ref());
+            vec![format!("REMOVE INDEX {idx} ON {table};")]
+        }
         _ => {
             // Future MigrationStep variants -- produce a no-op comment.
             vec![format!("-- unsupported migration step for table {table}")]
         }
     }
+}
+
+/// Build the `DEFINE INDEX ... UNIQUE` statement. When `per_tenant` is true
+/// the index keys off `(_tenant, field)` so tenants can independently use
+/// the same value.
+fn add_unique_surql(table: &str, field: &str, per_tenant: bool) -> String {
+    let idx = unique_index_name(table, field);
+    if per_tenant {
+        format!("DEFINE INDEX {idx} ON {table} FIELDS _tenant, {field} UNIQUE;")
+    } else {
+        format!("DEFINE INDEX {idx} ON {table} FIELDS {field} UNIQUE;")
+    }
+}
+
+fn unique_index_name(table: &str, field: &str) -> String {
+    format!("uq_{table}_{field}")
 }
 
 /// Returns `true` when a SurrealDB `DEFINE FIELD` for this type must carry
@@ -755,5 +778,41 @@ mod tests {
             stmts[1],
             "DEFINE INDEX idx_Contact_tenant ON TABLE Contact COLUMNS _tenant;"
         );
+    }
+
+    #[test]
+    fn add_unique_global() {
+        let step = MigrationStep::AddUnique {
+            field: FieldName::new("email").unwrap(),
+            per_tenant: false,
+        };
+        let stmts = migration_step_to_surql("Contact", &step);
+        assert_eq!(
+            stmts,
+            vec!["DEFINE INDEX uq_Contact_email ON Contact FIELDS email UNIQUE;"]
+        );
+    }
+
+    #[test]
+    fn add_unique_per_tenant() {
+        let step = MigrationStep::AddUnique {
+            field: FieldName::new("email").unwrap(),
+            per_tenant: true,
+        };
+        let stmts = migration_step_to_surql("Contact", &step);
+        assert_eq!(
+            stmts,
+            vec!["DEFINE INDEX uq_Contact_email ON Contact FIELDS _tenant, email UNIQUE;"]
+        );
+    }
+
+    #[test]
+    fn remove_unique() {
+        let step = MigrationStep::RemoveUnique {
+            field: FieldName::new("email").unwrap(),
+            per_tenant: true,
+        };
+        let stmts = migration_step_to_surql("Contact", &step);
+        assert_eq!(stmts, vec!["REMOVE INDEX uq_Contact_email ON Contact;"]);
     }
 }

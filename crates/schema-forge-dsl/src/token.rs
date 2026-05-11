@@ -59,6 +59,9 @@ pub enum Token {
     #[token("indexed")]
     Indexed,
 
+    #[token("unique")]
+    Unique,
+
     #[token("default")]
     Default,
 
@@ -144,6 +147,7 @@ impl Token {
             Self::File => "'file'",
             Self::Required => "'required'",
             Self::Indexed => "'indexed'",
+            Self::Unique => "'unique'",
             Self::Default => "'default'",
             Self::True => "'true'",
             Self::False => "'false'",
@@ -182,7 +186,7 @@ mod tests {
 
     #[test]
     fn keywords() {
-        let tokens = lex("schema text richtext integer float boolean datetime enum json composite file required indexed default true false");
+        let tokens = lex("schema text richtext integer float boolean datetime enum json composite file required indexed unique default true false");
         assert_eq!(
             tokens,
             vec![
@@ -199,6 +203,7 @@ mod tests {
                 Token::File,
                 Token::Required,
                 Token::Indexed,
+                Token::Unique,
                 Token::Default,
                 Token::True,
                 Token::False,

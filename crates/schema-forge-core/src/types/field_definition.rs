@@ -88,6 +88,13 @@ impl FieldDefinition {
             .any(|m| matches!(m, FieldModifier::Indexed))
     }
 
+    /// Returns true if this field has the `Unique` modifier.
+    pub fn is_unique(&self) -> bool {
+        self.modifiers
+            .iter()
+            .any(|m| matches!(m, FieldModifier::Unique))
+    }
+
     /// Returns true if this field has the `Owner` annotation.
     pub fn has_owner(&self) -> bool {
         self.annotations
