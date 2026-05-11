@@ -154,6 +154,76 @@ salary:         float(precision: 2)
 password_hash:  text(max: 512) @hidden                                // nobody sees it via API; backend reads directly
 ```
 
+## Unique Constraint Pattern (`unique`)
+
+Use the `unique` modifier to enforce no-duplicates at the database tier. The constraint is not optional — it lives in the schema migration, not in application logic — so it survives every code path (CRUD, hooks, bulk imports, direct DB writes).
+
+### When to use `unique`
+
+- Natural keys that aren't the primary id: email, username, slug, external_ref, invoice_number, sku.
+- Lookup fields used in URLs (`/orgs/:slug`).
+- Fields the application logic implicitly assumes are unique (e.g. "the user with email X").
+
+### When *not* to use `unique`
+
+- High-cardinality lookup fields where you only want fast queries — use `indexed` instead.
+- Fields whose semantic uniqueness is conditional (e.g. unique among non-archived rows). The current modifier is unconditional; model conditional uniqueness with a hook or a partial index outside the DSL.
+- Fields you can't predict will stay unique (display names, free-form titles).
+
+### Per-tenant vs table-wide
+
+```
+@tenant(root)
+schema Organization {
+    slug:  text(max: 100) required unique indexed     // composite (_tenant, slug)
+    name:  text(max: 255) required
+}
+
+@tenant(parent: "Organization")
+schema Project {
+    code:  text(max: 20) required unique indexed      // each org may have its own "WEB-1"
+    name:  text required
+}
+
+schema EmailDomain {                                  // no @tenant: plain UNIQUE(domain)
+    domain: text required unique
+}
+```
+
+Rule: any schema with `@tenant(...)` (root *or* child) gets a composite `(_tenant, field)` constraint. Schemas without `@tenant` get a plain table-wide constraint. There is no opt-out today.
+
+### Allowed types
+
+`text`, `integer`, `float`, `datetime`, `enum`. Applying `unique` to `richtext`, `json`, `boolean`, array, `composite`, `relation`, or `file` is a parse error.
+
+### Migration safety
+
+`AddUnique` is classified `RequiresConfirmation` — `schema-forge apply` will refuse it without `--force` because the DDL fails against existing duplicate rows. Workflow:
+
+1. Add `unique` to the schema.
+2. `schema-forge migrate` — shows the `AddUnique` step.
+3. Query/clean any existing duplicates: `SELECT slug, COUNT(*) FROM Organization GROUP BY slug HAVING COUNT(*) > 1`.
+4. `schema-forge apply --force` (or `migrate --execute --force`).
+
+`RemoveUnique` is `Safe` — drops the index/constraint with no data risk.
+
+### Error surface
+
+A duplicate-value write returns `409 Conflict`:
+
+```json
+{
+  "error": "unique_violation",
+  "schema": "Contact",
+  "field": "email",
+  "message": "unique constraint violated on field 'email' of schema 'Contact'"
+}
+```
+
+Generated React edit pages catch this via `ApiError.isUniqueViolation()` and call `form.setError(field, ...)` so the error renders inline on the offending input — no toast, no manual handling required.
+
+For hand-rolled clients, branch on `error === "unique_violation"` and `field` to mark the right form input.
+
 ## Dashboard & Kanban Pattern
 
 Configure visual dashboards with aggregation widgets and kanban layouts.
@@ -533,6 +603,13 @@ active: boolean default(true)
 
 // Display name (pair with @display annotation)
 name: text(max: 255) required indexed
+
+// Natural keys — `unique` enforces no-duplicates at the DB tier.
+// For tenanted schemas the constraint is per-tenant automatically.
+email:        text(max: 512) required unique indexed @widget("email")
+slug:         text(max: 100) required unique indexed
+external_ref: text(max: 64) unique indexed
+invoice_no:   text(max: 32) required unique indexed
 
 // Flexible metadata
 metadata: json

@@ -86,7 +86,7 @@ schema Company {
 )
 schema Contact {
     full_name:        text(max: 255) required indexed
-    email:            text(max: 512) indexed @widget("email")
+    email:            text(max: 512) required unique indexed @widget("email")
     phone:            text(max: 50) @widget("phone")
     title:            text(max: 255)
     company:          -> Company
@@ -110,6 +110,7 @@ schema Contact {
 ```
 
 **Notable features:**
+- `email` carries `unique` — duplicate-email writes return 409 `unique_violation` and the generated form surfaces the error inline on the email field. If this schema also carried `@tenant(...)` the constraint would be scoped per tenant.
 - `lead_score` with bounded integer and progress widget
 - `lifecycle_stage` as `@kanban_column` — enables kanban view
 - `-> Company` — many-to-one relation (each contact belongs to one company)
@@ -172,7 +173,7 @@ Organization as tenant root, departments scoped to organization:
 @access(read: ["member", "admin"], write: ["admin"], delete: ["admin"])
 schema Organization {
     name:          text(max: 255) required indexed
-    slug:          text(max: 100) required indexed
+    slug:          text(max: 100) required unique indexed
     billing_email: text(max: 512) @widget("email")
     plan:          enum("free", "starter", "business", "enterprise")
                    default("free") @widget("status_badge")
@@ -192,7 +193,7 @@ schema Organization {
 )
 schema Department {
     name:            text(max: 255) required
-    code:            text(max: 20) required indexed
+    code:            text(max: 20) required unique indexed
     description:     text
     head:            -> Employee
     parent_org:      -> Organization required
@@ -205,6 +206,10 @@ schema Department {
 ```
 
 **Key pattern:** `@tenant(root)` on Organization, `@tenant(parent: "Organization")` on Department. All department data is automatically scoped to its organization.
+
+**`unique` interaction with `@tenant`:**
+- Any schema carrying `@tenant(root)` or `@tenant(parent: "...")` gets a composite `(_tenant, field)` unique index. For tenant *children* like `Department.code`, this means each organization independently may have a `"ENG"` department — they don't collide. For tenant *roots* like `Organization.slug`, runtime tenant injection determines whether slugs are effectively organization-scoped or table-wide; in practice tenant-root entities are scoped by their own id, so two different organizations cannot share a slug.
+- Duplicate writes produce `409 { "error": "unique_violation", "schema": "Organization", "field": "slug", "message": "..." }`. The generated edit forms route this 409 onto the offending field via `react-hook-form`'s `setError`, so the user sees the error inline without a toast.
 
 ## HR Schema with Field-Level Access Control
 

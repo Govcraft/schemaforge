@@ -1,6 +1,6 @@
 ---
 name: schemaforge
-description: Use when writing, creating, editing, or reviewing SchemaForge .schema files. Use when defining data models, entity schemas, field types, relations, access control, or multi-tenant hierarchies in the SchemaForge DSL syntax. Use when declaring `file` fields backed by S3-compatible storage (MinIO, AWS S3, R2, Wasabi), configuring `[schema_forge.storage]` backends, or wiring upload/download/scan flows. Use when scaffolding or regenerating the React site with `schema-forge site generate`, wiring the `/app/*` per-entity pages or the runtime-dynamic `/admin/*` shell, or iterating with the `--templates-dir` override loader. Use when querying entities via the REST API, filtering, sorting, pagination, or building query parameters. Use when declaring lifecycle hooks via @hook annotations (including `before_upload`, `after_upload`, `on_scan_complete` for file fields), scaffolding hook gRPC services with `schema-forge hooks generate`, configuring [schema_forge.hooks] bindings, or auditing hooks with `hooks list` / `hooks diff`. Use when hitting `/api/v1/forge/auth/login`, `/auth/refresh`, or `/api/v1/forge/users` for the PASETO bootstrap and user management flows. Use when mapping PASETO custom claims onto Cedar `Forge::Principal` attributes via `[schema_forge.authz.principal_claims]` so hand-written custom Cedar policies can read per-bearer values like `principal.client_org_id`, including the IN-side `source = { user_field = "<f>" }` projection that populates those claims from User columns at login/refresh time.
+description: Use when writing, creating, editing, or reviewing SchemaForge .schema files. Use when defining data models, entity schemas, field types, relations, access control, or multi-tenant hierarchies in the SchemaForge DSL syntax. Use when declaring `unique` field constraints (per-tenant for `@tenant(...)` schemas, table-wide otherwise) and handling the 409 `unique_violation` error path. Use when declaring `file` fields backed by S3-compatible storage (MinIO, AWS S3, R2, Wasabi), configuring `[schema_forge.storage]` backends, or wiring upload/download/scan flows. Use when scaffolding or regenerating the React site with `schema-forge site generate`, wiring the `/app/*` per-entity pages or the runtime-dynamic `/admin/*` shell, or iterating with the `--templates-dir` override loader. Use when querying entities via the REST API, filtering, sorting, pagination, or building query parameters. Use when declaring lifecycle hooks via @hook annotations (including `before_upload`, `after_upload`, `on_scan_complete` for file fields), scaffolding hook gRPC services with `schema-forge hooks generate`, configuring [schema_forge.hooks] bindings, or auditing hooks with `hooks list` / `hooks diff`. Use when hitting `/api/v1/forge/auth/login`, `/auth/refresh`, or `/api/v1/forge/users` for the PASETO bootstrap and user management flows. Use when mapping PASETO custom claims onto Cedar `Forge::Principal` attributes via `[schema_forge.authz.principal_claims]` so hand-written custom Cedar policies can read per-bearer values like `principal.client_org_id`, including the IN-side `source = { user_field = "<f>" }` projection that populates those claims from User columns at login/refresh time.
 ---
 
 # SchemaForge — Schema Authoring & CLI Guide
@@ -9,7 +9,7 @@ description: Use when writing, creating, editing, or reviewing SchemaForge .sche
 
 SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `.schema` file produces database tables, REST API endpoints, migrations, Cedar authorization policies, and OpenAPI specs — no recompilation required.
 
-**Version:** 0.22.0
+**Version:** 0.27.0
 
 **Core principle:** Schemas are the single source of truth for the entire entity lifecycle. Authorization is **Cedar-canonical**: every read/write/delete decision flows through the embedded Cedar engine — there are no parallel custom guards.
 
@@ -23,13 +23,13 @@ SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `schema-forge-core` | 0.12.0 | Core types: schemas, fields (incl. `FieldType::File`), annotations (incl. `@hidden`), migrations, queries, hook events |
-| `schema-forge-dsl` | 0.7.0 | Lexer/parser for `.schema` DSL (logos-based) incl. `file(...)` syntax, size literals, and the `@hidden` field annotation |
-| `schema-forge-backend` | 0.7.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant and `EntityAuthStore` (the user-mgmt impl over the system `User` schema) |
-| `schema-forge-surrealdb` | 0.7.1 | SurrealDB backend implementation |
-| `schema-forge-postgres` | 0.5.1 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file columns |
-| `schema-forge-acton` | 0.23.0 | Axum/acton-service integration: REST API, Cedar policy store (hot-recompiled atomically on schema apply), auth, hook dispatcher, S3 storage registry (`aws-sdk-s3`) |
-| `schema-forge-cli` | 0.22.0 | CLI binary (`schemaforge`) built with clap derive; routes all configuration through `acton_service::Config<SchemaForgeConfig>` (single source of truth); ships `policies validate` and `bootstrap-admin` for CI / first-run provisioning |
+| `schema-forge-core` | 0.14.0 | Core types: schemas, fields (incl. `FieldType::File`), annotations (incl. `@hidden`), modifiers (incl. `unique`), migrations (incl. `AddUnique`/`RemoveUnique` with per-tenant scope), queries, hook events |
+| `schema-forge-dsl` | 0.9.0 | Lexer/parser for `.schema` DSL (logos-based) incl. `file(...)` syntax, size literals, the `@hidden` field annotation, and the `unique` modifier with parse-time type-guard |
+| `schema-forge-backend` | 0.10.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant, `EntityAuthStore` (the user-mgmt impl over the system `User` schema), and the typed `BackendError::UniqueViolation` discriminator |
+| `schema-forge-surrealdb` | 0.8.0 | SurrealDB backend implementation (incl. `DEFINE INDEX ... UNIQUE` codegen and unique-violation reclassification) |
+| `schema-forge-postgres` | 0.7.0 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file columns and SQLSTATE 23505 → typed `UniqueViolation` mapping |
+| `schema-forge-acton` | 0.26.0 | Axum/acton-service integration: REST API, Cedar policy store (hot-recompiled atomically on schema apply), auth, hook dispatcher, S3 storage registry (`aws-sdk-s3`), and the 409 `unique_violation` HTTP error envelope |
+| `schema-forge-cli` | 0.27.0 | CLI binary (`schemaforge`) built with clap derive; routes all configuration through `acton_service::Config<SchemaForgeConfig>` (single source of truth); ships `policies validate`, `bootstrap-admin`, and a site generator that surfaces `unique` as an inline form hint plus a 409-routed `setError` for CI / first-run provisioning |
 
 ## When to Use
 
@@ -564,9 +564,16 @@ The two backends are **mutually exclusive** at build time (enforced by acton-ser
 |----------|--------|--------|
 | Required | `required` | field must have a non-null value |
 | Indexed | `indexed` | indexed for fast lookups |
+| Unique | `unique` | values must be unique (per-tenant for `@tenant(...)` schemas, table-wide otherwise) |
 | Default | `default(value)` | value when field omitted |
 
 **Default value syntax:** `default("text")`, `default(42)`, `default(3.14)`, `default(true)`
+
+**`unique` rules:**
+- Allowed on `text`, `integer`, `float`, `datetime`, `enum`. Other types are a parse error (`UniqueOnUnsupportedType`) — `richtext`, `json`, `boolean`, arrays, `composite`, `relation`, `file`.
+- For schemas with `@tenant(root)` or `@tenant(parent: "...")` the underlying constraint is composite on `(_tenant, field)`; two tenants can hold the same value.
+- Adding `unique` to a column with existing duplicates fails at apply time. The migration step `AddUnique` is classified `RequiresConfirmation`; clean data first or pass `--force`.
+- A write that collides returns **HTTP 409** with body `{ "error": "unique_violation", "schema": "...", "field": "...", "message": "..." }`. Generated edit forms route this onto the offending field via `react-hook-form`'s `setError`.
 
 ## Quick Reference — Annotations
 
@@ -735,6 +742,9 @@ From a `.schema` file, SchemaForge produces:
 | Field without type | `name: text` (colon + type required) |
 | `-> contact` (lowercase relation) | `-> Contact` (PascalCase target) |
 | Entity body without `fields` wrapper | `{"fields": {"name": "value"}}` |
+| `active: boolean unique` (or `json` / array / relation / file / composite / richtext) | Move `unique` to a `text`/`integer`/`float`/`datetime`/`enum` field — those are the only types it's allowed on |
+| Expecting `unique` on a `@tenant(...)` schema to be table-wide | It's **per-tenant**: different tenants may hold the same value. For cross-tenant uniqueness, remove the `@tenant` annotation or model the field on a tenant-root entity |
+| Adding `unique` in a migration against a column with existing duplicates | Clean the duplicates first; `AddUnique` is classified `RequiresConfirmation` and the apply will fail otherwise |
 
 ## Additional Resources
 
