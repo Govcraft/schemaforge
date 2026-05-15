@@ -143,9 +143,19 @@ impl fmt::Display for ValueTransform {
 #[non_exhaustive]
 pub enum MigrationStep {
     /// Create a new schema table.
+    ///
+    /// `tenanted` is `true` when the schema carries a `@tenant(...)`
+    /// annotation. Backends use this flag to emit the per-table `_tenant`
+    /// column and supporting index as part of the `CreateSchema` step so
+    /// any follow-on `AddUnique { per_tenant: true }` step in the same
+    /// plan has the column it needs to reference. Without this flag the
+    /// `_tenant` column would be missing on first apply and any
+    /// `per_tenant` unique constraint would fail with
+    /// `column "_tenant" does not exist`.
     CreateSchema {
         name: SchemaName,
         fields: Vec<FieldDefinition>,
+        tenanted: bool,
     },
     /// Drop an entire schema table.
     DropSchema { name: SchemaName },
@@ -256,8 +266,17 @@ impl MigrationStep {
 impl fmt::Display for MigrationStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CreateSchema { name, fields } => {
-                write!(f, "CREATE schema '{name}' with {} fields", fields.len())
+            Self::CreateSchema {
+                name,
+                fields,
+                tenanted,
+            } => {
+                write!(
+                    f,
+                    "CREATE schema '{name}' with {} fields{}",
+                    fields.len(),
+                    if *tenanted { " (tenanted)" } else { "" }
+                )
             }
             Self::DropSchema { name } => write!(f, "DROP schema '{name}'"),
             Self::AddField { field } => {
@@ -526,6 +545,7 @@ impl DiffEngine {
         let mut steps = vec![MigrationStep::CreateSchema {
             name: schema.name.clone(),
             fields,
+            tenanted: per_tenant,
         }];
         for field in unique_fields {
             steps.push(MigrationStep::AddUnique { field, per_tenant });
@@ -1034,6 +1054,7 @@ mod tests {
             MigrationStep::CreateSchema {
                 name: SchemaName::new("Test").unwrap(),
                 fields: vec![make_field("name")],
+                tenanted: false,
             },
             MigrationStep::AddField {
                 field: make_field("email"),
@@ -1134,6 +1155,7 @@ mod tests {
             MigrationStep::CreateSchema {
                 name: SchemaName::new("Contact").unwrap(),
                 fields: vec![make_field("name")],
+                tenanted: false,
             },
             MigrationStep::AddField {
                 field: make_field("email"),
@@ -1432,10 +1454,51 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert!(matches!(
             &plan.steps[0],
-            MigrationStep::CreateSchema { name, fields }
-            if name.as_str() == "Contact" && fields.len() == 2
+            MigrationStep::CreateSchema { name, fields, tenanted }
+            if name.as_str() == "Contact" && fields.len() == 2 && !tenanted
         ));
         assert!(plan.is_safe());
+    }
+
+    /// Regression for GH #56: `create_new` against a tenanted schema must
+    /// mark the `CreateSchema` step as `tenanted: true` so backends emit
+    /// `_tenant` column DDL before any follow-on per-tenant unique index.
+    #[test]
+    fn create_new_marks_tenanted_schema_in_create_step() {
+        use crate::types::{Annotation, FieldModifier, TenantKind};
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Account").unwrap(),
+            vec![FieldDefinition::with_modifiers(
+                FieldName::new("slug").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Unique],
+            )],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        )
+        .unwrap();
+
+        let plan = DiffEngine::create_new(&schema);
+
+        match &plan.steps[0] {
+            MigrationStep::CreateSchema { tenanted, .. } => {
+                assert!(
+                    *tenanted,
+                    "CreateSchema for a @tenant(root) schema must be tenanted"
+                );
+            }
+            other => panic!("expected CreateSchema, got {other:?}"),
+        }
+
+        // Sanity: the per-tenant unique step still follows.
+        assert!(matches!(
+            plan.steps.get(1),
+            Some(MigrationStep::AddUnique {
+                per_tenant: true,
+                ..
+            })
+        ));
     }
 
     #[test]
