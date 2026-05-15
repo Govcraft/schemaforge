@@ -124,8 +124,20 @@ pub struct PrincipalClaimConfigEntry {
 /// `source = { user_field = "<f>" }` reads the named column off the User
 /// entity row at login time and projects it into the `custom` claim map per
 /// the projection table in [`UserFieldProjection`].
+///
+/// # Why `#[serde(untagged)]`?
+///
+/// External tagging (serde's default) would require the doubled-key form
+/// `source.user_field = { user_field = "..." }` in TOML, which contradicts
+/// the operator-facing shape documented in `docs/principal-claims-reference.md`
+/// (issue #54). Untagged matches the inline-table shape directly:
+/// `source = { user_field = "..." }`.
+///
+/// If a future variant ever shares an inner key name with `UserField`,
+/// disambiguate with a custom `Deserialize` impl — do not abandon the
+/// inline operator-facing surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(untagged)]
 pub enum PrincipalClaimSourceConfig {
     /// Read the value from a column on the User entity row.
     UserField {
