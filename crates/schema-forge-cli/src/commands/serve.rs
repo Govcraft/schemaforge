@@ -229,6 +229,7 @@ pub async fn run(
             .with_auth_store_arc(auth_store.clone())
             .with_storage_config(svc_config.custom.schema_forge.storage.clone())
             .with_principal_claims(bootstrap_principal_claims)
+            .with_seed_demo_users(args.seed_demo_users)
             .with_admin_credentials(
                 args.admin_user.clone(),
                 args.admin_password.clone().unwrap_or_default(),

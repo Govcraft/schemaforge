@@ -68,6 +68,7 @@ tasks:
           --port {{.PORT}} \
           --schemas {{.SCHEMA_DIR}} \
           --admin-password {{.ADMIN_PASSWORD}} \
+          --seed-demo-users \
           --db-url "mem://" \
           --dev-cors &
         SERVER_PID=$!
