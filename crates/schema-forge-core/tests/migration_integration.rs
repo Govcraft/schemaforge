@@ -59,7 +59,7 @@ fn scenario_create_new_crm_contact() {
     assert_eq!(plan.schema_name.as_str(), "Contact");
     assert!(matches!(
         &plan.steps[0],
-        MigrationStep::CreateSchema { name, fields }
+        MigrationStep::CreateSchema { name, fields, tenanted: false }
         if name.as_str() == "Contact" && fields.len() == 3
     ));
 }

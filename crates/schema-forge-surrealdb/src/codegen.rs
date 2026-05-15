@@ -19,8 +19,18 @@ use schema_forge_core::types::{
 /// * `step`  - The migration step to compile.
 pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String> {
     match step {
-        MigrationStep::CreateSchema { name: _, fields } => {
+        MigrationStep::CreateSchema {
+            name: _,
+            fields,
+            tenanted,
+        } => {
             let mut stmts = vec![format!("DEFINE TABLE {table} SCHEMAFULL;")];
+            // Define the `_tenant` field and its index before any field
+            // definitions or follow-on `AddUnique { per_tenant: true }`
+            // steps so the index has the column to reference.
+            if *tenanted {
+                stmts.extend(tenant_ddl_statements(table));
+            }
             for field in fields {
                 stmts.extend(define_field_stmts(table, field));
             }
@@ -380,6 +390,7 @@ mod tests {
         let step = MigrationStep::CreateSchema {
             name: SchemaName::new("Contact").unwrap(),
             fields: vec![text_field("name"), text_field("email")],
+            tenanted: false,
         };
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(stmts[0], "DEFINE TABLE Contact SCHEMAFULL;");
@@ -387,6 +398,103 @@ mod tests {
         assert!(stmts[1].contains("DEFINE FIELD name ON Contact TYPE option<string>;"));
         assert!(stmts[2].contains("DEFINE FIELD email ON Contact TYPE option<string>;"));
         assert_eq!(stmts.len(), 3);
+    }
+
+    /// Regression for GH #56: a tenanted `CreateSchema` must define
+    /// `_tenant` + its index before the regular field definitions so the
+    /// follow-on `AddUnique { per_tenant: true }` index has its column.
+    #[test]
+    fn create_schema_tenanted_emits_tenant_field_and_index() {
+        let step = MigrationStep::CreateSchema {
+            name: SchemaName::new("Contact").unwrap(),
+            fields: vec![text_field("name")],
+            tenanted: true,
+        };
+        let stmts = migration_step_to_surql("Contact", &step);
+        assert_eq!(stmts[0], "DEFINE TABLE Contact SCHEMAFULL;");
+        assert_eq!(
+            stmts[1],
+            "DEFINE FIELD _tenant ON TABLE Contact TYPE option<string>;",
+            "expected _tenant field definition immediately after DEFINE TABLE"
+        );
+        assert_eq!(
+            stmts[2],
+            "DEFINE INDEX idx_Contact_tenant ON TABLE Contact COLUMNS _tenant;",
+            "expected tenant index after the _tenant field"
+        );
+        assert!(
+            stmts[3].contains("DEFINE FIELD name ON Contact"),
+            "user-declared fields must come after tenant DDL"
+        );
+    }
+
+    /// Guard: a non-tenanted `CreateSchema` must not emit `_tenant` DDL.
+    #[test]
+    fn create_schema_non_tenanted_omits_tenant_ddl() {
+        let step = MigrationStep::CreateSchema {
+            name: SchemaName::new("Contact").unwrap(),
+            fields: vec![text_field("name")],
+            tenanted: false,
+        };
+        let stmts = migration_step_to_surql("Contact", &step);
+        for stmt in &stmts {
+            assert!(
+                !stmt.contains("_tenant"),
+                "non-tenanted schema must not reference _tenant, found: {stmt}"
+            );
+        }
+    }
+
+    /// Regression for GH #56 end-to-end on SurrealDB: planner output for
+    /// a tenant-root schema with a `unique` field must produce a DDL
+    /// stream where `_tenant` exists before the per-tenant unique index
+    /// references it.
+    #[test]
+    fn tenanted_schema_with_unique_emits_tenant_field_before_unique_index() {
+        use schema_forge_core::migration::DiffEngine;
+        use schema_forge_core::types::{
+            Annotation, FieldModifier, SchemaDefinition, SchemaId, TenantKind,
+        };
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Account").unwrap(),
+            vec![FieldDefinition::with_modifiers(
+                FieldName::new("slug").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Unique],
+            )],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        )
+        .expect("schema definition must be valid");
+
+        let plan = DiffEngine::create_new(&schema);
+        let mut all_stmts: Vec<String> = Vec::new();
+        for step in &plan.steps {
+            all_stmts.extend(migration_step_to_surql("Account", step));
+        }
+
+        let define_table_idx = all_stmts
+            .iter()
+            .position(|s| s.starts_with("DEFINE TABLE Account"))
+            .expect("DEFINE TABLE statement missing");
+        let tenant_field_idx = all_stmts
+            .iter()
+            .position(|s| s.contains("DEFINE FIELD _tenant ON TABLE Account"))
+            .expect("_tenant field DDL missing — issue #56 regression");
+        let unique_idx = all_stmts
+            .iter()
+            .position(|s| s.contains("uq_Account_slug") && s.contains("_tenant, slug"))
+            .expect("per-tenant unique index missing");
+
+        assert!(
+            define_table_idx < tenant_field_idx,
+            "_tenant field DDL must come after DEFINE TABLE"
+        );
+        assert!(
+            tenant_field_idx < unique_idx,
+            "_tenant field DDL must come before the per-tenant unique index"
+        );
     }
 
     #[test]

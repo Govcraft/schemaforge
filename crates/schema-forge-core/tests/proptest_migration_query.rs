@@ -250,6 +250,7 @@ proptest! {
                 FieldName::new("x").unwrap(),
                 FieldType::Boolean,
             )],
+            tenanted: false,
         };
         prop_assert_eq!(step.safety(), MigrationSafety::Safe);
     }

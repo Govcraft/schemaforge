@@ -18,7 +18,11 @@ use schema_forge_core::types::{
 /// * `step`  - The migration step to compile.
 pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
     match step {
-        MigrationStep::CreateSchema { name: _, fields } => {
+        MigrationStep::CreateSchema {
+            name: _,
+            fields,
+            tenanted,
+        } => {
             let mut column_defs = vec!["\"id\" TEXT PRIMARY KEY".to_string()];
             let mut post_stmts = Vec::new();
 
@@ -32,6 +36,12 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
                 "CREATE TABLE IF NOT EXISTS \"{table}\" ({});",
                 column_defs.join(", ")
             )];
+            // Tenant column + tenant index must land before any
+            // post-statements (e.g. follow-on `AddUnique { per_tenant: true }`
+            // steps later in the same migration plan reference `_tenant`).
+            if *tenanted {
+                stmts.extend(tenant_ddl_statements(table));
+            }
             stmts.extend(post_stmts);
             stmts
         }
@@ -424,6 +434,7 @@ mod tests {
         let step = MigrationStep::CreateSchema {
             name: SchemaName::new("Contact").unwrap(),
             fields: vec![text_field("name"), text_field("email")],
+            tenanted: false,
         };
         let stmts = migration_step_to_sql("Contact", &step);
         assert_eq!(stmts.len(), 1);
@@ -721,6 +732,7 @@ mod tests {
                 FieldName::new("contract").unwrap(),
                 sample_file_field_type(),
             )],
+            tenanted: false,
         };
         let stmts = migration_step_to_sql("Deal", &step);
         assert_eq!(stmts.len(), 1);
@@ -751,6 +763,104 @@ mod tests {
         assert_eq!(
             stmts[1],
             "CREATE INDEX IF NOT EXISTS \"idx_Contact_tenant\" ON \"Contact\" (\"_tenant\");"
+        );
+    }
+
+    /// Regression for GH #56: a tenanted `CreateSchema` must emit
+    /// `_tenant` column + index DDL *immediately after* `CREATE TABLE`
+    /// so any follow-on `AddUnique { per_tenant: true }` step in the same
+    /// plan can reference `_tenant` without crashing apply.
+    #[test]
+    fn create_schema_tenanted_emits_tenant_column_and_index() {
+        let step = MigrationStep::CreateSchema {
+            name: SchemaName::new("Contact").unwrap(),
+            fields: vec![text_field("name"), text_field("email")],
+            tenanted: true,
+        };
+        let stmts = migration_step_to_sql("Contact", &step);
+        assert!(
+            stmts[0].starts_with("CREATE TABLE IF NOT EXISTS \"Contact\""),
+            "expected CREATE TABLE first, got: {}",
+            stmts[0]
+        );
+        assert_eq!(
+            stmts[1],
+            "ALTER TABLE \"Contact\" ADD COLUMN IF NOT EXISTS \"_tenant\" TEXT;",
+            "expected _tenant column DDL immediately after CREATE TABLE"
+        );
+        assert_eq!(
+            stmts[2],
+            "CREATE INDEX IF NOT EXISTS \"idx_Contact_tenant\" ON \"Contact\" (\"_tenant\");",
+            "expected tenant index DDL after the _tenant column"
+        );
+    }
+
+    /// Guard: a non-tenanted `CreateSchema` must not emit `_tenant` DDL.
+    #[test]
+    fn create_schema_non_tenanted_omits_tenant_ddl() {
+        let step = MigrationStep::CreateSchema {
+            name: SchemaName::new("Contact").unwrap(),
+            fields: vec![text_field("name")],
+            tenanted: false,
+        };
+        let stmts = migration_step_to_sql("Contact", &step);
+        for stmt in &stmts {
+            assert!(
+                !stmt.contains("_tenant"),
+                "non-tenanted schema must not reference _tenant, found: {stmt}"
+            );
+        }
+    }
+
+    /// Regression for GH #56 end-to-end: running the planner against a
+    /// tenant-root schema with a `unique` field followed by the codegen
+    /// must produce DDL where `_tenant` is established *before* the
+    /// per-tenant unique index references it.
+    #[test]
+    fn tenanted_schema_with_unique_emits_tenant_column_before_unique_index() {
+        use schema_forge_core::migration::DiffEngine;
+        use schema_forge_core::types::{
+            Annotation, FieldModifier, SchemaDefinition, SchemaId, TenantKind,
+        };
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Account").unwrap(),
+            vec![FieldDefinition::with_modifiers(
+                FieldName::new("slug").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Unique],
+            )],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        )
+        .expect("schema definition must be valid");
+
+        let plan = DiffEngine::create_new(&schema);
+        let mut all_stmts: Vec<String> = Vec::new();
+        for step in &plan.steps {
+            all_stmts.extend(migration_step_to_sql("Account", step));
+        }
+
+        let create_idx = all_stmts
+            .iter()
+            .position(|s| s.starts_with("CREATE TABLE"))
+            .expect("CREATE TABLE statement missing");
+        let tenant_col_idx = all_stmts
+            .iter()
+            .position(|s| s.contains("ADD COLUMN IF NOT EXISTS \"_tenant\""))
+            .expect("_tenant column DDL missing — issue #56 regression");
+        let unique_idx = all_stmts
+            .iter()
+            .position(|s| s.contains("\"uq_Account_slug\"") && s.contains("\"_tenant\""))
+            .expect("per-tenant unique index missing");
+
+        assert!(
+            create_idx < tenant_col_idx,
+            "_tenant column DDL must come after CREATE TABLE"
+        );
+        assert!(
+            tenant_col_idx < unique_idx,
+            "_tenant column DDL must come before the per-tenant unique index"
         );
     }
 
