@@ -508,6 +508,20 @@ pub struct ServeArgs {
     #[arg(long = "admin-password", env = "FORGE_ADMIN_PASSWORD")]
     pub admin_password: Option<String>,
 
+    /// Seed the bundled SchemaForge demo personas (alice/bob/charlie/dana/eve)
+    /// after admin bootstrap.
+    ///
+    /// SECURITY: each demo account is created with the literal password
+    /// `"password"`. Enable ONLY for the local `task demo` flow. Production
+    /// and downstream AMI deployments must leave this disabled — which is
+    /// the default. See https://github.com/govcraft/schemaforge/issues/53.
+    #[arg(
+        long = "seed-demo-users",
+        env = "FORGE_SEED_DEMO_USERS",
+        default_value_t = false
+    )]
+    pub seed_demo_users: bool,
+
     /// Enable permissive CORS for local development.
     ///
     /// Allows all origins via acton-service's `with_development_cors()`.

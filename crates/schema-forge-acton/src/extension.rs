@@ -68,6 +68,13 @@ pub struct SchemaForgeExtensionBuilder {
     record_access_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
     auth_store: Option<Arc<dyn DynAuthStore>>,
     admin_credentials: Option<(String, String)>,
+    /// When `true`, also seed the five SchemaForge demo personas
+    /// (alice/bob/charlie/dana/eve, all with password `"password"`) after
+    /// bootstrapping the admin user.
+    ///
+    /// Defaults to `false`. Production and downstream deployments MUST leave
+    /// this off; only the bundled `task demo` flow flips it on. See #53.
+    seed_demo_users: bool,
     webhook_config: crate::webhook::WebhookConfig,
     storage_config: StorageConfig,
     role_ranks: crate::authz::role_ranks::RoleRanks,
@@ -82,6 +89,7 @@ impl SchemaForgeExtensionBuilder {
             record_access_policy: None,
             auth_store: None,
             admin_credentials: None,
+            seed_demo_users: false,
             webhook_config: crate::webhook::WebhookConfig::default(),
             storage_config: StorageConfig::default(),
             role_ranks: crate::authz::role_ranks::RoleRanks::empty(),
@@ -182,6 +190,18 @@ impl SchemaForgeExtensionBuilder {
         self
     }
 
+    /// Opt in to seeding the SchemaForge demo personas after admin bootstrap.
+    ///
+    /// **Security**: each demo user is created with the literal password
+    /// `"password"`. Pass `true` only from controlled local-development flows
+    /// (the bundled `task demo`). Production and downstream deployments MUST
+    /// leave this `false` — which is the default if this method is never
+    /// called. See #53 for the regression this opt-in prevents.
+    pub fn with_seed_demo_users(mut self, seed: bool) -> Self {
+        self.seed_demo_users = seed;
+        self
+    }
+
     /// Set the webhook configuration.
     pub fn with_webhook_config(mut self, config: crate::webhook::WebhookConfig) -> Self {
         self.webhook_config = config;
@@ -218,7 +238,7 @@ impl SchemaForgeExtensionBuilder {
                 .map_err(|e| ForgeError::Internal {
                     message: format!("Admin bootstrap failed: {e}"),
                 })?;
-            crate::shared_auth::bootstrap_demo_users(auth_store.as_ref())
+            crate::shared_auth::bootstrap_demo_users(auth_store.as_ref(), self.seed_demo_users)
                 .await
                 .map_err(|e| ForgeError::Internal {
                     message: format!("Demo user bootstrap failed: {e}"),

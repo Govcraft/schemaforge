@@ -3,10 +3,11 @@
 !.gitignore
 !.github
 
-# Text and markdown files (except README.md, docs/, and skills/)
+# Text and markdown files (except README.md, CHANGELOG.md, docs/, and skills/)
 *.txt
 *.md
 !README.md
+!CHANGELOG.md
 !docs/**
 !skills/**
 
