@@ -288,6 +288,21 @@ pub async fn run(
         resolved_principal_claims,
     );
 
+    // LOCAL WORKAROUND for issue #55: `acton-service`'s default `/health`
+    // handler reports `env!("CARGO_PKG_VERSION")` of the `acton-service`
+    // crate (currently 0.23.x), not the running `schema-forge-acton`
+    // version. That mismatch made `/health` drift from
+    // `/api/v1/forge/meta` and from `schema-forge --version`.
+    //
+    // `acton-service 0.23` exposes no version-override hook, so we layer
+    // a SchemaForge middleware that intercepts `GET /health` before the
+    // upstream handler runs and replies with the correct version. Other
+    // requests (notably `/ready` and `/api/v1/...`) pass through.
+    //
+    // TODO: remove once acton-service supports a service-version override
+    // (e.g. `Config.service.version` or a `with_service_version` builder).
+    let routes = wrap_health_with_schema_forge_version(routes);
+
     let bind_addr = format!("{}:{}", args.host, args.port);
     output.success(&format!(
         "SchemaForge server listening on http://{bind_addr}"
@@ -617,6 +632,41 @@ fn build_versioned_routes(
                 .layer(Extension(principal_claims_layer))
         })
         .build_routes()
+}
+
+/// Layer the SchemaForge `/health` override middleware onto the versioned
+/// routes returned by [`build_versioned_routes`].
+///
+/// This is the implementation of the local workaround for issue #55:
+/// `acton-service`'s `/health` handler hard-codes its own
+/// `CARGO_PKG_VERSION`, so without this layer `/health` reports the
+/// `acton-service` crate version (currently 0.23.x) instead of the running
+/// `schema-forge-acton` crate version. The middleware short-circuits
+/// `GET /health` and emits a wire-compatible response with the correct
+/// version, leaving every other path (notably `/ready` and the nested
+/// `/api/v1/...` tree) untouched.
+///
+/// `VersionedApiBuilder::build_routes()` is documented to always return
+/// `WithState`, but we keep the `WithoutState` branch as a defensive
+/// pass-through in case upstream changes the contract.
+fn wrap_health_with_schema_forge_version(
+    routes: acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig>,
+) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
+    use acton_service::service_builder::VersionedRoutes;
+    match routes {
+        VersionedRoutes::WithState(router) => {
+            let wrapped = router.layer(axum::middleware::from_fn(
+                schema_forge_acton::schema_forge_health_middleware,
+            ));
+            VersionedRoutes::WithState(wrapped)
+        }
+        VersionedRoutes::WithoutState(router) => {
+            let wrapped = router.layer(axum::middleware::from_fn(
+                schema_forge_acton::schema_forge_health_middleware,
+            ));
+            VersionedRoutes::WithoutState(wrapped)
+        }
+    }
 }
 
 /// Build a `MetaInfo` snapshot from the resolved DB params.

@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod entities;
 pub mod files;
+pub mod health;
 pub mod meta;
 pub mod permissions;
 pub mod query_params;
@@ -8,6 +9,10 @@ pub mod schemas;
 pub mod users;
 
 pub use auth::auth_routes;
+pub use health::{
+    schema_forge_health_middleware, HealthResponse, SCHEMA_FORGE_ACTON_VERSION,
+    SCHEMA_FORGE_SERVICE_NAME,
+};
 pub use meta::{meta_routes, MetaAuth, MetaBuild, MetaInfo};
 
 use axum::routing::{delete, get, post};
