@@ -858,6 +858,36 @@ body {
 }
 .micro { font-size: 11px; color: var(--app-fg-3); }
 .hairline { border-top: 1px solid var(--app-border); }
+/* Visually hide content but expose it to assistive technology.
+   Used for action-column header labels, sort-state announcements,
+   icon-only button names, and the breadcrumb "current page" marker. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.skip-link {
+  position: absolute;
+  top: -40px; left: 8px;
+  z-index: 1000;
+  padding: 8px 12px;
+  background: var(--app-fg-1);
+  color: var(--app-bg);
+  font-weight: 600;
+  border-radius: 6px;
+  text-decoration: none;
+  transition: top var(--dur-fast) var(--ease-out);
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+  top: 8px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .kbd, kbd {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 18px; height: 18px;
