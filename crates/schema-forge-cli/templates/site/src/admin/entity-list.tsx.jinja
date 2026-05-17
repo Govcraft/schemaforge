@@ -181,6 +181,7 @@ export function AdminEntityList() {
                 contains
               </span>
               <input
+                aria-label={`Filter by ${effectiveFilterField}`}
                 placeholder="filter…"
                 value={filterInput}
                 onChange={(e) => setFilterInput(e.target.value)}
