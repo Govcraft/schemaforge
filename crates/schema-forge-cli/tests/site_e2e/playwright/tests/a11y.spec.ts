@@ -80,8 +80,8 @@ test("delete confirmation dialog has zero axe violations", async ({ page }) => {
 
   // Seed a record so there is a row to delete.
   await page.goto("/admin/Company/new")
-  await page.getByLabel("name").fill("Axe Subject Co")
-  await page.locator('input[name="address.city"]').fill("Boston")
+  await page.getByRole("textbox", { name: "name" }).fill("Axe Subject Co")
+  await page.getByRole("textbox", { name: "city" }).fill("Boston")
   await page.getByRole("button", { name: /^create$/i }).click()
   await expect(page).toHaveURL(/\/admin\/Company\/[^/]+$/)
 

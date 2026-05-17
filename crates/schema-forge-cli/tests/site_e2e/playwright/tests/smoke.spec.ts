@@ -18,8 +18,10 @@ async function login(page: Page) {
 
 test("login lands the user away from /login", async ({ page }) => {
   await login(page)
-  // The default landing is the first codegen'd /app/<entity> page.
-  await expect(page).toHaveURL(/\/app\//)
+  // The default landing is the admin schema catalog ("/admin"). Match
+  // either /admin or any /app/<entity> page so this test stays decoupled
+  // from changes to App.tsx's root Navigate target.
+  await expect(page).toHaveURL(/\/(admin|app\/)/)
 })
 
 test("admin create → detail → delete round-trip on Company", async ({ page }) => {
@@ -30,18 +32,22 @@ test("admin create → detail → delete round-trip on Company", async ({ page }
   await page.getByRole("button", { name: /new company/i }).click()
   await expect(page).toHaveURL(/\/admin\/Company\/new/)
 
-  // Fill top-level fields plus a composite sub-field. The city input is
-  // keyed by the dot-path `address.city` in react-hook-form, but the
-  // rendered label is just "city" — grab it by name attribute.
-  const nameInput = page.getByLabel("name")
-  await nameInput.fill("Playwright Test Co")
-  await page.locator('input[name="address.city"]').fill("Austin")
+  // Fill top-level fields plus a composite sub-field. Visible labels show
+  // a required-asterisk after the field name; we target the inputs by
+  // their accessible name (aria-hidden hides the asterisk from AT) via
+  // getByRole.
+  await page.getByRole("textbox", { name: "name" }).fill("Playwright Test Co")
+  await page.getByRole("textbox", { name: "city" }).fill("Austin")
 
   await page.getByRole("button", { name: /^create$/i }).click()
 
-  // Detail view should render the values we just submitted.
+  // Detail view should render the values we just submitted. The headline
+  // and the spec-row both show the name; scope to the heading so strict
+  // mode passes.
   await expect(page).toHaveURL(/\/admin\/Company\/[^/]+$/)
-  await expect(page.getByText("Playwright Test Co")).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Playwright Test Co" }),
+  ).toBeVisible()
   await expect(page.getByText("Austin")).toBeVisible()
 
   // Back to the list and delete. Destructive actions now route through the
@@ -61,5 +67,10 @@ test("admin create → detail → delete round-trip on Company", async ({ page }
 test("/admin/users lists the bootstrapped admin", async ({ page }) => {
   await login(page)
   await page.goto("/admin/users")
-  await expect(page.getByRole("cell", { name: USERNAME })).toBeVisible()
+  // Strict mode: there can be multiple cells containing "admin" (the role
+  // chip says "platform_admin", display name says "Administrator"). Bind
+  // the assertion to the id-cell column where the row identifier lives.
+  await expect(
+    page.getByRole("cell", { name: USERNAME, exact: true }),
+  ).toBeVisible()
 })
