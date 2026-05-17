@@ -193,19 +193,27 @@ function renderEditor(
     case "relation_many": {
       // v1: comma-separated ids. A proper tag input is a later polish pass.
       const ids = Array.isArray(value) ? (value as string[]).join(", ") : ""
+      const helpId = `relmany-${field.name}-help`
       return (
-        <Input
-          placeholder="id1, id2, id3"
-          value={ids}
-          onChange={(e) =>
-            onChange(
-              e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            )
-          }
-        />
+        <>
+          <Input
+            placeholder="id1, id2, id3"
+            value={ids}
+            aria-describedby={helpId}
+            onChange={(e) =>
+              onChange(
+                e.target.value
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              )
+            }
+          />
+          <p id={helpId} className="help" style={ { marginTop: 4, fontSize: 11 }}>
+            Enter one or more {field.relationTarget ?? "related"} ids,
+            comma-separated.
+          </p>
+        </>
       )
     }
 
