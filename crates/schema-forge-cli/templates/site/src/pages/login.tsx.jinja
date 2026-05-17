@@ -92,7 +92,7 @@ export function LoginPage() {
 
   return (
     <div className="login-stage">
-      <aside className="login-left">
+      <section className="login-left" aria-label="Product identity">
         <div className="login-bg" />
 
         <div style={ { position: "relative", zIndex: 1 }}>
@@ -145,9 +145,9 @@ export function LoginPage() {
             <dd>{meta?.build.version ? `v${meta.build.version}` : "…"}</dd>
           </div>
         </dl>
-      </aside>
+      </section>
 
-      <section className="login-right">
+      <section className="login-right" aria-label="Sign in">
         <form className="login-form-wrap" onSubmit={handleSubmit(onSubmit)}>
           <div className="eyebrow" style={ { marginBottom: 8 }}>§ 01 / Sign in</div>
           <h1
