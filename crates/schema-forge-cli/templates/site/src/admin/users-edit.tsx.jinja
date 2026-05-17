@@ -202,19 +202,27 @@ export function UsersEdit() {
           </div>
 
           <div className="form-row">
-            <label className="form-label">
+            <label className="form-label" htmlFor="users-edit-password">
               password
               {isNew ? <span className="req">*</span> : <span className="opt">optional</span>}
             </label>
             <div className="form-field">
               <Input
+                id="users-edit-password"
                 type="password"
+                autoComplete="new-password"
+                aria-describedby="users-edit-password-help"
                 value={values.password}
                 onChange={(e) =>
                   setValues((prev) => ({ ...prev, password: e.target.value }))
                 }
                 placeholder={isNew ? "min 8 characters" : "leave blank to keep"}
               />
+              <p id="users-edit-password-help" className="help">
+                {isNew
+                  ? "Minimum 8 characters. The user will be prompted to change it on first sign-in."
+                  : "Leave blank to keep the current password."}
+              </p>
             </div>
           </div>
 
@@ -281,7 +289,8 @@ export function UsersEdit() {
                 <span>{values.active ? "Active" : "Disabled"}</span>
               </label>
               {willDisableSelf ? (
-                <div className="err mono" style={ { fontSize: 11 }}>
+                <div role="alert" className="err mono" style={ { fontSize: 11 }}>
+                  <span className="sr-only">Warning: </span>
                   warning: disabling the bootstrap admin will lock the instance
                 </div>
               ) : null}
