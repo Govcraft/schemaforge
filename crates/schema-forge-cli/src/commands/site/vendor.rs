@@ -28,13 +28,13 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/40 dark:aria-invalid:ring-destructive/60 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
         default: "bg-primary text-primary-foreground hover:bg-primary/90",
         destructive:
-          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40",
+          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive dark:bg-destructive/60 dark:focus-visible:ring-destructive",
         outline:
           "border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
         secondary:
@@ -99,7 +99,7 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
       data-slot="input"
       className={cn(
         "h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none selection:bg-primary selection:text-primary-foreground file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30",
-        "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring",
         "aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40",
         className
       )}
@@ -962,14 +962,23 @@ body {
   transition: border-color var(--dur-fast) var(--ease-out),
               box-shadow var(--dur-fast) var(--ease-out);
 }
-.input:focus, .select:focus, .textarea:focus {
-  outline: none;
+.input:focus-visible, .select:focus-visible, .textarea:focus-visible {
+  outline: 2px solid var(--app-fg-1);
+  outline-offset: 1px;
   border-color: var(--app-fg-1);
-  box-shadow: 0 0 0 1px var(--app-fg-1);
 }
+/* Invalid uses a dashed outline so the state remains visually distinct from
+   plain focus for color-blind users (SC 1.4.1). */
 .input.invalid, .select.invalid, .textarea.invalid {
   border-color: var(--gc-err-400);
+  border-style: dashed;
   box-shadow: 0 0 0 1px var(--gc-err-400);
+}
+.input.invalid:focus-visible,
+.select.invalid:focus-visible,
+.textarea.invalid:focus-visible {
+  outline: 2px solid var(--gc-err-400);
+  outline-offset: 1px;
 }
 .input::placeholder { color: var(--app-fg-4); }
 
@@ -1160,8 +1169,13 @@ body {
   font-size: 13px;
 }
 .toolbar-input input {
-  background: transparent; border: 0; outline: none; flex: 1;
+  background: transparent; border: 0; flex: 1;
   font-size: 13px; color: var(--app-fg-1);
+}
+.toolbar-input input:focus { outline: none; }
+.toolbar-input:focus-within {
+  outline: 2px solid var(--app-fg-1);
+  outline-offset: 1px;
 }
 .toolbar-input input::placeholder { color: var(--app-fg-4); }
 .toolbar-select {
