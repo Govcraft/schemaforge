@@ -230,51 +230,11 @@ function renderEditor(
       )
     }
 
-    case "json": {
-      const pretty =
-        value === undefined || value === null
-          ? ""
-          : JSON.stringify(value, null, 2)
-      return (
-        <textarea
-          className="min-h-[140px] w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs"
-          value={pretty}
-          onChange={(e) => {
-            const raw = e.target.value
-            if (raw.trim() === "") {
-              onChange(null)
-              return
-            }
-            try {
-              onChange(JSON.parse(raw))
-            } catch {
-              // Keep the raw text around so the user can fix it; the submit
-              // handler will re-parse and surface any residual error.
-              onChange(raw)
-            }
-          }}
-        />
-      )
-    }
+    case "json":
+      return <JsonEditor id={id} value={value} onChange={onChange} />
 
-    case "array": {
-      // v1: JSON-array editor. Good enough for scalars and enum lists.
-      const pretty = Array.isArray(value) ? JSON.stringify(value) : ""
-      return (
-        <Input
-          placeholder='["a", "b", "c"]'
-          value={pretty}
-          onChange={(e) => {
-            const raw = e.target.value
-            try {
-              onChange(raw.trim() === "" ? [] : JSON.parse(raw))
-            } catch {
-              onChange(raw)
-            }
-          }}
-        />
-      )
-    }
+    case "array":
+      return <ArrayEditor id={id} value={value} onChange={onChange} />
 
     case "composite": {
       const obj = (value ?? {}) as Record<string, unknown>
@@ -308,6 +268,122 @@ function renderEditor(
     default:
       return <Input value={String(value ?? "")} disabled />
   }
+}
+
+/**
+ * JSON editor wrapped in a component so the controlled <textarea> can track
+ * a parse-error state. Surfaces the error via aria-invalid +
+ * aria-describedby and a role=alert message (SC 3.3.1 / SC 3.3.3).
+ */
+function JsonEditor({
+  id,
+  value,
+  onChange,
+}: {
+  id?: string
+  value: unknown
+  onChange: (next: unknown) => void
+}) {
+  const initial =
+    value === undefined || value === null
+      ? ""
+      : typeof value === "string"
+        ? value
+        : JSON.stringify(value, null, 2)
+  const [draft, setDraft] = useState<string>(initial)
+  const [parseError, setParseError] = useState<string | null>(null)
+  const errId = id ? `${id}-err` : undefined
+  return (
+    <>
+      <textarea
+        id={id}
+        className="min-h-[140px] w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs"
+        value={draft}
+        aria-invalid={parseError ? "true" : undefined}
+        aria-describedby={parseError && errId ? errId : undefined}
+        onChange={(e) => {
+          const raw = e.target.value
+          setDraft(raw)
+          if (raw.trim() === "") {
+            setParseError(null)
+            onChange(null)
+            return
+          }
+          try {
+            const parsed = JSON.parse(raw)
+            setParseError(null)
+            onChange(parsed)
+          } catch (err) {
+            setParseError(err instanceof Error ? err.message : "Invalid JSON")
+            // Keep the raw text around so the user can fix it; the submit
+            // handler will refuse the save if it remains invalid.
+            onChange(raw)
+          }
+        }}
+      />
+      {parseError ? (
+        <p id={errId} role="alert" className="err" style={ { fontSize: 11 }}>
+          <span className="sr-only">Error: </span>
+          Invalid JSON: {parseError}
+        </p>
+      ) : null}
+    </>
+  )
+}
+
+/**
+ * Array (JSON-array) editor with the same parse-error surfacing as
+ * JsonEditor. Good enough for v1 scalar / enum lists; a tag input is a
+ * later polish pass.
+ */
+function ArrayEditor({
+  id,
+  value,
+  onChange,
+}: {
+  id?: string
+  value: unknown
+  onChange: (next: unknown) => void
+}) {
+  const initial = Array.isArray(value) ? JSON.stringify(value) : ""
+  const [draft, setDraft] = useState<string>(initial)
+  const [parseError, setParseError] = useState<string | null>(null)
+  const errId = id ? `${id}-err` : undefined
+  return (
+    <>
+      <Input
+        id={id}
+        placeholder='["a", "b", "c"]'
+        value={draft}
+        aria-invalid={parseError ? "true" : undefined}
+        aria-describedby={parseError && errId ? errId : undefined}
+        onChange={(e) => {
+          const raw = e.target.value
+          setDraft(raw)
+          if (raw.trim() === "") {
+            setParseError(null)
+            onChange([])
+            return
+          }
+          try {
+            const parsed = JSON.parse(raw)
+            if (!Array.isArray(parsed)) throw new Error("expected an array")
+            setParseError(null)
+            onChange(parsed)
+          } catch (err) {
+            setParseError(err instanceof Error ? err.message : "Invalid array")
+            onChange(raw)
+          }
+        }}
+      />
+      {parseError ? (
+        <p id={errId} role="alert" className="err" style={ { fontSize: 11 }}>
+          <span className="sr-only">Error: </span>
+          Invalid array: {parseError}
+        </p>
+      ) : null}
+    </>
+  )
 }
 
 /**
