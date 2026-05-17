@@ -715,8 +715,10 @@ pub const INDEX_CSS: &str = r#"@import "tailwindcss";
   --gc-ink:        #0A0A0A;
   --gc-ink-2:      #1F1F1F;
   --gc-graphite:   #3A3A3A;
-  --gc-steel:      #6B6B6B;
-  --gc-mist:       #9A9A9A;
+  /* Steel & mist raised to clear WCAG AA 4.5:1 against both paper
+     (#F5F2EC) and raised paper (#FFFFFF) backgrounds — see F-018 audit. */
+  --gc-steel:      #595959;
+  --gc-mist:       #6E6E6E;
   --gc-hairline:   #E4E1DA;
   --gc-rule:       #CFCAC0;
   --gc-paper:      #F5F2EC;
@@ -783,8 +785,10 @@ pub const INDEX_CSS: &str = r#"@import "tailwindcss";
   --app-bg-raised:    #181818;
   --app-fg-1:         #F0EDE5;
   --app-fg-2:         #B8B5AD;
-  --app-fg-3:         #8A8780;
-  --app-fg-4:         #5C5A55;
+  /* fg-3 raised to clear ≥5:1 on #0B0B0B; fg-4 raised to clear 4.5:1
+     against the same background and #181818 — see F-018 audit. */
+  --app-fg-3:         #A5A29A;
+  --app-fg-4:         #8A8780;
   --app-border:       #262626;
   --app-border-2:     #333333;
   --app-rail:         #050505;
