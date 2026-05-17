@@ -174,9 +174,13 @@ export function UsersEdit() {
       <form onSubmit={onSubmit}>
         <div className="form-grid">
           <div className="form-row">
-            <label className="form-label">username{isNew ? <span className="req">*</span> : null}</label>
+            <label className="form-label" htmlFor="users-edit-username">
+              username{isNew ? <span className="req">*</span> : null}
+            </label>
             <div className="form-field">
               <Input
+                id="users-edit-username"
+                autoComplete={isNew ? "username" : "off"}
                 value={values.username}
                 readOnly={!isNew}
                 onChange={(e) =>
