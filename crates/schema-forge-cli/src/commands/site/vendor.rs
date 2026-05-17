@@ -1115,7 +1115,7 @@ body {
   background: currentColor; opacity: 0.4; flex: none;
 }
 .rail-foot {
-  margin-top: auto;
+  margin: auto 0 0;
   padding: 12px 16px;
   border-top: 1px solid var(--app-rail-line);
   font-family: var(--font-mono); font-size: 10px;
@@ -1124,6 +1124,7 @@ body {
 }
 .rail-foot-line { display: flex; justify-content: space-between; gap: 8px; }
 .rail-foot-line + .rail-foot-line { margin-top: 4px; }
+.rail-foot dt, .rail-foot dd { margin: 0; display: inline; }
 
 /* Topbar */
 .crumbs { display: flex; align-items: center; font-size: 13px; color: var(--app-fg-3); flex: 1; min-width: 0; }

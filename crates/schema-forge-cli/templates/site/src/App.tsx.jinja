@@ -228,16 +228,16 @@ function Sidebar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
             <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
           </button>
         </div>
-        <div className="rail-foot">
+        <dl className="rail-foot">
           <div className="rail-foot-line">
-            <span>API</span>
-            <span style={ { color: "var(--app-rail-fg-2)" }}>/api/v1/forge</span>
+            <dt>API</dt>
+            <dd style={ { color: "var(--app-rail-fg-2)" }}>/api/v1/forge</dd>
           </div>
           <div className="rail-foot-line">
-            <span>Build</span>
-            <span style={ { color: "var(--app-rail-fg-2)" }}>runtime</span>
+            <dt>Build</dt>
+            <dd style={ { color: "var(--app-rail-fg-2)" }}>runtime</dd>
           </div>
-        </div>
+        </dl>
       </div>
     </aside>
   )
