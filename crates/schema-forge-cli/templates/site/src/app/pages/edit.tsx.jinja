@@ -27,6 +27,7 @@ import {
   type {{ entity.pascal }}FormValues,
 } from "@/generated/zod-schemas"
 import { Form } from "@/components/ui/form"
+import { useDocumentTitle } from "@/lib/use-document-title"
 import {
   {{ entity.pascal }}FormFields,
   normalize{{ entity.pascal }}InitialValues,
@@ -38,6 +39,7 @@ export function {{ entity.pascal }}Edit() {
   const queryClient = useQueryClient()
   const { id } = useParams<{ id: string }>()
   const isEdit = Boolean(id)
+  useDocumentTitle(isEdit ? "Edit {{ entity.title }}" : "New {{ entity.title }}")
 
   const { data } = useQuery({
     queryKey: ["{{ entity.snake }}", "detail", id],

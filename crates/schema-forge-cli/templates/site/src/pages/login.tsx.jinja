@@ -20,6 +20,7 @@ import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { login } from "@/lib/auth"
+import { useDocumentTitle } from "@/lib/use-document-title"
 import { getMeta, type MetaResponse } from "@/admin/api-client"
 
 const loginSchema = z.object({
@@ -40,6 +41,7 @@ function formatTtl(seconds: number | undefined): string {
 }
 
 export function LoginPage() {
+  useDocumentTitle("Sign in")
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [error, setError] = useState<string | null>(null)

@@ -11,6 +11,7 @@ import {
   type FieldResponse,
 } from "@/admin/api-client"
 import { ErrorBlock } from "@/components/ui/error-block"
+import { useDocumentTitle } from "@/lib/use-document-title"
 
 function isRelationField(f: FieldResponse): boolean {
   return f.field_type?.type === "Relation"
@@ -65,6 +66,7 @@ function Stat({ k, v, d }: { k: string; v: string | number; d?: string }) {
 }
 
 export function SchemasIndex() {
+  useDocumentTitle("Catalog")
   const query = useQuery({
     queryKey: ["admin", "schemas"],
     queryFn: () => listSchemas(),

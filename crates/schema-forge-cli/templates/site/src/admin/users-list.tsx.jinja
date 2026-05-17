@@ -9,8 +9,10 @@ import { deleteUser, listUsers, type UserRow } from "@/admin/api-client"
 import { Button } from "@/components/ui/button"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorBlock } from "@/components/ui/error-block"
+import { useDocumentTitle } from "@/lib/use-document-title"
 
 export function UsersList() {
+  useDocumentTitle("Users")
   const navigate = useNavigate()
   const qc = useQueryClient()
 

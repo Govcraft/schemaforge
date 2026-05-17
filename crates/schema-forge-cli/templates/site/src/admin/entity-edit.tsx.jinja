@@ -20,11 +20,15 @@ import { toast } from "sonner"
 import { FieldRenderer, canReadField, canWriteField } from "@/admin/field-renderer"
 import { Button } from "@/components/ui/button"
 import { ErrorBlock } from "@/components/ui/error-block"
+import { useDocumentTitle } from "@/lib/use-document-title"
 
 export function AdminEntityEdit() {
   const { schema, id } = useParams<{ schema: string; id?: string }>()
   const navigate = useNavigate()
   const isNew = !id
+  useDocumentTitle(
+    schema ? `${isNew ? "New" : "Edit"} ${schema}` : isNew ? "New record" : "Edit record",
+  )
 
   const meta = useQuery({
     queryKey: ["admin", "schema", schema],

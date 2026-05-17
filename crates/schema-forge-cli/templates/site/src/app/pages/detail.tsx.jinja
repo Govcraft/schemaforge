@@ -14,10 +14,12 @@ import { Link, useParams } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import { get{{ entity.pascal }} } from "@/generated/api-client"
 import { ErrorBlock } from "@/components/ui/error-block"
+import { useDocumentTitle } from "@/lib/use-document-title"
 import { {{ entity.pascal }}DetailRows } from "./detail.generated"
 
 export function {{ entity.pascal }}Detail() {
   const { id } = useParams<{ id: string }>()
+  useDocumentTitle("{{ entity.title }} record")
   const query = useQuery({
     queryKey: ["{{ entity.snake }}", "detail", id],
     queryFn: () => get{{ entity.pascal }}(id!),
@@ -28,7 +30,7 @@ export function {{ entity.pascal }}Detail() {
   if (isLoading) {
     return (
       <div className="page">
-        <div className="empty">Loading…</div>
+        <div className="empty" role="status" aria-live="polite">Loading…</div>
       </div>
     )
   }

@@ -283,6 +283,10 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         "src/lib/require-auth.tsx",
         renderer.render("src/lib/require-auth.tsx", ctx)?,
     ));
+    plan.push(owned(
+        "src/lib/use-document-title.ts",
+        vendor::USE_DOCUMENT_TITLE.to_string(),
+    ));
 
     // ---- shadcn primitives (vendored, owned, unmodified) ----
     plan.push(owned(

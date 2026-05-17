@@ -13,9 +13,11 @@ import { FieldRenderer, canReadField } from "@/admin/field-renderer"
 import { Button } from "@/components/ui/button"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorBlock } from "@/components/ui/error-block"
+import { useDocumentTitle } from "@/lib/use-document-title"
 
 export function AdminEntityDetail() {
   const { schema, id } = useParams<{ schema: string; id: string }>()
+  useDocumentTitle(schema ? `${schema} record` : "Record")
   const navigate = useNavigate()
 
   const meta = useQuery({

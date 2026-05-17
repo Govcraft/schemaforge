@@ -22,6 +22,7 @@ import {
 } from "@/admin/api-client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { useDocumentTitle } from "@/lib/use-document-title"
 
 type FormState = {
   username: string
@@ -45,6 +46,7 @@ export function UsersEdit() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const isNew = !username
+  useDocumentTitle(isNew ? "New user" : `Edit ${username}`)
 
   const existing = useQuery({
     queryKey: ["admin", "users"],

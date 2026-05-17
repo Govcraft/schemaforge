@@ -17,12 +17,14 @@ import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorBlock } from "@/components/ui/error-block"
+import { useDocumentTitle } from "@/lib/use-document-title"
 
 const PAGE_SIZES = [25, 50, 100, 200] as const
 type SortDir = "asc" | "desc"
 
 export function AdminEntityList() {
   const { schema } = useParams<{ schema: string }>()
+  useDocumentTitle(schema ?? "Records")
   const navigate = useNavigate()
   const qc = useQueryClient()
 
