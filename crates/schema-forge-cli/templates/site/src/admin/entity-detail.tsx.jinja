@@ -41,7 +41,7 @@ export function AdminEntityDetail() {
   if (meta.isLoading || entity.isLoading) {
     return (
       <div className="page">
-        <div className="empty">Loading…</div>
+        <div className="empty" role="status" aria-live="polite">Loading…</div>
       </div>
     )
   }

@@ -374,7 +374,12 @@ export default function App() {
           />
         </Routes>
       </main>
-      <Toaster position="bottom-right" richColors closeButton />
+      <Toaster
+        position="bottom-right"
+        richColors
+        closeButton
+        toastOptions={ { ariaLive: "polite" }}
+      />
     </div>
   )
 }

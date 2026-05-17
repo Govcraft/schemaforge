@@ -98,7 +98,7 @@ export function AdminEntityList() {
   if (meta.isLoading) {
     return (
       <div className="page">
-        <div className="empty">Loading…</div>
+        <div className="empty" role="status" aria-live="polite">Loading…</div>
       </div>
     )
   }
@@ -246,7 +246,9 @@ export function AdminEntityList() {
             {rows.isLoading && !rows.data ? (
               <tr>
                 <td colSpan={fields.length + 2}>
-                  <div className="empty">Loading…</div>
+                  <div className="empty" role="status" aria-live="polite">
+                    Loading…
+                  </div>
                 </td>
               </tr>
             ) : null}

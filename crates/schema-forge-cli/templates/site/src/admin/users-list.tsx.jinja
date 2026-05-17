@@ -30,7 +30,7 @@ export function UsersList() {
   if (users.isLoading) {
     return (
       <div className="page">
-        <div className="empty">Loading…</div>
+        <div className="empty" role="status" aria-live="polite">Loading…</div>
       </div>
     )
   }

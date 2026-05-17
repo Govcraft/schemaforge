@@ -74,7 +74,9 @@ export function SchemasIndex() {
   if (isLoading) {
     return (
       <div className="page">
-        <div className="empty">Loading schemas…</div>
+        <div className="empty" role="status" aria-live="polite">
+          Loading schemas…
+        </div>
       </div>
     )
   }

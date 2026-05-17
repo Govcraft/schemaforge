@@ -67,7 +67,7 @@ export function AdminEntityEdit() {
   if (meta.isLoading || (!isNew && existing.isLoading)) {
     return (
       <div className="page">
-        <div className="empty">Loading…</div>
+        <div className="empty" role="status" aria-live="polite">Loading…</div>
       </div>
     )
   }

@@ -1531,8 +1531,15 @@ export function ErrorBlock({
 }: ErrorBlockProps) {
   const message = error instanceof Error ? error.message : String(error)
   return (
-    <div className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm">
-      <p className="font-medium text-destructive">{title}</p>
+    <div
+      role="alert"
+      aria-live="assertive"
+      className="rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm"
+    >
+      <p className="font-medium text-destructive">
+        <span className="sr-only">Error: </span>
+        {title}
+      </p>
       <p className="mt-1 text-destructive/80">{message}</p>
       {children ? <div className="mt-2 text-muted-foreground">{children}</div> : null}
       {onRetry ? (
