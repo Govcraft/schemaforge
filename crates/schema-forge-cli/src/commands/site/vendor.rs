@@ -1240,7 +1240,8 @@ table.tbl .row-actions {
   display: flex; gap: 4px; justify-content: flex-end; opacity: 0;
   transition: opacity var(--dur-fast) var(--ease-out);
 }
-table.tbl tbody tr:hover .row-actions { opacity: 1; }
+table.tbl tbody tr:hover .row-actions,
+table.tbl .row-actions:focus-within { opacity: 1; }
 
 /* Pager */
 .pager {
