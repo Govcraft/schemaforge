@@ -543,6 +543,7 @@ export type RelationSelectProps = {
   onChange: (value: string) => void
   onBlur?: () => void
   name?: string
+  id?: string
   placeholder?: string
   disabled?: boolean
 }
@@ -566,7 +567,7 @@ function labelFor(row: RelationRow, displayField?: string): string {
 
 export const RelationSelect = forwardRef<HTMLSelectElement, RelationSelectProps>(
   function RelationSelect(
-    { target, displayField, value, onChange, onBlur, name, placeholder, disabled },
+    { target, displayField, value, onChange, onBlur, name, id, placeholder, disabled },
     ref,
   ) {
     const { data, isLoading, error } = useQuery<RelationRow[]>({
@@ -575,28 +576,57 @@ export const RelationSelect = forwardRef<HTMLSelectElement, RelationSelectProps>
       staleTime: 30_000,
     })
 
+    const statusId = id ? `${id}-status` : undefined
+    const isBusy = isLoading || Boolean(error)
     return (
-      <select
-        ref={ref}
-        name={name}
-        value={value ?? ""}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
-        disabled={disabled || isLoading || Boolean(error)}
-        className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
-      >
-        <option value="">{placeholder ?? `— no ${target} selected —`}</option>
-        {error ? (
-          <option value="" disabled>
-            Failed to load {target}
-          </option>
+      <>
+        <select
+          ref={ref}
+          id={id}
+          name={name}
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={onBlur}
+          disabled={disabled || isBusy}
+          aria-describedby={isBusy && statusId ? statusId : undefined}
+          className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+        >
+          <option value="">{placeholder ?? `— no ${target} selected —`}</option>
+          {error ? (
+            <option value="" disabled>
+              Failed to load {target}
+            </option>
+          ) : null}
+          {(data ?? []).map((row) => (
+            <option key={row.id} value={row.id}>
+              {labelFor(row, displayField)}
+            </option>
+          ))}
+        </select>
+        {isLoading ? (
+          <span
+            id={statusId}
+            role="status"
+            aria-live="polite"
+            className="help"
+            style={{ fontSize: 11 }}
+          >
+            Loading {target} options…
+          </span>
         ) : null}
-        {(data ?? []).map((row) => (
-          <option key={row.id} value={row.id}>
-            {labelFor(row, displayField)}
-          </option>
-        ))}
-      </select>
+        {error ? (
+          <span
+            id={statusId}
+            role="alert"
+            aria-live="assertive"
+            className="err"
+            style={{ fontSize: 11 }}
+          >
+            <span className="sr-only">Error: </span>
+            Failed to load {target} options.
+          </span>
+        ) : null}
+      </>
     )
   },
 )
