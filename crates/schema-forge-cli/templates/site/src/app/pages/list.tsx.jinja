@@ -184,12 +184,25 @@ export function {{ entity.pascal }}List() {
                   const sortable = SORTABLE_FIELDS.includes(field)
                   const active = sortField === field
                   const arrow = active ? (sortDir === "asc" ? " ↑" : " ↓") : ""
+                  const ariaSort: "ascending" | "descending" | "none" | undefined = sortable
+                    ? active
+                      ? sortDir === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : "none"
+                    : undefined
+                  const sortAnnouncement = active
+                    ? `, sorted ${sortDir === "asc" ? "ascending" : "descending"}`
+                    : ", not sorted"
                   return (
-                    <th key={h.id}>
+                    <th key={h.id} aria-sort={ariaSort}>
                       {sortable ? (
                         <button type="button" onClick={() => toggleSort(field)}>
                           {flexRender(h.column.columnDef.header, h.getContext())}
-                          {active ? <span className="sort-arrow">{arrow}</span> : null}
+                          <span className="sr-only">{sortAnnouncement}</span>
+                          {active ? (
+                            <span className="sort-arrow" aria-hidden="true">{arrow}</span>
+                          ) : null}
                         </button>
                       ) : (
                         flexRender(h.column.columnDef.header, h.getContext())

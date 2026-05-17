@@ -216,11 +216,22 @@ export function AdminEntityList() {
               {fields.map((f) => {
                 const active = sortField === f.name
                 const arrow = active ? (sortDir === "asc" ? " ↑" : " ↓") : ""
+                const ariaSort: "ascending" | "descending" | "none" = active
+                  ? sortDir === "asc"
+                    ? "ascending"
+                    : "descending"
+                  : "none"
+                const sortAnnouncement = active
+                  ? `, sorted ${sortDir === "asc" ? "ascending" : "descending"}`
+                  : ", not sorted"
                 return (
-                  <th key={f.name}>
+                  <th key={f.name} aria-sort={ariaSort}>
                     <button type="button" onClick={() => toggleSort(f.name)}>
                       {f.name}
-                      {active ? <span className="sort-arrow">{arrow}</span> : null}
+                      <span className="sr-only">{sortAnnouncement}</span>
+                      {active ? (
+                        <span className="sort-arrow" aria-hidden="true">{arrow}</span>
+                      ) : null}
                     </button>
                   </th>
                 )
