@@ -20,7 +20,6 @@ import {
   Activity as ActivityIcon,
   Boxes,
   Building2,
-  ChevronDown,
   ChevronRight,
   Contact,
   Database,
@@ -339,10 +338,17 @@ function Topbar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => v
         )}
       </button>
 
-      <button type="button" className="topbar-user" onClick={logout} title="Sign out">
-        <span className="avatar">{username.slice(0, 2).toUpperCase()}</span>
-        <span>{username}</span>
-        <ChevronDown size={12} />
+      <button
+        type="button"
+        className="topbar-user"
+        onClick={logout}
+        aria-label={`Sign out ${username}`}
+      >
+        <span className="avatar" aria-hidden="true">
+          {username.slice(0, 2).toUpperCase()}
+        </span>
+        <span aria-hidden="true">{username}</span>
+        <span className="sr-only">— sign out</span>
       </button>
     </header>
   )
