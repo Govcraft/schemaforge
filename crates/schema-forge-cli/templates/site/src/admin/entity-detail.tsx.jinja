@@ -11,6 +11,7 @@ import {
 } from "@/admin/api-client"
 import { FieldRenderer, canReadField } from "@/admin/field-renderer"
 import { Button } from "@/components/ui/button"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorBlock } from "@/components/ui/error-block"
 
 export function AdminEntityDetail() {
@@ -87,17 +88,26 @@ export function AdminEntityDetail() {
             </Button>
           ) : null}
           {canDelete ? (
-            <Button
-              variant="destructive"
-              disabled={remove.isPending}
-              onClick={() => {
-                if (window.confirm(`Delete ${schema} ${data.id}?`)) {
-                  remove.mutate()
-                }
-              }}
-            >
-              Delete
-            </Button>
+            <ConfirmDialog
+              trigger={
+                <Button variant="destructive" disabled={remove.isPending}>
+                  Delete
+                </Button>
+              }
+              title={`Delete ${schema}?`}
+              description={
+                <>
+                  You are about to permanently delete{" "}
+                  <span className="mono">{shortLabel(data)}</span>{" "}
+                  (<span className="mono">{data.id}</span>). This cannot be
+                  undone.
+                </>
+              }
+              confirmLabel="Delete"
+              destructive
+              busy={remove.isPending}
+              onConfirm={() => remove.mutate()}
+            />
           ) : null}
         </div>
       </div>

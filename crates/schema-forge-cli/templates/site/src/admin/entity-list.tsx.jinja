@@ -15,6 +15,7 @@ import {
 import { canReadField } from "@/admin/field-renderer"
 import { formatFieldValue } from "@/generated/formatters"
 import { Button } from "@/components/ui/button"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorBlock } from "@/components/ui/error-block"
 
 const PAGE_SIZES = [25, 50, 100, 200] as const
@@ -283,18 +284,29 @@ export function AdminEntityList() {
                         </Button>
                       ) : null}
                       {canDelete ? (
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          disabled={remove.isPending}
-                          onClick={() => {
-                            if (window.confirm(`Delete ${schema} ${row.id}?`)) {
-                              remove.mutate(row.id)
-                            }
-                          }}
-                        >
-                          Delete
-                        </Button>
+                        <ConfirmDialog
+                          trigger={
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              disabled={remove.isPending}
+                            >
+                              Delete
+                            </Button>
+                          }
+                          title={`Delete ${schema}?`}
+                          description={
+                            <>
+                              You are about to permanently delete{" "}
+                              <span className="mono">{shortId(row.id)}</span>.
+                              This cannot be undone.
+                            </>
+                          }
+                          confirmLabel="Delete"
+                          destructive
+                          busy={remove.isPending}
+                          onConfirm={() => remove.mutate(row.id)}
+                        />
                       ) : null}
                     </div>
                   </td>

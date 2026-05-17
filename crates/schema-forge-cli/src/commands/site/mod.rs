@@ -321,6 +321,10 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         "src/components/ui/file-upload.tsx",
         vendor::FILE_UPLOAD.to_string(),
     ));
+    plan.push(owned(
+        "src/components/ui/confirm-dialog.tsx",
+        vendor::CONFIRM_DIALOG.to_string(),
+    ));
 
     // ---- Generated multi-entity code (shared across pages) ----
     plan.push(owned(

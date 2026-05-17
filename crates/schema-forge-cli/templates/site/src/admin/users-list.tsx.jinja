@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { deleteUser, listUsers, type UserRow } from "@/admin/api-client"
 import { Button } from "@/components/ui/button"
+import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { ErrorBlock } from "@/components/ui/error-block"
 
 export function UsersList() {
@@ -118,18 +119,29 @@ export function UsersList() {
                         Edit
                       </Link>
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      disabled={remove.isPending}
-                      onClick={() => {
-                        if (window.confirm(`Delete user '${u.username}'?`)) {
-                          remove.mutate(u.username)
-                        }
-                      }}
-                    >
-                      Delete
-                    </Button>
+                    <ConfirmDialog
+                      trigger={
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          disabled={remove.isPending}
+                        >
+                          Delete
+                        </Button>
+                      }
+                      title={`Delete user?`}
+                      description={
+                        <>
+                          You are about to permanently delete user{" "}
+                          <span className="mono">{u.username}</span>. This
+                          cannot be undone.
+                        </>
+                      }
+                      confirmLabel="Delete user"
+                      destructive
+                      busy={remove.isPending}
+                      onConfirm={() => remove.mutate(u.username)}
+                    />
                   </div>
                 </td>
               </tr>
