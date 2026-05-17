@@ -218,9 +218,14 @@ function Sidebar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
             className="rail-link"
             style={ { color: "var(--app-rail-fg-2)", width: "100%", textAlign: "left", background: "transparent", border: 0, font: "inherit" }}
             onClick={onToggleTheme}
-            title={theme === "dark" ? "Light mode" : "Dark mode"}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            aria-pressed={theme === "dark"}
           >
-            {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+            {theme === "dark" ? (
+              <Sun size={14} aria-hidden="true" />
+            ) : (
+              <Moon size={14} aria-hidden="true" />
+            )}
             <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
           </button>
         </div>
@@ -324,9 +329,14 @@ function Topbar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => v
         type="button"
         className="btn btn-icon btn-ghost"
         onClick={onToggleTheme}
-        title={theme === "dark" ? "Light mode" : "Dark mode"}
+        aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        aria-pressed={theme === "dark"}
       >
-        {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+        {theme === "dark" ? (
+          <Sun size={14} aria-hidden="true" />
+        ) : (
+          <Moon size={14} aria-hidden="true" />
+        )}
       </button>
 
       <button type="button" className="topbar-user" onClick={logout} title="Sign out">
