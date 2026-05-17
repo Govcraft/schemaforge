@@ -1,4 +1,11 @@
 <!doctype html>
+<!--
+  Section 508 / WCAG 2.1 SC 3.1.1: the html `lang` attribute identifies the
+  default language of the page. Generated sites ship with `en` today.
+  Multi-locale support (per-tenant `language_tag`, per-field `@lang(...)` on
+  user content) is tracked under audit finding F-022 — when implemented, the
+  runtime must override this attribute at render time.
+-->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
