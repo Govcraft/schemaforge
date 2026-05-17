@@ -148,8 +148,8 @@ export function SchemasIndex() {
       </div>
 
       {appSchemas.length > 0 && (
-        <section style={ { marginBottom: 24 }}>
-          <div className="eyebrow" style={ { marginBottom: 8 }}>Application</div>
+        <section aria-labelledby="schemas-app-heading" style={ { marginBottom: 24 }}>
+          <h2 id="schemas-app-heading" className="eyebrow" style={ { marginBottom: 8 }}>Application</h2>
           <div
             style={ {
               display: "grid",
@@ -165,8 +165,8 @@ export function SchemasIndex() {
       )}
 
       {systemSchemas.length > 0 && (
-        <section>
-          <div className="eyebrow" style={ { marginBottom: 8 }}>System</div>
+        <section aria-labelledby="schemas-system-heading">
+          <h2 id="schemas-system-heading" className="eyebrow" style={ { marginBottom: 8 }}>System</h2>
           <div
             style={ {
               display: "grid",

@@ -116,7 +116,7 @@ export function LoginPage() {
           >
             Govcraft · Admin Console
           </div>
-          <h1 className="login-hero">SchemaForge</h1>
+          <p className="login-hero" aria-hidden="true">SchemaForge</p>
           <p className="login-tagline" style={ { marginTop: 18 }}>
             One schema file. Migrations, CRUD, validation, audit — generated.
             The same source of truth, all the way down.
@@ -150,7 +150,7 @@ export function LoginPage() {
       <section className="login-right">
         <form className="login-form-wrap" onSubmit={handleSubmit(onSubmit)}>
           <div className="eyebrow" style={ { marginBottom: 8 }}>§ 01 / Sign in</div>
-          <h2
+          <h1
             style={ {
               fontSize: 26,
               fontWeight: 600,
@@ -160,7 +160,7 @@ export function LoginPage() {
             }}
           >
             Sign in to {{ project_name }}
-          </h2>
+          </h1>
           <p
             style={ {
               fontSize: 13,
