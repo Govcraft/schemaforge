@@ -200,8 +200,12 @@ function FormField({
     <div className="form-row">
       <label className="form-label" htmlFor={inputId}>
         {field.name}
-        {field.required ? <span className="req">*</span> : null}
-        {!writable ? <span className="opt">read-only</span> : null}
+        {field.required ? (
+          <span className="req" aria-hidden="true">*</span>
+        ) : null}
+        {!writable ? (
+          <span className="opt" aria-hidden="true">read-only</span>
+        ) : null}
       </label>
       <div className="form-field">
         <FieldRenderer

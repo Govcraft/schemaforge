@@ -240,17 +240,26 @@ function renderEditor(
       const obj = (value ?? {}) as Record<string, unknown>
       return (
         <fieldset className="border rounded p-3 space-y-2">
-          {(field.subFields ?? []).map((sub) => (
-            <div key={sub.name} className="grid grid-cols-[160px_1fr] gap-2 items-center">
-              <label className="text-xs text-muted-foreground">
-                {sub.name}
-                {sub.required ? " *" : ""}
-              </label>
-              {renderEditor(sub, obj[sub.name], (next) =>
-                onChange({ ...obj, [sub.name]: next }),
-              )}
-            </div>
-          ))}
+          <legend className="sr-only">{field.name}</legend>
+          {(field.subFields ?? []).map((sub) => {
+            const subId = id ? `${id}-${sub.name}` : `composite-${field.name}-${sub.name}`
+            return (
+              <div key={sub.name} className="grid grid-cols-[160px_1fr] gap-2 items-center">
+                <label className="text-xs text-muted-foreground" htmlFor={subId}>
+                  {sub.name}
+                  {sub.required ? (
+                    <span aria-hidden="true"> *</span>
+                  ) : null}
+                </label>
+                {renderEditor(
+                  sub,
+                  obj[sub.name],
+                  (next) => onChange({ ...obj, [sub.name]: next }),
+                  subId,
+                )}
+              </div>
+            )
+          })}
         </fieldset>
       )
     }

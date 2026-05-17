@@ -775,10 +775,11 @@ pub const INDEX_CSS: &str = r#"@import "tailwindcss";
   --gc-ink:        #0A0A0A;
   --gc-ink-2:      #1F1F1F;
   --gc-graphite:   #3A3A3A;
-  /* Steel & mist raised to clear WCAG AA 4.5:1 against both paper
-     (#F5F2EC) and raised paper (#FFFFFF) backgrounds — see F-018 audit. */
+  /* Steel & mist raised to clear WCAG AA 4.5:1 against every consumer
+     background (paper #F5F2EC, raised paper #FFFFFF, and the slightly
+     darker paper-2 #EEEAE1 used by the toolbar). See F-018 audit. */
   --gc-steel:      #595959;
-  --gc-mist:       #6E6E6E;
+  --gc-mist:       #5E5E5E;
   --gc-hairline:   #E4E1DA;
   --gc-rule:       #CFCAC0;
   --gc-paper:      #F5F2EC;
@@ -824,7 +825,8 @@ pub const INDEX_CSS: &str = r#"@import "tailwindcss";
   --app-rail:         var(--gc-ink);
   --app-rail-fg:      var(--gc-paper);
   --app-rail-fg-2:    #C9C7C1;
-  --app-rail-fg-3:    #6B6B6B;
+  /* Rail bg is near-black (#0A0A0A) — fg-3 raised to ≥4.5:1. */
+  --app-rail-fg-3:    #898680;
   --app-rail-line:    #2A2A2A;
   --app-rail-active:  #1F1F1F;
   --app-row-hover:    rgba(10,10,10,0.035);
@@ -854,7 +856,9 @@ pub const INDEX_CSS: &str = r#"@import "tailwindcss";
   --app-rail:         #050505;
   --app-rail-fg:      #F0EDE5;
   --app-rail-fg-2:    #B8B5AD;
-  --app-rail-fg-3:    #6A6760;
+  /* Dark-theme rail is even darker than the dark-theme app bg; raise
+     fg-3 to clear AA against #050505. */
+  --app-rail-fg-3:    #898680;
   --app-rail-line:    #1A1A1A;
   --app-rail-active:  #161616;
   --app-row-hover:    rgba(255,255,255,0.03);
@@ -999,12 +1003,15 @@ body {
 .btn-primary:hover { background: var(--gc-ink-2); }
 [data-theme="dark"] .btn-primary:hover { background: #E5E2D9; }
 .btn-accent {
-  background: var(--accent); color: var(--accent-fg);
-  border-color: var(--accent);
+  /* Accent buttons render white text — the brand-bright signal-400 falls
+     under AA on white (~2.8:1). Use signal-600 so white text clears 4.5:1
+     while the page-level accent stays vivid. */
+  background: var(--gc-signal-600); color: var(--accent-fg);
+  border-color: var(--gc-signal-600);
 }
 .btn-accent:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background: #7E3208;
+  border-color: #7E3208;
 }
 .btn-danger {
   background: var(--gc-err-400); color: #fff; border-color: var(--gc-err-400);

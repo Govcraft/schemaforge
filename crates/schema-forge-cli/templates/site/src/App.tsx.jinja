@@ -437,9 +437,12 @@ export default function App() {
           />
         </Routes>
       </main>
+      {/* richColors is intentionally disabled — sonner's tinted variants
+          (green success, red error) fall under WCAG 2.1 SC 1.4.3 AA on
+          their default backgrounds. Neutral toasts pass contrast and the
+          announcement still reaches AT via aria-live. */}
       <Toaster
         position="bottom-right"
-        richColors
         closeButton
         toastOptions={ { ariaLive: "polite" }}
       />

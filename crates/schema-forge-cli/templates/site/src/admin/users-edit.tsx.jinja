@@ -175,7 +175,9 @@ export function UsersEdit() {
         <div className="form-grid">
           <div className="form-row">
             <label className="form-label" htmlFor="users-edit-username">
-              username{isNew ? <span className="req">*</span> : null}
+              username{isNew ? (
+                <span className="req" aria-hidden="true">*</span>
+              ) : null}
             </label>
             <div className="form-field">
               <Input
@@ -210,7 +212,11 @@ export function UsersEdit() {
           <div className="form-row">
             <label className="form-label" htmlFor="users-edit-password">
               password
-              {isNew ? <span className="req">*</span> : <span className="opt">optional</span>}
+              {isNew ? (
+                <span className="req" aria-hidden="true">*</span>
+              ) : (
+                <span className="opt" aria-hidden="true">optional</span>
+              )}
             </label>
             <div className="form-field">
               <Input
