@@ -1827,9 +1827,20 @@ export function FileUpload({
         {meta.mimeAllowlist.length > 0 ? ` Allowed: ${meta.mimeAllowlist.join(", ")}.` : ""}
       </p>
       {progress !== null ? (
-        <progress max={100} value={progress} style={{ width: "100%" }} />
+        <progress
+          max={100}
+          value={progress}
+          aria-label={`Uploading ${fieldName}`}
+          aria-valuetext={`${progress}% uploaded`}
+          style={{ width: "100%" }}
+        />
       ) : null}
-      {err ? <p className="err">{err}</p> : null}
+      {err ? (
+        <p role="alert" aria-live="assertive" className="err">
+          <span className="sr-only">Error: </span>
+          {err}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -1897,12 +1908,13 @@ export function AttachmentDownload({
       <a
         href={available ? fieldUrl : "#"}
         target="_blank"
-        rel="noreferrer"
+        rel="noopener noreferrer"
         aria-disabled={!available}
         className={compact ? "text-xs underline" : "btn"}
         style={!available ? { opacity: 0.5, pointerEvents: "none" } : undefined}
       >
         {compact ? "Download" : `Download ${filename}`}
+        <span className="sr-only"> (opens in a new tab)</span>
       </a>
     )
   }
@@ -1919,8 +1931,14 @@ export function AttachmentDownload({
         style={!available || busy ? { opacity: 0.5 } : undefined}
       >
         {busy ? "Opening…" : compact ? "Download" : `Download ${filename}`}
+        <span className="sr-only"> (opens in a new tab)</span>
       </a>
-      {err ? <span className="err">{err}</span> : null}
+      {err ? (
+        <span role="alert" aria-live="assertive" className="err">
+          <span className="sr-only">Error: </span>
+          {err}
+        </span>
+      ) : null}
     </span>
   )
 }
@@ -1949,7 +1967,7 @@ function StatusChip({ status }: { status: FileAttachment["status"] }) {
   return (
     <span
       className={`text-xs px-1.5 py-0.5 rounded ${tone[status] ?? "bg-muted"}`}
-      title={`Attachment is ${status}`}
+      aria-label={`Attachment status: ${status}`}
     >
       {status}
     </span>
