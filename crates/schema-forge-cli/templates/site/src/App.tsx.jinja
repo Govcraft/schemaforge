@@ -316,12 +316,12 @@ function Topbar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => v
         type="button"
         className="topbar-search"
         onClick={() => navigate("/admin")}
-        title="Jump to Schemas (⌘K palette: coming soon)"
+        aria-label="Open schema catalog"
       >
-        <Search size={14} />
-        <span className="grow">Search schemas, records…</span>
-        <kbd>⌘</kbd>
-        <kbd>K</kbd>
+        <Search size={14} aria-hidden="true" />
+        <span className="grow" aria-hidden="true">
+          Schema catalog
+        </span>
       </button>
 
       <button
