@@ -185,17 +185,30 @@ export function LoginPage() {
 
           <div style={ { display: "flex", flexDirection: "column", gap: 14 }}>
             <div>
-              <label className="eyebrow" style={ { display: "block", marginBottom: 6 }}>
+              <label
+                className="eyebrow"
+                htmlFor="login-username"
+                style={ { display: "block", marginBottom: 6 }}
+              >
                 Username
               </label>
               <input
+                id="login-username"
                 className={"input" + (errors.username ? " invalid" : "")}
                 autoComplete="username"
+                // autoFocus is intentionally retained for this dedicated
+                // single-purpose login page (WCAG 2.1 SC 3.2.1 historical
+                // exception). Remove if a banner/cookie notice is added
+                // above the form.
                 autoFocus
+                aria-invalid={errors.username ? "true" : undefined}
+                aria-describedby={errors.username ? "login-username-err" : undefined}
                 {...register("username")}
               />
               {errors.username ? (
                 <div
+                  id="login-username-err"
+                  role="alert"
                   className="err"
                   style={ {
                     marginTop: 4,
@@ -203,23 +216,33 @@ export function LoginPage() {
                     color: "var(--gc-err-400)",
                   }}
                 >
+                  <span className="sr-only">Error: </span>
                   {errors.username.message}
                 </div>
               ) : null}
             </div>
 
             <div>
-              <label className="eyebrow" style={ { display: "block", marginBottom: 6 }}>
+              <label
+                className="eyebrow"
+                htmlFor="login-password"
+                style={ { display: "block", marginBottom: 6 }}
+              >
                 Password
               </label>
               <input
+                id="login-password"
                 type="password"
                 className={"input" + (errors.password ? " invalid" : "")}
                 autoComplete="current-password"
+                aria-invalid={errors.password ? "true" : undefined}
+                aria-describedby={errors.password ? "login-password-err" : undefined}
                 {...register("password")}
               />
               {errors.password ? (
                 <div
+                  id="login-password-err"
+                  role="alert"
                   className="err"
                   style={ {
                     marginTop: 4,
@@ -227,6 +250,7 @@ export function LoginPage() {
                     color: "var(--gc-err-400)",
                   }}
                 >
+                  <span className="sr-only">Error: </span>
                   {errors.password.message}
                 </div>
               ) : null}
@@ -244,6 +268,7 @@ export function LoginPage() {
             {error ? (
               <div
                 role="alert"
+                aria-live="assertive"
                 style={ {
                   padding: "10px 14px",
                   borderLeft: "2px solid var(--gc-err-400)",
@@ -251,9 +276,16 @@ export function LoginPage() {
                   color: "var(--gc-err-400)",
                   fontSize: 13,
                   borderRadius: 2,
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "flex-start",
                 }}
               >
-                {error}
+                <span aria-hidden="true" style={ { fontWeight: 700 }}>!</span>
+                <span>
+                  <span className="sr-only">Error: </span>
+                  {error}
+                </span>
               </div>
             ) : null}
           </div>

@@ -155,6 +155,7 @@ export function AdminEntityEdit() {
         {formError ? (
           <div
             role="alert"
+            aria-live="assertive"
             style={ {
               marginTop: 16,
               padding: "10px 14px",
@@ -163,9 +164,16 @@ export function AdminEntityEdit() {
               color: "var(--gc-err-400)",
               fontSize: 13,
               borderRadius: 2,
+              display: "flex",
+              gap: 8,
+              alignItems: "flex-start",
             }}
           >
-            {formError}
+            <span aria-hidden="true" style={ { fontWeight: 700 }}>!</span>
+            <span>
+              <span className="sr-only">Error: </span>
+              {formError}
+            </span>
           </div>
         ) : null}
 
