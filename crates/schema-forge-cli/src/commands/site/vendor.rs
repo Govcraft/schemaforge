@@ -1092,11 +1092,21 @@ body {
 .rail-foot-line + .rail-foot-line { margin-top: 4px; }
 
 /* Topbar */
-.crumbs { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--app-fg-3); flex: 1; min-width: 0; }
+.crumbs { display: flex; align-items: center; font-size: 13px; color: var(--app-fg-3); flex: 1; min-width: 0; }
+.crumbs ol {
+  display: flex; align-items: center;
+  list-style: none; margin: 0; padding: 0;
+}
+.crumbs ol li { display: inline-flex; align-items: center; gap: 6px; padding-right: 6px; }
 .crumbs .sep { color: var(--app-fg-4); }
 .crumbs .now { color: var(--app-fg-1); font-weight: 500; }
 .crumbs a { color: inherit; text-decoration: none; cursor: pointer; }
-.crumbs a:hover { color: var(--app-fg-1); }
+.crumbs a:hover { color: var(--app-fg-1); text-decoration: underline; }
+.crumbs a:focus-visible {
+  outline: 2px solid var(--app-fg-1);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
 
 .topbar-search {
   display: flex; align-items: center; gap: 8px;
