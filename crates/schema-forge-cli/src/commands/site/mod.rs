@@ -253,6 +253,7 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         vendor::TSCONFIG_NODE_JSON.to_string(),
     ));
     plan.push(owned(".gitignore", vendor::GITIGNORE.to_string()));
+    plan.push(owned("eslint.config.js", vendor::ESLINT_CONFIG_JS.to_string()));
 
     // Brand marks. Vite serves `public/` at the URL root, so the templates
     // can reference `/logo-mark-white.svg` and `/logo-mark.svg` directly

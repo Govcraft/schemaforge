@@ -44,13 +44,17 @@ test("admin create → detail → delete round-trip on Company", async ({ page }
   await expect(page.getByText("Playwright Test Co")).toBeVisible()
   await expect(page.getByText("Austin")).toBeVisible()
 
-  // Back to the list and delete.
-  page.on("dialog", (d) => d.accept())
+  // Back to the list and delete. Destructive actions now route through the
+  // accessible Radix AlertDialog (Section 508 audit F-001) instead of
+  // window.confirm — hover the row so the row-actions reveal, then click
+  // Delete to open the dialog and confirm inside the alertdialog scope.
   await page.goto("/admin/Company")
-  await page
-    .getByRole("row", { name: /Playwright Test Co/i })
-    .getByRole("button", { name: /delete/i })
-    .click()
+  const row = page.getByRole("row", { name: /Playwright Test Co/i })
+  await row.hover()
+  await row.getByRole("button", { name: /^delete$/i }).click()
+  const dialog = page.getByRole("alertdialog")
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole("button", { name: /^delete$/i }).click()
   await expect(page.getByText("Playwright Test Co")).toHaveCount(0)
 })
 
