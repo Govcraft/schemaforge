@@ -6,16 +6,21 @@
 //! or `ssh-keygen -Y sign` we want to be able to do here too, with
 //! consistent paths and no per-tool muscle memory.
 //!
-//! Two concrete signers ship today:
+//! Three concrete signers ship today:
 //!
 //! - [`Ed25519Signer`]: raw Ed25519 over a PKCS#8 PEM key. Smallest
 //!   surface; pairs with [`crate::verifiers::ed25519::Ed25519Verifier`].
 //! - [`SshSigner`]: SSHSIG (`ssh-keygen -Y sign`) over an OpenSSH
 //!   private key. Pairs with
 //!   [`crate::verifiers::ssh::SshAllowedSignersVerifier`].
+//! - [`CosignKeylessSigner`]: shells out to `cosign sign-blob --bundle`
+//!   so each `.sig` becomes a Sigstore Bundle JSON ready for
+//!   [`crate::verifiers::cosign::CosignKeylessVerifier`]. Requires
+//!   `cosign` in `PATH` plus a working OIDC token source (e.g. GitHub
+//!   Actions' `ACTIONS_ID_TOKEN_REQUEST_TOKEN`/`URL`).
 //!
-//! Both implement the [`DirectorySigner`] trait so [`sign_directory`]
-//! can drive either one without conditional logic at the call site.
+//! All three implement the [`DirectorySigner`] trait so [`sign_directory`]
+//! can drive any of them without conditional logic at the call site.
 
 use std::path::{Path, PathBuf};
 
@@ -227,6 +232,114 @@ impl DirectorySigner for SshSigner {
 
     fn kind(&self) -> &'static str {
         "ssh-allowed-signers"
+    }
+}
+
+/// Cosign-keyless signer that delegates to the operator's `cosign`
+/// binary via `cosign sign-blob --bundle …`. We deliberately do not
+/// reimplement the OIDC + Fulcio + Rekor protocol — `cosign` is the
+/// canonical CLI for that flow, ships in every Sigstore-enabled CI
+/// environment, and tracks Fulcio API changes upstream.
+///
+/// Each [`Self::sign_to_sig_bytes`] call writes the message to a temp
+/// file, invokes `cosign sign-blob --yes --bundle <out>.json
+/// <message>`, then reads the produced Sigstore Bundle and returns it
+/// verbatim as the `.sig` payload. The resulting `.sig` is a
+/// self-contained Sigstore Bundle (mediaType
+/// `application/vnd.dev.sigstore.bundle.v0.3+json`) that
+/// [`crate::verifiers::cosign::CosignKeylessVerifier`] accepts.
+///
+/// One `cosign sign-blob` invocation per file means one OIDC round
+/// trip per file. For large schema directories that's noticeable but
+/// not slow; the alternative — reusing a single token — would require
+/// reimplementing the Fulcio cert exchange in-process.
+pub struct CosignKeylessSigner {
+    /// `cosign` binary name or path. Defaults to `cosign` (resolved
+    /// via `PATH`).
+    cosign_bin: String,
+}
+
+impl CosignKeylessSigner {
+    /// Build the signer and verify that the configured `cosign`
+    /// binary is on `PATH` (or at the supplied absolute path) and
+    /// reports a version. The version probe runs once at signer
+    /// construction so a missing binary surfaces *before* the first
+    /// signing attempt rather than after partial directory work.
+    pub fn try_new(cosign_bin: impl Into<String>) -> Result<Self, SigningError> {
+        let cosign_bin = cosign_bin.into();
+        let probe = std::process::Command::new(&cosign_bin)
+            .arg("version")
+            .output()
+            .map_err(|source| SigningError::InvalidKey {
+                name: cosign_bin.clone(),
+                message: format!("could not run `{cosign_bin} version`: {source}"),
+            })?;
+        if !probe.status.success() {
+            return Err(SigningError::InvalidKey {
+                name: cosign_bin,
+                message: format!(
+                    "`cosign version` failed (status {:?}): {}",
+                    probe.status,
+                    String::from_utf8_lossy(&probe.stderr),
+                ),
+            });
+        }
+        Ok(Self { cosign_bin })
+    }
+
+    /// Borrow the binary name this signer is configured with.
+    pub fn cosign_bin(&self) -> &str {
+        &self.cosign_bin
+    }
+}
+
+impl DirectorySigner for CosignKeylessSigner {
+    fn sign_to_sig_bytes(&self, message: &[u8]) -> Result<Vec<u8>, SigningError> {
+        let temp_dir = tempfile::tempdir().map_err(|source| SigningError::Io {
+            path: PathBuf::from("/tmp"),
+            source,
+        })?;
+        let input_path = temp_dir.path().join("blob.bin");
+        let bundle_path = temp_dir.path().join("blob.sig");
+
+        std::fs::write(&input_path, message).map_err(|source| SigningError::Io {
+            path: input_path.clone(),
+            source,
+        })?;
+
+        let output = std::process::Command::new(&self.cosign_bin)
+            .arg("sign-blob")
+            .arg("--yes")
+            .arg("--bundle")
+            .arg(&bundle_path)
+            .arg(&input_path)
+            .output()
+            .map_err(|source| SigningError::SignFailed {
+                message: format!(
+                    "spawning `{} sign-blob` failed: {source}",
+                    self.cosign_bin,
+                ),
+            })?;
+
+        if !output.status.success() {
+            return Err(SigningError::SignFailed {
+                message: format!(
+                    "`{} sign-blob` exited with status {:?}: {}",
+                    self.cosign_bin,
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr),
+                ),
+            });
+        }
+
+        std::fs::read(&bundle_path).map_err(|source| SigningError::Io {
+            path: bundle_path,
+            source,
+        })
+    }
+
+    fn kind(&self) -> &'static str {
+        "cosign-keyless"
     }
 }
 

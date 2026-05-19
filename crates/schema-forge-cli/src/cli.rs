@@ -192,6 +192,13 @@ pub struct SignArgs {
     /// non-SSH signing schemes.
     #[arg(long = "ssh-principal")]
     pub ssh_principal: Option<String>,
+
+    /// Override the `cosign` binary used by `--keyless`. Defaults to
+    /// the name `cosign` resolved via `PATH`. Useful when the runner
+    /// has multiple cosign versions or installs the binary at a
+    /// non-standard location.
+    #[arg(long = "cosign-bin", default_value = "cosign")]
+    pub cosign_bin: String,
 }
 
 /// Selects which signing scheme `schemaforge sign` uses. Exactly one
@@ -221,8 +228,15 @@ pub struct SignKeyArgs {
     #[arg(long = "ssh-key")]
     pub ssh_key: Option<PathBuf>,
 
-    /// Use Sigstore cosign keyless signing via the OIDC token in the
-    /// caller's environment (e.g., GitHub Actions). Wired up in Phase 3.
+    /// Use Sigstore cosign keyless signing. Shells out to `cosign
+    /// sign-blob --bundle …` once per schema file (and once for the
+    /// manifest), so the runtime needs `cosign` in `PATH` and an OIDC
+    /// token in the environment (`ACTIONS_ID_TOKEN_REQUEST_TOKEN` /
+    /// `ACTIONS_ID_TOKEN_REQUEST_URL` for GitHub Actions, or any flow
+    /// supported by `cosign` directly). The on-disk `.sig` artefact is
+    /// a Sigstore Bundle JSON (`mediaType
+    /// application/vnd.dev.sigstore.bundle.v0.3+json`) — one self-
+    /// contained file per signature.
     #[arg(long = "keyless")]
     pub keyless: bool,
 }

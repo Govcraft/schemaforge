@@ -13,6 +13,7 @@ use crate::error::{SigningError, VerifyError};
 use crate::hash::sha256_hex;
 use crate::manifest::{Manifest, MANIFEST_FILE_NAME};
 use crate::verifier::{SchemaVerifier, VerifiedIdentity};
+use crate::verifiers::cosign::CosignKeylessVerifier;
 use crate::verifiers::ed25519::{signature_path_for, Ed25519Verifier};
 use crate::verifiers::ssh::SshAllowedSignersVerifier;
 
@@ -43,10 +44,10 @@ impl std::fmt::Debug for VerifyPolicy {
 impl VerifyPolicy {
     /// Build from a deserialized [`SigningConfig`].
     ///
-    /// Unsupported verifier kinds (e.g., cosign-keyless in a Phase 1
-    /// build) surface as [`SigningError::InvalidPolicy`] — better to
-    /// fail loud at startup than silently accept and then never
-    /// verify.
+    /// Each `[[trusted_signers]]` entry constructs the matching
+    /// verifier eagerly so any malformed key / glob / unreadable path
+    /// surfaces at startup rather than on the first verification
+    /// attempt.
     pub fn from_config(config: &SigningConfig) -> Result<Self, SigningError> {
         let mut verifiers: Vec<Box<dyn SchemaVerifier>> = Vec::new();
 
@@ -64,13 +65,17 @@ impl VerifyPolicy {
                 TrustedSigner::SshAllowedSigners { name, path } => {
                     verifiers.push(Box::new(SshAllowedSignersVerifier::from_file(name, path)?));
                 }
-                TrustedSigner::CosignKeyless { issuer, .. } => {
-                    return Err(SigningError::InvalidPolicy {
-                        message: format!(
-                            "trusted signer for issuer '{issuer}' uses kind 'cosign-keyless', \
-                             which is not enabled in this build (Phase 3)",
-                        ),
-                    });
+                TrustedSigner::CosignKeyless {
+                    name,
+                    issuer,
+                    subject_pattern,
+                } => {
+                    let label = name.as_deref().unwrap_or("cosign-keyless");
+                    verifiers.push(Box::new(CosignKeylessVerifier::new(
+                        label,
+                        issuer,
+                        subject_pattern,
+                    )?));
                 }
             }
         }
@@ -536,19 +541,112 @@ mod tests {
     }
 
     #[test]
-    fn from_config_rejects_unsupported_kinds_in_phase1() {
+    fn from_config_accepts_cosign_keyless_signer() {
+        // Phase 3: cosign-keyless is now a first-class verifier kind.
+        // Construction should succeed against any well-formed glob and
+        // issuer; verification correctness is exercised in
+        // `verifiers::cosign::tests`.
+        let cfg = SigningConfig {
+            mode: SigningMode::Enforce,
+            trusted_signers: vec![TrustedSigner::CosignKeyless {
+                name: Some("release-pipeline".into()),
+                issuer: "https://token.actions.githubusercontent.com".into(),
+                subject_pattern: "https://github.com/example/repo/.github/workflows/*@refs/tags/v*".into(),
+            }],
+            manifest_filename: None,
+            trust_root_bundle: None,
+        };
+        let policy = VerifyPolicy::from_config(&cfg).expect("policy should build");
+        assert_eq!(policy.signer_count(), 1);
+    }
+
+    #[test]
+    fn from_config_rejects_cosign_keyless_with_bad_glob() {
         let cfg = SigningConfig {
             mode: SigningMode::Enforce,
             trusted_signers: vec![TrustedSigner::CosignKeyless {
                 name: None,
-                issuer: "https://example".into(),
-                subject_pattern: "*".into(),
+                issuer: "https://issuer".into(),
+                subject_pattern: "[unclosed-bracket".into(),
             }],
             manifest_filename: None,
             trust_root_bundle: None,
         };
         let err = VerifyPolicy::from_config(&cfg).unwrap_err();
         assert!(matches!(err, SigningError::InvalidPolicy { .. }));
+    }
+
+    /// Multi-scheme drill: one schema file signed cosign-keyless, the
+    /// manifest signed ed25519. Exercises the [`verify_with_any`]
+    /// fall-through where each per-artifact signature only matches
+    /// one of the configured verifiers — the OR-semantics + try-next
+    /// dispatch is the load-bearing piece that lets operators rotate
+    /// between schemes without atomically re-signing every file.
+    #[test]
+    fn mixed_scheme_directory_verifies_when_both_anchors_present() {
+        use crate::manifest::{Manifest, MANIFEST_FILE_NAME};
+        use crate::signer::DirectorySigner;
+        use crate::verifiers::ed25519::signature_path_for;
+
+        let cosign_blob: &[u8] =
+            include_bytes!("../test_data/cosign-v3-blob.txt");
+        let cosign_bundle: &str =
+            include_str!("../test_data/cosign-v3-blob.sigstore.json");
+
+        let dir = tempdir().unwrap();
+        // Schema file content == the cosign fixture's signed blob, so
+        // the fixture bundle is a valid signature over the file.
+        let schema_path = dir.path().join("blob.schema");
+        std::fs::write(&schema_path, cosign_blob).unwrap();
+        std::fs::write(signature_path_for(&schema_path), cosign_bundle).unwrap();
+
+        // Manifest signed by an ed25519 signer the policy trusts.
+        let manifest = Manifest::build(dir.path(), std::slice::from_ref(&schema_path)).unwrap();
+        let manifest_bytes = manifest.to_toml_bytes().unwrap();
+        let manifest_path = dir.path().join(MANIFEST_FILE_NAME);
+        std::fs::write(&manifest_path, &manifest_bytes).unwrap();
+
+        let manifest_signer = Ed25519Signer::from_seed_bytes(&[0xAB; 32]);
+        let manifest_sig = manifest_signer
+            .sign_to_sig_bytes(&manifest_bytes)
+            .unwrap();
+        std::fs::write(signature_path_for(&manifest_path), manifest_sig).unwrap();
+
+        let cfg = SigningConfig {
+            mode: SigningMode::Enforce,
+            trusted_signers: vec![
+                TrustedSigner::Ed25519 {
+                    name: "manifest-key".into(),
+                    public_key_b64: manifest_signer.public_key_b64_raw(),
+                },
+                TrustedSigner::CosignKeyless {
+                    name: Some("fixture".into()),
+                    issuer: "https://github.com/login/oauth".into(),
+                    subject_pattern: "*".into(),
+                },
+            ],
+            manifest_filename: None,
+            trust_root_bundle: None,
+        };
+        let policy = VerifyPolicy::from_config(&cfg).unwrap();
+        let report = policy
+            .verify_files(dir.path(), std::slice::from_ref(&schema_path))
+            .unwrap();
+        assert!(report.overall_ok);
+        // The schema's outcome must trace to the cosign verifier, not
+        // ed25519 — otherwise the fall-through would have masked a
+        // bug where ed25519 spuriously accepted bundle JSON.
+        let outcome = &report.files[0].outcome;
+        match outcome {
+            FileVerifyOutcome::Verified { identity } => {
+                assert_eq!(identity.kind, "cosign-keyless");
+            }
+            other => panic!("expected Verified via cosign, got {other:?}"),
+        }
+        // Manifest signer must trace back to the ed25519 anchor.
+        let manifest_signer_id = report.manifest_signer.unwrap();
+        assert_eq!(manifest_signer_id.kind, "ed25519");
+        assert_eq!(manifest_signer_id.name, "manifest-key");
     }
 
     #[test]

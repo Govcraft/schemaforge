@@ -145,8 +145,8 @@ database = "dev"
 #
 # Defaults to `off`, which preserves the pre-signing behaviour. For
 # production: switch `mode` to `enforce` and list at least one trust
-# anchor below. Two signing schemes are shipped today — pick whichever
-# matches the keys you already manage.
+# anchor below. Three signing schemes are shipped today — pick
+# whichever matches the keys you already manage.
 #
 # Option A — raw ed25519 (generate or reuse a PEM key):
 #
@@ -155,6 +155,11 @@ database = "dev"
 # Option B — sign with an existing OpenSSH key (`~/.ssh/id_ed25519` etc.):
 #
 #   schemaforge sign schemas/ --ssh-key ~/.ssh/id_ed25519 --print-pubkey
+#
+# Option C — Sigstore cosign keyless (workload OIDC, typically GitHub
+# Actions). Requires the `cosign` binary on the runner:
+#
+#   schemaforge sign schemas/ --keyless
 #
 # Then paste the printed trust block into `[[schema_forge.signing.
 # trusted_signers]]` below.
@@ -173,6 +178,15 @@ database = "dev"
 # kind = "ssh-allowed-signers"
 # name = "ops-allowed-signers"
 # path = "/etc/schemaforge/allowed_signers"
+#
+# # Cosign-keyless anchor (Option C). `issuer` is the exact OIDC
+# # issuer string the workload's token vendor sets; `subject_pattern`
+# # is a glob matched against the certificate's OIDC subject (SAN).
+# [[schema_forge.signing.trusted_signers]]
+# kind = "cosign-keyless"
+# name = "release-pipeline"
+# issuer = "https://token.actions.githubusercontent.com"
+# subject_pattern = "https://github.com/<org>/<repo>/.github/workflows/release.yml@refs/tags/v*"
 "#;
     write_file(&project_dir.join("config.toml"), config_content)
 }

@@ -63,7 +63,11 @@ pub use config::{SigningConfig, SigningMode, TrustedSigner};
 pub use error::{SigningError, VerifyError};
 pub use manifest::{Manifest, ManifestEntry, MANIFEST_FILE_NAME, MANIFEST_SCHEMA_VERSION};
 pub use policy::{FileVerifyOutcome, FileVerifyResult, VerifyPolicy, VerifyReport};
-pub use signer::{sign_directory, DirectorySigner, Ed25519Signer, SignReport, SignedFile, SshSigner};
+pub use signer::{
+    sign_directory, CosignKeylessSigner, DirectorySigner, Ed25519Signer, SignReport, SignedFile,
+    SshSigner,
+};
 pub use verifier::{SchemaVerifier, VerifiedIdentity};
+pub use verifiers::cosign::{load_trust_root_from_path, CosignKeylessVerifier};
 pub use verifiers::ed25519::{signature_path_for, Ed25519Verifier};
 pub use verifiers::ssh::{SshAllowedSignersVerifier, SSHSIG_NAMESPACE};

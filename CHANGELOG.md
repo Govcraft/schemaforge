@@ -15,7 +15,7 @@ is pre-1.0; breaking changes bump the **minor** version per
   `export`, `policies`, `hooks`, or `site`. The trust policy lives under
   `[schema_forge.signing]` in `config.toml`; three signer kinds are
   defined — `ed25519` (Phase 1, shipped), `ssh-allowed-signers` (Phase 2,
-  shipped), and `cosign-keyless` (Phase 3). Trust evaluation uses
+  shipped), and `cosign-keyless` (Phase 3, shipped). Trust evaluation uses
   OR-semantics so rotating keys is additive. Three modes: `off` (default
   for now, preserves pre-signing behaviour), `warn` (run checks, log
   failures, continue), `enforce` (any failure aborts with exit code 13).
@@ -24,10 +24,13 @@ is pre-1.0; breaking changes bump the **minor** version per
       signed `schemas.manifest.toml`. `--ed25519-generate` creates a
       fresh keypair; `--ed25519-key` reuses one; `--ssh-key` signs with
       an existing OpenSSH private key (SSHSIG format, identical to
-      `ssh-keygen -Y sign`); `--print-pubkey` emits the trust-anchor
-      block matching the chosen scheme. `--ssh-principal <id>`
-      customises the principal label printed in the allowed-signers
-      advisory output.
+      `ssh-keygen -Y sign`); `--keyless` shells out to `cosign
+      sign-blob --bundle …` so the on-disk `.sig` becomes a Sigstore
+      Bundle JSON ready for offline verification; `--print-pubkey`
+      emits the trust-anchor block matching the chosen scheme.
+      `--ssh-principal <id>` customises the principal label printed in
+      the allowed-signers advisory output. `--cosign-bin <path>`
+      overrides the `cosign` binary location used by `--keyless`.
     - `schemaforge verify <paths>` — standalone verifier suitable as a
       pre-merge CI gate; touches no database.
 
@@ -54,6 +57,23 @@ is pre-1.0; breaking changes bump the **minor** version per
   `namespaces="..."`, `valid-after`, and `valid-before` per-line options,
   so a key rotated out of date or restricted to a different namespace is
   rejected at the policy layer before any cryptographic check runs.
+
+  Phase 3 adds the **cosign-keyless** verifier so the same CI identity
+  that already signs SchemaForge releases can sign schemas. Trust roots
+  point at an OIDC `issuer` plus a glob `subject_pattern`; verification
+  rides the `sigstore-verify` crate's full chain (cert ↔ Sigstore Fulcio
+  root, SCT, Rekor inclusion proof, signature) and then post-checks the
+  cert's OIDC subject against the operator glob. On disk, the `.sig`
+  next to each schema is a Sigstore Bundle (`mediaType
+  application/vnd.dev.sigstore.bundle.v0.3+json`) rather than the legacy
+  `.sig`+`.pem` pair — bundles embed the Rekor inclusion proof, which
+  preserves the historical signing time the (10-minute) Fulcio cert
+  needs to validate long after expiry. Signing uses `schemaforge sign
+  --keyless`, which shells out to `cosign sign-blob --yes --bundle`; we
+  do not reimplement the Fulcio/Rekor OIDC dance because `cosign` is the
+  canonical CLI for that flow and ships in every Sigstore-enabled CI
+  environment. A new `--cosign-bin` overrides the binary location for
+  runners with a non-standard install.
 
 - New `fips` cargo feature on `schema-forge-cli` (and `schema-forge-acton`)
   routes rustls through `aws-lc-rs` compiled against the FIPS-validated

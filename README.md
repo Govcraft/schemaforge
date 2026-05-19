@@ -580,9 +580,9 @@ Behind the scenes `schemaforge sign` writes a `<file>.sig` next to
 every `.schema` and a `schemas.manifest.toml` (plus its own `.sig`)
 that pins every file's SHA-256. The verifier checks both: per-file
 signatures defeat tampering, the signed manifest defeats add/remove
-attacks. Three signer kinds are defined — `ed25519` and
-`ssh-allowed-signers` are shipped today; `cosign-keyless` is Phase 3.
-Trust evaluation uses OR-semantics so adding a new key is additive.
+attacks. Three signer kinds are defined — `ed25519`, `ssh-allowed-signers`,
+and `cosign-keyless` — all shipped today. Trust evaluation uses
+OR-semantics so adding a new key is additive.
 
 #### SSH allowed_signers (alternative to ed25519)
 
@@ -615,6 +615,42 @@ Supported per-entry options: `namespaces="ns1,ns2"`, `valid-after`,
 namespace other than `schema-forge-signing@govcraft.ai` are
 silently skipped at match time, so an SSH key authorised to attest git
 commits can't accidentally become trusted for schemas.
+
+#### Cosign keyless (workload OIDC, CI-friendly)
+
+The CI flow most teams already use to sign release binaries also signs
+schemas. SchemaForge shells out to `cosign sign-blob --yes --bundle …`
+so each `<file>.sig` is a self-contained Sigstore Bundle JSON carrying
+the ephemeral Fulcio certificate, the detached signature, and the
+Rekor inclusion proof. Verification rides the
+[`sigstore-verify`](https://crates.io/crates/sigstore-verify) crate's
+full chain check, then post-matches the certificate's OIDC subject
+against a SchemaForge-side glob:
+
+```bash
+# Inside a GitHub Actions workflow with `id-token: write`:
+schemaforge sign schemas/ --keyless
+```
+
+```toml
+[[schema_forge.signing.trusted_signers]]
+kind = "cosign-keyless"
+name = "release-pipeline"
+issuer = "https://token.actions.githubusercontent.com"
+subject_pattern = "https://github.com/govcraft/schemaforge/.github/workflows/release.yml@refs/tags/v*"
+```
+
+`issuer` is matched exactly (the value Fulcio embeds in the cert's
+`1.3.6.1.4.1.57264.1.1` extension); `subject_pattern` is a
+[`globset`](https://crates.io/crates/globset) glob matched against the
+cert's SAN URI. Verification works long after the (~10 minute) Fulcio
+cert expires because the bundle preserves Rekor's `integratedTime` as
+the historical signing instant.
+
+Requirements: `cosign` ≥ v3 on the runner (override with
+`--cosign-bin <path>`) and a working OIDC token source. GitHub Actions
+sets `ACTIONS_ID_TOKEN_REQUEST_TOKEN` / `…_URL` automatically when the
+workflow grants `permissions: id-token: write`.
 
 ## AI Agent
 

@@ -3,9 +3,11 @@
 
 use std::path::PathBuf;
 
-use schema_forge_signing::{sign_directory, DirectorySigner, Ed25519Signer, SignReport, SshSigner};
+use schema_forge_signing::{
+    sign_directory, CosignKeylessSigner, DirectorySigner, Ed25519Signer, SignReport, SshSigner,
+};
 
-use crate::cli::{GlobalOpts, SignArgs, SignKeyArgs};
+use crate::cli::{GlobalOpts, SignArgs};
 use crate::config::{load_svc_config, resolve_signing_config};
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
@@ -20,6 +22,7 @@ use crate::output::{OutputContext, OutputMode};
 enum CliSigner {
     Ed25519(Box<Ed25519Signer>),
     Ssh(Box<SshSigner>),
+    Cosign(Box<CosignKeylessSigner>),
 }
 
 impl DirectorySigner for CliSigner {
@@ -30,6 +33,7 @@ impl DirectorySigner for CliSigner {
         match self {
             CliSigner::Ed25519(s) => s.sign_to_sig_bytes(message),
             CliSigner::Ssh(s) => s.sign_to_sig_bytes(message),
+            CliSigner::Cosign(s) => s.sign_to_sig_bytes(message),
         }
     }
 
@@ -37,6 +41,7 @@ impl DirectorySigner for CliSigner {
         match self {
             CliSigner::Ed25519(s) => s.kind(),
             CliSigner::Ssh(s) => s.kind(),
+            CliSigner::Cosign(s) => s.kind(),
         }
     }
 }
@@ -50,7 +55,7 @@ pub async fn run(
     let manifest_filename = resolve_manifest_filename(&args, global)?;
     let (manifest_dir, files) = resolve_inputs(&args.paths)?;
 
-    let signer = build_signer(&args.key, args.force, output)?;
+    let signer = build_signer(&args, output)?;
 
     let report = sign_directory(
         &manifest_dir,
@@ -163,18 +168,15 @@ fn discover_schema_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>, CliError> {
     Ok(files)
 }
 
-fn build_signer(
-    key: &SignKeyArgs,
-    force: bool,
-    output: &OutputContext,
-) -> Result<CliSigner, CliError> {
+fn build_signer(args: &SignArgs, output: &OutputContext) -> Result<CliSigner, CliError> {
+    let key = &args.key;
     if let Some(path) = &key.ed25519_key {
         return Ed25519Signer::from_pem_file(path)
             .map(|s| CliSigner::Ed25519(Box::new(s)))
             .map_err(CliError::from);
     }
     if let Some(path) = &key.ed25519_generate {
-        if path.exists() && !force {
+        if path.exists() && !args.force {
             return Err(CliError::Other(format!(
                 "{} already exists; pass --force to overwrite",
                 path.display()
@@ -199,12 +201,18 @@ fn build_signer(
             .map_err(CliError::from);
     }
     if key.keyless {
-        return Err(CliError::Other(
-            "--keyless is not enabled in this build (Phase 3)".into(),
+        // Probe `cosign version` at signer construction so a missing
+        // or broken cosign binary fails immediately, not after we've
+        // started writing per-file signatures.
+        let signer = CosignKeylessSigner::try_new(&args.cosign_bin).map_err(CliError::from)?;
+        output.status(&format!(
+            "using cosign binary `{}` for keyless signing",
+            signer.cosign_bin()
         ));
+        return Ok(CliSigner::Cosign(Box::new(signer)));
     }
     Err(CliError::Other(
-        "no signing scheme selected; pass --ed25519-key, --ed25519-generate, or --ssh-key".into(),
+        "no signing scheme selected; pass --ed25519-key, --ed25519-generate, --ssh-key, or --keyless".into(),
     ))
 }
 
@@ -252,6 +260,24 @@ fn emit_pubkey_advice(
                  name = \"<give-me-a-name>\"\n  path = \"/etc/schemaforge/allowed_signers\"\n\n  \
                  SchemaForge signs under namespace 'schema-forge-signing@govcraft.ai'; \
                  namespace-restricted entries must include that string.",
+            );
+        }
+        CliSigner::Cosign(_) => {
+            // Keyless signing has no static public key to advertise —
+            // the Fulcio cert in each `.sig` bundle is ephemeral.
+            // What stays stable across signings is the OIDC identity,
+            // so we point the operator at the matching trust-anchor
+            // shape instead.
+            output.status(
+                "cosign-keyless leaves no static public key to print — each `.sig` carries \
+                 its own short-lived Fulcio certificate. Configure the trust anchor by \
+                 pinning the OIDC issuer and a subject glob that matches your signing \
+                 identity:\n\
+                 \n  [[schema_forge.signing.trusted_signers]]\n  kind = \"cosign-keyless\"\n  \
+                 name = \"<give-me-a-name>\"\n  issuer = \"https://token.actions.githubusercontent.com\"\n  \
+                 subject_pattern = \"https://github.com/<org>/<repo>/.github/workflows/<wf>.yml@refs/tags/v*\"\n\n  \
+                 For other issuers (Google, GitHub OAuth, custom OIDC), substitute the \
+                 issuer URL and the subject your token vendor sets as the SAN.",
             );
         }
     }

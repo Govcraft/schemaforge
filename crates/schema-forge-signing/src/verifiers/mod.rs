@@ -5,5 +5,6 @@
 //! not on the concrete types — the trait is the contract the policy
 //! engine binds against.
 
+pub mod cosign;
 pub mod ed25519;
 pub mod ssh;
