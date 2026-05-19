@@ -1,0 +1,100 @@
+// Scaffolded by `schema-forge site generate` — regenerated on every
+// run (Owned) so the §508 / OMB M-24-08 baseline stays current.
+// Operator-customizable details: the conformance status statement, the
+// list of known limitations, and the assistive-technology compatibility
+// section. Anything in this file may be tightened by your §508 program
+// office; do not delete the page — it is required by 36 CFR 1194
+// §§603.2–603.3 to be reachable from every page in both authed and
+// unauthed states.
+import { useDocumentTitle } from "@/lib/use-document-title"
+
+const ACCESSIBILITY_CONTACT =
+  {% if accessibility_contact %}"{{ accessibility_contact }}"{% else %}null{% endif %}
+
+export function AccessibilityPage() {
+  useDocumentTitle("Accessibility")
+
+  return (
+    <main className="mx-auto max-w-3xl px-6 py-12 leading-relaxed">
+      <h1 className="text-3xl font-semibold tracking-tight">
+        Accessibility statement
+      </h1>
+
+      <p className="mt-4 text-sm text-muted-foreground">
+        {{ project_name }} is committed to providing a digital experience
+        that conforms with Section 508 of the Rehabilitation Act of 1973
+        (29 U.S.C. § 794d) and the Web Content Accessibility Guidelines
+        (WCAG) 2.1 Level AA, consistent with OMB Memorandum M-24-08 and
+        36 CFR Part 1194.
+      </p>
+
+      <h2 className="mt-10 text-xl font-semibold">Conformance status</h2>
+      <p className="mt-2">
+        This site is built on the SchemaForge generated-admin baseline,
+        which targets WCAG 2.1 AA. Conformance is monitored in CI via
+        automated axe scans (no critical or serious violations gate
+        deployment) and verified by manual assistive-technology testing
+        on each release.
+      </p>
+
+      <h2 className="mt-10 text-xl font-semibold">
+        Compatibility with assistive technology
+      </h2>
+      <p className="mt-2">
+        The site is designed to work with current versions of screen
+        readers (NVDA, JAWS, VoiceOver), browser zoom up to 400%,
+        keyboard-only navigation, and operating-system high-contrast
+        modes. Users encountering an assistive-technology compatibility
+        issue should report it using the feedback channel below.
+      </p>
+
+      <h2 className="mt-10 text-xl font-semibold">Known limitations</h2>
+      <p className="mt-2">
+        Site-specific limitations identified by manual testing or user
+        reports will be listed here. List items as they are discovered;
+        review and clear closed items at each release.
+      </p>
+
+      <h2 className="mt-10 text-xl font-semibold">Feedback</h2>
+      {ACCESSIBILITY_CONTACT ? (
+        <p className="mt-2">
+          Report accessibility issues, request accessible alternatives,
+          or ask questions by emailing{" "}
+          <a
+            className="underline"
+            href={`mailto:${ACCESSIBILITY_CONTACT}?subject=Accessibility%20feedback%20for%20{{ project_name }}`}
+          >
+            {ACCESSIBILITY_CONTACT}
+          </a>
+          . The §508 program office acknowledges feedback within five
+          business days.
+        </p>
+      ) : (
+        <p
+          className="mt-2 rounded border border-amber-500/40 bg-amber-50 p-3 text-amber-900"
+          role="alert"
+        >
+          Accessibility contact not configured. Re-run{" "}
+          <code>schema-forge site generate --accessibility-contact</code>{" "}
+          with the §508 program manager's email so this page can route
+          feedback. The contact requirement comes from OMB M-24-08
+          §II.D and 36 CFR 1194 §603.2.
+        </p>
+      )}
+
+      <h2 className="mt-10 text-xl font-semibold">Standards and review</h2>
+      <ul className="mt-2 list-disc pl-6">
+        <li>
+          Section 508 of the Rehabilitation Act (29 U.S.C. § 794d) and 36
+          CFR Part 1194.
+        </li>
+        <li>WCAG 2.1 Level AA, W3C Recommendation 5 June 2018.</li>
+        <li>OMB Memorandum M-24-08, Strengthening Digital Accessibility.</li>
+      </ul>
+      <p className="mt-2 text-sm text-muted-foreground">
+        Statement last reviewed: regenerated with the site. Replace this
+        line with a fixed date at your next §508 review cycle.
+      </p>
+    </main>
+  )
+}

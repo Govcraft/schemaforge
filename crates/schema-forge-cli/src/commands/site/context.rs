@@ -99,6 +99,12 @@ pub struct SiteContext {
     pub project_name: String,
     /// Every non-system schema, projected into a generator-friendly view.
     pub entities: Vec<EntityView>,
+    /// Email of the §508 program manager / accessibility coordinator.
+    /// Surfaces in the generated `/accessibility` page and powers the
+    /// mailto feedback mechanism required by OMB M-24-08 and 36 CFR
+    /// 1194 §§603.2–603.3. `None` renders a visible "not configured"
+    /// notice so the gap stays auditable.
+    pub accessibility_contact: Option<String>,
 }
 
 /// Context passed to per-entity page templates. Carries the same
@@ -108,6 +114,7 @@ pub struct SiteContext {
 pub struct PageContext {
     pub project_name: String,
     pub entity: EntityView,
+    pub accessibility_contact: Option<String>,
 }
 
 /// One schema projected into a template-friendly view.
