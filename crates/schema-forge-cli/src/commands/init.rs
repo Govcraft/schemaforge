@@ -143,10 +143,21 @@ database = "dev"
 # ---------------------------------------------------------------------------
 # Signed-schema enforcement.
 #
-# Defaults to `off`, which preserves the pre-signing behaviour. For
-# production: switch `mode` to `enforce` and list at least one trust
-# anchor below. Three signing schemes are shipped today — pick
-# whichever matches the keys you already manage.
+# Fresh projects default to `mode = "off"` (the section is commented
+# out below) so `schemaforge apply` works against an unsigned schema
+# directory on day one. The recommended rollout is three stages:
+#
+#   1. off (current, while you finish writing schemas).
+#   2. warn — uncomment the block below as written. Every command
+#      runs the full verifier; failures are logged but do not abort.
+#      Use this to test signing in dev and CI without breaking the
+#      build, typically for one release cycle.
+#   3. enforce — change `mode = "warn"` to `mode = "enforce"` once
+#      every schema is signed and CI is green. Any verification
+#      failure aborts the command with exit code 13.
+#
+# Three signing schemes are shipped — pick whichever matches the keys
+# you already manage:
 #
 # Option A — raw ed25519 (generate or reuse a PEM key):
 #
@@ -161,11 +172,11 @@ database = "dev"
 #
 #   schemaforge sign schemas/ --keyless
 #
-# Then paste the printed trust block into `[[schema_forge.signing.
-# trusted_signers]]` below.
+# Paste the printed trust block into `[[schema_forge.signing.
+# trusted_signers]]` below before flipping the mode away from off.
 # ---------------------------------------------------------------------------
 # [schema_forge.signing]
-# mode = "enforce"   # off | warn | enforce
+# mode = "warn"      # off | warn | enforce — warn is the migration stop.
 #
 # # Ed25519 anchor (Option A):
 # [[schema_forge.signing.trusted_signers]]
@@ -182,6 +193,9 @@ database = "dev"
 # # Cosign-keyless anchor (Option C). `issuer` is the exact OIDC
 # # issuer string the workload's token vendor sets; `subject_pattern`
 # # is a glob matched against the certificate's OIDC subject (SAN).
+# # For airgap deployments, set `trust_root_bundle` to a refreshed
+# # Sigstore TUF snapshot (see `schemaforge trust-bundle refresh`):
+# #   trust_root_bundle = "/etc/schemaforge/trust_root.json"
 # [[schema_forge.signing.trusted_signers]]
 # kind = "cosign-keyless"
 # name = "release-pipeline"
@@ -304,6 +318,90 @@ mod tests {
         assert!(
             parsed.get("database").is_none(),
             "default config.toml must not enable [database] (postgres is opt-in)"
+        );
+    }
+
+    /// The signing scaffold is shipped fully commented out — fresh
+    /// projects parse as `mode = "off"` by virtue of the section not
+    /// existing. This guards against accidental uncommenting (which
+    /// would force every new project to configure trust anchors before
+    /// `apply` runs).
+    #[test]
+    fn create_config_file_leaves_signing_block_commented_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("test-project");
+        std::fs::create_dir_all(&project).unwrap();
+        create_config_file(&project).unwrap();
+        let content = std::fs::read_to_string(project.join("config.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&content).unwrap();
+        assert!(
+            parsed.get("schema_forge").is_none(),
+            "scaffold must NOT activate [schema_forge.signing] by default; \
+             it ships commented so fresh projects start in `mode = \"off\"`",
+        );
+        // The recommended migration stop is "warn", not "enforce" —
+        // operators uncommenting the block should land on warn and
+        // promote when ready. Guard that the example line in the
+        // scaffold still says so.
+        assert!(
+            content.contains("# mode = \"warn\""),
+            "scaffold should recommend `mode = \"warn\"` as the migration stop",
+        );
+    }
+
+    /// Round-trip drill: extract the commented signing block from
+    /// the scaffold, strip the comment prefix, and feed it back into
+    /// the trust-policy parser. The TOML committed into the scaffold
+    /// must always parse cleanly — bit-rot in the example would
+    /// leave operators copying a broken config when they uncomment.
+    #[test]
+    fn commented_signing_block_in_scaffold_parses_when_uncommented() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("test-project");
+        std::fs::create_dir_all(&project).unwrap();
+        create_config_file(&project).unwrap();
+        let content = std::fs::read_to_string(project.join("config.toml")).unwrap();
+
+        // Pull every line in the [schema_forge.signing] commented
+        // example and uncomment it. The block starts at the
+        // `# [schema_forge.signing]` line and extends to EOF in the
+        // scaffold.
+        let signing_block: String = content
+            .lines()
+            .skip_while(|line| !line.trim_start().starts_with("# [schema_forge.signing]"))
+            .map(|line| {
+                line.strip_prefix("# ")
+                    .or_else(|| line.strip_prefix("#"))
+                    .unwrap_or(line)
+                    .to_string()
+                    + "\n"
+            })
+            .collect();
+
+        // Stub out the placeholder so the example parses as a real
+        // base64 string. We're testing TOML structure, not key
+        // material.
+        let materialised = signing_block.replace(
+            "PASTE-SPKI-BASE64-FROM-schemaforge-sign-OUTPUT",
+            "AAAA",
+        );
+
+        let parsed: toml::Value = toml::from_str(&materialised).unwrap_or_else(|e| {
+            panic!("scaffold's signing example failed to parse:\n{materialised}\nerror: {e}")
+        });
+        let signing = parsed
+            .get("schema_forge")
+            .and_then(|v| v.get("signing"))
+            .expect("expected [schema_forge.signing] table");
+        let mode = signing.get("mode").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(mode, "warn", "scaffold default starting mode must be warn");
+        let signers = signing
+            .get("trusted_signers")
+            .and_then(|v| v.as_array())
+            .expect("expected [[trusted_signers]] array");
+        assert!(
+            signers.len() >= 3,
+            "scaffold should illustrate all three trust-anchor kinds (ed25519, ssh, cosign)",
         );
     }
 }

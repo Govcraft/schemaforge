@@ -586,6 +586,35 @@ attacks. Three signer kinds are defined — `ed25519`, `ssh-allowed-signers`,
 and `cosign-keyless` — all shipped today. Trust evaluation uses
 OR-semantics so adding a new key is additive.
 
+#### Rollout: off → warn → enforce
+
+A fresh `schemaforge init` ships with `mode = "off"` (the
+`[schema_forge.signing]` block is commented out), so day-one
+deployments behave exactly as before signing was added. The
+recommended path to full enforcement runs through three stages, in
+order:
+
+1. **Stage 1 — `off` (default).** Write and edit schemas freely;
+   no verification runs. Use this until the schema set is stable
+   enough to start signing.
+2. **Stage 2 — `warn`.** Generate keys and sign every schema with
+   `schemaforge sign`. Uncomment the signing block in `config.toml`;
+   the shipped scaffold starts you on `mode = "warn"`. Every command
+   now runs the verifier end-to-end (manifest + per-file signatures +
+   manifest-vs-disk cross-check + pinned SHA-256s), but failures are
+   logged rather than fatal. Run this in CI for one release cycle to
+   confirm every operator's environment passes verification.
+3. **Stage 3 — `enforce`.** Once `schemaforge verify` is green on
+   every branch, change the line to `mode = "enforce"`. Verification
+   failures now abort with exit code 13. `--no-verify` is refused in
+   enforce unless `SCHEMAFORGE_ALLOW_NO_VERIFY=1` is set —
+   production deployments cannot silently skip verification.
+
+OR-semantics over `[[trusted_signers]]` means each stage can also be
+used to *rotate* keys: add a new anchor, sign new schemas under it,
+let old signatures verify under the old anchor until they're all
+re-signed, then drop the retired anchor in a later release.
+
 #### SSH allowed_signers (alternative to ed25519)
 
 Operators who already manage an SSH key for code review or `git commit`

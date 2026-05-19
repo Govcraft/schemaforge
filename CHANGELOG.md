@@ -134,6 +134,8 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Migration
 
+#### Demo-user seeding (security fix)
+
 Operators upgrading from `schema-forge-cli` 0.27.x:
 
 - If you were relying on the implicit demo seed for local development, add
@@ -143,6 +145,40 @@ Operators upgrading from `schema-forge-cli` 0.27.x:
   them with `schemaforge user delete <name>` (or your backend's equivalent) and
   rotate any passwords that may have leaked. They were created with the literal
   string `"password"`.
+
+#### Signed-schema rollout (off → warn → enforce)
+
+Adopting signing on an existing deployment is a three-stage migration. The
+scaffold from `schemaforge init` defaults to **stage 1** with the
+`[schema_forge.signing]` block fully commented out — `mode` defaults to
+`"off"` and pre-signing behaviour is preserved. Once a deployment is ready:
+
+1. **Generate keys and sign every schema.** Pick one of the three signer
+   kinds (ed25519, SSH allowed_signers, cosign-keyless) and run
+   `schemaforge sign schemas/ --print-pubkey` to produce the trust-anchor
+   block. Paste the printed `[[schema_forge.signing.trusted_signers]]`
+   entry into `config.toml`.
+2. **Move to `mode = "warn"`.** Uncomment the signing block. Every command
+   now runs the full verifier (manifest signature, per-file signatures,
+   disk-vs-manifest cross-check, pinned SHA-256s) but logs failures
+   instead of aborting. Use this stop to flush out config / CI-pipeline
+   gaps without breaking production. The shipped scaffold sets
+   `mode = "warn"` as the recommended starting point when the block is
+   uncommented.
+3. **Promote to `mode = "enforce"`.** Once `schemaforge verify` is green
+   in CI and every operator command exits 0, change the line to
+   `mode = "enforce"`. Verification failures now abort with exit code
+   13. `--no-verify` is refused under enforce unless
+   `SCHEMAFORGE_ALLOW_NO_VERIFY=1` is set — production deployments
+   cannot silently skip verification.
+
+Airgap / SCIF deployments using `cosign-keyless` should also seed the
+offline trust root before flipping the mode: run `schemaforge trust-bundle
+refresh --output trust_root.json` on a connected host, copy the file across
+the airgap, and set `trust_root_bundle = "/path/to/trust_root.json"`. The
+verifier loads that snapshot at startup and uses it for every
+`cosign-keyless` anchor; missing or malformed bundles fail loud rather
+than silently falling back to the (eventually-stale) embedded snapshot.
 
 ### Version bumps
 
