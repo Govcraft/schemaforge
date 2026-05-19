@@ -15,7 +15,7 @@
 target/
 
 # Node.js
-/node_modules/
+node_modules/
 .worktrees/
 keys/
 config.local.toml
