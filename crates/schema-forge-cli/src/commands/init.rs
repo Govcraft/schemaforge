@@ -145,20 +145,34 @@ database = "dev"
 #
 # Defaults to `off`, which preserves the pre-signing behaviour. For
 # production: switch `mode` to `enforce` and list at least one trust
-# anchor below. Generate a keypair and sign your schemas with:
+# anchor below. Two signing schemes are shipped today — pick whichever
+# matches the keys you already manage.
+#
+# Option A — raw ed25519 (generate or reuse a PEM key):
 #
 #   schemaforge sign schemas/ --ed25519-generate ./keys/sign.pem --print-pubkey
 #
-# Then paste the printed public key into a `[[schema_forge.signing.
-# trusted_signers]]` block here.
+# Option B — sign with an existing OpenSSH key (`~/.ssh/id_ed25519` etc.):
+#
+#   schemaforge sign schemas/ --ssh-key ~/.ssh/id_ed25519 --print-pubkey
+#
+# Then paste the printed trust block into `[[schema_forge.signing.
+# trusted_signers]]` below.
 # ---------------------------------------------------------------------------
 # [schema_forge.signing]
 # mode = "enforce"   # off | warn | enforce
 #
+# # Ed25519 anchor (Option A):
 # [[schema_forge.signing.trusted_signers]]
 # kind = "ed25519"
 # name = "ops-key"
 # public_key_b64 = "PASTE-SPKI-BASE64-FROM-schemaforge-sign-OUTPUT"
+#
+# # SSH allowed_signers anchor (Option B):
+# [[schema_forge.signing.trusted_signers]]
+# kind = "ssh-allowed-signers"
+# name = "ops-allowed-signers"
+# path = "/etc/schemaforge/allowed_signers"
 "#;
     write_file(&project_dir.join("config.toml"), config_content)
 }

@@ -14,6 +14,7 @@ use crate::hash::sha256_hex;
 use crate::manifest::{Manifest, MANIFEST_FILE_NAME};
 use crate::verifier::{SchemaVerifier, VerifiedIdentity};
 use crate::verifiers::ed25519::{signature_path_for, Ed25519Verifier};
+use crate::verifiers::ssh::SshAllowedSignersVerifier;
 
 /// Resolved policy: mode + verifier instances.
 pub struct VerifyPolicy {
@@ -60,13 +61,8 @@ impl VerifyPolicy {
                 TrustedSigner::Ed25519PemFile { name, path } => {
                     verifiers.push(Box::new(Ed25519Verifier::from_pem_file(name, path)?));
                 }
-                TrustedSigner::SshAllowedSigners { name, .. } => {
-                    return Err(SigningError::InvalidPolicy {
-                        message: format!(
-                            "trusted signer '{name}' uses kind 'ssh-allowed-signers', which \
-                             is not enabled in this build (Phase 2)",
-                        ),
-                    });
+                TrustedSigner::SshAllowedSigners { name, path } => {
+                    verifiers.push(Box::new(SshAllowedSignersVerifier::from_file(name, path)?));
                 }
                 TrustedSigner::CosignKeyless { issuer, .. } => {
                     return Err(SigningError::InvalidPolicy {
@@ -282,34 +278,60 @@ impl VerifyPolicy {
         })
     }
 
-    /// Try every loaded verifier; return the first that accepts. The
-    /// last-error string is folded in so an operator who has only one
-    /// signer configured gets that signer's specific complaint.
+    /// Try every loaded verifier; return the first that accepts.
+    ///
+    /// Two failure shapes get folded together so multi-scheme policies
+    /// behave sensibly:
+    ///
+    /// - `UntrustedSigner` from one verifier just means "this anchor
+    ///   said no" — we record the reason and move on to the next.
+    /// - `MalformedSignature` from one verifier means "the bytes don't
+    ///   look like this scheme's format" — also a try-next signal, not
+    ///   a hard error, because multi-scheme deployments writing both
+    ///   raw-ed25519 and SSH signatures produce different on-disk
+    ///   formats and each verifier rejects the other scheme's bytes as
+    ///   malformed.
+    ///
+    /// If every verifier rejected, we surface the last `UntrustedSigner`
+    /// reason if any verifier produced one; otherwise the last
+    /// malformed-format complaint. That gives the operator the most
+    /// specific diagnostic — a real signer mismatch beats a "wrong
+    /// file format" message when both could apply.
     fn verify_with_any(
         &self,
         path: &Path,
         bytes: &[u8],
         signature: &[u8],
     ) -> Result<VerifiedIdentity, VerifyError> {
-        let mut last_reason = String::from("no trusted signers configured");
+        let mut last_untrusted: Option<String> = None;
+        let mut last_malformed: Option<String> = None;
         for v in &self.verifiers {
             match v.verify(path, bytes, signature, None) {
                 Ok(id) => return Ok(id),
                 Err(VerifyError::UntrustedSigner { reason, .. }) => {
-                    last_reason = reason;
+                    last_untrusted = Some(reason);
                 }
                 Err(VerifyError::MalformedSignature { message, .. }) => {
-                    return Err(VerifyError::MalformedSignature {
-                        path: path.to_path_buf(),
-                        message,
-                    });
+                    last_malformed = Some(message);
                 }
                 Err(other) => return Err(other),
             }
         }
+        if let Some(reason) = last_untrusted {
+            return Err(VerifyError::UntrustedSigner {
+                path: path.to_path_buf(),
+                reason,
+            });
+        }
+        if let Some(message) = last_malformed {
+            return Err(VerifyError::MalformedSignature {
+                path: path.to_path_buf(),
+                message,
+            });
+        }
         Err(VerifyError::UntrustedSigner {
             path: path.to_path_buf(),
-            reason: last_reason,
+            reason: "no trusted signers configured".into(),
         })
     }
 }

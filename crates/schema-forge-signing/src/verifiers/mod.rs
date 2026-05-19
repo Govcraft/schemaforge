@@ -6,3 +6,4 @@
 //! engine binds against.
 
 pub mod ed25519;
+pub mod ssh;

@@ -14,16 +14,20 @@ is pre-1.0; breaking changes bump the **minor** version per
   `.schema` file is parsed by `apply`, `migrate`, `serve`, `parse`,
   `export`, `policies`, `hooks`, or `site`. The trust policy lives under
   `[schema_forge.signing]` in `config.toml`; three signer kinds are
-  defined — `ed25519` (Phase 1, shipped), `ssh-allowed-signers` (Phase 2),
-  and `cosign-keyless` (Phase 3). Trust evaluation uses OR-semantics so
-  rotating keys is additive. Three modes: `off` (default for now,
-  preserves pre-signing behaviour), `warn` (run checks, log failures,
-  continue), `enforce` (any failure aborts with exit code 13). Two new
-  subcommands wrap the verifier:
+  defined — `ed25519` (Phase 1, shipped), `ssh-allowed-signers` (Phase 2,
+  shipped), and `cosign-keyless` (Phase 3). Trust evaluation uses
+  OR-semantics so rotating keys is additive. Three modes: `off` (default
+  for now, preserves pre-signing behaviour), `warn` (run checks, log
+  failures, continue), `enforce` (any failure aborts with exit code 13).
+  Two new subcommands wrap the verifier:
     - `schemaforge sign <paths>` — produce per-file `.sig` files and a
       signed `schemas.manifest.toml`. `--ed25519-generate` creates a
-      fresh keypair; `--ed25519-key` reuses one; `--print-pubkey` emits
-      the SPKI base64 ready to paste into the trust policy.
+      fresh keypair; `--ed25519-key` reuses one; `--ssh-key` signs with
+      an existing OpenSSH private key (SSHSIG format, identical to
+      `ssh-keygen -Y sign`); `--print-pubkey` emits the trust-anchor
+      block matching the chosen scheme. `--ssh-principal <id>`
+      customises the principal label printed in the allowed-signers
+      advisory output.
     - `schemaforge verify <paths>` — standalone verifier suitable as a
       pre-merge CI gate; touches no database.
 
@@ -41,6 +45,15 @@ is pre-1.0; breaking changes bump the **minor** version per
   of untrusted authors via "drop a file in `schemas/`." Per-file
   detached signatures cover tampering; the signed manifest with pinned
   SHA-256s and an explicit file list covers add/remove attacks.
+
+  Phase 2 adds the **SSH allowed_signers** verifier: trust roots can now
+  point at an `allowed_signers` file (the same format `git config
+  gpg.ssh.allowedSignersFile` consumes), and signatures live as
+  PEM-armored SSHSIG blobs under namespace
+  `schema-forge-signing@govcraft.ai`. Supports the
+  `namespaces="..."`, `valid-after`, and `valid-before` per-line options,
+  so a key rotated out of date or restricted to a different namespace is
+  rejected at the policy layer before any cryptographic check runs.
 
 - New `fips` cargo feature on `schema-forge-cli` (and `schema-forge-acton`)
   routes rustls through `aws-lc-rs` compiled against the FIPS-validated

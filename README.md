@@ -66,6 +66,7 @@ That's the whole demo. The backend uses an embedded in-memory store, so nothing 
 - [CLI Reference](#cli-reference)
 - [AI Agent](#ai-agent)
 - [Programmatic Usage](#programmatic-usage)
+- [Federal Deployment](#federal-deployment)
 - [Project Status](#project-status)
 - [Design Decisions](#design-decisions)
 - [Contributing](#contributing)
@@ -514,7 +515,7 @@ schemaforge <command> [options]
 | `export openapi` | Export OpenAPI spec (`-o file`) |
 | `policies list` | List Cedar authorization policies |
 | `policies regenerate` | Regenerate Cedar policy templates (`--force`) |
-| `sign <paths>` | Sign schemas (`--ed25519-key`, `--ed25519-generate`, `--ssh-key`, `--keyless`, `--print-pubkey`). Produces per-file `.sig`s and a signed `schemas.manifest.toml`. |
+| `sign <paths>` | Sign schemas (`--ed25519-key`, `--ed25519-generate`, `--ssh-key`, `--ssh-principal`, `--keyless`, `--print-pubkey`). Produces per-file `.sig`s and a signed `schemas.manifest.toml`. |
 | `verify <paths>` | Verify schemas against the configured trust policy without applying anything. Suitable as a pre-merge CI gate. |
 | `completions <shell>` | Generate shell completions (bash, zsh, fish, powershell, elvish) |
 
@@ -579,9 +580,41 @@ Behind the scenes `schemaforge sign` writes a `<file>.sig` next to
 every `.schema` and a `schemas.manifest.toml` (plus its own `.sig`)
 that pins every file's SHA-256. The verifier checks both: per-file
 signatures defeat tampering, the signed manifest defeats add/remove
-attacks. Three signer kinds are defined — `ed25519` (shipped today),
-`ssh-allowed-signers` (Phase 2), and `cosign-keyless` (Phase 3). Trust
-evaluation uses OR-semantics so adding a new key is additive.
+attacks. Three signer kinds are defined — `ed25519` and
+`ssh-allowed-signers` are shipped today; `cosign-keyless` is Phase 3.
+Trust evaluation uses OR-semantics so adding a new key is additive.
+
+#### SSH allowed_signers (alternative to ed25519)
+
+Operators who already manage an SSH key for code review or `git commit`
+signing can reuse it. SchemaForge produces SSHSIG-format signatures
+identical to `ssh-keygen -Y sign -n schema-forge-signing@govcraft.ai`
+and verifies them against an OpenSSH `allowed_signers` file (the same
+format `git config gpg.ssh.allowedSignersFile` consumes).
+
+```bash
+# Sign with an existing OpenSSH key (e.g., ~/.ssh/id_ed25519).
+schemaforge sign schemas/ \
+    --ssh-key ~/.ssh/id_ed25519 \
+    --ssh-principal roland@govcraft.ai \
+    --print-pubkey
+```
+
+The `--print-pubkey` advisory output is the `allowed_signers` line to
+append to your trust file plus the corresponding TOML block:
+
+```toml
+[[schema_forge.signing.trusted_signers]]
+kind = "ssh-allowed-signers"
+name = "ops-allowed-signers"
+path = "/etc/schemaforge/allowed_signers"
+```
+
+Supported per-entry options: `namespaces="ns1,ns2"`, `valid-after`,
+`valid-before` (`YYYYMMDD[HHMMSS][Z]`, UTC). Entries restricted to a
+namespace other than `schema-forge-signing@govcraft.ai` are
+silently skipped at match time, so an SSH key authorised to attest git
+commits can't accidentally become trusted for schemas.
 
 ## AI Agent
 
@@ -696,6 +729,47 @@ if plan.has_destructive_steps() {
     // Prompt for confirmation before applying
 }
 ```
+
+## Federal Deployment
+
+SchemaForge generated sites target Section 508 (36 CFR Part 1194, 2017 ICT Refresh) and WCAG 2.0 Level A/AA conformance. Federal-facing deployments must satisfy three obligations OMB M-24-08 and 36 CFR 1194 §§603.2–603.3 place on every page — a published accessibility statement, a working feedback mechanism, and a named §508 program manager / accessibility coordinator. The generator wires all three when you pass `--accessibility-contact`.
+
+### Federal deployment checklist
+
+Before submitting to a federal procurement reviewer, every generated tenant deployment should:
+
+1. **Regenerate the site with a named accessibility contact:**
+   ```bash
+   schemaforge site generate \
+     --schema-dir schemas \
+     --out-dir site \
+     --accessibility-contact roland@govcraft.ai \
+     --force-user-files
+   ```
+   Omitting `--accessibility-contact` is allowed but the generated `/accessibility` page will render a visible "contact not configured" notice so the gap stays auditable.
+
+2. **Confirm the `/accessibility` route loads** in both unauthed and authed states. The footer link is rendered on the sidebar rail and the login page; from any route a Tab traversal should reach it.
+
+3. **Run the axe scan and design-token contrast tests** (see [Contrast verification](#contrast-verification) below) and attach the output to the procurement package.
+
+4. **Sign the ACR.** Use the Govcraft `vpat-508` pipeline (`schemaforge-federal`) to produce a signed VPAT 2.5Rev 508 Accessibility Conformance Report from the live source tree.
+
+### Contrast verification
+
+The generated `src/index.css` contains documented token math that clears WCAG 2.0 SC 1.4.3 (Contrast Minimum, 4.5:1) against every consumer background. Procurement reviewers typically want runtime evidence in addition to source-level math. Two complementary checks satisfy this:
+
+- **Continuous (automated):** `@axe-core/playwright` runs against the deployed instance in CI on every PR. Findings are surfaced in the pipeline summary; a non-zero a11y count fails the build. See `.github/workflows/site-e2e.yml`.
+- **Procurement (point-in-time):** Color Contrast Analyzer (TPGi) screenshot pass on a deployed instance, one row per text-on-background token pair, attached to the next ACR revision as Appendix B.
+
+Token pairs to verify on light theme: `--gc-ink` on `--gc-paper`, `--gc-steel` / `--gc-mist` on `--gc-paper` and `--gc-paper-2`, `--accent` on `--gc-paper`. On dark theme: `--app-fg-1` / `--app-fg-2` / `--app-fg-3` on `--app-bg` and `--app-bg-2`. The dashed-border error state and required-indicator symbols are paired with text so they also satisfy SC 1.4.1 (Use of Color).
+
+### Reduced motion, page titles, session timing
+
+The baseline also honors three platform-accessibility expectations federal reviewers test for explicitly:
+
+- **`prefers-reduced-motion`** — `src/index.css` clamps all animation and transition durations to ~0.01ms when the OS-level reduce-motion setting is on (Section 508 FPC §302.9, WCAG 2.1 SC 2.3.3 advisory).
+- **Descriptive page titles** — `index.html` ships `<title>{project_name} — Admin</title>` for pre-hydration paint and text-mode browsers; `useDocumentTitle` refines per route at runtime (SC 2.4.2).
+- **Session-timeout warning** — `src/lib/auth.ts` surfaces a T-30s warning toast with an "Extend session" action before the PASETO refresh window closes (SC 2.2.1).
 
 ## Project Status
 

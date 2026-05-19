@@ -7087,6 +7087,7 @@ dependencies = [
  "schema-forge-surrealdb",
  "serde",
  "serde_json",
+ "ssh-key",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -7148,6 +7149,7 @@ dependencies = [
  "ssh-key",
  "tempfile",
  "thiserror 2.0.18",
+ "time",
  "toml 1.1.2+spec-1.1.0",
 ]
 

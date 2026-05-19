@@ -3,12 +3,43 @@
 
 use std::path::PathBuf;
 
-use schema_forge_signing::{sign_directory, Ed25519Signer, SignReport};
+use schema_forge_signing::{sign_directory, DirectorySigner, Ed25519Signer, SignReport, SshSigner};
 
 use crate::cli::{GlobalOpts, SignArgs, SignKeyArgs};
 use crate::config::{load_svc_config, resolve_signing_config};
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
+
+/// One of the concrete signers the CLI knows how to build. Carrying the
+/// concrete type (rather than `Box<dyn DirectorySigner>`) lets the
+/// `--print-pubkey` flow surface scheme-specific advice without a
+/// separate dispatch table. Both variants are boxed so the enum's
+/// stack footprint stays small and the variants stay close in size
+/// (clippy::large_enum_variant). The CLI only constructs one `CliSigner`
+/// per invocation, so the heap allocations are immaterial.
+enum CliSigner {
+    Ed25519(Box<Ed25519Signer>),
+    Ssh(Box<SshSigner>),
+}
+
+impl DirectorySigner for CliSigner {
+    fn sign_to_sig_bytes(
+        &self,
+        message: &[u8],
+    ) -> Result<Vec<u8>, schema_forge_signing::SigningError> {
+        match self {
+            CliSigner::Ed25519(s) => s.sign_to_sig_bytes(message),
+            CliSigner::Ssh(s) => s.sign_to_sig_bytes(message),
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            CliSigner::Ed25519(s) => s.kind(),
+            CliSigner::Ssh(s) => s.kind(),
+        }
+    }
+}
 
 /// Run the `sign` command.
 pub async fn run(
@@ -29,13 +60,7 @@ pub async fn run(
     )?;
 
     if args.print_pubkey {
-        let pubkey_b64 = signer.public_key_b64_spki()?;
-        output.status(&format!("public key (base64 SPKI): {pubkey_b64}"));
-        output.status(
-            "  paste this into your trust policy:\n\
-             \n  [[schema_forge.signing.trusted_signers]]\n  kind = \"ed25519\"\n  \
-             name = \"<give-me-a-name>\"\n  public_key_b64 = \"<above>\"",
-        );
+        emit_pubkey_advice(&signer, args.ssh_principal.as_deref(), output)?;
     }
 
     emit_report(output, &report);
@@ -142,9 +167,11 @@ fn build_signer(
     key: &SignKeyArgs,
     force: bool,
     output: &OutputContext,
-) -> Result<Ed25519Signer, CliError> {
+) -> Result<CliSigner, CliError> {
     if let Some(path) = &key.ed25519_key {
-        return Ed25519Signer::from_pem_file(path).map_err(CliError::from);
+        return Ed25519Signer::from_pem_file(path)
+            .map(|s| CliSigner::Ed25519(Box::new(s)))
+            .map_err(CliError::from);
     }
     if let Some(path) = &key.ed25519_generate {
         if path.exists() && !force {
@@ -164,12 +191,12 @@ fn build_signer(
         let signer = Ed25519Signer::from_seed_bytes(&seed_from_os_rng());
         signer.write_keypair(path)?;
         output.status(&format!("generated keypair at {}", path.display()));
-        return Ok(signer);
+        return Ok(CliSigner::Ed25519(Box::new(signer)));
     }
-    if key.ssh_key.is_some() {
-        return Err(CliError::Other(
-            "--ssh-key is not enabled in this build (Phase 2)".into(),
-        ));
+    if let Some(path) = &key.ssh_key {
+        return SshSigner::from_openssh_file(path)
+            .map(|s| CliSigner::Ssh(Box::new(s)))
+            .map_err(CliError::from);
     }
     if key.keyless {
         return Err(CliError::Other(
@@ -177,7 +204,7 @@ fn build_signer(
         ));
     }
     Err(CliError::Other(
-        "no signing scheme selected; pass --ed25519-key or --ed25519-generate".into(),
+        "no signing scheme selected; pass --ed25519-key, --ed25519-generate, or --ssh-key".into(),
     ))
 }
 
@@ -196,6 +223,39 @@ fn seed_from_os_rng() -> [u8; 32] {
     let mut f = std::fs::File::open("/dev/urandom").expect("open /dev/urandom");
     f.read_exact(&mut buf).expect("read 32 bytes from /dev/urandom");
     buf
+}
+
+/// Scheme-aware advice for `--print-pubkey`. Operators copy the
+/// printed block straight into their trust policy; the goal is that
+/// every supported scheme has a copy-pasteable equivalent.
+fn emit_pubkey_advice(
+    signer: &CliSigner,
+    ssh_principal: Option<&str>,
+    output: &OutputContext,
+) -> Result<(), CliError> {
+    match signer {
+        CliSigner::Ed25519(s) => {
+            let pubkey_b64 = s.public_key_b64_spki()?;
+            output.status(&format!("public key (base64 SPKI): {pubkey_b64}"));
+            output.status(
+                "  paste this into your trust policy:\n\
+                 \n  [[schema_forge.signing.trusted_signers]]\n  kind = \"ed25519\"\n  \
+                 name = \"<give-me-a-name>\"\n  public_key_b64 = \"<above>\"",
+            );
+        }
+        CliSigner::Ssh(s) => {
+            let line = s.allowed_signers_line(ssh_principal)?;
+            output.status(&format!("public key (allowed_signers line): {line}"));
+            output.status(
+                "  add the line above to an allowed_signers file, then reference it:\n\
+                 \n  [[schema_forge.signing.trusted_signers]]\n  kind = \"ssh-allowed-signers\"\n  \
+                 name = \"<give-me-a-name>\"\n  path = \"/etc/schemaforge/allowed_signers\"\n\n  \
+                 SchemaForge signs under namespace 'schema-forge-signing@govcraft.ai'; \
+                 namespace-restricted entries must include that string.",
+            );
+        }
+    }
+    Ok(())
 }
 
 fn emit_report(output: &OutputContext, report: &SignReport) {

@@ -185,6 +185,13 @@ pub struct SignArgs {
     /// Allow `--ed25519-generate` to overwrite an existing file.
     #[arg(short = 'f', long = "force")]
     pub force: bool,
+
+    /// Principal label used in the `--print-pubkey` allowed-signers
+    /// suggestion when signing with `--ssh-key`. Defaults to the key's
+    /// OpenSSH comment field (typically `user@host`). Has no effect for
+    /// non-SSH signing schemes.
+    #[arg(long = "ssh-principal")]
+    pub ssh_principal: Option<String>,
 }
 
 /// Selects which signing scheme `schemaforge sign` uses. Exactly one
@@ -204,9 +211,13 @@ pub struct SignKeyArgs {
     #[arg(long = "ed25519-generate")]
     pub ed25519_generate: Option<PathBuf>,
 
-    /// Path to an OpenSSH-format private key. Wired up in Phase 2.
-    /// Variant reserved so command lines written now stay
-    /// forward-compatible.
+    /// Path to an OpenSSH-format private key (e.g. `~/.ssh/id_ed25519`).
+    /// Encrypted keys are rejected — decrypt to a temporary path before
+    /// passing this flag, or use a key agent if one becomes supported.
+    /// SchemaForge signs under the namespace
+    /// `schema-forge-signing@govcraft.ai`; the corresponding allowed-
+    /// signers entry must either omit the `namespaces=` option or
+    /// include that string.
     #[arg(long = "ssh-key")]
     pub ssh_key: Option<PathBuf>,
 

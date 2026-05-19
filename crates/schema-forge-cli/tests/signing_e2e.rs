@@ -244,3 +244,276 @@ fn sign_help_lists_the_three_schemes() {
     assert!(text.contains("--ssh-key"));
     assert!(text.contains("--keyless"));
 }
+
+// ---------------------------------------------------------------------------
+// SSH allowed_signers (Phase 2) coverage. Each test below stands up a real
+// ed25519 OpenSSH key on disk, signs with it via `schemaforge sign --ssh-key`,
+// builds an allowed_signers trust file, and exercises verify/parse paths.
+// ---------------------------------------------------------------------------
+
+use ssh_key::private::Ed25519Keypair;
+use ssh_key::{LineEnding, PrivateKey};
+
+/// Write an OpenSSH-format private key to `<project>/keys/operator` and
+/// return the matching public-key line so a caller can build the
+/// allowed_signers file. Comment defaults to a recognisable principal.
+fn write_test_ssh_key(project: &std::path::Path, principal: &str) -> (std::path::PathBuf, String) {
+    let kp = Ed25519Keypair::from_seed(&[0x55; 32]);
+    let pk = PrivateKey::new(kp.into(), principal).unwrap();
+    let key_path = project.join("keys/operator");
+    fs::create_dir_all(key_path.parent().unwrap()).unwrap();
+    pk.write_openssh_file(&key_path, LineEnding::LF).unwrap();
+    let pubkey = pk.public_key().to_openssh().unwrap();
+    (key_path, pubkey)
+}
+
+fn write_allowed_signers(project: &std::path::Path, line: &str) -> std::path::PathBuf {
+    let path = project.join("trust/allowed_signers");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, format!("{line}\n")).unwrap();
+    path
+}
+
+fn append_ssh_trust_anchor(project: &std::path::Path, allowed_signers_path: &std::path::Path) {
+    let cfg_path = project.join("config.toml");
+    let mut cfg = fs::read_to_string(&cfg_path).unwrap();
+    cfg.push_str(&format!(
+        "\n[[schema_forge.signing.trusted_signers]]\n\
+         kind = \"ssh-allowed-signers\"\nname = \"ops-allowed-signers\"\npath = {:?}\n",
+        allowed_signers_path.display().to_string()
+    ));
+    fs::write(cfg_path, cfg).unwrap();
+}
+
+#[test]
+fn ssh_sign_then_verify_then_parse_round_trip() {
+    let project = scaffold_project("enforce");
+    let (key_path, pubkey_line) = write_test_ssh_key(project.path(), "roland@govcraft.ai");
+    let allowed = write_allowed_signers(
+        project.path(),
+        &format!("roland@govcraft.ai {pubkey_line}"),
+    );
+    append_ssh_trust_anchor(project.path(), &allowed);
+
+    let schemas = project.path().join("schemas");
+    schema_forge()
+        .current_dir(project.path())
+        .args([
+            "sign",
+            schemas.to_str().unwrap(),
+            "--ssh-key",
+            key_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Per-file PEM-armored SSHSIG was written.
+    let sig_bytes = fs::read(schemas.join("user.schema.sig")).unwrap();
+    let sig_text = String::from_utf8(sig_bytes).unwrap();
+    assert!(sig_text.starts_with("-----BEGIN SSH SIGNATURE-----"));
+
+    schema_forge()
+        .current_dir(project.path())
+        .args(["verify", "schemas"])
+        .assert()
+        .success();
+
+    schema_forge()
+        .current_dir(project.path())
+        .args(["parse", "schemas"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn ssh_verify_rejects_tampered_schema_under_enforce() {
+    let project = scaffold_project("enforce");
+    let (key_path, pubkey_line) = write_test_ssh_key(project.path(), "roland@govcraft.ai");
+    let allowed = write_allowed_signers(
+        project.path(),
+        &format!("roland@govcraft.ai {pubkey_line}"),
+    );
+    append_ssh_trust_anchor(project.path(), &allowed);
+
+    let schemas = project.path().join("schemas");
+    schema_forge()
+        .current_dir(project.path())
+        .args([
+            "sign",
+            schemas.to_str().unwrap(),
+            "--ssh-key",
+            key_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Flip a byte after signing.
+    let user = schemas.join("user.schema");
+    let orig = fs::read_to_string(&user).unwrap();
+    fs::write(&user, format!("{orig}\n# tamper\n")).unwrap();
+
+    schema_forge()
+        .current_dir(project.path())
+        .args(["verify", "schemas"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn ssh_verify_rejects_unknown_signer() {
+    let project = scaffold_project("enforce");
+    // Sign with one key …
+    let (signing_key, _signing_pubkey) =
+        write_test_ssh_key(project.path(), "roland@govcraft.ai");
+    // … but trust a *different* key.
+    let other_kp = Ed25519Keypair::from_seed(&[0x99; 32]);
+    let other_pk = PrivateKey::new(other_kp.into(), "ops@govcraft.ai").unwrap();
+    let other_pubkey = other_pk.public_key().to_openssh().unwrap();
+    let allowed = write_allowed_signers(
+        project.path(),
+        &format!("ops@govcraft.ai {other_pubkey}"),
+    );
+    append_ssh_trust_anchor(project.path(), &allowed);
+
+    let schemas = project.path().join("schemas");
+    schema_forge()
+        .current_dir(project.path())
+        .args([
+            "sign",
+            schemas.to_str().unwrap(),
+            "--ssh-key",
+            signing_key.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    schema_forge()
+        .current_dir(project.path())
+        .args(["verify", "schemas"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn ssh_sign_print_pubkey_emits_allowed_signers_hint() {
+    let project = scaffold_project("off");
+    let (key_path, _) = write_test_ssh_key(project.path(), "roland@govcraft.ai");
+    let schemas = project.path().join("schemas");
+    let out = schema_forge()
+        .current_dir(project.path())
+        .args([
+            "sign",
+            schemas.to_str().unwrap(),
+            "--ssh-key",
+            key_path.to_str().unwrap(),
+            "--print-pubkey",
+            "--ssh-principal",
+            "audit-bot@govcraft.ai",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("allowed_signers line"));
+    assert!(text.contains("audit-bot@govcraft.ai"));
+    assert!(text.contains("ssh-allowed-signers"));
+}
+
+#[test]
+fn ssh_verify_with_namespace_restriction_matches_schemaforge() {
+    let project = scaffold_project("enforce");
+    let (key_path, pubkey_line) = write_test_ssh_key(project.path(), "roland@govcraft.ai");
+    // Explicit namespaces= entry whitelisting the schemaforge namespace.
+    let allowed = write_allowed_signers(
+        project.path(),
+        &format!(
+            "roland@govcraft.ai namespaces=\"schema-forge-signing@govcraft.ai\" {pubkey_line}"
+        ),
+    );
+    append_ssh_trust_anchor(project.path(), &allowed);
+
+    let schemas = project.path().join("schemas");
+    schema_forge()
+        .current_dir(project.path())
+        .args([
+            "sign",
+            schemas.to_str().unwrap(),
+            "--ssh-key",
+            key_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    schema_forge()
+        .current_dir(project.path())
+        .args(["verify", "schemas"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn ssh_verify_rejects_when_namespace_not_allowed() {
+    let project = scaffold_project("enforce");
+    let (key_path, pubkey_line) = write_test_ssh_key(project.path(), "roland@govcraft.ai");
+    // Namespaces= restricts to *some other* namespace; schemaforge sig
+    // is in `schema-forge-signing@govcraft.ai`, so this entry must not match.
+    let allowed = write_allowed_signers(
+        project.path(),
+        &format!(
+            "roland@govcraft.ai namespaces=\"file@openssh.com\" {pubkey_line}"
+        ),
+    );
+    append_ssh_trust_anchor(project.path(), &allowed);
+
+    let schemas = project.path().join("schemas");
+    schema_forge()
+        .current_dir(project.path())
+        .args([
+            "sign",
+            schemas.to_str().unwrap(),
+            "--ssh-key",
+            key_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    schema_forge()
+        .current_dir(project.path())
+        .args(["verify", "schemas"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn ssh_verify_rejects_expired_entry() {
+    let project = scaffold_project("enforce");
+    let (key_path, pubkey_line) = write_test_ssh_key(project.path(), "roland@govcraft.ai");
+    // valid-before in the past — entry has expired, must not accept.
+    let allowed = write_allowed_signers(
+        project.path(),
+        &format!(
+            "roland@govcraft.ai valid-before=\"19991231\" {pubkey_line}"
+        ),
+    );
+    append_ssh_trust_anchor(project.path(), &allowed);
+
+    let schemas = project.path().join("schemas");
+    schema_forge()
+        .current_dir(project.path())
+        .args([
+            "sign",
+            schemas.to_str().unwrap(),
+            "--ssh-key",
+            key_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    schema_forge()
+        .current_dir(project.path())
+        .args(["verify", "schemas"])
+        .assert()
+        .failure();
+}
