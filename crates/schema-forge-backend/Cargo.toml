@@ -4,7 +4,7 @@ version = "0.10.0"
 edition = "2021"
 
 [dependencies]
-acton-service = { version = "0.23", default-features = false }
+acton-service = { version = "0.26.1", default-features = false, features = ["crypto-aws-lc-rs"] }
 argon2 = { version = "0.5", features = ["std"] }
 schema-forge-core = { path = "../schema-forge-core" }
 serde = { version = "1", features = ["derive"] }
