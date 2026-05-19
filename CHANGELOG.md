@@ -102,6 +102,13 @@ is pre-1.0; breaking changes bump the **minor** version per
   Build requires CMake, a C/C++ toolchain, and Go 1.18+. See README
   "FIPS builds".
 
+- Operator reference doc `docs/signing-reference.md` covers the
+  signed-schema subsystem end-to-end: threat model, trust-policy TOML
+  schema, manifest format, every CLI flag (sign / verify / trust-bundle
+  refresh / trust-bundle inspect), the off → warn → enforce rollout
+  playbook, and the airgap / SCIF workflow. Linked from the README
+  Signed-Schema Enforcement section.
+
 ### Changed
 
 - Upgraded `acton-service` to **0.26** in `schema-forge-acton`,
@@ -112,6 +119,22 @@ is pre-1.0; breaking changes bump the **minor** version per
 - `schema-forge-postgres` no longer pins `sqlx`'s `tls-rustls` (ring)
   feature; `acton-service`'s crypto feature drives the TLS provider so
   the FIPS path can swap cleanly.
+
+### Fixed
+
+- `schema-forge-backend` was still pinned to `acton-service 0.23` while
+  the rest of the workspace had moved to 0.26.1. The dual-version
+  trait mismatch refused to compile (`filter_visible`/`can_modify`/
+  `can_delete` signatures diverged between the two acton versions).
+  Aligned backend to 0.26.1 with `crypto-aws-lc-rs` enabled.
+- `commands/site/mod.rs` referenced an `accessibility_contact` field on
+  the public `SiteContext`/`PageContext` structs and rendered
+  `src/pages/accessibility.tsx`, but the field and template had never
+  shipped. Every `site generate` invocation crashed with "site template
+  not registered" and ten `site_generate` tests failed. Restored the
+  fields and a §508 / OMB M-24-08 conformance-statement template
+  rendering a visible "not configured" notice when the contact is
+  unset, so the audit gap remains visible instead of silently passing.
 
 ### Security / Breaking
 
@@ -182,5 +205,6 @@ than silently falling back to the (eventually-stale) embedded snapshot.
 
 ### Version bumps
 
-- `schema-forge-cli`: 0.27.0 → 0.28.0
-- `schema-forge-acton`: 0.26.0 → 0.27.0
+- `schema-forge-cli`: 0.27.0 → 0.29.0
+- `schema-forge-acton`: 0.26.0 → 0.28.0
+- `schema-forge-backend`: 0.10.0 → 0.11.0
