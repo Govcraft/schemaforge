@@ -44,6 +44,14 @@ async fn main() {
         }
         cli::Commands::Sign(args) => commands::sign::run(args, &cli.global, &output).await,
         cli::Commands::Verify(args) => commands::verify::run(args, &cli.global, &output).await,
+        cli::Commands::TrustBundle { command } => match command {
+            cli::TrustBundleCommands::Refresh(args) => {
+                commands::trust_bundle::run_refresh(args, &cli.global, &output).await
+            }
+            cli::TrustBundleCommands::Inspect(args) => {
+                commands::trust_bundle::run_inspect(args, &cli.global, &output).await
+            }
+        },
     };
 
     match result {

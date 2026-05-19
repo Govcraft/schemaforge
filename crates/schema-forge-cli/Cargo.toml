@@ -32,6 +32,7 @@ heck = "0.5.0"
 minijinja = "2.19.0"
 tracing = "0.1.44"
 schema-forge-signing = { version = "0.1.0", path = "../schema-forge-signing" }
+sigstore-trust-root = { version = "0.7.0", default-features = false, features = ["tuf"] }
 
 [features]
 default = ["surrealdb"]

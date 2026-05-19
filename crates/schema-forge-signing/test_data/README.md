@@ -14,6 +14,14 @@ The bundle's OIDC identity is an email under issuer
 preserves the historical signing time so the (long-expired) Fulcio
 cert still validates against the embedded production trust root.
 
+- `trust_root_fixture.json` — the Sigstore public-good trust-root
+  snapshot also borrowed from `sigstore-verify` v0.7.0
+  (`test_data/trusted_roots/public-good.json`). Used by Phase 4
+  tests to exercise the `trust_root_bundle` override path through
+  `VerifyPolicy::from_config` without depending on the embedded
+  snapshot inside `sigstore-trust-root` (which is opaque to us and
+  could change with a crate bump).
+
 These fixtures are deterministic and require no network. Tests in
-`src/verifiers/cosign.rs` reference them with `include_bytes!` /
-`include_str!`.
+`src/verifiers/cosign.rs` and `src/policy.rs` reference them with
+`include_bytes!` / `include_str!`.

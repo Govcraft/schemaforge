@@ -7234,6 +7234,7 @@ dependencies = [
  "schema-forge-surrealdb",
  "serde",
  "serde_json",
+ "sigstore-trust-root",
  "ssh-key",
  "tempfile",
  "thiserror 2.0.18",

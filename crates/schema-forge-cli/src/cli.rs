@@ -153,6 +153,16 @@ pub enum Commands {
     /// Verify a `.schema` directory against the trust policy without
     /// applying anything. Suitable as a pre-merge CI gate.
     Verify(VerifyArgs),
+
+    /// Manage the Sigstore TUF trust-root snapshot used by the
+    /// `cosign-keyless` verifier. Run `refresh` on a connected host to
+    /// fetch the latest material, then copy the JSON into an airgapped
+    /// deployment and point `[schema_forge.signing] trust_root_bundle`
+    /// at it.
+    TrustBundle {
+        #[command(subcommand)]
+        command: TrustBundleCommands,
+    },
 }
 
 /// Arguments for `schemaforge sign`.
@@ -239,6 +249,57 @@ pub struct SignKeyArgs {
     /// contained file per signature.
     #[arg(long = "keyless")]
     pub keyless: bool,
+}
+
+/// Subcommands for `schemaforge trust-bundle`.
+#[derive(Subcommand)]
+pub enum TrustBundleCommands {
+    /// Fetch the Sigstore production TUF trust-root snapshot and write
+    /// it to disk. Operators run this on a connected host, then copy
+    /// the JSON across the airgap to a SCIF deployment.
+    Refresh(TrustBundleRefreshArgs),
+
+    /// Show a one-line summary of a trust-root JSON file: source
+    /// instance, fulcio cert count, rekor key count, TSA cert count.
+    /// Useful as a sanity check after `refresh`.
+    Inspect(TrustBundleInspectArgs),
+}
+
+/// Arguments for `schemaforge trust-bundle refresh`.
+#[derive(Args)]
+pub struct TrustBundleRefreshArgs {
+    /// Output path for the refreshed trust-root JSON. Defaults to
+    /// `./trust_root.json` in the current directory.
+    #[arg(long = "output", short = 'o', default_value = "trust_root.json")]
+    pub output: PathBuf,
+
+    /// Sigstore instance to fetch from. `public-good` is the live
+    /// production TUF root that signs releases, attestations, and the
+    /// SchemaForge artefacts produced by `cosign sign-blob`. `staging`
+    /// fetches the Sigstore staging environment (only useful when
+    /// validating new tooling). `github` fetches the GitHub
+    /// artifact-attestation trust root.
+    #[arg(
+        long = "instance",
+        default_value = "public-good",
+        value_parser = ["public-good", "staging", "github"],
+    )]
+    pub instance: String,
+
+    /// Allow `refresh` to overwrite an existing file at the output
+    /// path. Without this, refusing to clobber is the safer default —
+    /// a botched copy across the airgap is worse than a refresh that
+    /// errored.
+    #[arg(short = 'f', long = "force")]
+    pub force: bool,
+}
+
+/// Arguments for `schemaforge trust-bundle inspect`.
+#[derive(Args)]
+pub struct TrustBundleInspectArgs {
+    /// Path to a trust-root JSON file produced by `trust-bundle refresh`
+    /// (or any compatible Sigstore trust-root snapshot).
+    pub path: PathBuf,
 }
 
 /// Arguments for `schemaforge verify`.

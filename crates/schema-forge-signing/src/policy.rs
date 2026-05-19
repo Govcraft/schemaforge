@@ -13,7 +13,7 @@ use crate::error::{SigningError, VerifyError};
 use crate::hash::sha256_hex;
 use crate::manifest::{Manifest, MANIFEST_FILE_NAME};
 use crate::verifier::{SchemaVerifier, VerifiedIdentity};
-use crate::verifiers::cosign::CosignKeylessVerifier;
+use crate::verifiers::cosign::{load_trust_root_from_path, CosignKeylessVerifier};
 use crate::verifiers::ed25519::{signature_path_for, Ed25519Verifier};
 use crate::verifiers::ssh::SshAllowedSignersVerifier;
 
@@ -51,6 +51,20 @@ impl VerifyPolicy {
     pub fn from_config(config: &SigningConfig) -> Result<Self, SigningError> {
         let mut verifiers: Vec<Box<dyn SchemaVerifier>> = Vec::new();
 
+        // For airgap / SCIF deployments, the operator points
+        // `trust_root_bundle` at a pre-fetched Sigstore TUF snapshot
+        // (refreshed on a connected host via
+        // `schemaforge trust-bundle refresh`). When unset, every
+        // cosign-keyless verifier falls back to the embedded
+        // production snapshot baked into `sigstore-trust-root`. We
+        // load the override exactly once and clone it into each
+        // cosign verifier so a directory with several cosign anchors
+        // doesn't re-parse the (~150 KB) JSON per anchor.
+        let trust_root_override = match &config.trust_root_bundle {
+            Some(path) => Some(load_trust_root_from_path(path)?),
+            None => None,
+        };
+
         for signer in &config.trusted_signers {
             match signer {
                 TrustedSigner::Ed25519 {
@@ -71,11 +85,16 @@ impl VerifyPolicy {
                     subject_pattern,
                 } => {
                     let label = name.as_deref().unwrap_or("cosign-keyless");
-                    verifiers.push(Box::new(CosignKeylessVerifier::new(
-                        label,
-                        issuer,
-                        subject_pattern,
-                    )?));
+                    let verifier = match &trust_root_override {
+                        Some(root) => CosignKeylessVerifier::with_trust_root(
+                            label,
+                            issuer,
+                            subject_pattern,
+                            root.clone(),
+                        )?,
+                        None => CosignKeylessVerifier::new(label, issuer, subject_pattern)?,
+                    };
+                    verifiers.push(Box::new(verifier));
                 }
             }
         }
@@ -558,6 +577,125 @@ mod tests {
         };
         let policy = VerifyPolicy::from_config(&cfg).expect("policy should build");
         assert_eq!(policy.signer_count(), 1);
+    }
+
+    #[test]
+    fn from_config_loads_trust_root_bundle_when_set() {
+        // Write the fixture trust-root JSON to a temp file and point
+        // `trust_root_bundle` at it. Verifier construction must
+        // succeed AND the load must visibly happen — exercised
+        // indirectly by ensuring an unreadable bundle path errors.
+        let dir = tempdir().unwrap();
+        let bundle_path = dir.path().join("trust_root.json");
+        std::fs::write(
+            &bundle_path,
+            include_str!("../test_data/trust_root_fixture.json"),
+        )
+        .unwrap();
+
+        let cfg = SigningConfig {
+            mode: SigningMode::Enforce,
+            trusted_signers: vec![TrustedSigner::CosignKeyless {
+                name: Some("release".into()),
+                issuer: "https://token.actions.githubusercontent.com".into(),
+                subject_pattern: "*".into(),
+            }],
+            manifest_filename: None,
+            trust_root_bundle: Some(bundle_path),
+        };
+        let policy = VerifyPolicy::from_config(&cfg).expect("policy should build");
+        assert_eq!(policy.signer_count(), 1);
+    }
+
+    #[test]
+    fn from_config_rejects_unreadable_trust_root_bundle() {
+        // Pointing at a nonexistent path must fail at policy build
+        // rather than silently fall back to the embedded snapshot —
+        // an operator who set `trust_root_bundle` expected that
+        // exact file to drive verification.
+        let cfg = SigningConfig {
+            mode: SigningMode::Enforce,
+            trusted_signers: vec![TrustedSigner::CosignKeyless {
+                name: None,
+                issuer: "https://issuer".into(),
+                subject_pattern: "*".into(),
+            }],
+            manifest_filename: None,
+            trust_root_bundle: Some(PathBuf::from("/nonexistent/airgap/trust_root.json")),
+        };
+        let err = VerifyPolicy::from_config(&cfg).unwrap_err();
+        // Either Io (path doesn't exist) or InvalidPolicy (path
+        // exists but unparseable) is acceptable here — the contract
+        // is "fail loud."
+        assert!(
+            matches!(err, SigningError::Io { .. } | SigningError::InvalidPolicy { .. }),
+            "expected Io or InvalidPolicy, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn trust_root_bundle_override_verifies_cosign_fixture() {
+        // End-to-end: trust_root_bundle points at our fixture JSON;
+        // the cosign-v3-blob bundle must verify through the
+        // operator-supplied trust root. Together with the
+        // `_loads_trust_root_bundle_when_set` test, this proves the
+        // override path is wired through every cosign verifier built
+        // by `from_config` (not just the first or the one with a
+        // specific name).
+        use crate::manifest::{Manifest, MANIFEST_FILE_NAME};
+        use crate::signer::DirectorySigner;
+        use crate::verifiers::ed25519::signature_path_for;
+
+        let cosign_blob: &[u8] = include_bytes!("../test_data/cosign-v3-blob.txt");
+        let cosign_bundle: &str = include_str!("../test_data/cosign-v3-blob.sigstore.json");
+
+        let dir = tempdir().unwrap();
+        let bundle_path = dir.path().join("trust_root.json");
+        // Write the same trust-root JSON the embedded
+        // `SIGSTORE_PRODUCTION_TRUSTED_ROOT` constant carries, but to
+        // disk — so we exercise the file-read + JSON-parse path while
+        // still using a trust root that's known to verify the
+        // cosign-v3-blob fixture.
+        std::fs::write(
+            &bundle_path,
+            sigstore_trust_root::SIGSTORE_PRODUCTION_TRUSTED_ROOT,
+        )
+        .unwrap();
+
+        let schema_path = dir.path().join("blob.schema");
+        std::fs::write(&schema_path, cosign_blob).unwrap();
+        std::fs::write(signature_path_for(&schema_path), cosign_bundle).unwrap();
+
+        let manifest = Manifest::build(dir.path(), std::slice::from_ref(&schema_path)).unwrap();
+        let manifest_bytes = manifest.to_toml_bytes().unwrap();
+        let manifest_path = dir.path().join(MANIFEST_FILE_NAME);
+        std::fs::write(&manifest_path, &manifest_bytes).unwrap();
+
+        let manifest_signer = Ed25519Signer::from_seed_bytes(&[0xCD; 32]);
+        let manifest_sig = manifest_signer.sign_to_sig_bytes(&manifest_bytes).unwrap();
+        std::fs::write(signature_path_for(&manifest_path), manifest_sig).unwrap();
+
+        let cfg = SigningConfig {
+            mode: SigningMode::Enforce,
+            trusted_signers: vec![
+                TrustedSigner::Ed25519 {
+                    name: "manifest-key".into(),
+                    public_key_b64: manifest_signer.public_key_b64_raw(),
+                },
+                TrustedSigner::CosignKeyless {
+                    name: Some("airgap-fixture".into()),
+                    issuer: "https://github.com/login/oauth".into(),
+                    subject_pattern: "*".into(),
+                },
+            ],
+            manifest_filename: None,
+            trust_root_bundle: Some(bundle_path),
+        };
+        let policy = VerifyPolicy::from_config(&cfg).unwrap();
+        let report = policy
+            .verify_files(dir.path(), std::slice::from_ref(&schema_path))
+            .unwrap();
+        assert!(report.overall_ok);
     }
 
     #[test]

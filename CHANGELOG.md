@@ -58,6 +58,23 @@ is pre-1.0; breaking changes bump the **minor** version per
   so a key rotated out of date or restricted to a different namespace is
   rejected at the policy layer before any cryptographic check runs.
 
+  Phase 4 adds **offline Sigstore trust-root** support for SCIF /
+  airgap deployments. The `[schema_forge.signing] trust_root_bundle =
+  "/path/to/trust_root.json"` field — accepted but inert in earlier
+  phases — now drives every `cosign-keyless` verifier in the policy:
+  one shared `TrustedRoot` is loaded from disk at startup and cloned
+  into each verifier instead of the embedded production snapshot. A
+  new `schemaforge trust-bundle refresh` command does a full TUF
+  fetch on a connected host (selectable target: `public-good`,
+  `staging`, or `github`) and writes the resulting JSON to disk; the
+  operator copies that file across the airgap and points
+  `trust_root_bundle` at it. `trust-bundle inspect` prints a one-line
+  fulcio/rekor/TSA count summary so the operator can confirm a sane
+  snapshot before deploying. The verifier fails loud if the
+  configured bundle path is missing or malformed — silent fallback to
+  the embedded snapshot would hide rotation drift, which is the whole
+  reason this knob exists.
+
   Phase 3 adds the **cosign-keyless** verifier so the same CI identity
   that already signs SchemaForge releases can sign schemas. Trust roots
   point at an OIDC `issuer` plus a glob `subject_pattern`; verification

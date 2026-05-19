@@ -517,6 +517,8 @@ schemaforge <command> [options]
 | `policies regenerate` | Regenerate Cedar policy templates (`--force`) |
 | `sign <paths>` | Sign schemas (`--ed25519-key`, `--ed25519-generate`, `--ssh-key`, `--ssh-principal`, `--keyless`, `--print-pubkey`). Produces per-file `.sig`s and a signed `schemas.manifest.toml`. |
 | `verify <paths>` | Verify schemas against the configured trust policy without applying anything. Suitable as a pre-merge CI gate. |
+| `trust-bundle refresh` | Fetch the Sigstore TUF trust-root snapshot (online TUF) and write it to disk. Used to seed `trust_root_bundle` in airgap deployments. Flags: `--output`, `--instance`, `--force`. |
+| `trust-bundle inspect <path>` | Print a one-line fulcio/rekor/TSA cert-count summary for a trust-root JSON file. Sanity check after copying a refreshed bundle. |
 | `completions <shell>` | Generate shell completions (bash, zsh, fish, powershell, elvish) |
 
 ### Global Options
@@ -651,6 +653,46 @@ Requirements: `cosign` ≥ v3 on the runner (override with
 `--cosign-bin <path>`) and a working OIDC token source. GitHub Actions
 sets `ACTIONS_ID_TOKEN_REQUEST_TOKEN` / `…_URL` automatically when the
 workflow grants `permissions: id-token: write`.
+
+##### Airgapped / SCIF deployments
+
+The cosign-keyless verifier consults the Sigstore production trust
+root by default — a snapshot baked into the `sigstore-trust-root`
+crate. For SCIF or otherwise network-isolated deployments that
+embedded copy will eventually age out as Fulcio rotates
+intermediates, and there is no way to refresh it from inside the
+enclave. The `trust_root_bundle` config field plus the
+`trust-bundle` subcommand cover that workflow:
+
+```bash
+# On a connected jump host with internet access:
+schemaforge trust-bundle refresh --output trust_root.json
+schemaforge trust-bundle inspect trust_root.json    # sanity check
+
+# Copy trust_root.json across the airgap into the deployment, then:
+```
+
+```toml
+[schema_forge.signing]
+mode = "enforce"
+trust_root_bundle = "/etc/schemaforge/trust_root.json"
+
+[[schema_forge.signing.trusted_signers]]
+kind = "cosign-keyless"
+name = "release-pipeline"
+issuer = "https://token.actions.githubusercontent.com"
+subject_pattern = "https://github.com/govcraft/schemaforge/.github/workflows/release.yml@refs/tags/v*"
+```
+
+The trust root is loaded once per process and shared across every
+cosign-keyless verifier in the policy. Missing or malformed bundle
+files fail loud at startup — fallback to the embedded snapshot is
+deliberately not implemented, because silent fallback would hide
+rotation drift in exactly the deployments that need to catch it.
+`trust-bundle refresh --instance github` fetches the GitHub
+artifact-attestation trust root instead of public-good; `--instance
+staging` fetches Sigstore's staging environment (useful only for
+validating new tooling).
 
 ## AI Agent
 

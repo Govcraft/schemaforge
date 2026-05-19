@@ -13,6 +13,7 @@ pub mod serve;
 pub mod sign;
 pub mod site;
 pub mod token;
+pub mod trust_bundle;
 pub mod verify;
 
 use std::sync::Arc;
