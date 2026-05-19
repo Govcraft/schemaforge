@@ -139,6 +139,26 @@ database = "dev"
 # Switch to PostgreSQL by removing [surrealdb] above and uncommenting:
 # [database]
 # url = "postgres://user:pass@localhost:5432/schemaforge"
+
+# ---------------------------------------------------------------------------
+# Signed-schema enforcement.
+#
+# Defaults to `off`, which preserves the pre-signing behaviour. For
+# production: switch `mode` to `enforce` and list at least one trust
+# anchor below. Generate a keypair and sign your schemas with:
+#
+#   schemaforge sign schemas/ --ed25519-generate ./keys/sign.pem --print-pubkey
+#
+# Then paste the printed public key into a `[[schema_forge.signing.
+# trusted_signers]]` block here.
+# ---------------------------------------------------------------------------
+# [schema_forge.signing]
+# mode = "enforce"   # off | warn | enforce
+#
+# [[schema_forge.signing.trusted_signers]]
+# kind = "ed25519"
+# name = "ops-key"
+# public_key_b64 = "PASTE-SPKI-BASE64-FROM-schemaforge-sign-OUTPUT"
 "#;
     write_file(&project_dir.join("config.toml"), config_content)
 }

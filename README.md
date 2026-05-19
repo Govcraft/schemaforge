@@ -157,7 +157,36 @@ cargo install --git https://github.com/Govcraft/schemaforge schema-forge-cli \
 # SurrealDB build
 cargo install --git https://github.com/Govcraft/schemaforge schema-forge-cli \
   --no-default-features --features surrealdb
+
+# FIPS-validated PostgreSQL build (federal deployments)
+cargo install --git https://github.com/Govcraft/schemaforge schema-forge-cli \
+  --no-default-features --features postgres,fips
 ```
+
+#### FIPS builds
+
+The `fips` feature routes rustls through `aws-lc-rs` compiled against the
+FIPS-validated AWS-LC C library (`aws-lc-fips-sys`). When enabled,
+SchemaForge installs `aws_lc_rs` as the process-wide rustls
+[`CryptoProvider`] at startup so every TLS-using subsystem — sqlx
+(PostgreSQL), reqwest (S3), tonic (hook dispatcher) — terminates through
+the FIPS module.
+
+Build requirements:
+
+- CMake 3.10+
+- **Clang 14–18** (FIPS module integrity checks reject the relocation
+  sections clang ≥19 emits; AWS-LC-FIPS 3.0.x targets clang ≤18). Point
+  cargo at the right compiler with `CC=/path/to/clang-18
+  CXX=/path/to/clang++-18` for the build.
+- Perl
+- Go 1.18+ (required by AWS-LC's `delocate` tool when targeting FIPS)
+- Supported platform per [aws-lc-fips-sys](https://github.com/aws/aws-lc-rs/tree/main/aws-lc-fips-sys)
+
+Note: the `surrealdb` backend pulls `rustls` with `ring` transitively and
+is **not** suitable for FIPS deployments. Pair `fips` with `postgres`.
+
+[`CryptoProvider`]: https://docs.rs/rustls/0.23/rustls/crypto/struct.CryptoProvider.html
 
 ### Scaffold a Project
 
@@ -485,6 +514,8 @@ schemaforge <command> [options]
 | `export openapi` | Export OpenAPI spec (`-o file`) |
 | `policies list` | List Cedar authorization policies |
 | `policies regenerate` | Regenerate Cedar policy templates (`--force`) |
+| `sign <paths>` | Sign schemas (`--ed25519-key`, `--ed25519-generate`, `--ssh-key`, `--keyless`, `--print-pubkey`). Produces per-file `.sig`s and a signed `schemas.manifest.toml`. |
+| `verify <paths>` | Verify schemas against the configured trust policy without applying anything. Suitable as a pre-merge CI gate. |
 | `completions <shell>` | Generate shell completions (bash, zsh, fish, powershell, elvish) |
 
 ### Global Options
@@ -499,6 +530,58 @@ schemaforge <command> [options]
 | `--db-url <url>` | SurrealDB connection URL (env: `SCHEMA_FORGE_DB_URL`) |
 | `--db-ns <name>` | SurrealDB namespace (env: `SCHEMA_FORGE_DB_NS`) |
 | `--db-name <name>` | SurrealDB database name (env: `SCHEMA_FORGE_DB_NAME`) |
+| `--trust-policy <path>` | Standalone trust-policy TOML; overrides `[schema_forge.signing]` (env: `SCHEMAFORGE_TRUST_POLICY`) |
+| `--no-verify` | Skip schema signature verification (refused under `signing.mode = "enforce"` unless `SCHEMAFORGE_ALLOW_NO_VERIFY=1`) |
+
+### Signed-Schema Enforcement
+
+SchemaForge can require that every `.schema` file under `schemas/` be
+cryptographically signed by an operator-controlled key before any
+command will read it. The control closes two threat classes that an
+unsigned schema directory leaves open: on-disk tampering of any file,
+and untrusted-author additions made by dropping a `.schema` into the
+directory.
+
+The trust policy lives under `[schema_forge.signing]` in `config.toml`
+(or in a standalone file via `--trust-policy`). Three modes:
+
+- `off` — default; skip verification (preserves pre-signing behaviour).
+- `warn` — run all checks, log failures, keep going. Useful for
+  migrating an existing deployment.
+- `enforce` — run all checks; any failure aborts with exit code 13.
+  Recommended for production.
+
+Quick start:
+
+```bash
+# Generate a keypair, sign every schema in ./schemas/, and print the
+# public key in the form that goes into the trust policy.
+schemaforge sign schemas/ \
+    --ed25519-generate ./keys/sign.pem \
+    --print-pubkey
+
+# Splice the printed public key into config.toml:
+#
+# [schema_forge.signing]
+# mode = "enforce"
+#
+# [[schema_forge.signing.trusted_signers]]
+# kind = "ed25519"
+# name = "ops-key"
+# public_key_b64 = "<PASTED-FROM-ABOVE>"
+
+# Standalone verifier — exits non-zero on any failure. Use as a
+# pre-merge CI gate.
+schemaforge verify schemas/
+```
+
+Behind the scenes `schemaforge sign` writes a `<file>.sig` next to
+every `.schema` and a `schemas.manifest.toml` (plus its own `.sig`)
+that pins every file's SHA-256. The verifier checks both: per-file
+signatures defeat tampering, the signed manifest defeats add/remove
+attacks. Three signer kinds are defined — `ed25519` (shipped today),
+`ssh-allowed-signers` (Phase 2), and `cosign-keyless` (Phase 3). Trust
+evaluation uses OR-semantics so adding a new key is additive.
 
 ## AI Agent
 

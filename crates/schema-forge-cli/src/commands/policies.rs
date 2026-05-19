@@ -7,7 +7,7 @@ use schema_forge_acton::cedar::generate_cedar_policies;
 use crate::cli::{
     GlobalOpts, PolicyCommands, PolicyListArgs, PolicyRegenerateArgs, PolicyValidateArgs,
 };
-use crate::commands::parse::parse_all_schemas;
+use crate::commands::parse::parse_all_schemas_with_global;
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
 
@@ -26,11 +26,15 @@ pub async fn run(
 
 async fn run_list(
     args: PolicyListArgs,
-    _global: &GlobalOpts,
+    global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
     // For list, we need schemas. Parse from default location.
-    let schemas = parse_all_schemas(&[std::path::PathBuf::from("schemas/")])?;
+    let schemas = parse_all_schemas_with_global(
+        &[std::path::PathBuf::from("schemas/")],
+        global,
+        output,
+    )?;
 
     for schema in &schemas {
         if let Some(ref filter) = args.schema {
@@ -88,10 +92,14 @@ async fn run_list(
 
 async fn run_regenerate(
     args: PolicyRegenerateArgs,
-    _global: &GlobalOpts,
+    global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
-    let schemas = parse_all_schemas(&[std::path::PathBuf::from("schemas/")])?;
+    let schemas = parse_all_schemas_with_global(
+        &[std::path::PathBuf::from("schemas/")],
+        global,
+        output,
+    )?;
 
     // Create output directory
     fs::create_dir_all(&args.output_dir).map_err(|e| CliError::Io {
@@ -149,10 +157,10 @@ async fn run_regenerate(
 /// bundle.
 async fn run_validate(
     args: PolicyValidateArgs,
-    _global: &GlobalOpts,
+    global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
-    let schemas = parse_all_schemas(&args.schema_paths)?;
+    let schemas = parse_all_schemas_with_global(&args.schema_paths, global, output)?;
 
     let role_ranks = RoleRanks::from_toml_file(&args.role_ranks).map_err(|e| {
         CliError::Other(format!(

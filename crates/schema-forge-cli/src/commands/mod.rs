@@ -10,8 +10,10 @@ pub mod migrate;
 pub mod parse;
 pub mod policies;
 pub mod serve;
+pub mod sign;
 pub mod site;
 pub mod token;
+pub mod verify;
 
 use std::sync::Arc;
 

@@ -41,7 +41,7 @@ use crate::cli::{GlobalOpts, HooksCommands, HooksDiffArgs, HooksGenerateArgs, Ho
 use crate::commands::codegen::{
     check_plan, write_plan, FilePlan, SentinelKind, WriteMode, WriteOptions,
 };
-use crate::commands::parse::parse_all_schemas;
+use crate::commands::parse::parse_all_schemas_with_global;
 use crate::error::CliError;
 use crate::output::OutputContext;
 
@@ -106,14 +106,15 @@ impl SchemaHooks {
 
 fn generate(
     args: HooksGenerateArgs,
-    _global: &GlobalOpts,
+    global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
     output.status(&format!(
         "Scanning schemas in {}...",
         args.schema_dir.display()
     ));
-    let schemas = parse_all_schemas(std::slice::from_ref(&args.schema_dir))?;
+    let schemas =
+        parse_all_schemas_with_global(std::slice::from_ref(&args.schema_dir), global, output)?;
     let mut hooked: Vec<SchemaHooks> = schemas.into_iter().filter_map(SchemaHooks::from).collect();
 
     if let Some(only) = &args.schema {
@@ -1042,8 +1043,9 @@ fn event_to_method(event: HookEvent) -> &'static str {
 // hooks list
 // ---------------------------------------------------------------------------
 
-fn list(args: HooksListArgs, _global: &GlobalOpts, output: &OutputContext) -> Result<(), CliError> {
-    let schemas = parse_all_schemas(std::slice::from_ref(&args.schema_dir))?;
+fn list(args: HooksListArgs, global: &GlobalOpts, output: &OutputContext) -> Result<(), CliError> {
+    let schemas =
+        parse_all_schemas_with_global(std::slice::from_ref(&args.schema_dir), global, output)?;
     let mut found = 0;
     for def in &schemas {
         let hooks: Vec<&Annotation> = def
@@ -1074,9 +1076,9 @@ fn list(args: HooksListArgs, _global: &GlobalOpts, output: &OutputContext) -> Re
 // hooks diff
 // ---------------------------------------------------------------------------
 
-fn diff(args: HooksDiffArgs, _global: &GlobalOpts, output: &OutputContext) -> Result<(), CliError> {
-    let old = parse_all_schemas(std::slice::from_ref(&args.old))?;
-    let new = parse_all_schemas(std::slice::from_ref(&args.new))?;
+fn diff(args: HooksDiffArgs, global: &GlobalOpts, output: &OutputContext) -> Result<(), CliError> {
+    let old = parse_all_schemas_with_global(std::slice::from_ref(&args.old), global, output)?;
+    let new = parse_all_schemas_with_global(std::slice::from_ref(&args.new), global, output)?;
 
     let old_map = build_hook_map(&old);
     let new_map = build_hook_map(&new);

@@ -11,6 +11,12 @@ use clap::Parser;
 
 #[tokio::main]
 async fn main() {
+    // Install rustls' aws_lc_rs provider once, before any TLS-using
+    // subsystem (sqlx, reqwest, tonic, surrealdb) constructs a client
+    // config. Under the `fips` feature this provider is backed by the
+    // FIPS-validated AWS-LC C library.
+    schema_forge_acton::crypto::install_default_crypto_provider();
+
     let cli = cli::Cli::parse();
     let output = output::OutputContext::from_global(&cli.global);
 
@@ -36,6 +42,8 @@ async fn main() {
         cli::Commands::BootstrapAdmin(args) => {
             commands::bootstrap_admin::run(args, &cli.global, &output).await
         }
+        cli::Commands::Sign(args) => commands::sign::run(args, &cli.global, &output).await,
+        cli::Commands::Verify(args) => commands::verify::run(args, &cli.global, &output).await,
     };
 
     match result {

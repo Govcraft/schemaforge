@@ -1,3 +1,4 @@
+use schema_forge_signing::SigningConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::authz::principal_claims::PrincipalClaimsConfig;
@@ -41,6 +42,17 @@ pub struct SchemaForgeSettings {
     /// see [`crate::authz::principal_claims`].
     #[serde(default)]
     pub authz: AuthzConfig,
+
+    /// Signed-schema enforcement. The CLI builds a
+    /// [`schema_forge_signing::VerifyPolicy`] from this section before
+    /// loading any `.schema` file, so on-disk tampering and
+    /// untrusted-author additions are rejected at the parse boundary.
+    /// Defaults to `mode = "off"` so existing deployments keep parsing
+    /// today; production setups should switch to `enforce` and list
+    /// trust anchors. See `schema-forge-signing` for the file layout
+    /// and verifier kinds.
+    #[serde(default)]
+    pub signing: SigningConfig,
 }
 
 /// `[schema_forge.authz]` section of config.toml.
@@ -71,6 +83,7 @@ impl Default for SchemaForgeSettings {
             hooks: crate::hooks::HooksConfig::default(),
             storage: crate::storage::StorageConfig::default(),
             authz: AuthzConfig::default(),
+            signing: SigningConfig::default(),
         }
     }
 }
@@ -96,6 +109,7 @@ mod tests {
                 hooks: crate::hooks::HooksConfig::default(),
                 storage: crate::storage::StorageConfig::default(),
                 authz: AuthzConfig::default(),
+                signing: SigningConfig::default(),
             },
         };
         let json = serde_json::to_string(&config).unwrap();

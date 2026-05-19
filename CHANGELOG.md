@@ -7,6 +7,62 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+### Added
+
+- **Signed-schema enforcement.** New `schema-forge-signing` crate verifies
+  per-file digital signatures and a signed directory manifest before any
+  `.schema` file is parsed by `apply`, `migrate`, `serve`, `parse`,
+  `export`, `policies`, `hooks`, or `site`. The trust policy lives under
+  `[schema_forge.signing]` in `config.toml`; three signer kinds are
+  defined — `ed25519` (Phase 1, shipped), `ssh-allowed-signers` (Phase 2),
+  and `cosign-keyless` (Phase 3). Trust evaluation uses OR-semantics so
+  rotating keys is additive. Three modes: `off` (default for now,
+  preserves pre-signing behaviour), `warn` (run checks, log failures,
+  continue), `enforce` (any failure aborts with exit code 13). Two new
+  subcommands wrap the verifier:
+    - `schemaforge sign <paths>` — produce per-file `.sig` files and a
+      signed `schemas.manifest.toml`. `--ed25519-generate` creates a
+      fresh keypair; `--ed25519-key` reuses one; `--print-pubkey` emits
+      the SPKI base64 ready to paste into the trust policy.
+    - `schemaforge verify <paths>` — standalone verifier suitable as a
+      pre-merge CI gate; touches no database.
+
+  Two new global flags route through the verifier:
+    - `--trust-policy <path>` overrides `[schema_forge.signing]` with a
+      standalone TOML, so one shared `config.toml` can fan out to many
+      environments without duplicating database settings.
+    - `--no-verify` skips verification for one invocation, but is
+      *refused* when `signing.mode = "enforce"` unless
+      `SCHEMAFORGE_ALLOW_NO_VERIFY=1` is set — production deployments
+      cannot silently skip verification.
+
+  Defeats two threat classes that an unsigned schema directory leaves
+  open: (1) filesystem-level tampering of any `.schema`, (2) introduction
+  of untrusted authors via "drop a file in `schemas/`." Per-file
+  detached signatures cover tampering; the signed manifest with pinned
+  SHA-256s and an explicit file list covers add/remove attacks.
+
+- New `fips` cargo feature on `schema-forge-cli` (and `schema-forge-acton`)
+  routes rustls through `aws-lc-rs` compiled against the FIPS-validated
+  AWS-LC C library (`aws-lc-fips-sys`). At startup, the CLI installs
+  `aws_lc_rs` as the process-wide rustls `CryptoProvider`, so PostgreSQL
+  (sqlx), S3 (reqwest), and the hook dispatcher (tonic) all terminate
+  TLS through the FIPS module. Pair with `postgres`; the `surrealdb`
+  backend still pulls `rustls/ring` transitively and is not FIPS-clean.
+  Build requires CMake, a C/C++ toolchain, and Go 1.18+. See README
+  "FIPS builds".
+
+### Changed
+
+- Upgraded `acton-service` to **0.26** in `schema-forge-acton`,
+  `schema-forge-cli`, and `schema-forge-backend`. 0.26's new
+  `crypto-aws-lc-rs` feature (enabled by default in our build) propagates
+  `aws-lc-rs` through `rustls`, `tokio-rustls`, `reqwest`, `sqlx`, and
+  `tonic`, replacing the previous ring-backed default.
+- `schema-forge-postgres` no longer pins `sqlx`'s `tls-rustls` (ring)
+  feature; `acton-service`'s crypto feature drives the TLS provider so
+  the FIPS path can swap cleanly.
+
 ### Security / Breaking
 
 - `schemaforge serve` no longer auto-seeds the five SchemaForge demo personas

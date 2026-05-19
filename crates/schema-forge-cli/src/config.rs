@@ -18,6 +18,7 @@ use std::path::Path;
 
 use acton_service::config::Config;
 use schema_forge_acton::SchemaForgeConfig;
+use schema_forge_signing::{SigningConfig, SigningMode, VerifyPolicy};
 
 use crate::cli::GlobalOpts;
 use crate::error::CliError;
@@ -291,6 +292,70 @@ fn default_dev_surrealdb_params() -> SurrealDbParams {
     }
 }
 
+/// Resolve a [`VerifyPolicy`] for schema-loading commands.
+///
+/// Resolution order:
+/// 1. If `global.no_verify` is set, return [`VerifyPolicy::off`] —
+///    the operator has explicitly opted out for this invocation. The
+///    CLI surfaces a one-time warning so this doesn't drift into a
+///    silent default.
+/// 2. If `global.trust_policy` points at an external TOML file, load
+///    that file as a standalone [`SigningConfig`] (handy when the
+///    deployment config lives elsewhere and only the trust policy is
+///    pinned per environment).
+/// 3. Otherwise, use the `[schema_forge.signing]` section from the
+///    already-loaded `Config<SchemaForgeConfig>`.
+///
+/// Refuses to honour `--no-verify` when the resolved policy is
+/// `mode = "enforce"`. Operators who want a working escape hatch in
+/// strict environments must instead set `SCHEMAFORGE_ALLOW_NO_VERIFY=1`
+/// — the env var is the explicit acknowledgement that they own the
+/// risk for this command. This matches the design used for
+/// production-grade auth bypasses.
+pub fn build_verify_policy(
+    svc_config: &Config<SchemaForgeConfig>,
+    global: &GlobalOpts,
+) -> Result<VerifyPolicy, CliError> {
+    let signing_config = resolve_signing_config(svc_config, global)?;
+
+    if global.no_verify {
+        let allow_in_enforce =
+            std::env::var("SCHEMAFORGE_ALLOW_NO_VERIFY").map(|v| v == "1").unwrap_or(false);
+        if signing_config.mode == SigningMode::Enforce && !allow_in_enforce {
+            return Err(CliError::Config {
+                message:
+                    "--no-verify refused: schema_forge.signing.mode is \"enforce\". \
+                     Set SCHEMAFORGE_ALLOW_NO_VERIFY=1 to override (audit the \
+                     reason in your change log)."
+                        .into(),
+            });
+        }
+        return Ok(VerifyPolicy::off());
+    }
+
+    Ok(VerifyPolicy::from_config(&signing_config)?)
+}
+
+/// Where the trust-policy bytes actually come from. Pulled out from
+/// [`build_verify_policy`] so the `verify` subcommand can introspect
+/// the resolved policy without re-running `--no-verify` checks.
+pub fn resolve_signing_config(
+    svc_config: &Config<SchemaForgeConfig>,
+    global: &GlobalOpts,
+) -> Result<SigningConfig, CliError> {
+    if let Some(path) = &global.trust_policy {
+        let text = std::fs::read_to_string(path).map_err(|e| CliError::Io {
+            path: path.clone(),
+            source: e,
+        })?;
+        let cfg: SigningConfig = toml::from_str(&text).map_err(|e| CliError::Config {
+            message: format!("failed to parse trust policy {}: {e}", path.display()),
+        })?;
+        return Ok(cfg);
+    }
+    Ok(svc_config.custom.schema_forge.signing.clone())
+}
+
 /// Detect PostgreSQL URLs by scheme.
 pub fn is_postgres_url(url: &str) -> bool {
     url.starts_with("postgres://") || url.starts_with("postgresql://")
@@ -310,6 +375,8 @@ mod tests {
             db_url: None,
             db_ns: None,
             db_name: None,
+            trust_policy: None,
+            no_verify: false,
         }
     }
 
@@ -497,6 +564,58 @@ mod tests {
         apply_cli_overrides(&mut svc, &global).unwrap();
         let s = svc.surrealdb.as_ref().expect("section must be created");
         assert_eq!(s.url, "ws://localhost:9000");
+    }
+
+    #[test]
+    fn build_verify_policy_off_by_default() {
+        let svc: Config<SchemaForgeConfig> = Config::default();
+        let policy = build_verify_policy(&svc, &empty_global()).unwrap();
+        assert_eq!(policy.mode(), SigningMode::Off);
+    }
+
+    #[test]
+    fn build_verify_policy_honours_no_verify_in_warn_mode() {
+        let mut svc: Config<SchemaForgeConfig> = Config::default();
+        svc.custom.schema_forge.signing.mode = SigningMode::Warn;
+        let mut global = empty_global();
+        global.no_verify = true;
+        let policy = build_verify_policy(&svc, &global).unwrap();
+        assert_eq!(policy.mode(), SigningMode::Off);
+    }
+
+    #[test]
+    fn build_verify_policy_refuses_no_verify_under_enforce() {
+        std::env::remove_var("SCHEMAFORGE_ALLOW_NO_VERIFY");
+        let mut svc: Config<SchemaForgeConfig> = Config::default();
+        svc.custom.schema_forge.signing.mode = SigningMode::Enforce;
+        svc.custom.schema_forge.signing.trusted_signers =
+            vec![schema_forge_signing::TrustedSigner::Ed25519 {
+                name: "x".into(),
+                public_key_b64: schema_forge_signing::Ed25519Signer::from_seed_bytes(&[0x42; 32])
+                    .public_key_b64_raw(),
+            }];
+        let mut global = empty_global();
+        global.no_verify = true;
+        let err = build_verify_policy(&svc, &global).unwrap_err();
+        assert!(matches!(err, CliError::Config { .. }));
+    }
+
+    #[test]
+    fn build_verify_policy_allows_no_verify_with_env_override() {
+        std::env::set_var("SCHEMAFORGE_ALLOW_NO_VERIFY", "1");
+        let mut svc: Config<SchemaForgeConfig> = Config::default();
+        svc.custom.schema_forge.signing.mode = SigningMode::Enforce;
+        svc.custom.schema_forge.signing.trusted_signers =
+            vec![schema_forge_signing::TrustedSigner::Ed25519 {
+                name: "x".into(),
+                public_key_b64: schema_forge_signing::Ed25519Signer::from_seed_bytes(&[0x42; 32])
+                    .public_key_b64_raw(),
+            }];
+        let mut global = empty_global();
+        global.no_verify = true;
+        let policy = build_verify_policy(&svc, &global).unwrap();
+        assert_eq!(policy.mode(), SigningMode::Off);
+        std::env::remove_var("SCHEMAFORGE_ALLOW_NO_VERIFY");
     }
 
     #[cfg(feature = "surrealdb")]

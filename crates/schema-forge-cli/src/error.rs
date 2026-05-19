@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use schema_forge_backend::BackendError;
 use schema_forge_dsl::DslError;
+use schema_forge_signing::{SigningError, VerifyError};
 
 /// Exit codes for the CLI process.
 ///
@@ -21,6 +22,10 @@ pub enum ExitCode {
     ConnectionError = 10,
     MigrationError = 11,
     ServerError = 12,
+    /// Schema signature verification failed. Distinguished from
+    /// `GeneralError` so CI gates and audit pipelines can branch on
+    /// "untrusted schema content" specifically.
+    VerificationFailed = 13,
 }
 
 /// Errors returned by CLI command handlers.
@@ -76,9 +81,41 @@ pub enum CliError {
     #[error("server error: {message}")]
     Server { message: String },
 
+    /// Schema-signature verification rejected the input. Wraps the
+    /// underlying [`VerifyError`] so the diagnostic layer can render
+    /// the specific failure (missing signature, hash mismatch,
+    /// untrusted signer, …).
+    #[error("schema signature verification failed: {source}")]
+    VerificationFailed {
+        #[source]
+        source: VerifyError,
+    },
+
+    /// Problem with the signing trust policy or with producing a
+    /// signature (key parse failure, malformed manifest, IO during
+    /// signing). Distinct from `VerificationFailed` which represents
+    /// a negative *outcome* — this one represents broken inputs.
+    #[error("signing infrastructure error: {source}")]
+    Signing {
+        #[source]
+        source: SigningError,
+    },
+
     /// Generic error with message.
     #[error("{0}")]
     Other(String),
+}
+
+impl From<VerifyError> for CliError {
+    fn from(source: VerifyError) -> Self {
+        Self::VerificationFailed { source }
+    }
+}
+
+impl From<SigningError> for CliError {
+    fn from(source: SigningError) -> Self {
+        Self::Signing { source }
+    }
 }
 
 impl CliError {
@@ -89,8 +126,11 @@ impl CliError {
             Self::Backend(BackendError::ConnectionError { .. }) => ExitCode::ConnectionError,
             Self::Backend(BackendError::MigrationFailed { .. }) => ExitCode::MigrationError,
             Self::Backend(_) => ExitCode::GeneralError,
-            Self::Config { .. } | Self::NoSchemaFiles { .. } => ExitCode::InvalidArguments,
+            Self::Config { .. } | Self::NoSchemaFiles { .. } | Self::Signing { .. } => {
+                ExitCode::InvalidArguments
+            }
             Self::Server { .. } => ExitCode::ServerError,
+            Self::VerificationFailed { .. } => ExitCode::VerificationFailed,
             Self::Io { .. }
             | Self::Cancelled
             | Self::SchemaNotFound { .. }
@@ -130,6 +170,14 @@ impl CliError {
             Self::Server { message } => serde_json::json!({
                 "error": "server_error",
                 "message": message,
+            }),
+            Self::VerificationFailed { source } => serde_json::json!({
+                "error": "verification_failed",
+                "message": source.to_string(),
+            }),
+            Self::Signing { source } => serde_json::json!({
+                "error": "signing_error",
+                "message": source.to_string(),
             }),
             other => serde_json::json!({
                 "error": "error",
@@ -317,5 +365,38 @@ mod tests {
         assert_eq!(ExitCode::ConnectionError as i32, 10);
         assert_eq!(ExitCode::MigrationError as i32, 11);
         assert_eq!(ExitCode::ServerError as i32, 12);
+        assert_eq!(ExitCode::VerificationFailed as i32, 13);
+    }
+
+    #[test]
+    fn verification_failed_exit_code() {
+        let err = CliError::VerificationFailed {
+            source: VerifyError::MissingManifest {
+                path: PathBuf::from("schemas/schemas.manifest.toml"),
+            },
+        };
+        assert_eq!(err.exit_code(), ExitCode::VerificationFailed);
+    }
+
+    #[test]
+    fn signing_error_exit_code() {
+        let err = CliError::Signing {
+            source: SigningError::InvalidPolicy {
+                message: "no signers".into(),
+            },
+        };
+        assert_eq!(err.exit_code(), ExitCode::InvalidArguments);
+    }
+
+    #[test]
+    fn to_json_verification_failed() {
+        let err = CliError::VerificationFailed {
+            source: VerifyError::MissingManifest {
+                path: PathBuf::from("schemas/schemas.manifest.toml"),
+            },
+        };
+        let json = err.to_json();
+        assert_eq!(json["error"], "verification_failed");
+        assert!(json["message"].as_str().unwrap().contains("no manifest"));
     }
 }

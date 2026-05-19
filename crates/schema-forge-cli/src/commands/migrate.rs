@@ -2,7 +2,7 @@ use console::Term;
 use schema_forge_core::migration::DiffEngine;
 
 use crate::cli::{GlobalOpts, MigrateArgs};
-use crate::commands::parse::parse_all_schemas;
+use crate::commands::parse::parse_all_schemas_with_global;
 use crate::config::{load_svc_config, resolve_db_params};
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
@@ -13,7 +13,7 @@ pub async fn run(
     global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
-    let schemas = parse_all_schemas(&args.paths)?;
+    let schemas = parse_all_schemas_with_global(&args.paths, global, output)?;
 
     let svc_config = load_svc_config(global)?;
     let db_params = resolve_db_params(&svc_config)?;

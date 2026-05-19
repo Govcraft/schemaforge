@@ -8,4 +8,5 @@ members = [
     "crates/schema-forge-acton",
     "crates/schema-forge-cli",
     "crates/schema-forge-postgres",
+    "crates/schema-forge-signing",
 ]

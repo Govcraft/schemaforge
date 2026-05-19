@@ -27,15 +27,20 @@ console = "0.15"
 dialoguer = "0.11"
 glob = "0.3"
 axum = { version = "0.8" }
-acton-service = { version = "0.23", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth"] }
+acton-service = { version = "0.26.1", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth", "crypto-aws-lc-rs"] }
 heck = "0.5.0"
 minijinja = "2.19.0"
 tracing = "0.1.44"
+schema-forge-signing = { version = "0.1.0", path = "../schema-forge-signing" }
 
 [features]
 default = ["surrealdb"]
 surrealdb = ["dep:schema-forge-surrealdb", "schema-forge-acton/surrealdb", "acton-service/surrealdb"]
 postgres = ["dep:schema-forge-postgres", "schema-forge-acton/postgres", "acton-service/database"]
+# Federal-grade build: routes rustls, sqlx, reqwest, and tonic through
+# aws-lc-rs compiled against the FIPS-validated AWS-LC C library.
+# Requires cmake + a supported toolchain. See README "FIPS builds".
+fips = ["schema-forge-acton/fips"]
 
 [dev-dependencies]
 assert_cmd = "2"

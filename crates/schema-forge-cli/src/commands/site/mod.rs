@@ -21,7 +21,7 @@ use crate::cli::{GlobalOpts, SiteCommands, SiteGenerateArgs};
 use crate::commands::codegen::{
     check_plan, write_plan, FilePlan, SentinelKind, WriteMode, WriteOptions,
 };
-use crate::commands::parse::parse_all_schemas;
+use crate::commands::parse::parse_all_schemas_with_global;
 use crate::error::CliError;
 use crate::output::OutputContext;
 
@@ -44,14 +44,15 @@ pub async fn run(
 
 fn generate(
     args: SiteGenerateArgs,
-    _global: &GlobalOpts,
+    global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
     output.status(&format!(
         "Scanning schemas in {}...",
         args.schema_dir.display()
     ));
-    let schemas = parse_all_schemas(std::slice::from_ref(&args.schema_dir))?;
+    let schemas =
+        parse_all_schemas_with_global(std::slice::from_ref(&args.schema_dir), global, output)?;
 
     if schemas.is_empty() {
         return Err(CliError::Config {
@@ -112,6 +113,7 @@ fn generate(
     let ctx = SiteContext {
         project_name: project_name.clone(),
         entities,
+        accessibility_contact: args.accessibility_contact.clone(),
     };
 
     let templates_dir = args.templates_dir.clone().or_else(|| {
@@ -362,6 +364,15 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         renderer.render("src/pages/login.tsx", ctx)?,
     ));
 
+    // ---- Public accessibility statement (Owned: regenerated so policy
+    // text stays current with the SchemaForge baseline). Required by
+    // OMB M-24-08 §§II.A–II.D and 36 CFR 1194 §§603.2–603.3 to live on
+    // every page, reachable in both authed and unauthed states. ----
+    plan.push(owned(
+        "src/pages/accessibility.tsx",
+        renderer.render("src/pages/accessibility.tsx", ctx)?,
+    ));
+
     // ---- `/app/*`: per-entity user-facing pages ----
     //
     // Lives under `src/app/pages/<kebab>/` so the path mirrors the route
@@ -387,6 +398,7 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         let page_ctx = PageContext {
             project_name: ctx.project_name.clone(),
             entity: entity.clone(),
+            accessibility_contact: ctx.accessibility_contact.clone(),
         };
         let page_dir = format!("src/app/pages/{}", entity.kebab);
         plan.push(owned(
@@ -565,6 +577,7 @@ mod tests {
         let page_ctx = PageContext {
             project_name: "demo".to_string(),
             entity,
+            accessibility_contact: None,
         };
 
         let renderer = SiteRenderer::new(None).unwrap();
@@ -680,6 +693,7 @@ mod tests {
         let page_ctx = PageContext {
             project_name: "demo".to_string(),
             entity,
+            accessibility_contact: None,
         };
         let renderer = SiteRenderer::new(None).unwrap();
         let rendered = renderer
@@ -779,6 +793,7 @@ mod tests {
         let page_ctx = PageContext {
             project_name: "demo".to_string(),
             entity,
+            accessibility_contact: None,
         };
         let renderer = SiteRenderer::new(None).unwrap();
         let rendered = renderer
@@ -850,6 +865,7 @@ mod tests {
         let page_ctx = PageContext {
             project_name: "demo".to_string(),
             entity,
+            accessibility_contact: None,
         };
         let renderer = SiteRenderer::new(None).unwrap();
         let rendered = renderer
@@ -899,6 +915,7 @@ mod tests {
         let page_ctx = PageContext {
             project_name: "demo".to_string(),
             entity,
+            accessibility_contact: None,
         };
         let renderer = SiteRenderer::new(None).unwrap();
         let rendered = renderer

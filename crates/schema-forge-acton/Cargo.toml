@@ -11,7 +11,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["sync"] }
-acton-service = { version = "0.23", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth"] }
+acton-service = { version = "0.26.1", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth", "crypto-aws-lc-rs"] }
 schema-forge-dsl = { path = "../schema-forge-dsl" }
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb", optional = true }
 schema-forge-postgres = { path = "../schema-forge-postgres", optional = true }
@@ -40,12 +40,19 @@ aws-credential-types = "1.2.11"
 thiserror = "2.0.18"
 cedar-policy = "4"
 toml = "1"
+aws-lc-rs = { version = "1", features = ["fips"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "logging"] }
+schema-forge-signing = { version = "0.1.0", path = "../schema-forge-signing" }
 
 
 [features]
 surrealdb = ["acton-service/surrealdb", "dep:schema-forge-surrealdb"]
 postgres = ["acton-service/database", "dep:schema-forge-postgres"]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum"]
+# Build aws-lc-rs against the FIPS-validated AWS-LC C library
+# (aws-lc-fips-sys) so federal deployments use NIST-certified crypto.
+# Requires cmake and a compatible toolchain at build time.
+fips = ["dep:aws-lc-rs"]
 
 [dev-dependencies]
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb" }

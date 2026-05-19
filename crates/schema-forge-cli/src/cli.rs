@@ -67,6 +67,24 @@ pub struct GlobalOpts {
     /// Database name (SurrealDB only) [env: SCHEMA_FORGE_DB_NAME]
     #[arg(long = "db-name", global = true, env = "SCHEMA_FORGE_DB_NAME")]
     pub db_name: Option<String>,
+
+    /// Path to a standalone trust-policy TOML file. Overrides the
+    /// `[schema_forge.signing]` section of the main config. Useful
+    /// when one config.toml is shared across environments but the
+    /// trust roots differ per deployment.
+    #[arg(
+        long = "trust-policy",
+        global = true,
+        env = "SCHEMAFORGE_TRUST_POLICY"
+    )]
+    pub trust_policy: Option<PathBuf>,
+
+    /// Skip schema signature verification for this invocation. Refused
+    /// when `signing.mode = "enforce"` unless `SCHEMAFORGE_ALLOW_NO_VERIFY=1`
+    /// is set — production environments should not accept an
+    /// unsigned-schema run silently.
+    #[arg(long = "no-verify", global = true)]
+    pub no_verify: bool,
 }
 
 /// Top-level subcommands.
@@ -127,6 +145,85 @@ pub enum Commands {
     /// Bootstrap the initial `platform_admin` user against the configured
     /// backend. Idempotent: only seeds when the user store is empty.
     BootstrapAdmin(BootstrapAdminArgs),
+
+    /// Sign `.schema` files and produce the directory manifest + per-file
+    /// signatures that `schemaforge apply` will later verify.
+    Sign(SignArgs),
+
+    /// Verify a `.schema` directory against the trust policy without
+    /// applying anything. Suitable as a pre-merge CI gate.
+    Verify(VerifyArgs),
+}
+
+/// Arguments for `schemaforge sign`.
+///
+/// Produces a `<dir>/schemas.manifest.toml` (plus its `.sig`) and a
+/// `<file>.sig` next to each `.schema`. Existing signature files are
+/// overwritten — re-running `sign` after editing a schema is the
+/// supported way to refresh signatures.
+#[derive(Args)]
+pub struct SignArgs {
+    /// Directory or individual `.schema` files to sign. Defaults to
+    /// `./schemas/`.
+    #[arg(default_value = "schemas/")]
+    pub paths: Vec<PathBuf>,
+
+    /// Signing scheme.
+    #[command(flatten)]
+    pub key: SignKeyArgs,
+
+    /// Override the manifest filename. Must match the operator's
+    /// `[schema_forge.signing] manifest_filename` if they've changed it.
+    #[arg(long = "manifest-filename")]
+    pub manifest_filename: Option<String>,
+
+    /// Also print the public key (base64 SPKI) so the operator can
+    /// paste it directly into their trust policy.
+    #[arg(long = "print-pubkey")]
+    pub print_pubkey: bool,
+
+    /// Allow `--ed25519-generate` to overwrite an existing file.
+    #[arg(short = 'f', long = "force")]
+    pub force: bool,
+}
+
+/// Selects which signing scheme `schemaforge sign` uses. Exactly one
+/// flag must be set.
+#[derive(Args, Debug)]
+#[group(required = true, multiple = false)]
+pub struct SignKeyArgs {
+    /// Path to a PKCS#8 PEM-encoded ed25519 private key. Generate one
+    /// with `openssl genpkey -algorithm ed25519` or rely on
+    /// `--ed25519-generate` to create one in place.
+    #[arg(long = "ed25519-key")]
+    pub ed25519_key: Option<PathBuf>,
+
+    /// Generate a fresh ed25519 keypair, write the private key to the
+    /// given path (PKCS#8 PEM), and use it to sign. Refuses to
+    /// overwrite an existing file unless `--force` is also set.
+    #[arg(long = "ed25519-generate")]
+    pub ed25519_generate: Option<PathBuf>,
+
+    /// Path to an OpenSSH-format private key. Wired up in Phase 2.
+    /// Variant reserved so command lines written now stay
+    /// forward-compatible.
+    #[arg(long = "ssh-key")]
+    pub ssh_key: Option<PathBuf>,
+
+    /// Use Sigstore cosign keyless signing via the OIDC token in the
+    /// caller's environment (e.g., GitHub Actions). Wired up in Phase 3.
+    #[arg(long = "keyless")]
+    pub keyless: bool,
+}
+
+/// Arguments for `schemaforge verify`.
+#[derive(Args)]
+pub struct VerifyArgs {
+    /// Directory or individual `.schema` files to verify. Defaults to
+    /// `./schemas/`. Verification uses the trust policy resolved by
+    /// the global `--trust-policy` / `[schema_forge.signing]` rules.
+    #[arg(default_value = "schemas/")]
+    pub paths: Vec<PathBuf>,
 }
 
 /// Arguments for `schema-forge bootstrap-admin`.
@@ -212,6 +309,15 @@ pub struct SiteGenerateArgs {
     /// is auto-detected relative to the current working directory.
     #[arg(long = "templates-dir")]
     pub templates_dir: Option<PathBuf>,
+
+    /// Email of the §508 program manager / accessibility coordinator for
+    /// this deployment. Surfaces in the generated `/accessibility` page
+    /// as the named contact and powers the mailto feedback mechanism
+    /// required by OMB M-24-08 and 36 CFR 1194 §§603.2–603.3. When
+    /// omitted, the page renders a visible "not configured" notice so
+    /// the gap stays auditable instead of silently passing.
+    #[arg(long = "accessibility-contact")]
+    pub accessibility_contact: Option<String>,
 }
 
 /// Hook scaffolding subcommands.

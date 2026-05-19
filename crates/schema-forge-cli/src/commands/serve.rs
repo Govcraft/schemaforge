@@ -14,7 +14,7 @@ use schema_forge_core::migration::DiffEngine;
 use tokio::sync::oneshot;
 
 use crate::cli::{GlobalOpts, ServeArgs};
-use crate::commands::parse::parse_all_schemas;
+use crate::commands::parse::{load_verify_policy, parse_all_schemas};
 use crate::config::{load_svc_config, resolve_db_params, DbParams};
 use crate::error::CliError;
 use crate::output::OutputContext;
@@ -52,7 +52,12 @@ pub async fn run(
 
     // 2. Parse schemas from the schema directory
     output.status("Parsing schemas...");
-    let schemas = match parse_all_schemas(std::slice::from_ref(&args.schema_dir)) {
+    let verify_policy = load_verify_policy(global, output)?;
+    let schemas = match parse_all_schemas(
+        std::slice::from_ref(&args.schema_dir),
+        &verify_policy,
+        output,
+    ) {
         Ok(s) => {
             output.status(&format!("  {} schemas parsed.", s.len()));
             s

@@ -1,5 +1,5 @@
 use crate::cli::{ExportCommands, ExportOpenapiArgs, GlobalOpts};
-use crate::commands::parse::parse_all_schemas;
+use crate::commands::parse::parse_all_schemas_with_global;
 use crate::error::CliError;
 use crate::output::OutputContext;
 
@@ -16,10 +16,10 @@ pub async fn run(
 
 async fn run_openapi(
     args: ExportOpenapiArgs,
-    _global: &GlobalOpts,
+    global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
-    let schemas = parse_all_schemas(&args.paths)?;
+    let schemas = parse_all_schemas_with_global(&args.paths, global, output)?;
 
     // Build a basic OpenAPI spec from schema definitions
     let mut paths = serde_json::Map::new();

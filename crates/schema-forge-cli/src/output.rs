@@ -137,6 +137,8 @@ mod tests {
             db_url: None,
             db_ns: None,
             db_name: None,
+            trust_policy: None,
+            no_verify: false,
         }
     }
 
