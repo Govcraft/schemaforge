@@ -545,6 +545,8 @@ unsigned schema directory leaves open: on-disk tampering of any file,
 and untrusted-author additions made by dropping a `.schema` into the
 directory.
 
+> **Full reference:** [`docs/signing-reference.md`](docs/signing-reference.md) — TOML schema for every signer kind, full CLI flag tables, manifest format spec, rollout playbook, and airgap/SCIF workflow.
+
 The trust policy lives under `[schema_forge.signing]` in `config.toml`
 (or in a standalone file via `--trust-policy`). Three modes:
 
