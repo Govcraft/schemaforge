@@ -4,6 +4,7 @@ pub mod authz;
 pub mod cedar;
 pub mod config;
 pub mod conversions;
+pub mod crypto;
 pub mod error;
 pub mod extension;
 #[cfg(feature = "graphql")]
