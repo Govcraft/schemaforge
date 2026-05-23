@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-cli"
-version = "0.29.0"
+version = "0.30.0"
 edition = "2021"
 
 [[bin]]
@@ -33,6 +33,7 @@ minijinja = "2.19.0"
 tracing = "0.1.44"
 schema-forge-signing = { version = "0.1.0", path = "../schema-forge-signing" }
 sigstore-trust-root = { version = "0.7.0", default-features = false, features = ["tuf"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls-no-provider"] }
 
 [features]
 default = ["surrealdb"]

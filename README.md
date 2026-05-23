@@ -275,6 +275,8 @@ GET    /forge/schemas                 List all schemas
 GET    /forge/openapi.json            Dynamic OpenAPI specification
 ```
 
+The paths above use the unversioned `/forge/...` prefix. The `schemaforge entity` CLI calls the same routes under the versioned base `/api/v1/forge/...`; see [Drive a running instance over HTTP](#drive-a-running-instance-over-http) below.
+
 ### Generate Schemas with AI
 
 Instead of writing DSL by hand, describe what you need:
@@ -289,6 +291,25 @@ schemaforge generate
 ```
 
 The AI agent calls `list_schemas` to see what already exists, generates DSL, calls `validate_schema` to check correctness, fixes any errors automatically, and applies the result after confirmation. No custom retry logic -- the LLM's tool execution loop handles self-correction naturally.
+
+### Drive a running instance over HTTP
+
+`schemaforge login` and the `schemaforge entity` subcommands are the ergonomic way to call the entity REST API that `schemaforge serve` exposes. Unlike `apply`, `inspect`, and `migrate` -- which connect straight to the database via `--db-url` -- these speak HTTP to a *running* server and authenticate with a Bearer PASETO token. They replace the hand-built `curl` plus offline-token workflow with typed input, real output formats, and stable exit codes you can branch on.
+
+```bash
+# 1. Authenticate once; the token is cached and reused automatically.
+schemaforge login --server https://forge.agency.gov -u alice
+
+# 2. Create an entity with typed fields (numbers, booleans, and JSON are coerced).
+schemaforge entity create Contact --server https://forge.agency.gov \
+  --set first_name=Alice --set last_name=Stone --set 'tags:=["vip"]'
+
+# 3. List, filter, and sort.
+schemaforge entity list Contact --server https://forge.agency.gov \
+  --eq status=active --sort -created_at --limit 25
+```
+
+The full command surface, token-source precedence, output formats, exit codes, and the `[schema_forge.client]` config section are documented in [`docs/entity-cli-reference.md`](docs/entity-cli-reference.md).
 
 ## Architecture
 
@@ -511,6 +532,8 @@ schemaforge <command> [options]
 | `migrate <paths>` | Show migration plan (`--execute` to apply, `--schema` for a specific schema) |
 | `generate [desc]` | Generate schemas from natural language (`--batch`, `--provider`, `--model`) |
 | `serve` | Start HTTP server with dynamic routes (`--host`, `--port`, `--watch`) |
+| `login` | Authenticate against a running instance and cache a Bearer token (`--username`, `--password-stdin`, `--print-token`) |
+| `entity <verb>` | Call entity REST endpoints on a running instance: `list`, `get`, `create`, `replace`, `patch`, `delete`, `query` (see [`docs/entity-cli-reference.md`](docs/entity-cli-reference.md)) |
 | `inspect [schema]` | Show registered schemas and details (`--detail`, `--counts`) |
 | `export openapi` | Export OpenAPI spec (`-o file`) |
 | `policies list` | List Cedar authorization policies |
@@ -535,6 +558,8 @@ schemaforge <command> [options]
 | `--db-name <name>` | SurrealDB database name (env: `SCHEMA_FORGE_DB_NAME`) |
 | `--trust-policy <path>` | Standalone trust-policy TOML; overrides `[schema_forge.signing]` (env: `SCHEMAFORGE_TRUST_POLICY`) |
 | `--no-verify` | Skip schema signature verification (refused under `signing.mode = "enforce"` unless `SCHEMAFORGE_ALLOW_NO_VERIFY=1`) |
+
+> `login` and the `entity` subcommands do not use `--db-url`. They speak HTTP to a running instance and take their own connection flags -- `--server`, `--token-file` / `--token-stdin`, `--ca-cert`, `--insecure`, `--timeout` -- documented in [`docs/entity-cli-reference.md`](docs/entity-cli-reference.md).
 
 ### Signed-Schema Enforcement
 

@@ -53,6 +53,44 @@ pub struct SchemaForgeSettings {
     /// and verifier kinds.
     #[serde(default)]
     pub signing: SigningConfig,
+
+    /// Connection defaults for the `schemaforge` CLI's HTTP commands
+    /// (`entity`, `login`). The running service never reads this section —
+    /// it exists only so an operator can pin a server URL, token file, and
+    /// TLS material once in the shared `config.toml` instead of repeating
+    /// `--server`/`--token-file` flags on every invocation. CLI flags and
+    /// environment variables still override these values.
+    #[serde(default)]
+    pub client: ClientConfig,
+}
+
+/// `[schema_forge.client]` section of config.toml.
+///
+/// Read exclusively by the CLI's HTTP command group; the server ignores it.
+/// All fields are optional so the CLI can layer environment variables and
+/// command-line flags on top with a clear precedence (flags > env > config >
+/// built-in defaults).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClientConfig {
+    /// Base URL of the running instance, e.g. `https://forge.agency.gov`.
+    /// The CLI appends the versioned API base path itself.
+    #[serde(default)]
+    pub server: Option<String>,
+
+    /// Path to a file containing the Bearer PASETO token. Tokens are never
+    /// stored inline in config so the file's own permissions guard the
+    /// secret.
+    #[serde(default)]
+    pub token_file: Option<String>,
+
+    /// Path to a PEM-encoded CA certificate for verifying a private-PKI
+    /// server certificate.
+    #[serde(default)]
+    pub ca_cert: Option<String>,
+
+    /// Per-request timeout in seconds.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 /// `[schema_forge.authz]` section of config.toml.
@@ -84,6 +122,7 @@ impl Default for SchemaForgeSettings {
             storage: crate::storage::StorageConfig::default(),
             authz: AuthzConfig::default(),
             signing: SigningConfig::default(),
+            client: ClientConfig::default(),
         }
     }
 }
@@ -110,6 +149,7 @@ mod tests {
                 storage: crate::storage::StorageConfig::default(),
                 authz: AuthzConfig::default(),
                 signing: SigningConfig::default(),
+                client: ClientConfig::default(),
             },
         };
         let json = serde_json::to_string(&config).unwrap();
@@ -139,6 +179,36 @@ mod tests {
         assert!(claims.contains_key("client_org_id"));
         assert!(claims.contains_key("team_ids"));
         assert!(claims.contains_key("level"));
+    }
+
+    #[test]
+    fn client_section_deserialises() {
+        let toml = r#"
+            [schema_forge.client]
+            server = "https://forge.agency.gov"
+            token_file = "~/.config/schemaforge/token"
+            ca_cert = "/etc/pki/root.pem"
+            timeout_secs = 45
+        "#;
+        let config: SchemaForgeConfig = toml::from_str(toml).unwrap();
+        let client = &config.schema_forge.client;
+        assert_eq!(client.server.as_deref(), Some("https://forge.agency.gov"));
+        assert_eq!(
+            client.token_file.as_deref(),
+            Some("~/.config/schemaforge/token")
+        );
+        assert_eq!(client.ca_cert.as_deref(), Some("/etc/pki/root.pem"));
+        assert_eq!(client.timeout_secs, Some(45));
+    }
+
+    #[test]
+    fn client_section_defaults_to_empty() {
+        let config: SchemaForgeConfig = serde_json::from_str("{}").unwrap();
+        let client = &config.schema_forge.client;
+        assert!(client.server.is_none());
+        assert!(client.token_file.is_none());
+        assert!(client.ca_cert.is_none());
+        assert!(client.timeout_secs.is_none());
     }
 
     #[test]

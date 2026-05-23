@@ -26,6 +26,13 @@ pub enum ExitCode {
     /// `GeneralError` so CI gates and audit pipelines can branch on
     /// "untrusted schema content" specifically.
     VerificationFailed = 13,
+    /// Authentication rejected by the server (HTTP 401). Distinct from a
+    /// transport `ConnectionError` so scripts can tell "token is missing or
+    /// expired" apart from "the server is unreachable".
+    AuthFailed = 14,
+    /// Authorization denied by the server (HTTP 403). The caller
+    /// authenticated successfully but lacks permission for the action.
+    Forbidden = 15,
 }
 
 /// Errors returned by CLI command handlers.
@@ -81,6 +88,26 @@ pub enum CliError {
     #[error("server error: {message}")]
     Server { message: String },
 
+    /// A non-success response from the entity REST API. Carries the HTTP
+    /// status and the server's error envelope (`{ "error": kind, "message":
+    /// ... }`). The `message` is already human-formatted by
+    /// [`crate::http::classify_http_error`] — including grouped validation
+    /// `details` and an actionable tip — so `Display` can render it
+    /// verbatim. `status` and `kind` drive the exit code and JSON output.
+    #[error("{message}")]
+    Http {
+        status: u16,
+        kind: String,
+        message: String,
+    },
+
+    /// The HTTP request never reached a server response: connection
+    /// refused, DNS failure, TLS handshake error, or timeout. Distinct from
+    /// [`CliError::Http`] (the server answered) and from
+    /// [`BackendError::ConnectionError`] (a direct database connection).
+    #[error("connection error: {message}")]
+    Connection { message: String },
+
     /// Schema-signature verification rejected the input. Wraps the
     /// underlying [`VerifyError`] so the diagnostic layer can render
     /// the specific failure (missing signature, hash mismatch,
@@ -130,6 +157,14 @@ impl CliError {
                 ExitCode::InvalidArguments
             }
             Self::Server { .. } => ExitCode::ServerError,
+            Self::Http { status, .. } => match status {
+                401 => ExitCode::AuthFailed,
+                403 => ExitCode::Forbidden,
+                422 => ExitCode::InvalidArguments,
+                500..=599 => ExitCode::ServerError,
+                _ => ExitCode::GeneralError,
+            },
+            Self::Connection { .. } => ExitCode::ConnectionError,
             Self::VerificationFailed { .. } => ExitCode::VerificationFailed,
             Self::Io { .. }
             | Self::Cancelled
@@ -169,6 +204,19 @@ impl CliError {
             }),
             Self::Server { message } => serde_json::json!({
                 "error": "server_error",
+                "message": message,
+            }),
+            Self::Http {
+                status,
+                kind,
+                message,
+            } => serde_json::json!({
+                "error": kind,
+                "message": message,
+                "status": status,
+            }),
+            Self::Connection { message } => serde_json::json!({
+                "error": "connection_error",
                 "message": message,
             }),
             Self::VerificationFailed { source } => serde_json::json!({
@@ -366,6 +414,58 @@ mod tests {
         assert_eq!(ExitCode::MigrationError as i32, 11);
         assert_eq!(ExitCode::ServerError as i32, 12);
         assert_eq!(ExitCode::VerificationFailed as i32, 13);
+        assert_eq!(ExitCode::AuthFailed as i32, 14);
+        assert_eq!(ExitCode::Forbidden as i32, 15);
+    }
+
+    fn http(status: u16) -> CliError {
+        CliError::Http {
+            status,
+            kind: "x".into(),
+            message: "boom".into(),
+        }
+    }
+
+    #[test]
+    fn http_status_maps_to_exit_code() {
+        assert_eq!(http(401).exit_code(), ExitCode::AuthFailed);
+        assert_eq!(http(403).exit_code(), ExitCode::Forbidden);
+        assert_eq!(http(422).exit_code(), ExitCode::InvalidArguments);
+        assert_eq!(http(404).exit_code(), ExitCode::GeneralError);
+        assert_eq!(http(409).exit_code(), ExitCode::GeneralError);
+        assert_eq!(http(500).exit_code(), ExitCode::ServerError);
+        assert_eq!(http(503).exit_code(), ExitCode::ServerError);
+    }
+
+    #[test]
+    fn connection_error_exit_code() {
+        let err = CliError::Connection {
+            message: "refused".into(),
+        };
+        assert_eq!(err.exit_code(), ExitCode::ConnectionError);
+    }
+
+    #[test]
+    fn to_json_http_error_uses_server_kind() {
+        let err = CliError::Http {
+            status: 422,
+            kind: "validation_failed".into(),
+            message: "2 fields invalid".into(),
+        };
+        let json = err.to_json();
+        assert_eq!(json["error"], "validation_failed");
+        assert_eq!(json["status"], 422);
+        assert_eq!(json["message"], "2 fields invalid");
+    }
+
+    #[test]
+    fn to_json_connection_error() {
+        let err = CliError::Connection {
+            message: "dns failure".into(),
+        };
+        let json = err.to_json();
+        assert_eq!(json["error"], "connection_error");
+        assert!(json["message"].as_str().unwrap().contains("dns"));
     }
 
     #[test]

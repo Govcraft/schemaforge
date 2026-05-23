@@ -126,6 +126,26 @@ pub enum Commands {
         command: TokenCommands,
     },
 
+    /// Call entity REST endpoints on a running instance over HTTP.
+    ///
+    /// Unlike `inspect`/`apply`/`migrate` — which connect directly to the
+    /// database via `--db-url` — this group speaks the REST API against a
+    /// deployed server and authenticates with a Bearer PASETO token. Get a
+    /// token with `schemaforge login` (credential flow against the server)
+    /// or `schemaforge token generate` (offline, from the PASETO key).
+    Entity {
+        #[command(subcommand)]
+        command: EntityCommands,
+    },
+
+    /// Authenticate against a running instance and cache a Bearer token.
+    ///
+    /// Calls `POST /auth/login`, prompts for the password (or reads
+    /// `--password-stdin`), and by default writes the returned token to the
+    /// XDG state directory so subsequent `entity` commands pick it up
+    /// automatically.
+    Login(LoginArgs),
+
     /// Generate shell completion scripts
     Completions(CompletionsArgs),
 
@@ -839,6 +859,271 @@ pub struct CompletionsArgs {
     pub shell: String,
 }
 
+// ---------------------------------------------------------------------------
+// Entity REST command group (HTTP client against a running instance)
+// ---------------------------------------------------------------------------
+
+/// Connection options shared by every `entity` verb and by `login`.
+///
+/// Deliberately separate from the global `--db-url` family: this group talks
+/// to a *running server over HTTP*, never to a database. The Bearer token is
+/// never accepted as a flag — only via `--token-stdin`, `--token-file`, the
+/// `SCHEMAFORGE_TOKEN` environment variable, or the cached `login` token —
+/// so it stays out of `ps` output and shell history. (`login` ignores the
+/// token-source fields; it is acquiring a token.)
+#[derive(Args, Debug, Clone)]
+pub struct EntityConnectionArgs {
+    /// Base URL of the running instance (e.g. https://forge.agency.gov). The
+    /// versioned API path is appended automatically. [env: SCHEMAFORGE_SERVER]
+    #[arg(long, env = "SCHEMAFORGE_SERVER")]
+    pub server: Option<String>,
+
+    /// API version path segment.
+    #[arg(long = "api-version", default_value = "v1")]
+    pub api_version: String,
+
+    /// Read the Bearer token from this file (preferred on shared machines).
+    #[arg(long = "token-file")]
+    pub token_file: Option<PathBuf>,
+
+    /// Read the Bearer token from stdin (highest precedence).
+    #[arg(long = "token-stdin")]
+    pub token_stdin: bool,
+
+    /// PEM CA certificate for verifying a private-PKI server certificate.
+    #[arg(long = "ca-cert")]
+    pub ca_cert: Option<PathBuf>,
+
+    /// Skip TLS certificate verification. INSECURE — warns on every call and
+    /// must never be used against production.
+    #[arg(long = "insecure")]
+    pub insecure: bool,
+
+    /// Per-request timeout in seconds.
+    #[arg(long = "timeout")]
+    pub timeout: Option<u64>,
+}
+
+/// Field input shared by `create`, `replace`, and `patch`.
+#[derive(Args, Debug, Clone)]
+pub struct EntityInputArgs {
+    /// Set a field. `--set name=Alice` types the value (numbers and
+    /// true/false are detected; everything else stays a string). Use
+    /// `field:=json` for explicit JSON — arrays, objects, relation lists:
+    /// `--set 'tags:=["a","b"]'`. Repeatable.
+    #[arg(long = "set", value_name = "FIELD=VALUE")]
+    pub set: Vec<String>,
+
+    /// Full request body as JSON: a `{...}` literal, `@file.json`, or `-`
+    /// for stdin. A bare field map is wrapped in `{ "fields": ... }`
+    /// automatically. Mutually combinable with `--set` (set overlays data).
+    #[arg(long = "data", value_name = "JSON|@FILE|-")]
+    pub data: Option<String>,
+}
+
+/// `entity` subcommands. Verbs map to HTTP semantics: `replace` is PUT (the
+/// complete entity, required fields enforced) and `patch` is PATCH (a partial
+/// merge).
+#[derive(Subcommand)]
+pub enum EntityCommands {
+    /// List entities, optionally filtered, sorted, and paginated.
+    ///
+    /// The args are boxed: `EntityListArgs` carries the connection options
+    /// plus nine filter vectors, so inlining it would bloat every variant of
+    /// this enum (clippy::large_enum_variant).
+    List(Box<EntityListArgs>),
+    /// Fetch a single entity by ID.
+    Get(Box<EntityGetArgs>),
+    /// Create a new entity.
+    Create(Box<EntityCreateArgs>),
+    /// Replace an entity (PUT — full entity, all required fields present).
+    Replace(Box<EntityWriteArgs>),
+    /// Partially update an entity (PATCH — only the supplied fields change).
+    Patch(Box<EntityWriteArgs>),
+    /// Delete an entity by ID.
+    Delete(Box<EntityDeleteArgs>),
+    /// Run an advanced JSON-filter query (POST .../entities/query).
+    Query(Box<EntityQueryArgs>),
+}
+
+/// Arguments for `entity list`.
+#[derive(Args)]
+pub struct EntityListArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+
+    /// Schema name (e.g. Contact).
+    pub schema: String,
+
+    /// Raw filter operands in the server's `field__op=value` grammar, passed
+    /// through verbatim (e.g. `age__gt=25` `status__in=a,b`). A bare
+    /// `field=value` means equality.
+    #[arg(value_name = "FIELD__OP=VALUE")]
+    pub filters: Vec<String>,
+
+    /// Equality filter convenience: `--eq field=value`. Repeatable.
+    #[arg(long = "eq", value_name = "F=V")]
+    pub eq: Vec<String>,
+    /// Not-equal filter: `--ne field=value`. Repeatable.
+    #[arg(long = "ne", value_name = "F=V")]
+    pub ne: Vec<String>,
+    /// Greater-than filter: `--gt field=value`. Repeatable.
+    #[arg(long = "gt", value_name = "F=V")]
+    pub gt: Vec<String>,
+    /// Greater-or-equal filter: `--gte field=value`. Repeatable.
+    #[arg(long = "gte", value_name = "F=V")]
+    pub gte: Vec<String>,
+    /// Less-than filter: `--lt field=value`. Repeatable.
+    #[arg(long = "lt", value_name = "F=V")]
+    pub lt: Vec<String>,
+    /// Less-or-equal filter: `--lte field=value`. Repeatable.
+    #[arg(long = "lte", value_name = "F=V")]
+    pub lte: Vec<String>,
+    /// Substring filter: `--contains field=value`. Repeatable.
+    #[arg(long = "contains", value_name = "F=V")]
+    pub contains: Vec<String>,
+    /// Prefix filter: `--startswith field=value`. Repeatable.
+    #[arg(long = "startswith", value_name = "F=V")]
+    pub startswith: Vec<String>,
+    /// Set-membership filter: `--in field=a,b,c`. Repeatable.
+    #[arg(long = "in", value_name = "F=A,B,C")]
+    pub in_: Vec<String>,
+
+    /// Sort spec: `-age,name` (prefix `-` = descending) or `age:desc`.
+    /// `allow_hyphen_values` lets the leading `-` be read as part of the
+    /// value rather than a flag.
+    #[arg(long, allow_hyphen_values = true)]
+    pub sort: Option<String>,
+    /// Field projection (comma-separated).
+    #[arg(long)]
+    pub fields: Option<String>,
+    /// Maximum number of entities to return.
+    #[arg(long)]
+    pub limit: Option<usize>,
+    /// Number of entities to skip.
+    #[arg(long)]
+    pub offset: Option<usize>,
+    /// Skip the total-count computation (sends count=false).
+    #[arg(long = "no-count")]
+    pub no_count: bool,
+    /// Skip relation display resolution (sends resolve=false).
+    #[arg(long = "no-resolve")]
+    pub no_resolve: bool,
+}
+
+/// Arguments for `entity get`.
+#[derive(Args)]
+pub struct EntityGetArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Schema name.
+    pub schema: String,
+    /// Entity ID.
+    pub id: String,
+    /// Field projection (comma-separated).
+    #[arg(long)]
+    pub fields: Option<String>,
+    /// Skip relation display resolution (sends resolve=false).
+    #[arg(long = "no-resolve")]
+    pub no_resolve: bool,
+}
+
+/// Arguments for `entity create`.
+#[derive(Args)]
+pub struct EntityCreateArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Schema name.
+    pub schema: String,
+    #[command(flatten)]
+    pub input: EntityInputArgs,
+    /// Print the resolved request (method, URL, body) without sending it.
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+}
+
+/// Arguments for `entity replace` (PUT) and `entity patch` (PATCH).
+#[derive(Args)]
+pub struct EntityWriteArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Schema name.
+    pub schema: String,
+    /// Entity ID.
+    pub id: String,
+    #[command(flatten)]
+    pub input: EntityInputArgs,
+    /// Print the resolved request (method, URL, body) without sending it.
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+}
+
+/// Arguments for `entity delete`.
+#[derive(Args)]
+pub struct EntityDeleteArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Schema name.
+    pub schema: String,
+    /// Entity ID.
+    pub id: String,
+    /// Skip the confirmation prompt. Required in non-interactive contexts.
+    #[arg(long = "yes", short = 'y')]
+    pub yes: bool,
+    /// Print the resolved request without sending it.
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+}
+
+/// Arguments for `entity query`.
+#[derive(Args)]
+pub struct EntityQueryArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Schema name.
+    pub schema: String,
+    /// JSON filter body: a `{...}` literal, `@file.json`, or `-` for stdin.
+    #[arg(long = "filter", value_name = "JSON|@FILE|-")]
+    pub filter: Option<String>,
+    /// Sort spec: `-age,name` or `age:desc`.
+    #[arg(long, allow_hyphen_values = true)]
+    pub sort: Option<String>,
+    /// Field projection (comma-separated).
+    #[arg(long)]
+    pub fields: Option<String>,
+    /// Maximum number of entities to return.
+    #[arg(long)]
+    pub limit: Option<usize>,
+    /// Number of entities to skip.
+    #[arg(long)]
+    pub offset: Option<usize>,
+    /// Skip the total-count computation (sends count=false).
+    #[arg(long = "no-count")]
+    pub no_count: bool,
+    /// Skip relation display resolution (sends resolve=false).
+    #[arg(long = "no-resolve")]
+    pub no_resolve: bool,
+}
+
+/// Arguments for `schemaforge login`.
+#[derive(Args)]
+pub struct LoginArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Username to authenticate.
+    #[arg(long, short = 'u')]
+    pub username: String,
+    /// Read the password from stdin instead of prompting interactively.
+    #[arg(long = "password-stdin")]
+    pub password_stdin: bool,
+    /// Do not cache the token to the XDG state directory; print only.
+    #[arg(long = "no-save")]
+    pub no_save: bool,
+    /// Also write the raw token to stdout (pipeable).
+    #[arg(long = "print-token")]
+    pub print_token: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,5 +1362,123 @@ mod tests {
     fn invalid_shell_rejected() {
         let result = Cli::try_parse_from(["schemaforge", "completions", "tcsh"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_entity_list_with_filters_and_conn() {
+        let cli = Cli::try_parse_from([
+            "schemaforge",
+            "entity",
+            "list",
+            "Contact",
+            "age__gt=25",
+            "--eq",
+            "name=Alice",
+            "--server",
+            "https://forge.example.gov",
+            "--sort",
+            "-age,name",
+            "--limit",
+            "10",
+            "--no-resolve",
+        ])
+        .unwrap();
+        let Commands::Entity {
+            command: EntityCommands::List(args),
+        } = cli.command
+        else {
+            panic!("expected Entity List command");
+        };
+        assert_eq!(args.schema, "Contact");
+        assert_eq!(args.filters, vec!["age__gt=25".to_string()]);
+        assert_eq!(args.eq, vec!["name=Alice".to_string()]);
+        assert_eq!(args.conn.server.as_deref(), Some("https://forge.example.gov"));
+        assert_eq!(args.sort.as_deref(), Some("-age,name"));
+        assert_eq!(args.limit, Some(10));
+        assert!(args.no_resolve);
+    }
+
+    #[test]
+    fn parse_entity_create_with_set() {
+        let cli = Cli::try_parse_from([
+            "schemaforge",
+            "entity",
+            "create",
+            "User",
+            "--set",
+            "name=Alice",
+            "--set",
+            "roles:=[\"staff\"]",
+        ])
+        .unwrap();
+        let Commands::Entity {
+            command: EntityCommands::Create(args),
+        } = cli.command
+        else {
+            panic!("expected Entity Create command");
+        };
+        assert_eq!(args.schema, "User");
+        assert_eq!(
+            args.input.set,
+            vec!["name=Alice".to_string(), "roles:=[\"staff\"]".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_entity_delete_requires_id_and_takes_yes() {
+        let cli = Cli::try_parse_from([
+            "schemaforge",
+            "entity",
+            "delete",
+            "User",
+            "user_01abc",
+            "--yes",
+        ])
+        .unwrap();
+        let Commands::Entity {
+            command: EntityCommands::Delete(args),
+        } = cli.command
+        else {
+            panic!("expected Entity Delete command");
+        };
+        assert_eq!(args.schema, "User");
+        assert_eq!(args.id, "user_01abc");
+        assert!(args.yes);
+    }
+
+    #[test]
+    fn entity_has_no_token_flag() {
+        // The Bearer token must never be acceptable as a flag (it would leak
+        // via `ps` and shell history). Only --token-file / --token-stdin / env.
+        let result = Cli::try_parse_from([
+            "schemaforge",
+            "entity",
+            "get",
+            "User",
+            "user_01abc",
+            "--token",
+            "v4.local.secret",
+        ]);
+        assert!(result.is_err(), "--token must not be a recognized flag");
+    }
+
+    #[test]
+    fn parse_login_command() {
+        let cli = Cli::try_parse_from([
+            "schemaforge",
+            "login",
+            "--server",
+            "https://forge.example.gov",
+            "--username",
+            "admin",
+            "--print-token",
+        ])
+        .unwrap();
+        let Commands::Login(args) = cli.command else {
+            panic!("expected Login command");
+        };
+        assert_eq!(args.username, "admin");
+        assert!(args.print_token);
+        assert_eq!(args.conn.server.as_deref(), Some("https://forge.example.gov"));
     }
 }

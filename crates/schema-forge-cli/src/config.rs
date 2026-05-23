@@ -14,13 +14,16 @@
 //! by construction: there is exactly one URL, so the schema-forge backend
 //! pool and acton-service's pool can never disagree.
 
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use acton_service::config::Config;
+use schema_forge_acton::config::ClientConfig;
 use schema_forge_acton::SchemaForgeConfig;
 use schema_forge_signing::{SigningConfig, SigningMode, VerifyPolicy};
 
-use crate::cli::GlobalOpts;
+use crate::cli::{EntityConnectionArgs, GlobalOpts};
 use crate::error::CliError;
 
 /// Default SurrealDB URL when no config and no CLI flag are supplied.
@@ -359,6 +362,155 @@ pub fn resolve_signing_config(
 /// Detect PostgreSQL URLs by scheme.
 pub fn is_postgres_url(url: &str) -> bool {
     url.starts_with("postgres://") || url.starts_with("postgresql://")
+}
+
+// ---------------------------------------------------------------------------
+// Entity HTTP command connection resolution
+// ---------------------------------------------------------------------------
+
+/// Default server origin for the entity HTTP commands when neither a flag,
+/// env var, nor `[schema_forge.client]` supplies one. Matches the `serve`
+/// defaults (host 127.0.0.1, port 3000).
+const DEFAULT_CLIENT_SERVER: &str = "http://127.0.0.1:3000";
+
+/// Default per-request timeout for entity HTTP commands.
+const DEFAULT_CLIENT_TIMEOUT_SECS: u64 = 30;
+
+/// Fully-resolved connection settings for the entity HTTP command group.
+///
+/// `Debug` is implemented by hand to redact the token: it must never appear
+/// in logs, panics, or `-vvv` output.
+#[derive(Clone)]
+pub struct ResolvedClient {
+    /// Server origin with any trailing slash trimmed (e.g. `https://host`).
+    pub server: String,
+    /// API version path segment (e.g. `v1`).
+    pub api_version: String,
+    /// Bearer token, if one could be sourced. `None` is valid for `login`
+    /// (which acquires a token); entity verbs surface a clear error.
+    pub token: Option<String>,
+    /// PEM CA certificate path for a private-PKI server certificate.
+    pub ca_cert: Option<PathBuf>,
+    /// Skip TLS verification (INSECURE).
+    pub insecure: bool,
+    /// Per-request timeout.
+    pub timeout: Duration,
+}
+
+impl std::fmt::Debug for ResolvedClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedClient")
+            .field("server", &self.server)
+            .field("api_version", &self.api_version)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("ca_cert", &self.ca_cert)
+            .field("insecure", &self.insecure)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+/// Resolve entity-command connection settings from, in precedence order:
+/// CLI flags, environment variables, the `[schema_forge.client]` config
+/// section, and built-in defaults.
+///
+/// Performs IO: reads the token from stdin/file/cache as directed. The token
+/// is never logged.
+pub fn resolve_client_config(
+    svc: &Config<SchemaForgeConfig>,
+    conn: &EntityConnectionArgs,
+) -> Result<ResolvedClient, CliError> {
+    let client_cfg = &svc.custom.schema_forge.client;
+
+    let server = conn
+        .server
+        .clone()
+        .or_else(|| client_cfg.server.clone())
+        .unwrap_or_else(|| DEFAULT_CLIENT_SERVER.to_string());
+    let server = server.trim_end_matches('/').to_string();
+
+    let timeout_secs = conn
+        .timeout
+        .or(client_cfg.timeout_secs)
+        .unwrap_or(DEFAULT_CLIENT_TIMEOUT_SECS);
+
+    let ca_cert = conn
+        .ca_cert
+        .clone()
+        .or_else(|| client_cfg.ca_cert.clone().map(PathBuf::from));
+
+    let token = resolve_token(conn, client_cfg)?;
+
+    Ok(ResolvedClient {
+        server,
+        api_version: conn.api_version.clone(),
+        token,
+        ca_cert,
+        insecure: conn.insecure,
+        timeout: Duration::from_secs(timeout_secs),
+    })
+}
+
+/// Source the Bearer token, highest precedence first:
+/// 1. `--token-stdin`, 2. `--token-file`, 3. `SCHEMAFORGE_TOKEN` env,
+/// 4. `[schema_forge.client] token_file`, 5. the cached `login` token.
+fn resolve_token(
+    conn: &EntityConnectionArgs,
+    client_cfg: &ClientConfig,
+) -> Result<Option<String>, CliError> {
+    if conn.token_stdin {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| CliError::Io {
+                path: PathBuf::from("<stdin>"),
+                source: e,
+            })?;
+        return Ok(Some(buf.trim().to_string()));
+    }
+    if let Some(path) = &conn.token_file {
+        return Ok(Some(read_token_file(path)?));
+    }
+    if let Ok(tok) = std::env::var("SCHEMAFORGE_TOKEN") {
+        if !tok.trim().is_empty() {
+            return Ok(Some(tok.trim().to_string()));
+        }
+    }
+    if let Some(path) = &client_cfg.token_file {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Ok(Some(read_token_file(&p)?));
+        }
+    }
+    let cached = xdg_state_token_path();
+    if cached.exists() {
+        return Ok(Some(read_token_file(&cached)?));
+    }
+    Ok(None)
+}
+
+fn read_token_file(path: &Path) -> Result<String, CliError> {
+    let text = std::fs::read_to_string(path).map_err(|e| CliError::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    Ok(text.trim().to_string())
+}
+
+/// Path to the cached `login` token: `$XDG_STATE_HOME/schemaforge/token`,
+/// falling back to `~/.local/state/schemaforge/token`.
+pub fn xdg_state_token_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
+        if !dir.is_empty() {
+            return PathBuf::from(dir).join("schemaforge").join("token");
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".local")
+        .join("state")
+        .join("schemaforge")
+        .join("token")
 }
 
 #[cfg(test)]
