@@ -158,6 +158,7 @@ async fn users_router(seeded: SeededBackend, claims: Claims) -> Router {
             hook_dispatcher: None,
             storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
             policy_store: None,
+            custom_policies_dir: None,
             reply: ReplyChannel::new(tx),
         })
         .await;

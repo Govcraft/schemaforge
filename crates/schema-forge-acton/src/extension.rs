@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use axum::Router;
@@ -405,6 +406,7 @@ impl SchemaForgeExtension {
         storage_config: &StorageConfig,
         role_ranks: crate::authz::role_ranks::RoleRanks,
         principal_claims: crate::authz::principal_claims::PrincipalClaimMappings,
+        custom_policies_dir: Option<&Path>,
     ) -> Result<InitForgeData, ForgeError> {
         // Load existing schemas from the backend into a HashMap
         let stored_schemas = backend
@@ -467,7 +469,7 @@ impl SchemaForgeExtension {
         let policy_store = crate::authz::PolicyStore::new(
             crate::authz::store::PolicyStoreSnapshot::from_schemas(
                 &all_schemas,
-                None,
+                custom_policies_dir,
                 role_ranks,
                 principal_claims,
             )

@@ -253,6 +253,11 @@ pub struct InitForge {
     pub hook_dispatcher: Option<Arc<dyn crate::hooks::HookDispatcher>>,
     pub storage_registry: crate::storage::StorageRegistry,
     pub policy_store: Option<Arc<crate::authz::PolicyStore>>,
+    /// Directory holding `*.cedar` custom policies merged into the runtime
+    /// bundle on every recompile. `None` means no custom policies (the
+    /// auto-discovered default falls through to `None` when
+    /// `policies/custom` is absent).
+    pub custom_policies_dir: Option<std::path::PathBuf>,
     pub reply: ReplyChannel<()>,
 }
 
