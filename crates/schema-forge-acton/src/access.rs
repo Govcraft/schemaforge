@@ -10,6 +10,7 @@ use schema_forge_core::types::{DynamicValue, SchemaDefinition};
 
 use serde::Serialize;
 
+use crate::authz::adapters::user_id_from_sub;
 use crate::authz::namespace::ActionVerb;
 use crate::authz::{authorize, authorize_field, FieldDirection, PolicyStore};
 use crate::error::ForgeError;
@@ -339,6 +340,139 @@ pub fn inject_tenant_on_create(
     }
 }
 
+/// Force-set the schema's `@owner` field to the authenticated principal.
+///
+/// The Cedar `owner_write` / `owner_restrict` policies decide per-record
+/// access by comparing `resource.<owner_field> == principal.id`. If the
+/// owner field is client-supplied a caller can plant rows under any
+/// principal's ID — claiming-by-impersonation, locking themselves out of
+/// their own creations, or both. Server-side injection at create time
+/// closes this hole.
+///
+/// Behavior:
+/// - No-op when the schema has no `@owner` annotation.
+/// - No-op when `claims` is `None` (unauthenticated routes are rejected
+///   upstream; for the rare `@access(write: ["public"])` case there is no
+///   principal to record).
+/// - Overwrites any client-supplied value in the owner field. The client
+///   never wins — even when carrying its own principal id, we still
+///   re-write it so the server is the single source of truth.
+pub fn inject_owner_on_create(
+    fields: &mut BTreeMap<String, DynamicValue>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+) {
+    let Some(claims) = claims else { return };
+    let Some(owner_field) = schema.fields.iter().find(|f| f.has_owner()) else {
+        return;
+    };
+    // Match the Cedar `Forge::Principal::id` attribute shape — the engine
+    // strips the `user:` prefix when building the principal entity (see
+    // `crate::authz::adapters::user_id_from_sub`). Storing the prefixed
+    // form on the row would silently break every `@owner` policy: the
+    // `resource[<owner>] == principal.id` clause would never match.
+    let owner_value = user_id_from_sub(&claims.sub).to_string();
+    fields.insert(
+        owner_field.name.as_str().to_string(),
+        DynamicValue::Text(owner_value),
+    );
+}
+
+/// Drop any client-supplied value for the schema's `@owner` field from a
+/// proposed update payload.
+///
+/// Ownership transfer is a privileged operation; allowing it through a
+/// regular PUT/PATCH would let any caller hand their record off to a
+/// chosen principal (or worse, masquerade their own writes as a victim's).
+/// The Cedar `owner_restrict` policy evaluates against the *current*
+/// resource state, so the in-memory check passes — but the persisted
+/// owner column would then change. Stripping the field here keeps
+/// ownership immutable post-create.
+pub fn strip_owner_on_update(
+    fields: &mut BTreeMap<String, DynamicValue>,
+    schema: &SchemaDefinition,
+) {
+    if let Some(owner_field) = schema.fields.iter().find(|f| f.has_owner()) {
+        fields.remove(owner_field.name.as_str());
+    }
+}
+
+/// Conventional audit-column field names auto-maintained by the platform.
+///
+/// `created_by` / `updated_by` carry the principal id, with the `user:`
+/// prefix stripped to match Cedar's `principal.id` attribute shape.
+/// `created_at` / `updated_at` carry the current wall-clock time.
+/// A schema author who declares any subset of these fields gets them
+/// populated by the server on create/update — the client never wins.
+const AUDIT_COL_CREATED_BY: &str = "created_by";
+const AUDIT_COL_UPDATED_BY: &str = "updated_by";
+const AUDIT_COL_CREATED_AT: &str = "created_at";
+const AUDIT_COL_UPDATED_AT: &str = "updated_at";
+
+/// Auto-populate conventional `created_*` and `updated_*` audit columns
+/// on entity creation. See module constants for the supported field names.
+///
+/// Behavior:
+/// - No-op for any column the schema does not declare. Operator opt-in,
+///   not enforcement: a schema without these fields gets no audit columns.
+/// - Overwrites any client-supplied value. The audit trail is server-owned.
+/// - Skips `created_by` / `updated_by` when `claims` is `None`.
+pub fn inject_audit_columns_on_create(
+    fields: &mut BTreeMap<String, DynamicValue>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    // Same stripping as inject_owner_on_create — a schema author who marks
+    // `created_by` as `@owner` should get a value that Cedar can match
+    // against `principal.id`. See note on inject_owner_on_create.
+    let actor = claims.map(|c| user_id_from_sub(&c.sub).to_string());
+    inject_audit_actor_field(fields, schema, AUDIT_COL_CREATED_BY, actor.as_deref());
+    inject_audit_actor_field(fields, schema, AUDIT_COL_UPDATED_BY, actor.as_deref());
+    inject_audit_timestamp_field(fields, schema, AUDIT_COL_CREATED_AT, now);
+    inject_audit_timestamp_field(fields, schema, AUDIT_COL_UPDATED_AT, now);
+}
+
+/// Auto-populate the conventional `updated_*` audit columns on entity update.
+///
+/// The create-side columns (`created_by`, `created_at`) are intentionally
+/// untouched — they remain at the values stamped during the create that
+/// originated the row. Callers must merge this output into the entity's
+/// existing field map before persisting.
+pub fn inject_audit_columns_on_update(
+    fields: &mut BTreeMap<String, DynamicValue>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let actor = claims.map(|c| user_id_from_sub(&c.sub).to_string());
+    inject_audit_actor_field(fields, schema, AUDIT_COL_UPDATED_BY, actor.as_deref());
+    inject_audit_timestamp_field(fields, schema, AUDIT_COL_UPDATED_AT, now);
+}
+
+fn inject_audit_actor_field(
+    fields: &mut BTreeMap<String, DynamicValue>,
+    schema: &SchemaDefinition,
+    name: &str,
+    actor: Option<&str>,
+) {
+    let Some(actor) = actor else { return };
+    if schema.fields.iter().any(|f| f.name.as_str() == name) {
+        fields.insert(name.to_string(), DynamicValue::Text(actor.to_string()));
+    }
+}
+
+fn inject_audit_timestamp_field(
+    fields: &mut BTreeMap<String, DynamicValue>,
+    schema: &SchemaDefinition,
+    name: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) {
+    if schema.fields.iter().any(|f| f.name.as_str() == name) {
+        fields.insert(name.to_string(), DynamicValue::DateTime(at));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,5 +719,238 @@ mod tests {
         inject_tenant_on_create(&mut fields, Some(&claims), &tenant_config);
 
         assert!(!fields.contains_key("_tenant"));
+    }
+
+    // -----------------------------------------------------------------------
+    // inject_owner_on_create / strip_owner_on_update tests
+    // -----------------------------------------------------------------------
+
+    fn schema_with_owner(name: &str, owner_field: &str) -> SchemaDefinition {
+        use schema_forge_core::types::FieldAnnotation;
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new(name).unwrap(),
+            vec![
+                FieldDefinition::new(
+                    FieldName::new("title").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new(owner_field).unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                    vec![],
+                    vec![FieldAnnotation::Owner],
+                ),
+            ],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    fn schema_without_owner(name: &str) -> SchemaDefinition {
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new(name).unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("title").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn inject_owner_on_create_sets_owner_to_principal_sub() {
+        let schema = schema_with_owner("Note", "created_by");
+        let claims = make_claims(&["member"]);
+        let mut fields = BTreeMap::new();
+        fields.insert("title".to_string(), DynamicValue::Text("hello".to_string()));
+
+        inject_owner_on_create(&mut fields, &schema, Some(&claims));
+
+        assert_eq!(
+            fields["created_by"],
+            DynamicValue::Text(user_id_from_sub(&claims.sub).to_string())
+        );
+    }
+
+    #[test]
+    fn inject_owner_on_create_overwrites_client_supplied_value() {
+        // Regression: a malicious client supplies a different principal in the
+        // owner field to claim a record under someone else's id. The server
+        // must overwrite it unconditionally.
+        let schema = schema_with_owner("Note", "created_by");
+        let claims = make_claims(&["member"]);
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "created_by".to_string(),
+            DynamicValue::Text("user:victim".to_string()),
+        );
+
+        inject_owner_on_create(&mut fields, &schema, Some(&claims));
+
+        assert_eq!(
+            fields["created_by"],
+            DynamicValue::Text(user_id_from_sub(&claims.sub).to_string())
+        );
+    }
+
+    #[test]
+    fn inject_owner_on_create_noop_when_schema_has_no_owner() {
+        let schema = schema_without_owner("Plain");
+        let claims = make_claims(&["member"]);
+        let mut fields = BTreeMap::new();
+        fields.insert("title".to_string(), DynamicValue::Text("x".to_string()));
+
+        inject_owner_on_create(&mut fields, &schema, Some(&claims));
+
+        assert!(!fields.contains_key("created_by"));
+    }
+
+    #[test]
+    fn inject_owner_on_create_noop_when_unauthenticated() {
+        let schema = schema_with_owner("Note", "created_by");
+        let mut fields = BTreeMap::new();
+
+        inject_owner_on_create(&mut fields, &schema, None);
+
+        assert!(!fields.contains_key("created_by"));
+    }
+
+    #[test]
+    fn strip_owner_on_update_drops_owner_field_if_present() {
+        // Regression: ownership transfer through PUT/PATCH is forbidden.
+        let schema = schema_with_owner("Note", "created_by");
+        let mut fields = BTreeMap::new();
+        fields.insert("title".to_string(), DynamicValue::Text("new".to_string()));
+        fields.insert(
+            "created_by".to_string(),
+            DynamicValue::Text("user:attacker".to_string()),
+        );
+
+        strip_owner_on_update(&mut fields, &schema);
+
+        assert!(!fields.contains_key("created_by"));
+        assert!(fields.contains_key("title"));
+    }
+
+    #[test]
+    fn strip_owner_on_update_noop_when_schema_has_no_owner() {
+        let schema = schema_without_owner("Plain");
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "created_by".to_string(),
+            DynamicValue::Text("anything".to_string()),
+        );
+
+        strip_owner_on_update(&mut fields, &schema);
+
+        assert!(fields.contains_key("created_by"));
+    }
+
+    // -----------------------------------------------------------------------
+    // inject_audit_columns tests
+    // -----------------------------------------------------------------------
+
+    fn schema_with_audit_columns() -> SchemaDefinition {
+        use schema_forge_core::types::FieldType as FT;
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Audited").unwrap(),
+            vec![
+                FieldDefinition::new(
+                    FieldName::new("title").unwrap(),
+                    FT::Text(TextConstraints::unconstrained()),
+                ),
+                FieldDefinition::new(FieldName::new("created_by").unwrap(), FT::Text(TextConstraints::unconstrained())),
+                FieldDefinition::new(FieldName::new("updated_by").unwrap(), FT::Text(TextConstraints::unconstrained())),
+                FieldDefinition::new(FieldName::new("created_at").unwrap(), FT::DateTime),
+                FieldDefinition::new(FieldName::new("updated_at").unwrap(), FT::DateTime),
+            ],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn inject_audit_columns_on_create_fills_all_four_when_declared() {
+        let schema = schema_with_audit_columns();
+        let claims = make_claims(&["member"]);
+        let now = chrono::Utc::now();
+        let mut fields = BTreeMap::new();
+
+        inject_audit_columns_on_create(&mut fields, &schema, Some(&claims), now);
+
+        let expected_actor = user_id_from_sub(&claims.sub).to_string();
+        assert_eq!(fields["created_by"], DynamicValue::Text(expected_actor.clone()));
+        assert_eq!(fields["updated_by"], DynamicValue::Text(expected_actor));
+        assert_eq!(fields["created_at"], DynamicValue::DateTime(now));
+        assert_eq!(fields["updated_at"], DynamicValue::DateTime(now));
+    }
+
+    #[test]
+    fn inject_audit_columns_on_create_overwrites_client_supplied_actor() {
+        // Client tries to attribute the create to another user; server wins.
+        let schema = schema_with_audit_columns();
+        let claims = make_claims(&["member"]);
+        let now = chrono::Utc::now();
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "created_by".to_string(),
+            DynamicValue::Text("user:spoofed".to_string()),
+        );
+
+        inject_audit_columns_on_create(&mut fields, &schema, Some(&claims), now);
+
+        assert_eq!(
+            fields["created_by"],
+            DynamicValue::Text(user_id_from_sub(&claims.sub).to_string())
+        );
+    }
+
+    #[test]
+    fn inject_audit_columns_on_create_skips_fields_not_in_schema() {
+        let schema = schema_without_owner("Plain");
+        let claims = make_claims(&["member"]);
+        let now = chrono::Utc::now();
+        let mut fields = BTreeMap::new();
+
+        inject_audit_columns_on_create(&mut fields, &schema, Some(&claims), now);
+
+        assert!(!fields.contains_key("created_by"));
+        assert!(!fields.contains_key("created_at"));
+        assert!(!fields.contains_key("updated_by"));
+        assert!(!fields.contains_key("updated_at"));
+    }
+
+    #[test]
+    fn inject_audit_columns_on_update_touches_only_updated_columns() {
+        let schema = schema_with_audit_columns();
+        let claims = make_claims(&["member"]);
+        let now = chrono::Utc::now();
+        let mut fields = BTreeMap::new();
+        // Simulate prior values that an update payload might carry — the
+        // create-side columns must NOT be overwritten by update injection.
+        let earlier = now - chrono::Duration::hours(1);
+        fields.insert("created_at".to_string(), DynamicValue::DateTime(earlier));
+        fields.insert(
+            "created_by".to_string(),
+            DynamicValue::Text("user:original".to_string()),
+        );
+
+        inject_audit_columns_on_update(&mut fields, &schema, Some(&claims), now);
+
+        // updated_* set, created_* untouched
+        assert_eq!(
+            fields["updated_by"],
+            DynamicValue::Text(user_id_from_sub(&claims.sub).to_string())
+        );
+        assert_eq!(fields["updated_at"], DynamicValue::DateTime(now));
+        assert_eq!(
+            fields["created_by"],
+            DynamicValue::Text("user:original".to_string())
+        );
+        assert_eq!(fields["created_at"], DynamicValue::DateTime(earlier));
     }
 }
