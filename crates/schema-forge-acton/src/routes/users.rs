@@ -24,6 +24,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use acton_service::audit::{AuditEventKind, AuditSeverity, AuditSource};
 use acton_service::middleware::Claims;
 use acton_service::state::AppState;
 use axum::extract::{Path, State};
@@ -49,6 +50,69 @@ use crate::error::ForgeError;
 use crate::messages::{GetPolicyStore, GetSchema, ReplyChannel};
 use crate::state::DynAuthStore;
 use acton_service::prelude::ActorHandleInterface;
+
+// ---------------------------------------------------------------------------
+// Audit helpers
+// ---------------------------------------------------------------------------
+
+/// Emit a structured user-management audit event.
+///
+/// User CRUD, role mutations, and password changes are all high-sensitivity
+/// admin operations that need a durable chain entry for NIST 800-53 AU-2.
+/// The acton-service audit chain owns sequencing and BLAKE3 hash linkage;
+/// this helper centralises severity selection and the `actor / target /
+/// action` metadata shape so every emission stays consistent.
+async fn audit_user(
+    state: &AppState<SchemaForgeConfig>,
+    event: &'static str,
+    severity: AuditSeverity,
+    actor: &str,
+    target: &str,
+    extra: Option<serde_json::Value>,
+) {
+    let Some(logger) = state.audit_logger() else { return };
+    let mut metadata = serde_json::json!({
+        "actor": actor,
+        "target": target,
+    });
+    if let (Some(obj), Some(extra)) = (metadata.as_object_mut(), extra) {
+        if let Some(extra_obj) = extra.as_object() {
+            for (k, v) in extra_obj {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    logger.log_custom(event, severity, Some(metadata)).await;
+}
+
+/// Emit the built-in `auth.password.changed` event with the actor and target.
+async fn audit_password_changed(
+    state: &AppState<SchemaForgeConfig>,
+    actor: &str,
+    target: &str,
+) {
+    let Some(logger) = state.audit_logger() else { return };
+    logger
+        .log_auth(
+            AuditEventKind::AuthPasswordChanged,
+            AuditSeverity::Notice,
+            AuditSource {
+                subject: Some(format!("user:{target}")),
+                ..AuditSource::default()
+            },
+        )
+        .await;
+    // Also drop a custom event carrying the *actor* so a self-service
+    // change and an admin-driven reset are distinguishable in the chain.
+    let metadata = serde_json::json!({
+        "actor": actor,
+        "target": target,
+        "self_service": actor == target,
+    });
+    logger
+        .log_custom("forge.user.password_changed", AuditSeverity::Notice, Some(metadata))
+        .await;
+}
 
 // ---------------------------------------------------------------------------
 // Auth helpers
@@ -493,6 +557,19 @@ pub async fn create_user(
         message: format!("authz engine error during create_user: {e}"),
     })?;
     if !decision.is_allow() {
+        audit_user(
+            &state,
+            "forge.access.denied",
+            AuditSeverity::Warning,
+            &claims.sub,
+            &body.username,
+            Some(serde_json::json!({
+                "action": "create_user",
+                "proposed_roles": body.roles,
+                "reason": "role_rank_guard",
+            })),
+        )
+        .await;
         return Err(ForgeError::Forbidden {
             message: format!(
                 "creating user with roles {:?} would exceed caller's role_rank",
@@ -524,6 +601,19 @@ pub async fn create_user(
             .ok_or_else(|| ForgeError::Internal {
                 message: format!("created user '{}' not found on readback", body.username),
             })?;
+
+    audit_user(
+        &state,
+        "forge.user.created",
+        AuditSeverity::Notice,
+        &claims.sub,
+        &body.username,
+        Some(serde_json::json!({
+            "roles": body.roles,
+            "display_name": display_name,
+        })),
+    )
+    .await;
 
     Ok((StatusCode::CREATED, Json(user_to_response(&created))))
 }
@@ -579,6 +669,18 @@ pub async fn delete_user(
         message: format!("authz engine error during delete_user: {e}"),
     })?;
     if !decision.is_allow() {
+        audit_user(
+            &state,
+            "forge.access.denied",
+            AuditSeverity::Warning,
+            &claims.sub,
+            &username,
+            Some(serde_json::json!({
+                "action": "delete_user",
+                "reason": "role_rank_guard",
+            })),
+        )
+        .await;
         return Err(ForgeError::Forbidden {
             message: format!("not authorized to delete user '{username}'"),
         });
@@ -603,6 +705,18 @@ pub async fn delete_user(
     }
 
     auth_store.delete_user(&username).await?;
+    audit_user(
+        &state,
+        "forge.user.deleted",
+        AuditSeverity::Notice,
+        &claims.sub,
+        &username,
+        Some(serde_json::json!({
+            "deleted_roles": target.roles,
+            "was_platform_admin": target_is_platform_admin,
+        })),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -654,6 +768,19 @@ pub async fn update_user(
         message: format!("authz engine error during update_user (existing): {e}"),
     })?;
     if !decision_existing.is_allow() {
+        audit_user(
+            &state,
+            "forge.access.denied",
+            AuditSeverity::Warning,
+            &claims.sub,
+            &username,
+            Some(serde_json::json!({
+                "action": "update_user",
+                "guard": "current_entity",
+                "reason": "role_rank_guard",
+            })),
+        )
+        .await;
         return Err(ForgeError::Forbidden {
             message: format!("not authorized to edit user '{username}'"),
         });
@@ -696,6 +823,20 @@ pub async fn update_user(
             message: format!("authz engine error during update_user (proposed): {e}"),
         })?;
         if !decision_proposed.is_allow() {
+            audit_user(
+                &state,
+                "forge.access.denied",
+                AuditSeverity::Warning,
+                &claims.sub,
+                &username,
+                Some(serde_json::json!({
+                    "action": "update_user",
+                    "guard": "proposed_entity",
+                    "proposed_roles": new_roles,
+                    "reason": "role_rank_guard",
+                })),
+            )
+            .await;
             return Err(ForgeError::Forbidden {
                 message: format!(
                     "updating '{username}' to roles {new_roles:?} would exceed caller's role_rank"
@@ -727,16 +868,48 @@ pub async fn update_user(
 
     // Persist. `update_user` covers roles + display_name; `toggle_user_active`
     // covers the active flag. We only call each store method when its
-    // governed field actually changed, so the audit trail stays clean.
+    // governed field actually changed, so the audit chain entries below
+    // distinguish roles/name updates from active-flag toggles.
     let roles_or_name_changed =
         body.roles.is_some() || body.display_name.is_some();
     if roles_or_name_changed {
         auth_store
             .update_user(&username, &new_roles, &new_display_name)
             .await?;
+        let mut changed = Vec::new();
+        if body.roles.is_some() && new_roles != current.roles {
+            changed.push("roles");
+        }
+        if body.display_name.is_some() && Some(&new_display_name) != current.display_name.as_ref() {
+            changed.push("display_name");
+        }
+        audit_user(
+            &state,
+            "forge.user.updated",
+            AuditSeverity::Notice,
+            &claims.sub,
+            &username,
+            Some(serde_json::json!({
+                "changed_fields": changed,
+                "prev_roles": current.roles,
+                "new_roles": new_roles,
+            })),
+        )
+        .await;
     }
     if body.active.is_some() && new_active != current.active {
         auth_store.toggle_user_active(&username).await?;
+        audit_user(
+            &state,
+            "forge.user.active_toggled",
+            AuditSeverity::Notice,
+            &claims.sub,
+            &username,
+            Some(serde_json::json!({
+                "active": new_active,
+            })),
+        )
+        .await;
     }
 
     let updated = auth_store
@@ -793,6 +966,18 @@ pub async fn change_password(
             message: format!("authz engine error during change_password: {e}"),
         })?;
         if !decision.is_allow() {
+            audit_user(
+                &state,
+                "forge.access.denied",
+                AuditSeverity::Warning,
+                &claims.sub,
+                &username,
+                Some(serde_json::json!({
+                    "action": "change_password",
+                    "reason": "role_rank_guard",
+                })),
+            )
+            .await;
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to change password for user '{username}'"),
             });
@@ -802,6 +987,7 @@ pub async fn change_password(
     auth_store
         .change_password(&username, &body.password)
         .await?;
+    audit_password_changed(&state, &claims.sub, &username).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

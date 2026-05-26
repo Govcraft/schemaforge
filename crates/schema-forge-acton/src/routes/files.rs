@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use acton_service::audit::AuditSeverity;
 use acton_service::middleware::Claims;
 use acton_service::prelude::ActorHandleInterface;
 use acton_service::state::AppState;
@@ -53,6 +54,42 @@ use crate::storage::{S3Client, StorageRegistry};
 /// Timeout for actor round-trips. Matches the entities route module so latency
 /// budgets stay aligned across the runtime.
 const ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Identifier triple for a file attachment, packed so audit emission
+/// signatures don't exceed clippy's `too_many_arguments` ceiling.
+struct FileTarget<'a> {
+    schema: &'a str,
+    entity_id: &'a str,
+    field: &'a str,
+}
+
+/// Emit a file-lifecycle audit event to the durable chain.
+///
+/// File handlers carry highly variable per-event metadata (key, mime, size,
+/// reason). Keeping this in one helper means a future "redact this field
+/// from chain entries" change touches one place.
+async fn audit_file(
+    state: &AppState<SchemaForgeConfig>,
+    event: &'static str,
+    severity: AuditSeverity,
+    actor: Option<&str>,
+    target: FileTarget<'_>,
+    extra: serde_json::Value,
+) {
+    let Some(logger) = state.audit_logger() else { return };
+    let mut metadata = serde_json::json!({
+        "actor": actor.unwrap_or("_anonymous"),
+        "schema": target.schema,
+        "entity_id": target.entity_id,
+        "field": target.field,
+    });
+    if let (Some(obj), Some(extra_obj)) = (metadata.as_object_mut(), extra.as_object()) {
+        for (k, v) in extra_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    logger.log_custom(event, severity, Some(metadata)).await;
+}
 
 // ---------------------------------------------------------------------------
 // Request / response types
@@ -186,6 +223,26 @@ pub async fn mint_upload_url(
         "minted upload url"
     );
 
+    audit_file(
+        &state,
+        "forge.file.upload_minted",
+        AuditSeverity::Informational,
+        claims.as_ref().map(|c| c.sub.as_str()),
+        FileTarget {
+            schema: ctx.schema.name.as_str(),
+            entity_id: ctx.entity.id.as_str(),
+            field: &field,
+        },
+        serde_json::json!({
+            "key": presigned.key,
+            "filename": body.filename,
+            "mime": body.mime,
+            "size": body.size,
+            "expires_at": expires_at.to_rfc3339(),
+        }),
+    )
+    .await;
+
     Ok(Json(MintUploadUrlResponse {
         upload_url: presigned.url,
         key: presigned.key,
@@ -315,6 +372,26 @@ pub async fn confirm_upload(
     )
     .await;
 
+    audit_file(
+        &state,
+        "forge.file.uploaded",
+        AuditSeverity::Notice,
+        claims.as_ref().map(|c| c.sub.as_str()),
+        FileTarget {
+            schema: ctx.schema.name.as_str(),
+            entity_id: ctx.entity.id.as_str(),
+            field: &field,
+        },
+        serde_json::json!({
+            "key": attachment.key,
+            "mime": attachment.mime,
+            "size": attachment.size,
+            "status": attachment.status.as_str(),
+            "checksum_sha256": attachment.checksum,
+        }),
+    )
+    .await;
+
     Ok(Json(AttachmentResponse {
         status: attachment.status.as_str().to_string(),
         attachment,
@@ -419,6 +496,32 @@ pub async fn scan_complete(
     )
     .await;
 
+    // Quarantined outcomes are Warning severity: an admin should be able to
+    // pull just those out of the chain when triaging an incident. Clean
+    // outcomes stay Notice.
+    let severity = if matches!(current.status, FileStatus::Quarantined) {
+        AuditSeverity::Warning
+    } else {
+        AuditSeverity::Notice
+    };
+    audit_file(
+        &state,
+        "forge.file.scan_complete",
+        severity,
+        claims.as_ref().map(|c| c.sub.as_str()),
+        FileTarget {
+            schema: ctx.schema.name.as_str(),
+            entity_id: ctx.entity.id.as_str(),
+            field: &field,
+        },
+        serde_json::json!({
+            "key": current.key,
+            "status": current.status.as_str(),
+            "reason": body.reason,
+        }),
+    )
+    .await;
+
     Ok(Json(AttachmentResponse {
         status: current.status.as_str().to_string(),
         attachment: current,
@@ -454,6 +557,28 @@ pub async fn download_file(
     }
 
     let client = resolve_backend(&ctx.registry, &ctx.constraints.bucket)?;
+
+    audit_file(
+        &state,
+        "forge.file.downloaded",
+        AuditSeverity::Notice,
+        claims.as_ref().map(|c| c.sub.as_str()),
+        FileTarget {
+            schema: ctx.schema.name.as_str(),
+            entity_id: ctx.entity.id.as_str(),
+            field: &field,
+        },
+        serde_json::json!({
+            "key": attachment.key,
+            "mime": attachment.mime,
+            "size": attachment.size,
+            "access": match ctx.constraints.access {
+                FileAccess::Presigned => "presigned",
+                FileAccess::Proxied => "proxied",
+            },
+        }),
+    )
+    .await;
 
     match ctx.constraints.access {
         FileAccess::Presigned => {
