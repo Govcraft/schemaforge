@@ -3,6 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use schema_forge_backend::entity::{Entity, QueryResult};
 use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
@@ -295,6 +296,14 @@ pub trait DynAuthStore: Send + Sync {
         username: &'a str,
         new_password: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
+
+    /// Stamp the user's `last_login` field to `at`. See
+    /// [`schema_forge_backend::user_store::AuthStore::record_login`].
+    fn record_login<'a>(
+        &'a self,
+        username: &'a str,
+        at: DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
 }
 
 /// Blanket impl: any concrete `AuthStore` automatically implements `DynAuthStore`.
@@ -378,6 +387,14 @@ impl<T: AuthStore + 'static> DynAuthStore for T {
         new_password: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
         Box::pin(AuthStore::change_password(self, username, new_password))
+    }
+
+    fn record_login<'a>(
+        &'a self,
+        username: &'a str,
+        at: DateTime<Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::record_login(self, username, at))
     }
 }
 

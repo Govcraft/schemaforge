@@ -101,20 +101,21 @@ fn build_test_generator() -> (Arc<PasetoGenerator>, NamedTempFile) {
 }
 
 /// Build a router that mounts only `/auth/login` with the Extensions the
-/// login handler now depends on.
-async fn login_app() -> (Router, NamedTempFile) {
+/// login handler now depends on. The auth store is returned so tests can
+/// read back the User row to verify side-effects (e.g. `last_login`).
+async fn login_app() -> (Router, NamedTempFile, Arc<dyn DynAuthStore>) {
     let auth_store = seeded_auth_store().await;
     let (generator, key_tmp) = build_test_generator();
     let principal_claims =
         Arc::new(schema_forge_acton::authz::PrincipalClaimMappings::default());
     let router = auth_routes()
-        .layer(Extension(auth_store))
+        .layer(Extension(auth_store.clone()))
         .layer(Extension(generator))
         .layer(Extension(principal_claims))
         .with_state(acton_service::state::AppState::<
             schema_forge_acton::SchemaForgeConfig,
         >::default());
-    (router, key_tmp)
+    (router, key_tmp, auth_store)
 }
 
 async fn post_login(app: Router, body: &str) -> (StatusCode, serde_json::Value) {
@@ -133,7 +134,7 @@ async fn post_login(app: Router, body: &str) -> (StatusCode, serde_json::Value) 
 
 #[tokio::test]
 async fn login_with_correct_credentials_returns_token() {
-    let (app, _key) = login_app().await;
+    let (app, _key, _store) = login_app().await;
     let (status, body) = post_login(app, r#"{"username":"admin","password":"dev"}"#).await;
 
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -155,7 +156,7 @@ async fn login_with_correct_credentials_returns_token() {
 
 #[tokio::test]
 async fn login_with_wrong_password_returns_401_envelope() {
-    let (app, _key) = login_app().await;
+    let (app, _key, _store) = login_app().await;
     let (status, body) = post_login(app, r#"{"username":"admin","password":"wrong"}"#).await;
 
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -166,11 +167,64 @@ async fn login_with_wrong_password_returns_401_envelope() {
 
 #[tokio::test]
 async fn login_with_unknown_user_returns_401_envelope() {
-    let (app, _key) = login_app().await;
+    let (app, _key, _store) = login_app().await;
     let (status, body) = post_login(app, r#"{"username":"ghost","password":"dev"}"#).await;
 
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"], "invalid credentials");
     assert_eq!(body["code"], "UNAUTHORIZED");
     assert_eq!(body["status"], 401);
+}
+
+/// Regression for issue #59: a successful login must stamp `last_login` on
+/// the User row. Prior to the fix the field was declared by the schema but
+/// no code ever wrote it, so admins could not answer "who logged in
+/// recently?" from `entity list User`.
+#[tokio::test]
+async fn login_success_stamps_last_login_on_user_row() {
+    use schema_forge_core::types::DynamicValue;
+
+    let (app, _key, store) = login_app().await;
+
+    let before = chrono::Utc::now();
+    let (status, _body) = post_login(app, r#"{"username":"admin","password":"dev"}"#).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let entity = store
+        .get_user_entity("admin")
+        .await
+        .expect("get_user_entity ok")
+        .expect("admin row must exist");
+    let last_login = match entity.field("last_login") {
+        Some(DynamicValue::DateTime(dt)) => *dt,
+        other => panic!("expected DynamicValue::DateTime on last_login, got {other:?}"),
+    };
+    assert!(
+        last_login >= before,
+        "last_login {last_login} must be at-or-after the request start {before}"
+    );
+    assert!(
+        last_login <= chrono::Utc::now(),
+        "last_login {last_login} must not be in the future"
+    );
+}
+
+/// Failed credential validation must not stamp `last_login` — that field
+/// records *successful* logins only.
+#[tokio::test]
+async fn login_failure_leaves_last_login_untouched() {
+    let (app, _key, store) = login_app().await;
+
+    let (status, _body) = post_login(app, r#"{"username":"admin","password":"wrong"}"#).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let entity = store
+        .get_user_entity("admin")
+        .await
+        .expect("get_user_entity ok")
+        .expect("admin row must exist");
+    assert!(
+        entity.field("last_login").is_none(),
+        "last_login must remain unset after a failed login"
+    );
 }

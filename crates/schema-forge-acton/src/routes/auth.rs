@@ -14,10 +14,13 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use acton_service::audit::{AuditEventKind, AuditSeverity, AuditSource};
 use acton_service::auth::tokens::paseto_generator::PasetoGenerator;
 use acton_service::auth::tokens::{ClaimsBuilder, TokenGenerator};
 use acton_service::middleware::Claims;
 use acton_service::prelude::Error as ActonError;
+use acton_service::state::AppState;
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
@@ -27,6 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::access::OptionalClaims;
 use crate::authz::principal_claims::{PrincipalClaimMappings, PrincipalClaimsError};
+use crate::config::SchemaForgeConfig;
 use crate::state::DynAuthStore;
 
 /// Default expiry for tokens minted by this endpoint (1 hour).
@@ -93,6 +97,7 @@ struct LoginErrorBody {
 /// surfaced as 500 so they are easy to distinguish from the 401 "bad
 /// credentials" case.
 pub async fn login(
+    State(state): State<AppState<SchemaForgeConfig>>,
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Extension(generator): Extension<Arc<PasetoGenerator>>,
     Extension(principal_claims): Extension<Arc<PrincipalClaimMappings>>,
@@ -103,14 +108,23 @@ pub async fn login(
         .await
     {
         Ok(Some(u)) => u,
-        Ok(None) => return unauthorized_response(),
-        Err(e) => return internal_error_response(format!("auth store error: {e}")),
+        Ok(None) => {
+            emit_login_failed(&state, &req.username).await;
+            return unauthorized_response();
+        }
+        Err(e) => {
+            emit_login_failed(&state, &req.username).await;
+            return internal_error_response(format!("auth store error: {e}"));
+        }
     };
 
     let user_entity = if principal_claims.has_user_field_sources() {
         match auth_store.get_user_entity(&user.username).await {
             Ok(Some(e)) => Some(e),
-            Ok(None) => return unauthorized_response(),
+            Ok(None) => {
+                emit_login_failed(&state, &req.username).await;
+                return unauthorized_response();
+            }
             Err(e) => return internal_error_response(format!("auth store error: {e}")),
         }
     } else {
@@ -120,7 +134,10 @@ pub async fn login(
     let claims =
         match build_login_claims(&user.username, &user.roles, user_entity.as_ref(), &principal_claims) {
             Ok(c) => c,
-            Err(BuildLoginClaimsError::NullRequired(_)) => return unauthorized_response(),
+            Err(BuildLoginClaimsError::NullRequired(_)) => {
+                emit_login_failed(&state, &req.username).await;
+                return unauthorized_response();
+            }
             Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
         };
 
@@ -129,7 +146,20 @@ pub async fn login(
         Err(e) => return internal_error_response(format!("failed to generate token: {e}")),
     };
 
-    let expires_at = Utc::now() + chrono::Duration::seconds(LOGIN_TOKEN_LIFETIME.as_secs() as i64);
+    let issued_at = Utc::now();
+
+    // Persist before returning the token. Fails closed: a DB write failure
+    // produces a 500 rather than handing the caller a token without an
+    // audit trail entry. The login handler already proved the row exists
+    // via validate_credentials, so the only realistic failure mode is a
+    // backend outage — in which case 500 is the right answer.
+    if let Err(e) = auth_store.record_login(&user.username, issued_at).await {
+        return internal_error_response(format!("failed to record last_login: {e}"));
+    }
+
+    emit_login_success(&state, &user.username).await;
+
+    let expires_at = issued_at + chrono::Duration::seconds(LOGIN_TOKEN_LIFETIME.as_secs() as i64);
 
     let body = LoginResponse {
         token,
@@ -148,6 +178,7 @@ pub async fn login(
 /// expired or missing token get a clean 401 — the client can then show the
 /// login screen without hitting a ginned-up internal error.
 pub async fn refresh(
+    State(state): State<AppState<SchemaForgeConfig>>,
     OptionalClaims(claims): OptionalClaims,
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Extension(generator): Extension<Arc<PasetoGenerator>>,
@@ -197,12 +228,63 @@ pub async fn refresh(
 
     let expires_at = Utc::now() + chrono::Duration::seconds(LOGIN_TOKEN_LIFETIME.as_secs() as i64);
 
+    emit_token_refresh(&state, &user.username).await;
+
     let body = LoginResponse {
         token,
         expires_at: expires_at.to_rfc3339(),
         roles: user.roles.clone(),
     };
     (StatusCode::OK, Json(body)).into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Audit emission helpers
+// ---------------------------------------------------------------------------
+
+async fn emit_login_success(state: &AppState<SchemaForgeConfig>, username: &str) {
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_auth(
+                AuditEventKind::AuthLoginSuccess,
+                AuditSeverity::Informational,
+                AuditSource {
+                    subject: Some(format!("user:{username}")),
+                    ..AuditSource::default()
+                },
+            )
+            .await;
+    }
+}
+
+async fn emit_login_failed(state: &AppState<SchemaForgeConfig>, attempted_username: &str) {
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_auth(
+                AuditEventKind::AuthLoginFailed,
+                AuditSeverity::Warning,
+                AuditSource {
+                    subject: Some(format!("user:{attempted_username}")),
+                    ..AuditSource::default()
+                },
+            )
+            .await;
+    }
+}
+
+async fn emit_token_refresh(state: &AppState<SchemaForgeConfig>, username: &str) {
+    if let Some(logger) = state.audit_logger() {
+        logger
+            .log_auth(
+                AuditEventKind::AuthTokenRefresh,
+                AuditSeverity::Informational,
+                AuditSource {
+                    subject: Some(format!("user:{username}")),
+                    ..AuditSource::default()
+                },
+            )
+            .await;
+    }
 }
 
 // ---------------------------------------------------------------------------
