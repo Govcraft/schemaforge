@@ -237,9 +237,9 @@ pub fn filter_entity_fields(
     schema: &SchemaDefinition,
     claims: Option<&Claims>,
     direction: FieldFilterDirection,
-) {
+) -> Vec<String> {
     if claims.is_none() {
-        return;
+        return Vec::new();
     }
 
     let cedar_dir = match direction {
@@ -268,9 +268,10 @@ pub fn filter_entity_fields(
         .cloned()
         .collect();
 
-    for name in fields_to_remove {
-        entity.fields.remove(&name);
+    for name in &fields_to_remove {
+        entity.fields.remove(name);
     }
+    fields_to_remove
 }
 
 /// Inject tenant scoping filter into a query.
