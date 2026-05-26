@@ -140,6 +140,7 @@ async fn setup(
                 .map(|d| d as Arc<dyn schema_forge_acton::hooks::HookDispatcher>),
             storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
             policy_store: None,
+            custom_policies_dir: None,
             reply: ReplyChannel::new(tx),
         })
         .await;
@@ -695,6 +696,7 @@ async fn after_change_writeback_to_trigger_entity_is_eventually_consistent() {
             hook_dispatcher: Some(writeback),
             storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
             policy_store: None,
+            custom_policies_dir: None,
             reply: schema_forge_acton::messages::ReplyChannel::new(init_tx),
         })
         .await;

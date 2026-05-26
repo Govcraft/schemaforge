@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use schema_forge_signing::SigningConfig;
 use serde::{Deserialize, Serialize};
 
@@ -106,6 +108,15 @@ pub struct AuthzConfig {
     /// subsections.
     #[serde(default)]
     pub principal_claims: PrincipalClaimsConfig,
+
+    /// Directory holding additional `*.cedar` policies that the running
+    /// daemon merges into the Cedar bundle on every recompile. Equivalent
+    /// to `schemaforge policies validate --custom-dir` but for the live
+    /// serve path. `serve --custom-dir` overrides this; when neither is
+    /// set the daemon auto-discovers `policies/custom` relative to the
+    /// working directory if that directory exists.
+    #[serde(default)]
+    pub custom_policies_dir: Option<PathBuf>,
 }
 
 fn default_route_prefix() -> String {

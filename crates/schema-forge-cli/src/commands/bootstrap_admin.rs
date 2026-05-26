@@ -69,6 +69,7 @@ pub async fn run(
         &svc_config.custom.schema_forge.storage,
         role_ranks,
         principal_claims,
+        None,
     )
     .await
     .map_err(|e| CliError::Server {

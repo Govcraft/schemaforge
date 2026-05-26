@@ -748,6 +748,15 @@ pub struct ServeArgs {
     /// (only `platform_admin` carries a rank).
     #[arg(long = "role-ranks", default_value = "policies/role_ranks.toml")]
     pub role_ranks: PathBuf,
+
+    /// Directory containing additional `*.cedar` policies to merge into
+    /// the runtime bundle (e.g. `policies/custom/`). Overrides
+    /// `[schema_forge.authz] custom_policies_dir` in config.toml. When
+    /// neither is set, the daemon auto-discovers `policies/custom`
+    /// relative to the working directory if that directory exists.
+    /// Missing explicitly-named directories are treated as empty.
+    #[arg(long = "custom-dir")]
+    pub custom_dir: Option<PathBuf>,
 }
 
 /// Export subcommands.

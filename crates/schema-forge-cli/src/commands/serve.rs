@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -97,6 +98,32 @@ pub async fn run(
         message: format!("invalid [schema_forge.authz.principal_claims]: {e}"),
     })?;
 
+    // 4c. Resolve the custom-policies directory. CLI `--custom-dir` overrides
+    //     `[schema_forge.authz] custom_policies_dir` in config.toml. When
+    //     neither is set, auto-discover `policies/custom` relative to the
+    //     working directory only when that directory exists, so deployments
+    //     without the convention don't generate a misleading log line. An
+    //     explicitly-named missing directory is still passed through —
+    //     `load_custom_policies` treats it as empty — but we warn so the
+    //     misconfiguration is visible. Fixes issue #57.
+    let custom_dir = resolve_custom_policies_dir(
+        args.custom_dir.as_deref(),
+        svc_config
+            .custom
+            .schema_forge
+            .authz
+            .custom_policies_dir
+            .as_deref(),
+    );
+    if let Some(dir) = custom_dir.as_deref() {
+        if !dir.exists() {
+            output.warn(&format!(
+                "custom policies directory {} does not exist; bundle will use generated policies only",
+                dir.display()
+            ));
+        }
+    }
+
     // 5. Build ForgeActor initialization data (loads schemas, seeds system schemas, builds tenant config)
     let init_data = SchemaForgeExtension::build_init(
         backend_arc.clone(),
@@ -104,6 +131,7 @@ pub async fn run(
         &storage_config,
         role_ranks,
         principal_claims,
+        custom_dir.as_deref(),
     )
     .await
     .map_err(|e| CliError::Server {
@@ -165,10 +193,24 @@ pub async fn run(
     // an app schema with "type X is not declared in the schema".
     if let Some(policy_store) = &init_data.policy_store {
         policy_store
-            .recompile_from_schemas(&all_schemas, None)
+            .recompile_from_schemas(&all_schemas, custom_dir.as_deref())
             .map_err(|e| CliError::Server {
                 message: format!("Cedar policy recompile failed after schema apply: {e}"),
             })?;
+
+        // Log the final bundle posture so misconfiguration (missing custom
+        // policies, wrong directory) is obvious at startup. Mirrors the
+        // success line `schemaforge policies validate` already prints.
+        let snap = policy_store.current();
+        let custom_suffix = custom_dir
+            .as_deref()
+            .map(|d| format!(" (custom: {})", d.display()))
+            .unwrap_or_default();
+        output.success(&format!(
+            "Cedar bundle loaded: {} policies, hash {}{custom_suffix}",
+            snap.policy_count,
+            &snap.policy_hash[..16],
+        ));
     }
 
     // Phase-2 principal-claim validation: bind every `source.user_field`
@@ -377,6 +419,7 @@ pub async fn run(
             hook_dispatcher,
             storage_registry: init_data.storage_registry,
             policy_store: init_data.policy_store,
+            custom_policies_dir: custom_dir.clone(),
             reply: ReplyChannel::new(tx),
         })
         .await;
@@ -675,6 +718,32 @@ fn wrap_health_with_schema_forge_version(
     }
 }
 
+/// Resolve the custom-Cedar-policies directory for the live serve path.
+///
+/// Precedence:
+/// 1. `--custom-dir` on the command line.
+/// 2. `[schema_forge.authz] custom_policies_dir` in `config.toml`.
+/// 3. `policies/custom` relative to the working directory **iff** that
+///    directory exists. Auto-discovery is suppressed when the directory is
+///    absent so deployments that don't use the convention don't get a
+///    misleading "custom: policies/custom" log line.
+///
+/// An explicitly-named missing directory is still returned so the caller can
+/// warn the operator; `load_custom_policies` already treats it as empty.
+fn resolve_custom_policies_dir(
+    cli_dir: Option<&Path>,
+    config_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(p) = cli_dir {
+        return Some(p.to_path_buf());
+    }
+    if let Some(p) = config_dir {
+        return Some(p.to_path_buf());
+    }
+    let default = PathBuf::from("policies/custom");
+    default.is_dir().then_some(default)
+}
+
 /// Build a `MetaInfo` snapshot from the resolved DB params.
 ///
 /// `backend` and `backend_label` are picked off the `DbParams` variant so
@@ -691,6 +760,69 @@ fn build_meta_info(db_params: &DbParams) -> Arc<schema_forge_acton::MetaInfo> {
     };
     let ttl = schema_forge_acton::routes::auth::LOGIN_TOKEN_LIFETIME.as_secs();
     Arc::new(schema_forge_acton::MetaInfo::new(backend, label, ttl))
+}
+
+/// Backend-agnostic tests for `resolve_custom_policies_dir`. Kept out of the
+/// SurrealDB-gated module below so they run on every build.
+#[cfg(test)]
+mod resolve_tests {
+    use super::resolve_custom_policies_dir;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    // CWD is process-global. Serialize the two tests below that mutate it
+    // so they don't race against each other under `cargo nextest run`.
+    static CWD_GUARD: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn cli_flag_wins_over_config() {
+        let cli = PathBuf::from("/cli/custom");
+        let cfg = PathBuf::from("/cfg/custom");
+        let got = resolve_custom_policies_dir(Some(&cli), Some(&cfg));
+        assert_eq!(got.as_deref(), Some(cli.as_path()));
+    }
+
+    #[test]
+    fn config_used_when_cli_absent() {
+        let cfg = PathBuf::from("/cfg/custom");
+        let got = resolve_custom_policies_dir(None, Some(&cfg));
+        assert_eq!(got.as_deref(), Some(cfg.as_path()));
+    }
+
+    #[test]
+    fn explicit_missing_dir_is_passed_through_for_warning() {
+        // Resolver does not stat the explicit path — `load_custom_policies`
+        // treats a missing directory as empty, and the caller emits a warn
+        // line. The resolver must return the path so the caller can warn.
+        let cli = PathBuf::from("/definitely/does/not/exist");
+        let got = resolve_custom_policies_dir(Some(&cli), None);
+        assert_eq!(got.as_deref(), Some(cli.as_path()));
+    }
+
+    #[test]
+    fn default_returns_none_when_policies_custom_missing() {
+        // Run from a temp dir with no `policies/custom` subdirectory so
+        // the auto-discovery branch returns None instead of a phantom path.
+        let _guard = CWD_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(tmp.path()).expect("set cwd");
+        let got = resolve_custom_policies_dir(None, None);
+        std::env::set_current_dir(prev).expect("restore cwd");
+        assert!(got.is_none(), "auto-discovery should return None when policies/custom does not exist");
+    }
+
+    #[test]
+    fn default_returns_path_when_policies_custom_exists() {
+        let _guard = CWD_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("policies/custom")).expect("mkdir");
+        let prev = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(tmp.path()).expect("set cwd");
+        let got = resolve_custom_policies_dir(None, None);
+        std::env::set_current_dir(prev).expect("restore cwd");
+        assert_eq!(got, Some(PathBuf::from("policies/custom")));
+    }
 }
 
 /// Mem-backed SurrealDB is the only auth store we can stand up synchronously

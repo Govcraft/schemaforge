@@ -7,6 +7,7 @@
 //! that the handler uses to send the result back to the caller.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use acton_service::prelude::*;
@@ -44,6 +45,12 @@ pub struct ForgeActor {
     pub(crate) hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
     pub(crate) storage_registry: StorageRegistry,
     pub(crate) policy_store: Option<Arc<crate::authz::PolicyStore>>,
+    /// Custom Cedar policy directory threaded through from the CLI/config
+    /// at `InitForge` time. Used by [`recompile_policy_store`] so that
+    /// runtime schema mutations recompile against the same bundle the
+    /// daemon started with — without it, a schema mutation would silently
+    /// strip operator-authored policies from the live `PolicyStore`.
+    pub(crate) custom_policies_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ForgeActor {
@@ -79,6 +86,7 @@ impl ForgeActor {
             hook_dispatcher: None,
             storage_registry: StorageRegistry::default(),
             policy_store: None,
+            custom_policies_dir: None,
         }
     }
 }
@@ -108,6 +116,7 @@ fn configure_init(actor: &mut ManagedActor<Idle, ForgeActor>) {
         actor.model.tenant_config = msg.tenant_config.clone();
         actor.model.hook_dispatcher = msg.hook_dispatcher.clone();
         actor.model.storage_registry = msg.storage_registry.clone();
+        actor.model.custom_policies_dir = msg.custom_policies_dir.clone();
 
         // Lazy-init the policy store when the caller did not supply one. The
         // CLI / extension build paths always pass it, but tests and ad-hoc
@@ -322,7 +331,8 @@ fn recompile_policy_store(
     };
 
     let schemas: Vec<SchemaDefinition> = model.registry.values().cloned().collect();
-    match store.recompile_from_schemas(&schemas, None) {
+    let custom_dir = model.custom_policies_dir.as_deref();
+    match store.recompile_from_schemas(&schemas, custom_dir) {
         Ok(()) => {
             tracing::info!(
                 target: "schema_forge_acton::authz",

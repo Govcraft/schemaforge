@@ -344,6 +344,55 @@ mod tests {
     }
 
     #[test]
+    fn recompile_from_schemas_merges_custom_dir() {
+        // Regression for issue #57: the live serve recompile path used to
+        // pass `None` for `custom_dir`, silently dropping operator-authored
+        // policies. Prove the recompile now picks up a valid custom forbid
+        // and grows the bundle, with a different hash than the generated-only
+        // snapshot.
+        let baseline = PolicyStoreSnapshot::from_schemas(
+            &[schema_named("Alpha")],
+            None,
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap();
+        let baseline_count = baseline.policy_count;
+        let baseline_hash = baseline.policy_hash.clone();
+        let store = PolicyStore::new(baseline);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("scope.cedar"),
+            r#"
+                @id("custom.deny_all_alpha")
+                forbid (
+                    principal is Forge::Principal,
+                    action,
+                    resource is Alpha
+                );
+            "#,
+        )
+        .unwrap();
+
+        store
+            .recompile_from_schemas(&[schema_named("Alpha")], Some(tmp.path()))
+            .expect("recompile with custom_dir should succeed");
+
+        let current = store.current();
+        assert!(
+            current.policy_count > baseline_count,
+            "custom forbid policy must be merged into the bundle ({} -> {})",
+            baseline_count,
+            current.policy_count,
+        );
+        assert_ne!(
+            current.policy_hash, baseline_hash,
+            "policy hash must change once custom_dir is loaded",
+        );
+    }
+
+    #[test]
     fn recompile_from_schemas_keeps_old_bundle_on_failure() {
         // Build a healthy bundle, then point recompile at a custom-policy
         // directory whose Cedar source fails to validate. The store must
