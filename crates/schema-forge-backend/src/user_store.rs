@@ -1,5 +1,6 @@
 use std::future::Future;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::entity::Entity;
@@ -94,6 +95,20 @@ pub trait AuthStore: Send + Sync {
         &self,
         username: &str,
         new_password: &str,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send;
+
+    /// Stamp the user's `last_login` field to `at`.
+    ///
+    /// Called from the login handler after credentials validate, before the
+    /// token is returned. Implementations must be idempotent against a
+    /// missing user row (return `Ok(())`) so a delete-mid-login race does
+    /// not 500 a legitimate caller. Failure to persist surfaces as
+    /// [`BackendError`] and is treated as fatal by the caller — audit
+    /// completeness takes precedence over login throughput.
+    fn record_login(
+        &self,
+        username: &str,
+        at: DateTime<Utc>,
     ) -> impl Future<Output = Result<(), BackendError>> + Send;
 }
 

@@ -23,6 +23,7 @@ use std::sync::Arc;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use chrono::{DateTime, Utc};
 use schema_forge_core::query::{FieldPath, Filter, Query};
 use schema_forge_core::types::{
     DynamicValue, EntityId, FieldName, FieldType, IntegerConstraints, SchemaDefinition, SchemaName,
@@ -40,6 +41,7 @@ const ROLES_FIELD: &str = "roles";
 const ROLE_RANK_FIELD: &str = "role_rank";
 const DISPLAY_NAME_FIELD: &str = "display_name";
 const ACTIVE_FIELD: &str = "active";
+const LAST_LOGIN_FIELD: &str = "last_login";
 
 /// Function that maps a role name to a numeric rank, returning `None`
 /// for unregistered roles.
@@ -526,6 +528,25 @@ impl AuthStore for EntityAuthStore {
             PASSWORD_HASH_FIELD.to_string(),
             DynamicValue::Text(hash),
         );
+        self.store.update(&entity).await?;
+        Ok(())
+    }
+
+    async fn record_login(
+        &self,
+        username: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), BackendError> {
+        let mut entity = match self.find_entity_by_username(username).await? {
+            Some(e) => e,
+            // Idempotent on a missing row: a delete-mid-login race shouldn't
+            // 500 the caller. The login handler already proved the row
+            // existed when validate_credentials succeeded.
+            None => return Ok(()),
+        };
+        entity
+            .fields
+            .insert(LAST_LOGIN_FIELD.to_string(), DynamicValue::DateTime(at));
         self.store.update(&entity).await?;
         Ok(())
     }

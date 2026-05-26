@@ -241,6 +241,14 @@ mod tests {
         ) -> Result<(), BackendError> {
             unimplemented!("not used by bootstrap path")
         }
+
+        async fn record_login(
+            &self,
+            _username: &str,
+            _at: chrono::DateTime<chrono::Utc>,
+        ) -> Result<(), BackendError> {
+            unimplemented!("not used by bootstrap path")
+        }
     }
 
     /// Helper: run an async block on a single-threaded current-thread runtime.
