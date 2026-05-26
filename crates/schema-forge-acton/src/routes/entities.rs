@@ -2289,6 +2289,21 @@ pub async fn update_entity(
             .await;
         let existing = ask_forge(rx).await?.map_err(ForgeError::from)?;
         if !policy.can_modify(&schema_def, c, &existing).await {
+            if let Some(logger) = state.audit_logger() {
+                logger
+                    .log_custom(
+                        "forge.access.denied",
+                        acton_service::audit::AuditSeverity::Warning,
+                        Some(serde_json::json!({
+                            "schema": &schema,
+                            "entity_id": existing.id.as_str(),
+                            "action": "update",
+                            "user": &c.sub,
+                            "reason": "record_can_modify",
+                        })),
+                    )
+                    .await;
+            }
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to modify entity '{id}'"),
             });
@@ -2501,6 +2516,21 @@ pub async fn patch_entity(
 
     if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
         if !policy.can_modify(&schema_def, c, &existing).await {
+            if let Some(logger) = state.audit_logger() {
+                logger
+                    .log_custom(
+                        "forge.access.denied",
+                        acton_service::audit::AuditSeverity::Warning,
+                        Some(serde_json::json!({
+                            "schema": &schema,
+                            "entity_id": existing.id.as_str(),
+                            "action": "patch",
+                            "user": &c.sub,
+                            "reason": "record_can_modify",
+                        })),
+                    )
+                    .await;
+            }
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to modify entity '{id}'"),
             });
@@ -2736,6 +2766,21 @@ pub async fn delete_entity(
             .await;
         let entity = ask_forge(rx).await?.map_err(ForgeError::from)?;
         if !policy.can_delete(&schema_def, c, &entity).await {
+            if let Some(logger) = state.audit_logger() {
+                logger
+                    .log_custom(
+                        "forge.access.denied",
+                        acton_service::audit::AuditSeverity::Warning,
+                        Some(serde_json::json!({
+                            "schema": &schema,
+                            "entity_id": entity.id.as_str(),
+                            "action": "delete",
+                            "user": &c.sub,
+                            "reason": "record_can_delete",
+                        })),
+                    )
+                    .await;
+            }
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to delete entity '{id}'"),
             });

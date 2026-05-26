@@ -63,6 +63,46 @@ struct FileTarget<'a> {
     field: &'a str,
 }
 
+/// Wrap a `check_schema_access` call so any deny lands in the durable
+/// audit chain before the error propagates to the client.
+///
+/// Without this, schema-level access denials on file routes only ever
+/// reach `tracing` via the Cedar engine — they never reach the
+/// hash-chained audit ledger. The route-layer audit entry carries the
+/// schema/entity/field triple the engine doesn't see, which is what an
+/// incident responder needs to triage "who tried to grab what".
+async fn check_file_schema_access(
+    state: &AppState<SchemaForgeConfig>,
+    policy_store: &Arc<crate::authz::PolicyStore>,
+    ctx: &FileContext,
+    field: &str,
+    claims: Option<&Claims>,
+    access: AccessAction,
+) -> Result<(), ForgeError> {
+    match check_schema_access(policy_store, &ctx.schema, claims, access) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            audit_file(
+                state,
+                "forge.access.denied",
+                AuditSeverity::Warning,
+                claims.map(|c| c.sub.as_str()),
+                FileTarget {
+                    schema: ctx.schema.name.as_str(),
+                    entity_id: ctx.entity.id.as_str(),
+                    field,
+                },
+                serde_json::json!({
+                    "action": format!("{access:?}"),
+                    "reason": "schema_access",
+                }),
+            )
+            .await;
+            Err(e)
+        }
+    }
+}
+
 /// Emit a file-lifecycle audit event to the durable chain.
 ///
 /// File handlers carry highly variable per-event metadata (key, mime, size,
@@ -170,7 +210,15 @@ pub async fn mint_upload_url(
 ) -> Result<Json<MintUploadUrlResponse>, ForgeError> {
     let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
     let policy_store = fetch_policy_store(&state).await?;
-    check_schema_access(&policy_store, &ctx.schema, claims.as_ref(), AccessAction::Write)?;
+    check_file_schema_access(
+        &state,
+        &policy_store,
+        &ctx,
+        &field,
+        claims.as_ref(),
+        AccessAction::Write,
+    )
+    .await?;
 
     validate_upload_request(&body, &ctx.constraints)?;
 
@@ -261,7 +309,15 @@ pub async fn confirm_upload(
 ) -> Result<Json<AttachmentResponse>, ForgeError> {
     let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
     let policy_store = fetch_policy_store(&state).await?;
-    check_schema_access(&policy_store, &ctx.schema, claims.as_ref(), AccessAction::Write)?;
+    check_file_schema_access(
+        &state,
+        &policy_store,
+        &ctx,
+        &field,
+        claims.as_ref(),
+        AccessAction::Write,
+    )
+    .await?;
 
     // Reject keys that don't match the expected per-entity/per-field prefix.
     // Prevents a caller from attaching a confirmed object that was uploaded
@@ -429,6 +485,22 @@ pub async fn scan_complete(
         message: "scan-complete requires authenticated platform_admin".into(),
     })?;
     if !caller.has_role(PLATFORM_ADMIN_ROLE) {
+        audit_file(
+            &state,
+            "forge.access.denied",
+            AuditSeverity::Warning,
+            Some(&caller.sub),
+            FileTarget {
+                schema: &schema,
+                entity_id: &entity_id,
+                field: &field,
+            },
+            serde_json::json!({
+                "action": "scan_complete",
+                "reason": "platform_admin_required",
+            }),
+        )
+        .await;
         return Err(ForgeError::Forbidden {
             message: "scan-complete requires platform_admin role".into(),
         });
@@ -538,7 +610,15 @@ pub async fn download_file(
 ) -> Result<Response, ForgeError> {
     let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
     let policy_store = fetch_policy_store(&state).await?;
-    check_schema_access(&policy_store, &ctx.schema, claims.as_ref(), AccessAction::Read)?;
+    check_file_schema_access(
+        &state,
+        &policy_store,
+        &ctx,
+        &field,
+        claims.as_ref(),
+        AccessAction::Read,
+    )
+    .await?;
 
     let attachment = current_attachment(&ctx.entity, &field).ok_or_else(|| {
         ForgeError::EntityNotFound {
