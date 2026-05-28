@@ -211,6 +211,8 @@ my-platform/
     └── main.rs
 ```
 
+The generated `config.toml` is seeded with `[schema_forge] project_name = "my-platform"` — the human-facing name shown to users in invitation emails and used as the default email `From` display-name. Edit it to whatever your users should recognize.
+
 ### Define a Schema
 
 Create a file at `schemas/crm.schema`:
@@ -930,6 +932,7 @@ SchemaForge is under active development. All seven crates compile and pass 1123 
 - Axum JSON API with dynamic CRUD routes and schema management
 - React site generator (`schemaforge site generate`) producing a Vite + Tailwind + shadcn app against the JSON API
 - Token-based authentication (PASETO) with an auth-store-backed login endpoint
+- Email-based user invitation and onboarding with single-use PASETO invite links and SMTP delivery (see [`docs/invitations-reference.md`](docs/invitations-reference.md))
 - Cedar authorization policy generation
 - Schema-level and field-level access control via `@access` and `@field_access` annotations
 - Record-level ownership-based access control
