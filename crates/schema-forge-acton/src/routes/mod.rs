@@ -2,6 +2,7 @@ pub mod auth;
 pub mod entities;
 pub mod files;
 pub mod health;
+pub mod invites;
 pub mod meta;
 pub mod permissions;
 pub mod query_params;

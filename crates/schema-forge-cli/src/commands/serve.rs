@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use acton_service::auth::config::{PasetoGenerationConfig, TokenGenerationConfig};
 use acton_service::auth::tokens::paseto_generator::PasetoGenerator;
+use acton_service::middleware::paseto::PasetoAuth;
 use acton_service::prelude::ActorHandleInterface;
 use acton_service::service_builder::ServiceBuilder;
 use acton_service::versioning::{ApiVersion, VersionedApiBuilder};
@@ -303,6 +304,10 @@ pub async fn run(
     if let Some(acton_service::config::TokenConfig::Paseto(ref mut pc)) = svc_config.token {
         pc.public_paths.push("/api/v1/forge/auth/login".to_string());
         pc.public_paths.push("/api/v1/forge/meta".to_string());
+        // The invitee has no token yet; the accept endpoint authenticates by
+        // possession of a valid, unconsumed invitation, not a bearer.
+        pc.public_paths
+            .push("/api/v1/forge/auth/invites/accept".to_string());
     }
 
     // Opt-in permissive CORS for local development. Warns loudly in logs.
@@ -323,6 +328,41 @@ pub async fn run(
     // auto-created on first boot when missing so `serve` is self-bootstrapping.
     let paseto_generator = build_paseto_generator(&svc_config, output)?;
 
+    // Build the PASETO *validator* from the same config/key the generator
+    // uses. The invite-accept endpoint re-verifies the stored invite token
+    // through this validator so role/tenant are read from signed claims.
+    let paseto_validator = build_paseto_validator(&svc_config)?;
+
+    // Provision the internal ForgeInvitation table (NOT registered in the
+    // public schema registry) and build the invite store over it.
+    let invite_store = schema_forge_acton::system::provision_invite_store(
+        backend_arc.as_ref(),
+        entity_store.clone(),
+    )
+    .await
+    .map_err(|e| CliError::Server {
+        message: format!("failed to provision invite store: {e}"),
+    })?;
+
+    // Build the outbound email transport. When `[schema_forge.email]` is
+    // disabled we still inject a sender — one that fails closed — so the
+    // invite endpoints return a clear "email not configured" error rather
+    // than 500-ing on a missing extension.
+    let email_cfg = svc_config.custom.schema_forge.email.clone();
+    let email_sender: Arc<dyn schema_forge_acton::email::EmailSender> = if email_cfg.enabled {
+        Arc::new(
+            schema_forge_acton::email::SmtpEmailSender::from_config(&email_cfg).map_err(|e| {
+                CliError::Config {
+                    message: format!("invalid [schema_forge.email] config: {e}"),
+                }
+            })?,
+        )
+    } else {
+        Arc::new(schema_forge_acton::email::DisabledEmailSender::new(
+            email_cfg.public_base_url.clone(),
+        ))
+    };
+
     // 8. Build versioned routes via acton-service for the JSON forge API.
     //    Build a `MetaInfo` snapshot from the resolved DB params + the
     //    login token TTL so `GET /api/v1/forge/meta` can surface honest
@@ -338,6 +378,9 @@ pub async fn run(
     let routes = build_versioned_routes(
         login_auth_store,
         paseto_generator,
+        paseto_validator,
+        invite_store,
+        email_sender,
         meta_info,
         resolved_principal_claims,
         tenant_config_layer,
@@ -672,9 +715,13 @@ fn build_paseto_generator(
 /// Nests SchemaForge's JSON API routes under `/api/v1/forge/`. All UI
 /// surfaces are generated client-side by `schemaforge site generate`; this
 /// server only serves the JSON API plus the login endpoint.
+#[allow(clippy::too_many_arguments)]
 fn build_versioned_routes(
     auth_store: Arc<dyn schema_forge_acton::DynAuthStore>,
     paseto_generator: Arc<PasetoGenerator>,
+    paseto_validator: Arc<PasetoAuth>,
+    invite_store: Arc<dyn schema_forge_backend::InviteStore>,
+    email_sender: Arc<dyn schema_forge_acton::email::EmailSender>,
     meta_info: Arc<schema_forge_acton::MetaInfo>,
     principal_claims: Arc<schema_forge_acton::authz::PrincipalClaimMappings>,
     tenant_config: Arc<Option<schema_forge_backend::tenant::TenantConfig>>,
@@ -684,6 +731,9 @@ fn build_versioned_routes(
     // extract them via axum::Extension.
     let auth_store_layer = auth_store;
     let generator_layer = paseto_generator;
+    let validator_layer = paseto_validator;
+    let invite_store_layer = invite_store;
+    let email_sender_layer = email_sender;
     let meta_layer = meta_info;
     let principal_claims_layer = principal_claims;
     let tenant_config_layer = tenant_config;
@@ -704,11 +754,38 @@ fn build_versioned_routes(
                 ))
                 .layer(Extension(auth_store_layer))
                 .layer(Extension(generator_layer))
+                .layer(Extension(validator_layer))
+                .layer(Extension(invite_store_layer))
+                .layer(Extension(email_sender_layer))
                 .layer(Extension(meta_layer))
                 .layer(Extension(principal_claims_layer))
                 .layer(Extension(tenant_config_layer))
         })
         .build_routes()
+}
+
+/// Build a [`PasetoAuth`] validator from the loaded acton-service config.
+///
+/// Shares the key file the token middleware and [`build_paseto_generator`]
+/// use, so a token minted by the generator round-trips through this validator.
+/// Used by the invite-accept endpoint to re-verify a stored invite token.
+fn build_paseto_validator(
+    svc_config: &acton_service::config::Config<schema_forge_acton::SchemaForgeConfig>,
+) -> Result<Arc<PasetoAuth>, CliError> {
+    let paseto_cfg = match &svc_config.token {
+        Some(acton_service::config::TokenConfig::Paseto(pc)) => pc,
+        _ => {
+            return Err(CliError::Config {
+                message: "[token] must be configured with format = \"paseto\" to verify \
+                          invitation tokens"
+                    .to_string(),
+            });
+        }
+    };
+    let validator = PasetoAuth::new(paseto_cfg).map_err(|e| CliError::Config {
+        message: format!("failed to build PASETO validator: {e}"),
+    })?;
+    Ok(Arc::new(validator))
 }
 
 /// Layer the SchemaForge `/health` override middleware onto the versioned
@@ -873,11 +950,30 @@ mod tests {
         };
         use schema_forge_surrealdb::SurrealBackend;
 
+        use std::io::Write as _;
+
         let key = [0u8; 32];
         let generator = Arc::new(PasetoGenerator::with_symmetric_key(
             key,
             TokenGenerationConfig::default(),
         ));
+
+        // A matching on-disk key so `PasetoAuth::new` can build a validator
+        // sharing the generator's symmetric key.
+        let mut key_file = tempfile::NamedTempFile::new().unwrap();
+        key_file.write_all(&key).unwrap();
+        key_file.flush().unwrap();
+        let validator = Arc::new(
+            PasetoAuth::new(&acton_service::config::PasetoConfig {
+                version: "v4".to_string(),
+                purpose: "local".to_string(),
+                key_path: key_file.path().to_path_buf(),
+                issuer: None,
+                audience: None,
+                public_paths: vec![],
+            })
+            .unwrap(),
+        );
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let backend = rt
@@ -937,6 +1033,15 @@ mod tests {
             EntityAuthStore::new(entity_store.clone(), user_schema, resolver),
         );
 
+        let invite_store = rt
+            .block_on(schema_forge_acton::system::provision_invite_store(
+                backend.as_ref(),
+                entity_store.clone(),
+            ))
+            .unwrap();
+        let email_sender: Arc<dyn schema_forge_acton::email::EmailSender> =
+            Arc::new(schema_forge_acton::email::DisabledEmailSender::new(None));
+
         let meta = Arc::new(schema_forge_acton::MetaInfo::new(
             "surrealdb",
             "SurrealDB 2.x",
@@ -952,6 +1057,9 @@ mod tests {
         let _routes = build_versioned_routes(
             auth_store,
             generator,
+            validator,
+            invite_store,
+            email_sender,
             meta,
             principal_claims,
             tenant_config,

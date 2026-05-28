@@ -127,6 +127,26 @@ pub trait AuthStore: Send + Sync {
         username: &str,
         at: DateTime<Utc>,
     ) -> impl Future<Output = Result<(), BackendError>> + Send;
+
+    /// Grant `username` a membership in the tenant identified by
+    /// `(tenant_type, tenant_id)`, optionally scoped to `role`.
+    ///
+    /// Writes one `TenantMembership` row referencing the user's `User`
+    /// entity. Used by the invite-accept flow (issue #71) to make a freshly
+    /// onboarded user a member of the tenant they were invited to, in the
+    /// same request that creates their account.
+    ///
+    /// Errors if the user row cannot be resolved or the deployment has not
+    /// seeded the `TenantMembership` schema — onboarding a user into a
+    /// tenant that the store can't record must fail loudly, not silently
+    /// drop the membership.
+    fn add_tenant_membership(
+        &self,
+        username: &str,
+        tenant_type: &str,
+        tenant_id: &str,
+        role: Option<&str>,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send;
 }
 
 #[cfg(test)]

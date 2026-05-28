@@ -47,6 +47,7 @@ const LAST_LOGIN_FIELD: &str = "last_login";
 const TM_USER_FIELD: &str = "user";
 const TM_TENANT_TYPE_FIELD: &str = "tenant_type";
 const TM_TENANT_ID_FIELD: &str = "tenant_id";
+const TM_ROLE_FIELD: &str = "role";
 
 /// Function that maps a role name to a numeric rank, returning `None`
 /// for unregistered roles.
@@ -606,6 +607,54 @@ impl AuthStore for EntityAuthStore {
             .iter()
             .filter_map(entity_to_tenant_ref)
             .collect())
+    }
+
+    async fn add_tenant_membership(
+        &self,
+        username: &str,
+        tenant_type: &str,
+        tenant_id: &str,
+        role: Option<&str>,
+    ) -> Result<(), BackendError> {
+        let tm_schema =
+            self.tenant_membership_schema
+                .as_ref()
+                .ok_or_else(|| BackendError::Internal {
+                    message: "TenantMembership schema not attached; cannot grant membership"
+                        .to_string(),
+                })?;
+
+        // Resolve the user's EntityId so the membership row references the
+        // actual `User` entity — the `user` field is a typed `-> User` ref,
+        // and `list_tenant_memberships` filters on `DynamicValue::Ref(id)`.
+        let user_entity = self.find_entity_by_username(username).await?.ok_or_else(|| {
+            BackendError::EntityNotFound {
+                schema: "User".to_string(),
+                entity_id: username.to_string(),
+            }
+        })?;
+
+        let mut fields: std::collections::BTreeMap<String, DynamicValue> =
+            std::collections::BTreeMap::new();
+        fields.insert(
+            TM_USER_FIELD.to_string(),
+            DynamicValue::Ref(user_entity.id.clone()),
+        );
+        fields.insert(
+            TM_TENANT_TYPE_FIELD.to_string(),
+            DynamicValue::Text(tenant_type.to_string()),
+        );
+        fields.insert(
+            TM_TENANT_ID_FIELD.to_string(),
+            DynamicValue::Text(tenant_id.to_string()),
+        );
+        if let Some(r) = role.filter(|s| !s.is_empty()) {
+            fields.insert(TM_ROLE_FIELD.to_string(), DynamicValue::Text(r.to_string()));
+        }
+
+        let entity = Entity::new(tm_schema.name.clone(), fields);
+        self.store.create(&entity).await?;
+        Ok(())
     }
 
     async fn record_login(

@@ -62,7 +62,7 @@ use acton_service::prelude::ActorHandleInterface;
 /// The acton-service audit chain owns sequencing and BLAKE3 hash linkage;
 /// this helper centralises severity selection and the `actor / target /
 /// action` metadata shape so every emission stays consistent.
-async fn audit_user(
+pub(crate) async fn audit_user(
     state: &AppState<SchemaForgeConfig>,
     event: &'static str,
     severity: AuditSeverity,
@@ -123,7 +123,7 @@ async fn audit_password_changed(
 /// Duplicated (by design) from `routes::schemas` because that file is owned
 /// by a parallel agent and cannot be edited. The helper is trivially pure
 /// and unit-tested below.
-fn require_auth(claims: &Option<Claims>) -> Result<&Claims, ForgeError> {
+pub(crate) fn require_auth(claims: &Option<Claims>) -> Result<&Claims, ForgeError> {
     claims.as_ref().ok_or(ForgeError::Unauthorized {
         message: "authentication required".to_string(),
     })
@@ -131,7 +131,7 @@ fn require_auth(claims: &Option<Claims>) -> Result<&Claims, ForgeError> {
 
 
 /// Fetch the User schema definition from the registry.
-async fn fetch_user_schema(
+pub(crate) async fn fetch_user_schema(
     state: &AppState<SchemaForgeConfig>,
 ) -> Result<SchemaDefinition, ForgeError> {
     let forge = state
@@ -155,7 +155,7 @@ async fn fetch_user_schema(
 }
 
 /// Fetch the current Cedar policy store from the actor.
-async fn fetch_policy_store(
+pub(crate) async fn fetch_policy_store(
     state: &AppState<SchemaForgeConfig>,
 ) -> Result<Arc<PolicyStore>, ForgeError> {
     let forge = state
@@ -188,7 +188,7 @@ async fn fetch_policy_store(
 /// table the policy store already carries. This makes the global
 /// `user_role_rank_forbid` policy fire correctly without requiring a
 /// separate read of the User table.
-fn forge_user_to_user_entity(user: &ForgeUser, store: &PolicyStore) -> Entity {
+pub(crate) fn forge_user_to_user_entity(user: &ForgeUser, store: &PolicyStore) -> Entity {
     let snapshot = store.current();
     let role_rank = snapshot.role_ranks.max_rank(&user.roles);
 
@@ -237,7 +237,7 @@ fn forge_user_to_user_entity(user: &ForgeUser, store: &PolicyStore) -> Entity {
 /// The only restricted role today is `platform_admin`: only an existing
 /// platform admin may grant it. Other role names pass through. Same
 /// helper will gate role edits in a future `PUT /users/:username`.
-fn caller_can_grant_roles(
+pub(crate) fn caller_can_grant_roles(
     claims: &Claims,
     requested_roles: &[String],
 ) -> Result<(), ForgeError> {
@@ -290,7 +290,7 @@ fn validate_username(username: &str) -> Result<(), ForgeError> {
 }
 
 /// Verify a plaintext password meets the minimum length requirement.
-fn validate_password(password: &str) -> Result<(), ForgeError> {
+pub(crate) fn validate_password(password: &str) -> Result<(), ForgeError> {
     if password.is_empty() {
         return Err(ForgeError::ValidationFailed {
             details: vec!["password must not be empty".to_string()],

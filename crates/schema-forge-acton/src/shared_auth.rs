@@ -256,6 +256,16 @@ mod tests {
         ) -> Result<Vec<schema_forge_backend::TenantRef>, BackendError> {
             unimplemented!("not used by bootstrap path")
         }
+
+        async fn add_tenant_membership(
+            &self,
+            _username: &str,
+            _tenant_type: &str,
+            _tenant_id: &str,
+            _role: Option<&str>,
+        ) -> Result<(), BackendError> {
+            unimplemented!("not used by bootstrap path")
+        }
     }
 
     /// Helper: run an async block on a single-threaded current-thread runtime.

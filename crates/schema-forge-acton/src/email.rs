@@ -262,6 +262,36 @@ impl EmailSender for InMemoryEmailSender {
     }
 }
 
+/// An [`EmailSender`] that always refuses delivery with
+/// [`EmailError::NotConfigured`].
+///
+/// Wired when `[schema_forge.email] enabled = false` so flows that need to
+/// send mail get a clear "email not configured" error from `send` rather than
+/// a confusing 500 on a missing `Extension<Arc<dyn EmailSender>>`. The
+/// configured `public_base_url` (if any) is still surfaced so link-building
+/// code paths behave identically regardless of whether SMTP is wired.
+pub struct DisabledEmailSender {
+    public_base_url: Option<String>,
+}
+
+impl DisabledEmailSender {
+    /// Create a disabled sender carrying an optional base URL.
+    pub fn new(public_base_url: Option<String>) -> Self {
+        Self { public_base_url }
+    }
+}
+
+#[async_trait]
+impl EmailSender for DisabledEmailSender {
+    async fn send(&self, _message: EmailMessage) -> Result<(), EmailError> {
+        Err(EmailError::NotConfigured)
+    }
+
+    fn public_base_url(&self) -> Option<&str> {
+        self.public_base_url.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +370,20 @@ mod tests {
         let sent = sender.sent();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].to, "user@example.gov");
+        assert_eq!(sender.public_base_url(), Some("https://app.agency.gov"));
+    }
+
+    #[tokio::test]
+    async fn disabled_sender_fails_closed_but_keeps_base_url() {
+        let sender = DisabledEmailSender::new(Some("https://app.agency.gov".to_string()));
+        let res = sender
+            .send(EmailMessage {
+                to: "user@example.gov".to_string(),
+                subject: "Welcome".to_string(),
+                body_text: "hello".to_string(),
+            })
+            .await;
+        assert!(matches!(res, Err(EmailError::NotConfigured)));
         assert_eq!(sender.public_base_url(), Some("https://app.agency.gov"));
     }
 }
