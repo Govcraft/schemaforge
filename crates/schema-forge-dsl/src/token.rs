@@ -130,6 +130,35 @@ pub enum Token {
     Ident,
 }
 
+/// Every reserved keyword in the SchemaDSL lexer, as its source string.
+///
+/// Single source of truth for "which identifiers the lexer claims as a keyword
+/// token rather than [`Token::Ident`]". A name listed here cannot be used as a
+/// bare identifier (schema name, field name, etc.) because the lexer never
+/// emits `Ident` for it. Consumers that generate identifiers — notably the
+/// property tests — filter against this list so they can't drift from the
+/// lexer. The `keywords_const_matches_lexer` test pins each entry to a real
+/// keyword token.
+pub const KEYWORDS: &[&str] = &[
+    "schema",
+    "text",
+    "richtext",
+    "integer",
+    "float",
+    "boolean",
+    "datetime",
+    "enum",
+    "json",
+    "composite",
+    "file",
+    "required",
+    "indexed",
+    "unique",
+    "default",
+    "true",
+    "false",
+];
+
 impl Token {
     /// Returns a human-readable description of this token kind.
     pub fn description(&self) -> &'static str {
@@ -209,6 +238,37 @@ mod tests {
                 Token::False,
             ]
         );
+    }
+
+    #[test]
+    fn keywords_const_matches_lexer() {
+        // Every entry in KEYWORDS must lex as exactly one non-`Ident` keyword
+        // token. This pins the published list to the lexer so the two cannot
+        // drift apart silently.
+        for kw in KEYWORDS {
+            let mut lexer = Token::lexer(kw);
+            let tok = lexer
+                .next()
+                .unwrap_or_else(|| panic!("{kw} produced no token"))
+                .unwrap_or_else(|_| panic!("{kw} produced a lex error"));
+            assert_ne!(
+                tok,
+                Token::Ident,
+                "{kw} is in KEYWORDS but the lexer treats it as an identifier"
+            );
+            assert!(lexer.next().is_none(), "{kw} should lex to a single token");
+        }
+    }
+
+    #[test]
+    fn lex_keywords_covers_full_const() {
+        // The `keywords()` test asserts the exact token order for the full
+        // keyword set; this guards that it stays in lockstep with the count of
+        // published KEYWORDS, so a new keyword can't be added to one without
+        // the other.
+        let tokens = lex(&KEYWORDS.join(" "));
+        assert_eq!(tokens.len(), KEYWORDS.len());
+        assert!(tokens.iter().all(|t| *t != Token::Ident));
     }
 
     #[test]

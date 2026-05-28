@@ -1,5 +1,23 @@
 use proptest::prelude::*;
+use proptest::test_runner::FileFailurePersistence;
+use schema_forge_core::types::cedar_reserved::reserved_field_name;
+use schema_forge_dsl::token::KEYWORDS;
 use schema_forge_dsl::{parse, print};
+
+/// Path (relative to the crate root) where proptest persists regression seeds.
+///
+/// Set explicitly because the default `SourceParallel` strategy can't locate a
+/// crate root from an integration test (there is no `lib.rs`/`main.rs` under
+/// `tests/`), which otherwise prints a warning and drops discovered seeds.
+const REGRESSIONS_FILE: &str = "tests/proptest_dsl.proptest-regressions";
+
+/// Proptest configuration with deterministic on-disk seed persistence.
+fn config() -> ProptestConfig {
+    ProptestConfig {
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(REGRESSIONS_FILE))),
+        ..ProptestConfig::default()
+    }
+}
 
 /// Strategy for generating valid PascalCase schema names.
 fn pascal_case_name() -> impl Strategy<Value = String> {
@@ -7,26 +25,17 @@ fn pascal_case_name() -> impl Strategy<Value = String> {
 }
 
 /// Strategy for generating valid snake_case field names.
+///
+/// A name is only valid as a bare field identifier if it is neither a DSL
+/// lexer keyword (it would tokenize as a keyword, not an identifier) nor a
+/// Cedar-reserved name (rejected by `FieldName::new`, since field names become
+/// Cedar attribute identifiers). Both exclusion sets are imported from their
+/// owning crates — `schema_forge_dsl::token::KEYWORDS` and
+/// `schema_forge_core`'s `reserved_field_name` — so this filter can never
+/// drift from the parser's actual acceptance criteria.
 fn snake_case_name() -> impl Strategy<Value = String> {
-    "[a-z][a-z0-9_]{0,15}".prop_filter("not a keyword", |s| {
-        !matches!(
-            s.as_str(),
-            "text"
-                | "richtext"
-                | "integer"
-                | "float"
-                | "boolean"
-                | "datetime"
-                | "enum"
-                | "json"
-                | "composite"
-                | "required"
-                | "indexed"
-                | "default"
-                | "true"
-                | "false"
-                | "schema"
-        )
+    "[a-z][a-z0-9_]{0,15}".prop_filter("not a reserved keyword", |s| {
+        !KEYWORDS.contains(&s.as_str()) && reserved_field_name(s).is_none()
     })
 }
 
@@ -44,6 +53,8 @@ fn simple_type() -> impl Strategy<Value = String> {
 }
 
 proptest! {
+    #![proptest_config(config())]
+
     /// Parsing a valid minimal schema should never fail.
     #[test]
     fn valid_minimal_schema_always_parses(
