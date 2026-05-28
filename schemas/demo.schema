@@ -7,19 +7,24 @@
 //
 // Grammar coverage:
 //   Types:        text, richtext, integer, float, boolean, datetime, enum,
-//                 json, composite, arrays ([]), relations (->, ->[]), file
+//                 json, composite, arrays ([]), relations (->, ->[])
 //   Modifiers:    required, indexed, unique (tenant-root, per-tenant & global),
 //                 default
 //   Schema anns:  @tenant(root|parent), @display, @dashboard (all params),
 //                 @access (incl. cross_tenant_read), @version, @system, @webhook
 //                 (bare & parameterized)
-//   Field anns:   @owner, @hidden, @field_access, @kanban_column,
-//                 @widget (all 17 variants), @format (all 7 variants),
-//                 @enum_colors (full palette), @list(primary|column|hidden)
+//   Field anns:   @owner, @hidden, @field_access, @kanban_column, @widget,
+//                 @format (all 7 variants), @enum_colors (full palette),
+//                 @list(primary|column|hidden)
 //
-//   NOT exercised: @hook(...). Hooks are deliberately omitted so the schema can
-//   be demoed without standing up the external hooks gRPC service. See the
-//   SchemaForge docs / `hooks generate` for hook usage.
+// Deliberately NOT exercised here (so `task demo` boots with zero external
+// dependencies — no S3/MinIO, no hooks gRPC service):
+//   - file(...) fields and their @widget("file")/@widget("avatar") renderers.
+//     A file field requires a matching [schema_forge.storage.backends.<name>]
+//     entry or the server refuses to boot, and storage is S3-compatible only.
+//     See skills/schemaforge/storage-reference.md for a runnable file(...)
+//     example (presigned + proxied) with the backend config it needs.
+//   - @hook(...). See the SchemaForge docs / `hooks generate` for hook usage.
 //
 // Organization hierarchy:
 //   Organization (tenant root)
@@ -94,9 +99,6 @@ schema Employee {
     full_name:        text(max: 255) required indexed
     email:            text(max: 512) required indexed @widget("email")
     phone:            text(max: 50) @widget("phone")
-    // file(...) field with the default `presigned` access strategy: the runtime
-    // mints a short-TTL GET URL and the client reads directly from storage.
-    photo:            file(bucket: "avatars", max_size: "5MB", mime: ["image/png", "image/jpeg"], access: "presigned") @widget("avatar")
     title:            text(max: 255)
     department:       -> Department
     manager:          -> Employee
@@ -335,10 +337,6 @@ schema Milestone {
 schema Document {
     title:            text(max: 500) required indexed
     content:          richtext required @widget("markdown")
-    // file(...) with `access: "proxied"`: the runtime streams the bytes itself
-    // on every fetch so authorization is re-checked at download time. max_size
-    // accepts a size-suffixed string ("25MB") or a raw integer byte count.
-    attachment:       file(bucket: "documents", max_size: "25MB", mime: ["application/pdf", "image/*"], access: "proxied") @widget("file")
     summary:          text
     doc_type:         enum("proposal", "specification", "report", "memo", "meeting_notes", "other") default("other") @widget("status_badge")
     status:           enum("draft", "review", "approved", "archived") default("draft") @widget("status_badge") @kanban_column
