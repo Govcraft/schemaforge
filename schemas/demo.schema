@@ -3,8 +3,23 @@
 // =============================================================================
 //
 // Domain: A multi-tenant project management platform with CRM, HR, and
-// document management capabilities. Designed to exercise every DSL feature
-// including @widget, @dashboard, @kanban_column, and @format annotations.
+// document management capabilities. Designed to exercise every DSL feature.
+//
+// Grammar coverage:
+//   Types:        text, richtext, integer, float, boolean, datetime, enum,
+//                 json, composite, arrays ([]), relations (->, ->[]), file
+//   Modifiers:    required, indexed, unique (tenant-root, per-tenant & global),
+//                 default
+//   Schema anns:  @tenant(root|parent), @display, @dashboard (all params),
+//                 @access (incl. cross_tenant_read), @version, @system, @webhook
+//                 (bare & parameterized)
+//   Field anns:   @owner, @hidden, @field_access, @kanban_column,
+//                 @widget (all 17 variants), @format (all 7 variants),
+//                 @enum_colors (full palette), @list(primary|column|hidden)
+//
+//   NOT exercised: @hook(...). Hooks are deliberately omitted so the schema can
+//   be demoed without standing up the external hooks gRPC service. See the
+//   SchemaForge docs / `hooks generate` for hook usage.
 //
 // Organization hierarchy:
 //   Organization (tenant root)
@@ -31,12 +46,16 @@
 @access(read: ["member", "admin"], write: ["admin"], delete: ["admin"])
 schema Organization {
     name:             text(max: 255) required indexed
-    slug:             text(max: 100) required indexed
+    // `unique` on the tenant ROOT enforces global (cross-tenant) uniqueness —
+    // the slug namespaces every organization. On @tenant(parent:) schemas the
+    // same modifier would scope uniqueness per-tenant instead.
+    slug:             text(max: 100) required indexed unique
     billing_email:    text(max: 512) @widget("email")
     plan:             enum("free", "starter", "business", "enterprise") default("free") @widget("status_badge")
     max_seats:        integer(min: 1) default(5)
+    storage_quota:    integer(min: 0) default(0) @format("bytes")        // @format("bytes") — humanizes a byte count
     logo_url:         text @widget("image")
-    settings:         json
+    settings:         json @widget("json")                              // @widget("json") — raw JSON editor
     founded:          datetime @format("relative")
     active:           boolean default(true)
     owner_id:         text required @owner
@@ -75,6 +94,9 @@ schema Employee {
     full_name:        text(max: 255) required indexed
     email:            text(max: 512) required indexed @widget("email")
     phone:            text(max: 50) @widget("phone")
+    // file(...) field with the default `presigned` access strategy: the runtime
+    // mints a short-TTL GET URL and the client reads directly from storage.
+    photo:            file(bucket: "avatars", max_size: "5MB", mime: ["image/png", "image/jpeg"], access: "presigned") @widget("avatar")
     title:            text(max: 255)
     department:       -> Department
     manager:          -> Employee
@@ -82,6 +104,8 @@ schema Employee {
     termination_date: datetime @format("relative")
     salary:           float(precision: 2) @field_access(read: ["hr", "admin"], write: ["hr", "admin"]) @format("currency")
     ssn_last_four:    text(max: 4) @field_access(read: ["hr", "admin"], write: ["hr"])
+    // @hidden — server-internal field, never serialized to API clients or the UI.
+    internal_hr_id:   text(max: 64) @hidden
     employment_type:  enum("full_time", "part_time", "contractor", "intern") default("full_time") @widget("status_badge")
     status:           enum("active", "on_leave", "terminated") default("active") @widget("status_badge")
     skills:           text[]
@@ -147,6 +171,7 @@ schema Company {
     industry:         enum("technology", "finance", "healthcare", "education", "retail", "manufacturing", "consulting", "other") @widget("status_badge")
     size:             enum("startup", "smb", "mid_market", "enterprise") @widget("status_badge")
     employee_count:   integer(min: 0)
+    satisfaction:     integer(min: 1, max: 5) @widget("rating")        // @widget("rating") — 1–5 star control
     annual_revenue:   float(precision: 2) @field_access(read: ["finance", "sales", "admin"], write: ["finance"]) @format("currency")
     website:          text @widget("url")
     description:      richtext
@@ -175,11 +200,16 @@ schema Company {
 @display("name")
 @dashboard(widgets: ["count", "sum:value", "avg:value"], layout: "kanban", group_by: "stage", sort_default: "-expected_close")
 @access(read: ["sales", "finance", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
+// Parameterized @webhook — POSTs to an external endpoint on the listed lifecycle
+// events (only created/updated/deleted are valid), signed with the shared secret.
+@webhook(events: ["created", "updated", "deleted"], url: "https://example.com/hooks/deals", secret: "whsec_demo_replace_me")
 schema Deal {
     name:             text(max: 255) required indexed
     value:            float(precision: 2) required @field_access(read: ["sales", "finance", "admin"], write: ["sales"]) @format("currency")
     currency:         text(max: 3) default("USD")
-    stage:            enum("prospecting", "qualification", "proposal", "negotiation", "closed_won", "closed_lost") default("prospecting") @widget("status_badge") @kanban_column
+    // @enum_colors maps enum variants to semantic UI colors. Each key must name
+    // a real variant of this field; colors are drawn from the closed palette.
+    stage:            enum("prospecting", "qualification", "proposal", "negotiation", "closed_won", "closed_lost") default("prospecting") @widget("status_badge") @kanban_column @enum_colors(prospecting: "gray", qualification: "blue", proposal: "amber", negotiation: "purple", closed_won: "green", closed_lost: "red")
     probability:      integer(min: 0, max: 100) default(10) @widget("progress") @format("percent")
     expected_close:   datetime @format("relative")
     actual_close:     datetime @format("relative")
@@ -198,12 +228,15 @@ schema Deal {
 
 @display("subject")
 @access(read: ["sales", "marketing", "manager", "admin"], write: ["sales", "marketing", "admin"], delete: ["admin"])
+// Bare @webhook — registers the schema for outbound notifications using the
+// instance-wide default endpoint/secret (no inline parameters).
+@webhook
 schema Activity {
     subject:          text(max: 500) required
     activity_type:    enum("call", "email", "meeting", "note", "task", "demo", "follow_up") required @widget("status_badge")
-    description:      richtext
-    occurred_at:      datetime required @format("relative")
-    duration_minutes: integer(min: 0)
+    description:      richtext @widget("rich_text")                    // @widget("rich_text") — WYSIWYG editor
+    occurred_at:      datetime required @format("datetime")            // @format("datetime") — absolute date + time
+    duration_minutes: integer(min: 0) @format("duration")             // @format("duration") — humanizes a span
     outcome:          enum("completed", "no_answer", "rescheduled", "cancelled") @widget("status_badge")
     contact:          -> Contact
     company:          -> Company
@@ -230,6 +263,7 @@ schema Project {
     description:      richtext
     status:           enum("planning", "active", "on_hold", "completed", "cancelled") default("planning") @widget("status_badge") @kanban_column
     priority:         enum("critical", "high", "medium", "low") default("medium") @widget("status_badge")
+    health_score:     integer(min: 0, max: 100) default(100) @widget("slider")   // @widget("slider") — bounded range input
     start_date:       datetime @format("relative")
     target_end_date:  datetime @format("relative")
     actual_end_date:  datetime @format("relative")
@@ -276,11 +310,13 @@ schema Task {
 @display("name")
 @access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
 schema Milestone {
-    name:             text(max: 255) required
+    // @list(...) hints control list-view rendering: `primary` is the headline
+    // cell, `column` forces inclusion, `hidden` suppresses an otherwise-shown field.
+    name:             text(max: 255) required @list(primary)
     description:      text
-    due_date:         datetime required @format("relative")
-    completed_at:     datetime @format("relative")
-    status:           enum("upcoming", "in_progress", "completed", "missed") default("upcoming") @widget("status_badge")
+    due_date:         datetime required @format("date")               // @format("date") — calendar date, no time
+    completed_at:     datetime @format("relative") @list(hidden)
+    status:           enum("upcoming", "in_progress", "completed", "missed") default("upcoming") @widget("status_badge") @list(column)
     project:          -> Project required
     tasks:            -> Task[]
     owner_id:         text @owner
@@ -299,6 +335,10 @@ schema Milestone {
 schema Document {
     title:            text(max: 500) required indexed
     content:          richtext required @widget("markdown")
+    // file(...) with `access: "proxied"`: the runtime streams the bytes itself
+    // on every fetch so authorization is re-checked at download time. max_size
+    // accepts a size-suffixed string ("25MB") or a raw integer byte count.
+    attachment:       file(bucket: "documents", max_size: "25MB", mime: ["application/pdf", "image/*"], access: "proxied") @widget("file")
     summary:          text
     doc_type:         enum("proposal", "specification", "report", "memo", "meeting_notes", "other") default("other") @widget("status_badge")
     status:           enum("draft", "review", "approved", "archived") default("draft") @widget("status_badge") @kanban_column
@@ -378,11 +418,14 @@ schema Theme {
 /* Tags provide flexible categorization across all entity types. */
 
 @display("name")
-@access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
+// cross_tenant_read lets these roles read Tag rows owned by OTHER tenants —
+// appropriate for shared reference data. read/write/delete stay tenant-scoped.
+@access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"], cross_tenant_read: ["member", "manager", "admin"])
 schema Tag {
-    name:             text(max: 100) required indexed
+    // Tag is not tenant-scoped, so `unique` enforces a single global namespace.
+    name:             text(max: 100) required indexed unique
     color:            text(max: 7) @widget("color")
-    category:         enum("general", "priority", "status", "department", "skill", "industry") default("general") @widget("status_badge")
+    category:         enum("general", "priority", "status", "department", "skill", "industry") default("general") @widget("status_badge") @enum_colors(general: "neutral", priority: "rose", status: "teal", department: "violet", skill: "green", industry: "gray")
     description:      text
     active:           boolean default(true)
 }
@@ -397,7 +440,7 @@ schema Workflow {
     description:      text
     target_schema:    text(max: 100) required
     trigger_field:    text(max: 100) required
-    rules:            json required
+    rules:            json required @widget("json")
     enabled:          boolean default(true)
     execution_count:  integer(min: 0) default(0)
     last_executed:    datetime
