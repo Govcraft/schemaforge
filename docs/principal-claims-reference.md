@@ -482,6 +482,12 @@ Header rules:
 - **Header references a tenant the user is not a member of**: 403
   `ACTIVE_TENANT_FORBIDDEN`. Closes impersonation.
 
+There is **no separate "switch tenant" endpoint and no active-tenant token
+claim**. Switching is purely a client concern: send a different
+`X-Active-Tenant` header on the next request — no re-login, no new token. A
+browser discovers its memberships (to build a switcher) and its currently
+resolved active tenant via `GET /auth/me`; see §10.7.
+
 ### 10.3 Zero-membership policy
 
 If `@tenant` annotations are present in the deployment's schemas
@@ -558,4 +564,56 @@ curl -sf -H "authorization: Bearer $BOB_TOKEN" \
      -H "X-Active-Tenant: Organization:org-c" \
      http://localhost:3000/api/v1/forge/schemas/Opportunity/entities
 # 403 ACTIVE_TENANT_FORBIDDEN — bob isn't a member of org-c.
+```
+
+### 10.7 Client read of the contract: `GET /auth/me`
+
+A browser client cannot decode the PASETO (it is `v4.local`, encrypted with
+the server's symmetric key), so it cannot see its own `user_id`, its
+memberships, or which tenant is active. `GET /api/v1/forge/auth/me` is the
+authenticated read side of this contract — the anchor for "signed in as /
+current org" chrome and a tenant switcher:
+
+```jsonc
+{
+  "user_id": "user_01k...",          // the User entity id (no email→id lookup)
+  "email": "alice@agency.gov",        // the login identifier
+  "display_name": "Alice Stone",
+  "roles": ["member"],
+  "tenant_chain": [                   // the FULL membership set (§10.1),
+    { "schema": "Organization", "entity_id": "org-a" },  // each entry is
+    { "schema": "Organization", "entity_id": "org-b" }   // directly usable as
+  ],                                                     // an X-Active-Tenant value
+  "active_tenant": { "tenant_type": "Organization", "tenant_id": "org-a" },
+  "active_tenant_header": "X-Active-Tenant",
+  "principal_claims": { /* projected user-field claims, §1 */ }
+}
+```
+
+Key behaviors:
+
+- **`active_tenant` resolution mirrors §10.2.** If the request carries a valid
+  `X-Active-Tenant` header naming a member, that tenant is reported; with a sole
+  membership it is implied; otherwise (multi-membership, no header, or a header
+  naming a non-member) it is `null` — the client must choose. `active_tenant_header`
+  names the header to send, so clients don't hard-code it.
+- **`/auth/me` is exempt from the `tenant_scope` middleware.** It must return the
+  *full* membership set so a client can render every switchable tenant; the
+  multi-membership `ACTIVE_TENANT_REQUIRED` rule (§10.2) would otherwise reject
+  exactly the multi-tenant users this endpoint serves. (`/auth/refresh` is exempt
+  for the same reason — it carries no tenant context of its own.)
+- **Switching uses §10.2, not a new token.** Read the options here, then send the
+  chosen `X-Active-Tenant` header on subsequent entity requests.
+
+```sh
+# bob (multi-membership): discover identity + switchable tenants.
+curl -sf -H "authorization: Bearer $BOB_TOKEN" \
+     http://localhost:3000/api/v1/forge/auth/me
+# active_tenant: null  (multi-membership, no header → client must choose)
+
+# confirm which tenant a given header resolves to before using it for writes.
+curl -sf -H "authorization: Bearer $BOB_TOKEN" \
+     -H "X-Active-Tenant: Organization:org-b" \
+     http://localhost:3000/api/v1/forge/auth/me
+# active_tenant: { tenant_type: "Organization", tenant_id: "org-b" }
 ```
