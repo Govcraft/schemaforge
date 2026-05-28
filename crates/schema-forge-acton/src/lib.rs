@@ -11,6 +11,7 @@ pub mod extension;
 pub mod graphql;
 pub mod hooks;
 pub mod messages;
+pub mod middleware;
 pub mod routes;
 pub mod shared;
 pub mod shared_auth;

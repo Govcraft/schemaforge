@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::entity::Entity;
 use crate::error::BackendError;
+use crate::tenant::TenantRef;
 
 /// A user record (without password_hash).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +97,22 @@ pub trait AuthStore: Send + Sync {
         username: &str,
         new_password: &str,
     ) -> impl Future<Output = Result<(), BackendError>> + Send;
+
+    /// List the tenant memberships granted to `username`.
+    ///
+    /// Returns the flat set of `(tenant_type, tenant_id)` tuples backing
+    /// the PASETO `tenant_chain` custom claim. Each entry is a tenant the
+    /// user belongs to — the set carries no inherent order and no implied
+    /// hierarchy walk. The per-request active tenant and its ancestor
+    /// chain are resolved upstream by the `tenant_scope` middleware.
+    ///
+    /// Returns an empty `Vec` for unknown users or users with no
+    /// memberships; policy decisions ("0 memberships + tenancy enabled
+    /// → refuse login") belong to the caller, not the store.
+    fn list_tenant_memberships(
+        &self,
+        username: &str,
+    ) -> impl Future<Output = Result<Vec<TenantRef>, BackendError>> + Send;
 
     /// Stamp the user's `last_login` field to `at`.
     ///
