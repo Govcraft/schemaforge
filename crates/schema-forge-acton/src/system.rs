@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::system_schemas;
@@ -106,6 +107,56 @@ pub async fn seed_system_schemas_into_map(
     }
 
     Ok(())
+}
+
+/// Provision the internal `ForgeInvitation` table and return a ready
+/// [`InviteStore`](schema_forge_backend::InviteStore) over it.
+///
+/// Deliberately mirrors [`seed_system_schemas`] **minus the registry insert**:
+/// the table is created and its metadata persisted (so reboots are idempotent
+/// and entity queries resolve the right `SchemaId`), but it is never added to
+/// the in-memory [`SchemaRegistry`]. Because `/schemas` and every entity route
+/// resolve schemas through that registry, the invitation table — which holds
+/// the full minted invite tokens — stays unreachable from the public API. See
+/// the module docs on [`schema_forge_backend::invite_store`].
+pub async fn provision_invite_store(
+    backend: &dyn DynForgeBackend,
+    entity_store: Arc<dyn schema_forge_backend::DynEntityStore>,
+) -> Result<Arc<dyn schema_forge_backend::InviteStore>, ForgeError> {
+    let mut definitions = schema_forge_dsl::parse(schema_forge_backend::FORGE_INVITATION_SCHEMA)
+        .map_err(|errors| ForgeError::Internal {
+            message: format!("failed to parse ForgeInvitation schema: {errors:?}"),
+        })?;
+    let definition = definitions.pop().ok_or_else(|| ForgeError::Internal {
+        message: "ForgeInvitation schema parsed to zero definitions".to_string(),
+    })?;
+
+    // Reuse the persisted definition when present so the store addresses the
+    // table by the same SchemaId the backend already provisioned.
+    let definition = match backend
+        .load_schema_metadata(&definition.name)
+        .await
+        .map_err(ForgeError::from)?
+    {
+        Some(existing) => existing,
+        None => {
+            let plan = DiffEngine::create_new(&definition);
+            backend
+                .apply_migration(&definition.name, &plan.steps)
+                .await
+                .map_err(ForgeError::from)?;
+            backend
+                .store_schema_metadata(&definition)
+                .await
+                .map_err(ForgeError::from)?;
+            definition
+        }
+    };
+
+    Ok(Arc::new(schema_forge_backend::EntityInviteStore::new(
+        entity_store,
+        definition,
+    )))
 }
 
 #[cfg(test)]

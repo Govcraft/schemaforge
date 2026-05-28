@@ -312,6 +312,16 @@ pub trait DynAuthStore: Send + Sync {
         &'a self,
         username: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<TenantRef>, BackendError>> + Send + 'a>>;
+
+    /// Grant the user a tenant membership. See
+    /// [`schema_forge_backend::user_store::AuthStore::add_tenant_membership`].
+    fn add_tenant_membership<'a>(
+        &'a self,
+        username: &'a str,
+        tenant_type: &'a str,
+        tenant_id: &'a str,
+        role: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
 }
 
 /// Blanket impl: any concrete `AuthStore` automatically implements `DynAuthStore`.
@@ -410,6 +420,22 @@ impl<T: AuthStore + 'static> DynAuthStore for T {
         username: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<TenantRef>, BackendError>> + Send + 'a>> {
         Box::pin(AuthStore::list_tenant_memberships(self, username))
+    }
+
+    fn add_tenant_membership<'a>(
+        &'a self,
+        username: &'a str,
+        tenant_type: &'a str,
+        tenant_id: &'a str,
+        role: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::add_tenant_membership(
+            self,
+            username,
+            tenant_type,
+            tenant_id,
+            role,
+        ))
     }
 }
 

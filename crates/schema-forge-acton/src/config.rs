@@ -19,6 +19,16 @@ pub struct SchemaForgeConfig {
 /// SchemaForge settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchemaForgeSettings {
+    /// Human-facing name of this deployment, used wherever an end user sees
+    /// the application by name rather than seeing the SchemaForge engine.
+    /// Today that is the invitation email — its body and subject — and the
+    /// default `From` display-name when [`crate::email::EmailConfig::from`] is
+    /// a bare address. Defaults to `"SchemaForge"` so existing deployments are
+    /// unchanged; a "Bob's Dog Scheduling" deployment sets this once and every
+    /// onboarding touchpoint reads correctly.
+    #[serde(default = "default_project_name")]
+    pub project_name: String,
+
     /// The URL path prefix for SchemaForge routes (default: "/forge").
     #[serde(default = "default_route_prefix")]
     pub route_prefix: String,
@@ -38,6 +48,12 @@ pub struct SchemaForgeSettings {
     /// S3-compatible storage backends for `file` field types.
     #[serde(default)]
     pub storage: crate::storage::StorageConfig,
+
+    /// Outbound email (SMTP) settings, used by operational flows that must
+    /// reach a human out-of-band — currently user invitations. Disabled by
+    /// default; see [`crate::email::EmailConfig`].
+    #[serde(default)]
+    pub email: crate::email::EmailConfig,
 
     /// Authorization configuration. Currently exposes operator-defined
     /// PASETO custom-claim → Cedar `Forge::Principal` attribute mappings;
@@ -123,14 +139,20 @@ fn default_route_prefix() -> String {
     "/forge".to_string()
 }
 
+fn default_project_name() -> String {
+    "SchemaForge".to_string()
+}
+
 impl Default for SchemaForgeSettings {
     fn default() -> Self {
         Self {
+            project_name: default_project_name(),
             route_prefix: default_route_prefix(),
             auto_generate_cedar_policies: false,
             webhooks: crate::webhook::WebhookConfig::default(),
             hooks: crate::hooks::HooksConfig::default(),
             storage: crate::storage::StorageConfig::default(),
+            email: crate::email::EmailConfig::default(),
             authz: AuthzConfig::default(),
             signing: SigningConfig::default(),
             client: ClientConfig::default(),
@@ -153,11 +175,13 @@ mod tests {
     fn serde_roundtrip_preserves_all_fields() {
         let config = SchemaForgeConfig {
             schema_forge: SchemaForgeSettings {
+                project_name: "Bob's Dog Scheduling".to_string(),
                 route_prefix: "/api/forge".to_string(),
                 auto_generate_cedar_policies: true,
                 webhooks: crate::webhook::WebhookConfig::default(),
                 hooks: crate::hooks::HooksConfig::default(),
                 storage: crate::storage::StorageConfig::default(),
+                email: crate::email::EmailConfig::default(),
                 authz: AuthzConfig::default(),
                 signing: SigningConfig::default(),
                 client: ClientConfig::default(),
@@ -166,8 +190,25 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let back: SchemaForgeConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.schema_forge.route_prefix, "/api/forge");
+        assert_eq!(back.schema_forge.project_name, "Bob's Dog Scheduling");
         assert!(back.schema_forge.auto_generate_cedar_policies);
         assert!(back.schema_forge.authz.principal_claims.is_empty());
+    }
+
+    #[test]
+    fn project_name_defaults_to_schemaforge() {
+        let config: SchemaForgeConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.schema_forge.project_name, "SchemaForge");
+    }
+
+    #[test]
+    fn project_name_deserialises_from_toml() {
+        let toml = r#"
+            [schema_forge]
+            project_name = "Bob's Dog Scheduling"
+        "#;
+        let config: SchemaForgeConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.schema_forge.project_name, "Bob's Dog Scheduling");
     }
 
     #[test]

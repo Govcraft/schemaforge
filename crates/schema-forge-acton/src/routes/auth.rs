@@ -667,6 +667,14 @@ pub fn auth_routes(
         .route("/auth/login", post(login))
         .route("/auth/refresh", post(refresh))
         .route("/auth/me", get(me))
+        // Invitations (issue #71). `/auth/invites` is authenticated;
+        // `/auth/invites/accept` is public (added to the token middleware's
+        // public_paths by `commands::serve`) since the invitee has no token.
+        .route("/auth/invites", post(crate::routes::invites::create_invite))
+        .route(
+            "/auth/invites/accept",
+            post(crate::routes::invites::accept_invite),
+        )
 }
 
 // ---------------------------------------------------------------------------
