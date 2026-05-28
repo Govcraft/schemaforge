@@ -171,13 +171,20 @@ fn build_accept_url(base: Option<&str>, invite_id: &str) -> String {
     }
 }
 
-/// Plain-text invitation email body.
-fn invite_email_body(accept_url: &str) -> String {
+/// Plain-text invitation email body, branded with the deployment's
+/// `project_name` so onboarding users see the application they are joining
+/// (e.g. "Bob's Dog Scheduling") rather than the underlying engine.
+fn invite_email_body(project_name: &str, accept_url: &str) -> String {
     format!(
-        "You have been invited to join the SchemaForge workspace.\n\n\
+        "You have been invited to join {project_name}.\n\n\
          To accept the invitation and set your password, open:\n\n  {accept_url}\n\n\
          If you were not expecting this invitation you can ignore this message.\n"
     )
+}
+
+/// Subject line for the invitation email, branded with `project_name`.
+fn invite_email_subject(project_name: &str) -> String {
+    format!("You've been invited to {project_name}")
 }
 
 // ---------------------------------------------------------------------------
@@ -299,10 +306,11 @@ pub async fn create_invite(
     // 5xx so the operator knows the invite did not reach the invitee. The row
     // stays `Pending`, so the invite can be re-sent once SMTP is healthy.
     let accept_url = build_accept_url(email_sender.public_base_url(), &invitation.jti);
+    let project_name = &state.config().custom.schema_forge.project_name;
     let message = EmailMessage {
         to: body.email.clone(),
-        subject: "You've been invited".to_string(),
-        body_text: invite_email_body(&accept_url),
+        subject: invite_email_subject(project_name),
+        body_text: invite_email_body(project_name, &accept_url),
     };
     if let Err(e) = email_sender.send(message).await {
         audit_user(
@@ -517,7 +525,27 @@ mod tests {
 
     #[test]
     fn invite_email_body_contains_link() {
-        let body = invite_email_body("https://app.agency.gov/invite/accept?invite=xyz");
+        let body = invite_email_body(
+            "SchemaForge",
+            "https://app.agency.gov/invite/accept?invite=xyz",
+        );
         assert!(body.contains("https://app.agency.gov/invite/accept?invite=xyz"));
+    }
+
+    #[test]
+    fn invite_email_is_branded_with_project_name() {
+        let body = invite_email_body("Bob's Dog Scheduling", "https://x/invite?invite=1");
+        assert!(
+            body.contains("join Bob's Dog Scheduling"),
+            "email body must name the deployment, not the engine: {body}"
+        );
+        assert!(
+            !body.contains("SchemaForge"),
+            "branded body must not leak the engine name: {body}"
+        );
+        assert_eq!(
+            invite_email_subject("Bob's Dog Scheduling"),
+            "You've been invited to Bob's Dog Scheduling"
+        );
     }
 }

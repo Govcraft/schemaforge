@@ -155,7 +155,15 @@ impl SmtpEmailSender {
     /// [`EmailError::InvalidConfig`] when a required field (`host`, `from`)
     /// is missing or malformed — surfacing misconfiguration at startup rather
     /// than on the first invite.
-    pub fn from_config(cfg: &EmailConfig) -> Result<Self, EmailError> {
+    ///
+    /// `project_name` is the deployment's display name (from
+    /// `[schema_forge] project_name`). When `from` is a bare address with no
+    /// display name, it becomes the `From` display-name so recipients see the
+    /// application (e.g. `Bob's Dog Scheduling <noreply@…>`) rather than a
+    /// naked address. An operator who needs an exact `From` for deliverability
+    /// can still embed a display name in `from` directly, which is respected
+    /// verbatim.
+    pub fn from_config(cfg: &EmailConfig, project_name: &str) -> Result<Self, EmailError> {
         if !cfg.enabled {
             return Err(EmailError::NotConfigured);
         }
@@ -169,9 +177,15 @@ impl SmtpEmailSender {
             .as_deref()
             .filter(|f| !f.is_empty())
             .ok_or_else(|| EmailError::InvalidConfig("from is required".to_string()))?;
-        let from: Mailbox = from_raw
+        let parsed: Mailbox = from_raw
             .parse()
             .map_err(|e| EmailError::InvalidAddress(format!("from '{from_raw}': {e}")))?;
+        // Brand a bare address with the project name; respect an explicit
+        // display name the operator set in `from`.
+        let from = match (parsed.name.is_none(), project_name.trim().is_empty()) {
+            (true, false) => Mailbox::new(Some(project_name.to_string()), parsed.email),
+            _ => parsed,
+        };
 
         let builder = match cfg.tls {
             EmailTls::Implicit => AsyncSmtpTransport::<Tokio1Executor>::relay(host),
@@ -339,7 +353,7 @@ mod tests {
     fn smtp_sender_refuses_when_disabled() {
         let cfg = EmailConfig::default();
         assert!(matches!(
-            SmtpEmailSender::from_config(&cfg),
+            SmtpEmailSender::from_config(&cfg, "SchemaForge"),
             Err(EmailError::NotConfigured)
         ));
     }
@@ -351,9 +365,38 @@ mod tests {
             ..EmailConfig::default()
         };
         assert!(matches!(
-            SmtpEmailSender::from_config(&cfg),
+            SmtpEmailSender::from_config(&cfg, "SchemaForge"),
             Err(EmailError::InvalidConfig(_))
         ));
+    }
+
+    // These build a real `AsyncSmtpTransport`, whose connection-pool `Drop`
+    // requires a Tokio runtime — run them as async tests so the runtime
+    // outlives the sender.
+    #[tokio::test]
+    async fn bare_from_address_is_branded_with_project_name() {
+        let cfg = EmailConfig {
+            enabled: true,
+            host: Some("mail.example.gov".to_string()),
+            from: Some("noreply@example.gov".to_string()),
+            ..EmailConfig::default()
+        };
+        let sender = SmtpEmailSender::from_config(&cfg, "Bob's Dog Scheduling").unwrap();
+        assert_eq!(sender.from.name.as_deref(), Some("Bob's Dog Scheduling"));
+        assert_eq!(sender.from.email.to_string(), "noreply@example.gov");
+    }
+
+    #[tokio::test]
+    async fn explicit_from_display_name_is_respected() {
+        let cfg = EmailConfig {
+            enabled: true,
+            host: Some("mail.example.gov".to_string()),
+            from: Some("Agency Mailer <noreply@example.gov>".to_string()),
+            ..EmailConfig::default()
+        };
+        // Operator's explicit display name wins over the project name.
+        let sender = SmtpEmailSender::from_config(&cfg, "Bob's Dog Scheduling").unwrap();
+        assert_eq!(sender.from.name.as_deref(), Some("Agency Mailer"));
     }
 
     #[tokio::test]

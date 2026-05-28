@@ -23,8 +23,10 @@ pub async fn run(
     // Create directories and files based on template
     create_project_structure(&project_dir, template)?;
 
-    // Generate config.toml with defaults
-    create_config_file(&project_dir)?;
+    // Generate config.toml with defaults, branding it with the project name so
+    // user-facing flows (invitation emails) read with the application's name
+    // out of the box rather than the SchemaForge engine name.
+    create_config_file(&project_dir, &args.name)?;
 
     // Output summary
     match output.mode {
@@ -126,12 +128,42 @@ fn create_project_structure(project_dir: &Path, template: Template) -> Result<()
     Ok(())
 }
 
-fn create_config_file(project_dir: &Path) -> Result<(), CliError> {
+/// Escape a string for use inside a TOML basic (double-quoted) string.
+///
+/// A project name is operator-supplied and becomes the directory name, so it
+/// can contain characters (`"`, `\`) that would break the generated TOML if
+/// interpolated raw. Escape exactly what a basic string requires.
+fn toml_escape_basic(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str(r"\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str(r"\n"),
+            '\r' => out.push_str(r"\r"),
+            '\t' => out.push_str(r"\t"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn create_config_file(project_dir: &Path, project_name: &str) -> Result<(), CliError> {
     // Schema-forge uses acton-service's canonical config layout: SurrealDB
     // settings live under [surrealdb], PostgreSQL settings under [database].
     // CLI flags (`--db-url`, `--db-ns`, `--db-name`) and `ACTON_*` env vars
     // override these in-place; there is no parallel schema-forge config layer.
-    let config_content = r#"[surrealdb]
+    let project_name_block = format!(
+        "[schema_forge]\n\
+         # Human-facing name of this deployment. Shown to users in invitation\n\
+         # emails and used as the default email From display-name. Edit this to\n\
+         # the name users should recognize. Defaults to \"SchemaForge\" if removed.\n\
+         project_name = \"{}\"\n\n",
+        toml_escape_basic(project_name)
+    );
+    let config_content = format!(
+        "{project_name_block}{}",
+        r#"[surrealdb]
 url = "ws://localhost:8000"
 namespace = "schemaforge"
 database = "dev"
@@ -201,8 +233,9 @@ database = "dev"
 # name = "release-pipeline"
 # issuer = "https://token.actions.githubusercontent.com"
 # subject_pattern = "https://github.com/<org>/<repo>/.github/workflows/release.yml@refs/tags/v*"
-"#;
-    write_file(&project_dir.join("config.toml"), config_content)
+"#
+    );
+    write_file(&project_dir.join("config.toml"), &config_content)
 }
 
 fn create_dir(path: &Path) -> Result<(), CliError> {
@@ -304,7 +337,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("test-project");
         std::fs::create_dir_all(&project).unwrap();
-        create_config_file(&project).unwrap();
+        create_config_file(&project, "test-project").unwrap();
         let content = std::fs::read_to_string(project.join("config.toml")).unwrap();
         let parsed: toml::Value = toml::from_str(&content).unwrap();
         // Template uses acton-service's canonical layout: SurrealDB lives
@@ -321,6 +354,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn create_config_file_brands_project_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("bobs-dogs");
+        std::fs::create_dir_all(&project).unwrap();
+        create_config_file(&project, "Bob's Dog Scheduling").unwrap();
+        let content = std::fs::read_to_string(project.join("config.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&content).unwrap();
+        assert_eq!(
+            parsed
+                .get("schema_forge")
+                .and_then(|v| v.get("project_name"))
+                .and_then(|v| v.as_str()),
+            Some("Bob's Dog Scheduling"),
+            "scaffold must seed [schema_forge] project_name from the init name"
+        );
+    }
+
+    #[test]
+    fn create_config_file_escapes_project_name_for_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("quoted");
+        std::fs::create_dir_all(&project).unwrap();
+        // A name with a double-quote and backslash must not break the TOML.
+        create_config_file(&project, r#"Ann "Q" \ Co"#).unwrap();
+        let content = std::fs::read_to_string(project.join("config.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&content).unwrap();
+        assert_eq!(
+            parsed
+                .get("schema_forge")
+                .and_then(|v| v.get("project_name"))
+                .and_then(|v| v.as_str()),
+            Some(r#"Ann "Q" \ Co"#)
+        );
+    }
+
     /// The signing scaffold is shipped fully commented out — fresh
     /// projects parse as `mode = "off"` by virtue of the section not
     /// existing. This guards against accidental uncommenting (which
@@ -331,11 +400,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("test-project");
         std::fs::create_dir_all(&project).unwrap();
-        create_config_file(&project).unwrap();
+        create_config_file(&project, "test-project").unwrap();
         let content = std::fs::read_to_string(project.join("config.toml")).unwrap();
         let parsed: toml::Value = toml::from_str(&content).unwrap();
+        // [schema_forge] now exists (it carries project_name), but the
+        // signing subtable must stay commented so fresh projects parse as
+        // `mode = "off"` and `apply` works without trust anchors on day one.
         assert!(
-            parsed.get("schema_forge").is_none(),
+            parsed
+                .get("schema_forge")
+                .and_then(|v| v.get("signing"))
+                .is_none(),
             "scaffold must NOT activate [schema_forge.signing] by default; \
              it ships commented so fresh projects start in `mode = \"off\"`",
         );
@@ -359,7 +434,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("test-project");
         std::fs::create_dir_all(&project).unwrap();
-        create_config_file(&project).unwrap();
+        create_config_file(&project, "test-project").unwrap();
         let content = std::fs::read_to_string(project.join("config.toml")).unwrap();
 
         // Pull every line in the [schema_forge.signing] commented
