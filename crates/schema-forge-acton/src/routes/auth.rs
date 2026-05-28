@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::access::{OptionalClaims, PLATFORM_ADMIN_ROLE};
 use crate::authz::principal_claims::{PrincipalClaimMappings, PrincipalClaimsError};
 use crate::config::SchemaForgeConfig;
+use crate::middleware::tenant_scope::{parse_active_tenant, ACTIVE_TENANT_HEADER};
 use crate::state::DynAuthStore;
 
 /// Default expiry for tokens minted by this endpoint (1 hour).
@@ -78,6 +79,77 @@ struct LoginErrorBody {
     error: &'static str,
     code: &'static str,
     status: u16,
+}
+
+/// The tenant currently scoping the session, as surfaced by `GET /auth/me`.
+///
+/// Shape mirrors the `X-Active-Tenant: <tenant_type>:<tenant_id>` header the
+/// `tenant_scope` middleware consumes, so a client can round-trip it directly:
+/// read `active_tenant` here, send it back as the header to keep that scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveTenant {
+    /// Tenant schema name (e.g. `"Organization"`).
+    pub tenant_type: String,
+    /// Tenant entity id (e.g. `"organization_01k..."`).
+    pub tenant_id: String,
+}
+
+impl ActiveTenant {
+    fn from_ref(r: &TenantRef) -> Self {
+        Self {
+            tenant_type: r.schema.clone(),
+            tenant_id: r.entity_id.clone(),
+        }
+    }
+}
+
+/// Success response body for `GET /auth/me`.
+///
+/// The browser cannot read the encrypted PASETO, so this endpoint is the
+/// client-side anchor for "signed in as / current org" chrome: it returns the
+/// resolved `user_id`, the user's full tenant membership set (`tenant_chain` —
+/// each entry is directly usable to build an `X-Active-Tenant` value), and the
+/// currently-active tenant.
+#[derive(Debug, Serialize)]
+pub struct MeResponse {
+    /// The User entity id (`user_01k...`) — the stable identity the client
+    /// otherwise can't obtain without an email→id lookup.
+    pub user_id: String,
+    /// The login identifier, which is the user's email.
+    pub email: String,
+    pub display_name: Option<String>,
+    pub roles: Vec<String>,
+    /// The user's full membership set (every tenant they may operate in).
+    pub tenant_chain: Vec<TenantRef>,
+    /// The tenant scoping this request: the `X-Active-Tenant` header if present
+    /// and a member, else the sole membership, else `null` (client must choose).
+    pub active_tenant: Option<ActiveTenant>,
+    /// The header name a client sends to set/switch the active tenant. Surfaced
+    /// so clients don't hard-code it. Switching needs no new token (see #67).
+    pub active_tenant_header: &'static str,
+    /// Operator-declared principal-claim projections (same values baked into
+    /// the token at login), for client-side display/branching.
+    pub principal_claims: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Resolve the active tenant from the membership set and an optional
+/// `X-Active-Tenant` header value, mirroring `tenant_scope`'s selection rule:
+/// a valid header that names a member wins; with no header a sole membership is
+/// implied; otherwise there is no resolved active tenant (the client chooses).
+///
+/// Pure: no I/O, fully unit-testable.
+fn resolve_active_tenant(memberships: &[TenantRef], header: Option<&str>) -> Option<ActiveTenant> {
+    match header {
+        Some(h) => {
+            let (schema, id) = parse_active_tenant(h)?;
+            memberships
+                .iter()
+                .find(|m| m.schema == schema && m.entity_id == id)
+                .map(ActiveTenant::from_ref)
+        }
+        None if memberships.len() == 1 => Some(ActiveTenant::from_ref(&memberships[0])),
+        None => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +347,81 @@ pub async fn refresh(
         token,
         expires_at: expires_at.to_rfc3339(),
         roles: user.roles.clone(),
+    };
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+/// `GET /auth/me` — return the authenticated principal as the server resolves
+/// it, so a browser client (which cannot decrypt the PASETO) can render
+/// "signed in as / current org" chrome and a tenant switcher without an
+/// email→user_id round-trip.
+///
+/// `active_tenant` is resolved exactly as `tenant_scope` resolves it for entity
+/// requests: the `X-Active-Tenant: <type>:<id>` header when present and a
+/// member, else the sole membership, else `null`. Switching tenants is done by
+/// sending a different `X-Active-Tenant` header on subsequent requests — no new
+/// token, consistent with the model shipped in #67. This route is deliberately
+/// exempt from the `tenant_scope` middleware so it can return the *full*
+/// membership set rather than the active tenant's hierarchy.
+pub async fn me(
+    OptionalClaims(claims): OptionalClaims,
+    Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
+    Extension(principal_claims): Extension<Arc<PrincipalClaimMappings>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let Some(claims) = claims else {
+        return unauthorized_response();
+    };
+
+    let username = claims
+        .username
+        .clone()
+        .unwrap_or_else(|| claims.sub.trim_start_matches("user:").to_string());
+
+    // Re-read live state (roles/active/memberships), same contract as refresh:
+    // a grant, revocation, or deactivation since login takes effect here.
+    let user = match auth_store.get_user(&username).await {
+        Ok(Some(u)) if u.active => u,
+        Ok(_) => return unauthorized_response(),
+        Err(e) => return internal_error_response(format!("auth store error: {e}")),
+    };
+
+    let entity = match auth_store.get_user_entity(&username).await {
+        Ok(Some(e)) => e,
+        Ok(None) => return unauthorized_response(),
+        Err(e) => return internal_error_response(format!("auth store error: {e}")),
+    };
+
+    let memberships = match auth_store.list_tenant_memberships(&username).await {
+        Ok(m) => m,
+        Err(e) => return internal_error_response(format!("auth store error: {e}")),
+    };
+
+    let principal_claims_map = if principal_claims.has_user_field_sources() {
+        match principal_claims.project_user_fields(&entity) {
+            Ok(m) => m.into_iter().collect(),
+            Err(e) => {
+                return internal_error_response(format!("principal claim projection failed: {e}"))
+            }
+        }
+    } else {
+        serde_json::Map::new()
+    };
+
+    let active_tenant = resolve_active_tenant(
+        &memberships,
+        headers.get(ACTIVE_TENANT_HEADER).and_then(|v| v.to_str().ok()),
+    );
+
+    let body = MeResponse {
+        user_id: entity.id.to_string(),
+        email: username,
+        display_name: user.display_name,
+        roles: user.roles,
+        tenant_chain: memberships,
+        active_tenant,
+        active_tenant_header: ACTIVE_TENANT_HEADER,
+        principal_claims: principal_claims_map,
     };
     (StatusCode::OK, Json(body)).into_response()
 }
@@ -505,16 +652,21 @@ fn internal_error_response(message: String) -> Response {
 // Router helper
 // ---------------------------------------------------------------------------
 
-/// Build the auth sub-router, containing just `POST /auth/login`.
+/// Build the auth sub-router: `POST /auth/login`, `POST /auth/refresh`, and
+/// `GET /auth/me`.
 ///
 /// Nested alongside the rest of the forge routes (schemas, entities) under
-/// `/api/v1/forge/` by `SchemaForgeExtension::versioned_forge_routes`.
+/// `/api/v1/forge/` by `SchemaForgeExtension::versioned_forge_routes`. The
+/// `tenant_scope` middleware deliberately skips `/auth/*` (see its early-out),
+/// so `/auth/me` sees the full membership set and `/auth/refresh` stays usable
+/// for multi-membership users.
 pub fn auth_routes(
 ) -> axum::Router<acton_service::state::AppState<crate::config::SchemaForgeConfig>> {
-    use axum::routing::post;
+    use axum::routing::{get, post};
     axum::Router::new()
         .route("/auth/login", post(login))
         .route("/auth/refresh", post(refresh))
+        .route("/auth/me", get(me))
 }
 
 // ---------------------------------------------------------------------------
@@ -660,5 +812,91 @@ mod tests {
         }];
         let res = enforce_tenant_membership_policy(&memberships, &[], None);
         assert!(res.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // /auth/me active-tenant resolution (issue #70)
+    // -----------------------------------------------------------------------
+
+    fn tref(schema: &str, id: &str) -> TenantRef {
+        TenantRef {
+            schema: schema.to_string(),
+            entity_id: id.to_string(),
+        }
+    }
+
+    #[test]
+    fn resolve_active_tenant_no_memberships_is_none() {
+        assert_eq!(resolve_active_tenant(&[], None), None);
+        assert_eq!(resolve_active_tenant(&[], Some("Organization:org-a")), None);
+    }
+
+    #[test]
+    fn resolve_active_tenant_sole_membership_without_header() {
+        let m = vec![tref("Organization", "org-a")];
+        assert_eq!(
+            resolve_active_tenant(&m, None),
+            Some(ActiveTenant {
+                tenant_type: "Organization".into(),
+                tenant_id: "org-a".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_active_tenant_multi_membership_without_header_is_none() {
+        let m = vec![tref("Organization", "org-a"), tref("Organization", "org-b")];
+        assert_eq!(resolve_active_tenant(&m, None), None);
+    }
+
+    #[test]
+    fn resolve_active_tenant_header_selects_member() {
+        let m = vec![tref("Organization", "org-a"), tref("Organization", "org-b")];
+        assert_eq!(
+            resolve_active_tenant(&m, Some("Organization:org-b")),
+            Some(ActiveTenant {
+                tenant_type: "Organization".into(),
+                tenant_id: "org-b".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_active_tenant_header_not_a_member_is_none() {
+        let m = vec![tref("Organization", "org-a")];
+        assert_eq!(resolve_active_tenant(&m, Some("Organization:org-x")), None);
+    }
+
+    #[test]
+    fn resolve_active_tenant_malformed_header_is_none() {
+        let m = vec![tref("Organization", "org-a"), tref("Organization", "org-b")];
+        assert_eq!(resolve_active_tenant(&m, Some("garbage")), None);
+    }
+
+    #[test]
+    fn me_response_serializes_with_expected_shape() {
+        let body = MeResponse {
+            user_id: "user_01k".into(),
+            email: "roland@govcraft.ai".into(),
+            display_name: Some("Roland".into()),
+            roles: vec!["admin".into()],
+            tenant_chain: vec![tref("Organization", "org-a")],
+            active_tenant: Some(ActiveTenant {
+                tenant_type: "Organization".into(),
+                tenant_id: "org-a".into(),
+            }),
+            active_tenant_header: ACTIVE_TENANT_HEADER,
+            principal_claims: serde_json::Map::new(),
+        };
+        let v = serde_json::to_value(&body).unwrap();
+        assert_eq!(v["user_id"], "user_01k");
+        assert_eq!(v["email"], "roland@govcraft.ai");
+        assert_eq!(v["tenant_chain"][0]["schema"], "Organization");
+        assert_eq!(v["active_tenant"]["tenant_type"], "Organization");
+        assert_eq!(v["active_tenant"]["tenant_id"], "org-a");
+        assert_eq!(v["active_tenant_header"], "x-active-tenant");
+        // active_tenant is null (not omitted) when there's no resolved tenant.
+        let none_body = serde_json::json!({ "active_tenant": Option::<ActiveTenant>::None });
+        assert!(none_body["active_tenant"].is_null());
     }
 }

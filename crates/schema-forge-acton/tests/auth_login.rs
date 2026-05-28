@@ -443,3 +443,114 @@ async fn login_failure_leaves_last_login_untouched() {
         "last_login must remain unset after a failed login"
     );
 }
+
+// ---------------------------------------------------------------------------
+// GET /auth/me (issue #70)
+// ---------------------------------------------------------------------------
+
+/// Build a `Claims` envelope the way the token middleware would inject one,
+/// so `/auth/me` can be driven without standing up the full middleware stack.
+fn claims_for(username: &str, roles: &[&str]) -> acton_service::middleware::Claims {
+    use acton_service::auth::tokens::ClaimsBuilder;
+    let mut b = ClaimsBuilder::new()
+        .user(username)
+        .username(username)
+        .issuer("schemaforge");
+    for r in roles {
+        b = b.role(*r);
+    }
+    b.build().expect("build claims")
+}
+
+/// GET `/auth/me` with an optional injected `Claims` extension and an optional
+/// `X-Active-Tenant` header.
+async fn get_me(
+    app: Router,
+    claims: Option<acton_service::middleware::Claims>,
+    active_tenant: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let mut builder = Request::builder().method(Method::GET).uri("/auth/me");
+    if let Some(h) = active_tenant {
+        builder = builder.header("x-active-tenant", h);
+    }
+    let mut req = builder.body(Body::empty()).unwrap();
+    if let Some(c) = claims {
+        req.extensions_mut().insert(c);
+    }
+    let res = app.oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).expect("response body is JSON")
+    };
+    (status, body)
+}
+
+#[tokio::test]
+async fn me_returns_principal_and_full_membership_set() {
+    let (store, _cfg) = seeded_auth_store_with_memberships(2, &["member"]).await;
+    let (app, _key, _store) = login_app_with(store, None).await;
+
+    let (status, body) = get_me(app, Some(claims_for("alice", &["member"])), None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["email"], "alice");
+    assert!(
+        body["user_id"].as_str().unwrap().starts_with("user_"),
+        "user_id should be the User entity id, got {:?}",
+        body["user_id"]
+    );
+    let chain = body["tenant_chain"].as_array().expect("tenant_chain array");
+    assert_eq!(chain.len(), 2, "alice has two memberships");
+    // Multiple memberships and no X-Active-Tenant header => no resolved active
+    // tenant; the client must choose. (The header model shipped in #67.)
+    assert!(body["active_tenant"].is_null());
+    assert_eq!(body["active_tenant_header"], "x-active-tenant");
+}
+
+#[tokio::test]
+async fn me_resolves_active_tenant_from_header() {
+    let (store, _cfg) = seeded_auth_store_with_memberships(2, &["member"]).await;
+    let (app, _key, _store) = login_app_with(store, None).await;
+
+    let (status, body) = get_me(
+        app,
+        Some(claims_for("alice", &["member"])),
+        Some("Organization:org-b"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["active_tenant"]["tenant_type"], "Organization");
+    assert_eq!(body["active_tenant"]["tenant_id"], "org-b");
+}
+
+#[tokio::test]
+async fn me_with_non_member_active_tenant_header_resolves_null() {
+    let (store, _cfg) = seeded_auth_store_with_memberships(2, &["member"]).await;
+    let (app, _key, _store) = login_app_with(store, None).await;
+
+    let (status, body) = get_me(
+        app,
+        Some(claims_for("alice", &["member"])),
+        Some("Organization:org-not-mine"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body["active_tenant"].is_null(),
+        "a header naming a non-member tenant must not resolve"
+    );
+}
+
+#[tokio::test]
+async fn me_without_claims_returns_401() {
+    let (store, _cfg) = seeded_auth_store_with_memberships(1, &["member"]).await;
+    let (app, _key, _store) = login_app_with(store, None).await;
+
+    let (status, _body) = get_me(app, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
