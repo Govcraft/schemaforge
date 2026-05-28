@@ -8,7 +8,7 @@
 // and `FieldResponse`. Keep them in sync with that file when the backend
 // changes — TODO(Phase 4) is to have the backend expose a pre-digested
 // "view" shape so we don't parse the raw `FieldType` enum on the client.
-import { refreshToken, tokenStore } from "@/lib/auth"
+import { ACTIVE_TENANT_HEADER, activeTenantStore, refreshToken, tokenStore } from "@/lib/auth"
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
 const FORGE_API_PREFIX = "/api/v1/forge"
@@ -373,6 +373,14 @@ async function sendRequest(path: string, init?: RequestInit): Promise<Response> 
   }
   if (token) {
     headers["Authorization"] = `Bearer ${token}`
+  }
+  // Scope every entity request to the operator's chosen tenant. The server
+  // resolves this against the token's membership set and 403s a non-member
+  // value, so it is safe to send unconditionally. A caller-supplied header
+  // (via `init`) wins, letting one-off requests override the active scope.
+  const activeTenant = activeTenantStore.get()
+  if (activeTenant && !(ACTIVE_TENANT_HEADER in headers)) {
+    headers[ACTIVE_TENANT_HEADER] = activeTenant
   }
   return fetch(`${API_BASE}${path}`, { ...init, headers })
 }
