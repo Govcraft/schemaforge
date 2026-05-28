@@ -19,10 +19,21 @@ const TOKEN_KEY = "schemaforge.token"
 const EXPIRES_KEY = "schemaforge.token_expires_at"
 const ROLES_KEY = "schemaforge.roles"
 const USERNAME_KEY = "schemaforge.username"
+// The tenant the operator is currently acting within. Persisted so the
+// choice survives reloads; sent verbatim as the `X-Active-Tenant` request
+// header. Value shape is `<tenant_type>:<tenant_id>`, the same string the
+// server's tenant_scope middleware parses.
+const ACTIVE_TENANT_KEY = "schemaforge.active_tenant"
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
 const LOGIN_PATH = "/api/v1/forge/auth/login"
 const REFRESH_PATH = "/api/v1/forge/auth/refresh"
+const ME_PATH = "/api/v1/forge/auth/me"
+
+/** The header the backend reads to scope a request to one of the caller's
+ *  tenant memberships. Mirrors `ACTIVE_TENANT_HEADER` in the Rust
+ *  `tenant_scope` middleware; surfaced here so callers don't hard-code it. */
+export const ACTIVE_TENANT_HEADER = "X-Active-Tenant"
 
 // Fire the background refresh this many ms before the token's stated
 // `expires_at`. Five minutes gives the network and the refresh handler
@@ -108,12 +119,55 @@ export const tokenStore = {
       window.sessionStorage.removeItem(EXPIRES_KEY)
       window.sessionStorage.removeItem(ROLES_KEY)
       window.sessionStorage.removeItem(USERNAME_KEY)
+      // Clear the active tenant alongside the token. Losing the session must
+      // not strand a stale tenant selection that the next operator inherits.
+      window.sessionStorage.removeItem(ACTIVE_TENANT_KEY)
     } catch {
       // Ignore — clear is best-effort.
     }
     if (refreshTimer !== null) {
       clearTimeout(refreshTimer)
       refreshTimer = null
+    }
+  },
+}
+
+/**
+ * The tenant the operator is currently acting within.
+ *
+ * Switching tenants is a stateless, client-driven concern: the PASETO carries
+ * the user's *full* membership set (`tenant_chain`); which membership scopes a
+ * given request is chosen per-request by sending the `X-Active-Tenant` header.
+ * This store holds that choice. The server independently rejects a header
+ * naming a tenant the caller is not a member of (403), so this is convenience
+ * + display, never the security boundary.
+ */
+export const activeTenantStore = {
+  /** Current `<tenant_type>:<tenant_id>` header value, or `null` if unset. */
+  get(): string | null {
+    if (typeof window === "undefined") return null
+    try {
+      return window.sessionStorage.getItem(ACTIVE_TENANT_KEY)
+    } catch {
+      return null
+    }
+  },
+  set(tenantType: string, tenantId: string): void {
+    if (typeof window === "undefined") return
+    try {
+      window.sessionStorage.setItem(ACTIVE_TENANT_KEY, `${tenantType}:${tenantId}`)
+    } catch {
+      // sessionStorage quota / private mode: silently drop. Requests will
+      // fall back to no header; a multi-membership user then gets the
+      // server's 400 ACTIVE_TENANT_REQUIRED until the next successful set.
+    }
+  },
+  clear(): void {
+    if (typeof window === "undefined") return
+    try {
+      window.sessionStorage.removeItem(ACTIVE_TENANT_KEY)
+    } catch {
+      // Ignore — clear is best-effort.
     }
   },
 }
@@ -237,4 +291,61 @@ export function logout(): void {
 
 export function isAuthenticated(): boolean {
   return tokenStore.get() !== null
+}
+
+// ---------------------------------------------------------------------------
+// Principal / tenancy (`GET /auth/me`)
+// ---------------------------------------------------------------------------
+
+/** One of the caller's tenant memberships. Mirrors the Rust `TenantRef`
+ *  (`{schema, entity_id}`); every entry is directly usable to build an
+ *  `X-Active-Tenant: <schema>:<entity_id>` value. */
+export type TenantRef = {
+  schema: string
+  entity_id: string
+}
+
+/** The tenant scoping the current session. Mirrors the Rust `ActiveTenant`
+ *  (`{tenant_type, tenant_id}`). `tenant_type` equals the membership's
+ *  `schema`; `tenant_id` equals its `entity_id`. */
+export type ActiveTenant = {
+  tenant_type: string
+  tenant_id: string
+}
+
+/** Response of `GET /auth/me` — the browser cannot decrypt the PASETO, so
+ *  this is the client-side anchor for "signed in as / current tenant" chrome
+ *  and the tenant switcher. Mirrors the Rust `MeResponse`. */
+export type MeResponse = {
+  user_id: string
+  email: string
+  display_name: string | null
+  roles: string[]
+  /** The user's full membership set (every tenant they may operate in). */
+  tenant_chain: TenantRef[]
+  /** The tenant scoping this request: the sent `X-Active-Tenant` if a member,
+   *  else the sole membership, else `null` (the client must choose). */
+  active_tenant: ActiveTenant | null
+  /** The header name to send to set/switch the active tenant. */
+  active_tenant_header: string
+}
+
+/**
+ * Fetch the authenticated principal and tenancy context. Sends the stored
+ * `X-Active-Tenant` so the returned `active_tenant` reflects the operator's
+ * current choice (the endpoint is exempt from tenant scoping, so it always
+ * returns the *full* `tenant_chain` regardless of the header). Throws on a
+ * missing token or non-200 so React Query surfaces the error state.
+ */
+export async function fetchMe(): Promise<MeResponse> {
+  const token = tokenStore.get()
+  if (!token) throw new Error("no stored token")
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+  }
+  const active = activeTenantStore.get()
+  if (active) headers[ACTIVE_TENANT_HEADER] = active
+  const res = await fetch(`${API_BASE}${ME_PATH}`, { headers })
+  if (!res.ok) throw new Error(`auth/me failed: ${res.status}`)
+  return (await res.json()) as MeResponse
 }

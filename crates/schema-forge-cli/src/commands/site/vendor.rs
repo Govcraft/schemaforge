@@ -1222,6 +1222,43 @@ body {
   border-radius: 2px;
 }
 
+/* ---- Tenant switcher (topbar) ---- */
+.topbar-tenant {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 2px;
+  background: var(--app-bg-2);
+  color: var(--app-fg-2);
+}
+.topbar-tenant:hover { border-color: var(--app-border-2); }
+.topbar-tenant select {
+  border: 0; background: transparent;
+  color: var(--app-fg-1);
+  font-family: inherit; font-size: 13px;
+  padding: 5px 4px; cursor: pointer;
+  max-width: 220px;
+}
+.topbar-tenant select:focus-visible {
+  outline: 2px solid var(--app-fg-1);
+  outline-offset: 2px; border-radius: 2px;
+}
+.topbar-tenant-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 2px;
+  background: var(--app-bg-2);
+  color: var(--app-fg-2);
+  font-size: 13px;
+}
+.topbar-tenant-admin {
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.04em;
+  border-color: var(--accent);
+  color: var(--app-fg-1);
+}
+
 /* ---- Page wrapper ---- */
 .page { padding: 24px 32px 64px; max-width: 1480px; }
 .page-narrow { padding: 24px 32px 64px; max-width: 920px; }

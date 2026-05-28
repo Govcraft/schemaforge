@@ -39,7 +39,14 @@ import { routeManifest } from "@/generated/route-manifest"
 import { LoginPage } from "@/pages/login"
 import { AdminLayout } from "@/admin/layout"
 import { RequireAuth } from "@/lib/require-auth"
-import { getCurrentUsername, isAuthenticated, logout } from "@/lib/auth"
+import {
+  activeTenantStore,
+  fetchMe,
+  getCurrentRoles,
+  getCurrentUsername,
+  isAuthenticated,
+  logout,
+} from "@/lib/auth"
 import {
   getAdminPermissions,
   isSystemSchema,
@@ -273,6 +280,91 @@ function humanizeCrumb(seg: string): string {
   return decoded
 }
 
+// The role that transcends tenancy. A holder sees cross-tenant data because
+// the server's tenant_scope middleware bypasses scoping for them entirely —
+// so the switcher shows a standing badge rather than a picker. Mirrors
+// `PLATFORM_ADMIN_ROLE` in the Rust backend.
+const PLATFORM_ADMIN_ROLE = "platform_admin"
+
+// Tenant ids are TypeIDs (`organization_01k…`); show a compact tail so a
+// screen reader and the eye both get something legible rather than 30 chars.
+function shortTenantId(id: string): string {
+  const tail = id.includes("_") ? id.slice(id.lastIndexOf("_") + 1) : id
+  return tail.length > 10 ? tail.slice(0, 8) + "…" : tail
+}
+
+// Tenant chrome: a picker when the operator belongs to several tenants, a
+// static chip when they belong to exactly one, and a "platform_admin" badge
+// when no tenant scope is in effect (so cross-tenant visibility is explained).
+// Switching is stateless — it stores the choice and hard-reloads to /admin so
+// no tenant-A data lingers in the React Query cache under tenant B.
+function TenantControl() {
+  const { data: me } = useQuery({
+    queryKey: ["auth", "me", activeTenantStore.get()],
+    queryFn: fetchMe,
+  })
+
+  const isPlatformAdmin = getCurrentRoles().includes(PLATFORM_ADMIN_ROLE)
+  const chain = me?.tenant_chain ?? []
+  const active = me?.active_tenant ?? null
+
+  // Platform admin first: their requests are never tenant-scoped server-side,
+  // so a picker would imply a constraint that does not exist.
+  if (isPlatformAdmin) {
+    return (
+      <span className="topbar-tenant-chip topbar-tenant-admin">
+        Operating as: platform_admin
+      </span>
+    )
+  }
+
+  function switchTo(value: string) {
+    const sep = value.indexOf(":")
+    if (sep <= 0) return
+    activeTenantStore.set(value.slice(0, sep), value.slice(sep + 1))
+    if (typeof window !== "undefined") window.location.assign("/admin")
+  }
+
+  if (chain.length >= 2) {
+    const current = active ? `${active.tenant_type}:${active.tenant_id}` : ""
+    return (
+      <label className="topbar-tenant">
+        <Building2 size={14} aria-hidden="true" />
+        <span className="sr-only">Active tenant</span>
+        <select
+          value={current}
+          onChange={(e) => switchTo(e.target.value)}
+          aria-label="Switch active tenant"
+        >
+          {current === "" ? <option value="">Select tenant…</option> : null}
+          {chain.map((t) => (
+            <option key={`${t.schema}:${t.entity_id}`} value={`${t.schema}:${t.entity_id}`}>
+              {t.schema}: {shortTenantId(t.entity_id)}
+            </option>
+          ))}
+        </select>
+      </label>
+    )
+  }
+
+  if (active) {
+    return (
+      <span
+        className="topbar-tenant-chip"
+        title={`${active.tenant_type}:${active.tenant_id}`}
+      >
+        <Building2 size={14} aria-hidden="true" />
+        <span>
+          {active.tenant_type}: {shortTenantId(active.tenant_id)}
+        </span>
+      </span>
+    )
+  }
+
+  // No tenancy in effect (single-tenant deployment or no memberships).
+  return null
+}
+
 function Topbar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -323,6 +415,8 @@ function Topbar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => v
           Schema catalog
         </span>
       </button>
+
+      <TenantControl />
 
       <button
         type="button"
