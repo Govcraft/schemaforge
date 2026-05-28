@@ -43,6 +43,7 @@ toml = "1"
 aws-lc-rs = { version = "1", features = ["fips"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "logging"] }
 schema-forge-signing = { version = "0.1.0", path = "../schema-forge-signing" }
+lettre = { version = "0.11.22", default-features = false, features = ["tokio1-rustls", "aws-lc-rs", "webpki-roots", "smtp-transport", "builder", "pool", "hostname"] }
 
 
 [features]

@@ -5,8 +5,10 @@ pub mod cedar;
 pub mod config;
 pub mod conversions;
 pub mod crypto;
+pub mod email;
 pub mod error;
 pub mod extension;
+pub mod invite;
 #[cfg(feature = "graphql")]
 pub mod graphql;
 pub mod hooks;

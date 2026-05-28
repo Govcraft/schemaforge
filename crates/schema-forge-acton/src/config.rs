@@ -39,6 +39,12 @@ pub struct SchemaForgeSettings {
     #[serde(default)]
     pub storage: crate::storage::StorageConfig,
 
+    /// Outbound email (SMTP) settings, used by operational flows that must
+    /// reach a human out-of-band — currently user invitations. Disabled by
+    /// default; see [`crate::email::EmailConfig`].
+    #[serde(default)]
+    pub email: crate::email::EmailConfig,
+
     /// Authorization configuration. Currently exposes operator-defined
     /// PASETO custom-claim → Cedar `Forge::Principal` attribute mappings;
     /// see [`crate::authz::principal_claims`].
@@ -131,6 +137,7 @@ impl Default for SchemaForgeSettings {
             webhooks: crate::webhook::WebhookConfig::default(),
             hooks: crate::hooks::HooksConfig::default(),
             storage: crate::storage::StorageConfig::default(),
+            email: crate::email::EmailConfig::default(),
             authz: AuthzConfig::default(),
             signing: SigningConfig::default(),
             client: ClientConfig::default(),
@@ -158,6 +165,7 @@ mod tests {
                 webhooks: crate::webhook::WebhookConfig::default(),
                 hooks: crate::hooks::HooksConfig::default(),
                 storage: crate::storage::StorageConfig::default(),
+                email: crate::email::EmailConfig::default(),
                 authz: AuthzConfig::default(),
                 signing: SigningConfig::default(),
                 client: ClientConfig::default(),
