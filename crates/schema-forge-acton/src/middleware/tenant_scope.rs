@@ -80,13 +80,15 @@ where
     B: Send + 'static,
     Request<B>: Into<Request<axum::body::Body>>,
 {
-    // Auth/identity endpoints (`/api/v1/forge/auth/*`) are not tenant-scoped
-    // entity access. `/auth/me` must return the user's *full* membership set so
-    // a client can build a tenant switcher; subjecting it to the multi-membership
-    // `X-Active-Tenant` requirement below would refuse exactly the users it
-    // exists to serve. Skipping tenancy here also keeps `/auth/refresh` usable
-    // for multi-membership users (a refresh carries no tenant context of its own).
-    if request.uri().path().contains("/forge/auth/") {
+    // Auth/identity endpoints are not tenant-scoped entity access. `/auth/me`
+    // must return the user's *full* membership set so a client can build a tenant
+    // switcher; subjecting it to the multi-membership `X-Active-Tenant` requirement
+    // below would refuse exactly the users it exists to serve. Skipping tenancy
+    // here also keeps `/auth/refresh` usable for multi-membership users (a refresh
+    // carries no tenant context of its own). The exemption is an exact-match
+    // allowlist (see `is_tenancy_exempt`) — never a substring match, which would
+    // be an authz bypass for crafted entity paths.
+    if is_tenancy_exempt(request.uri().path()) {
         return next.run(request.into()).await;
     }
 
@@ -260,6 +262,31 @@ pub(crate) fn parse_active_tenant(s: &str) -> Option<(String, String)> {
     Some((schema.to_string(), rest.to_string()))
 }
 
+/// Request paths that are exempt from tenant scoping — the identity endpoints.
+///
+/// These are matched against the path as this middleware observes it. The layer
+/// wraps the `/forge` nest but sits *under* the `/api/v{n}` version mount, so the
+/// version prefix is already stripped while `/forge` is not — hence `/forge/auth/…`
+/// rather than `/api/v1/forge/auth/…` or a bare `/auth/…`.
+const TENANCY_EXEMPT_PATHS: [&str; 3] = [
+    "/forge/auth/login",
+    "/forge/auth/refresh",
+    "/forge/auth/me",
+];
+
+/// Whether `path` is one of the identity endpoints exempt from tenant scoping.
+///
+/// The match is deliberately **exact**, not a `contains`/`starts_with` test. An
+/// unanchored substring check would let a crafted entity path skip tenancy and
+/// reach tenant-scoped data unscoped — e.g. `/forge/Account/forge/auth/x`
+/// (substring), or `/forge/auth/me/../Account/123` (prefix + traversal, should an
+/// upstream proxy fail to normalize it). Only the three known identity routes are
+/// exempt; anything else — including any future `/forge/auth/*` route not listed
+/// here — falls through to normal tenant scoping until explicitly added.
+pub(crate) fn is_tenancy_exempt(path: &str) -> bool {
+    TENANCY_EXEMPT_PATHS.contains(&path)
+}
+
 /// Errors raised during the hierarchy walk.
 #[derive(Debug)]
 enum WalkError {
@@ -397,6 +424,30 @@ mod tests {
         let (s, id) = parse_active_tenant("Organization:org-a").unwrap();
         assert_eq!(s, "Organization");
         assert_eq!(id, "org-a");
+    }
+
+    #[test]
+    fn tenancy_exempt_matches_only_the_three_identity_paths() {
+        assert!(is_tenancy_exempt("/forge/auth/login"));
+        assert!(is_tenancy_exempt("/forge/auth/refresh"));
+        assert!(is_tenancy_exempt("/forge/auth/me"));
+    }
+
+    #[test]
+    fn tenancy_exempt_rejects_substring_and_traversal_bypasses() {
+        // A crafted entity path that merely *contains* the auth segment must not
+        // be exempted — this is the bug an unanchored `contains` check allowed.
+        assert!(!is_tenancy_exempt("/forge/Account/forge/auth/me"));
+        assert!(!is_tenancy_exempt("/forge/auth/me/../Account/123"));
+        assert!(!is_tenancy_exempt("/forge/auth/login/../../Account"));
+        // Prefix-only matches and unknown auth subpaths are not exempt either.
+        assert!(!is_tenancy_exempt("/forge/auth/"));
+        assert!(!is_tenancy_exempt("/forge/auth/login/extra"));
+        assert!(!is_tenancy_exempt("/forge/authxme"));
+        // Trailing slash is a distinct path and does not route to the handler.
+        assert!(!is_tenancy_exempt("/forge/auth/me/"));
+        // Ordinary entity traffic is, of course, scoped.
+        assert!(!is_tenancy_exempt("/forge/schemas/Foo/entities"));
     }
 
     #[test]
