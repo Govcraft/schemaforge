@@ -32,6 +32,7 @@ use schema_forge_core::types::{
 
 use crate::entity::Entity;
 use crate::error::BackendError;
+use crate::tenant::TenantRef;
 use crate::traits::EntityStore;
 use crate::user_store::{AuthStore, ForgeUser};
 
@@ -42,6 +43,10 @@ const ROLE_RANK_FIELD: &str = "role_rank";
 const DISPLAY_NAME_FIELD: &str = "display_name";
 const ACTIVE_FIELD: &str = "active";
 const LAST_LOGIN_FIELD: &str = "last_login";
+
+const TM_USER_FIELD: &str = "user";
+const TM_TENANT_TYPE_FIELD: &str = "tenant_type";
+const TM_TENANT_ID_FIELD: &str = "tenant_id";
 
 /// Function that maps a role name to a numeric rank, returning `None`
 /// for unregistered roles.
@@ -87,6 +92,13 @@ pub struct EntityAuthStore {
     store: Arc<dyn DynEntityStore>,
     user_schema: SchemaDefinition,
     role_rank_resolver: RoleRankResolver,
+    /// `TenantMembership` schema definition, used to query the user's
+    /// flat membership set during login/refresh. `None` when the
+    /// deployment has not seeded the system schema yet (e.g. a
+    /// `mem://` smoke test that skips system-schema seeding) — in that
+    /// case [`AuthStore::list_tenant_memberships`] returns an empty
+    /// `Vec`, mirroring the "no memberships configured" path.
+    tenant_membership_schema: Option<SchemaDefinition>,
 }
 
 /// Object-safe variant of [`EntityStore`] for the `Arc<dyn ...>` storage
@@ -219,7 +231,24 @@ impl EntityAuthStore {
             store,
             user_schema,
             role_rank_resolver,
+            tenant_membership_schema: None,
         }
+    }
+
+    /// Attach the `TenantMembership` schema so [`AuthStore::list_tenant_memberships`]
+    /// can query the user's membership rows.
+    ///
+    /// Optional builder method: deployments without the system schema
+    /// seeded (or running tenancy-disabled smoke tests) can skip it,
+    /// and `list_tenant_memberships` will return an empty `Vec`.
+    pub fn with_tenant_membership_schema(mut self, schema: SchemaDefinition) -> Self {
+        debug_assert_eq!(
+            schema.name.as_str(),
+            "TenantMembership",
+            "with_tenant_membership_schema must be called with the TenantMembership SchemaDefinition"
+        );
+        self.tenant_membership_schema = Some(schema);
+        self
     }
 
     /// Returns the password_hash field type from the User schema, used by
@@ -382,6 +411,22 @@ fn extract_integer(entity: &Entity, field: &str) -> Option<i64> {
     }
 }
 
+/// Build a [`TenantRef`] from a `TenantMembership` entity row.
+///
+/// Pure: no I/O, no state. Returns `None` if either required field is
+/// missing or carries the wrong `DynamicValue` variant — callers should
+/// skip the row rather than fail the whole login, because a single
+/// malformed row should not lock the user out of an otherwise valid
+/// membership set.
+pub(crate) fn entity_to_tenant_ref(entity: &Entity) -> Option<TenantRef> {
+    let schema = extract_text(entity, TM_TENANT_TYPE_FIELD)?;
+    let entity_id = extract_text(entity, TM_TENANT_ID_FIELD)?;
+    if schema.is_empty() || entity_id.is_empty() {
+        return None;
+    }
+    Some(TenantRef { schema, entity_id })
+}
+
 // ---------------------------------------------------------------------------
 // AuthStore implementation
 // ---------------------------------------------------------------------------
@@ -530,6 +575,37 @@ impl AuthStore for EntityAuthStore {
         );
         self.store.update(&entity).await?;
         Ok(())
+    }
+
+    async fn list_tenant_memberships(
+        &self,
+        username: &str,
+    ) -> Result<Vec<TenantRef>, BackendError> {
+        // Tenancy not configured for this deployment — return empty.
+        // The login handler treats "0 memberships + tenancy enabled" as
+        // a 401; with no schema attached we don't know whether tenancy
+        // is enabled, so we leave that decision to the caller.
+        let Some(tm_schema) = self.tenant_membership_schema.as_ref() else {
+            return Ok(Vec::new());
+        };
+
+        // Resolve the user's EntityId first; without the row there are
+        // no memberships to read regardless of the TenantMembership
+        // table's contents.
+        let Some(user_entity) = self.find_entity_by_username(username).await? else {
+            return Ok(Vec::new());
+        };
+
+        let query = Query::new(tm_schema.id.clone()).with_filter(Filter::eq(
+            FieldPath::single(TM_USER_FIELD),
+            DynamicValue::Ref(user_entity.id.clone()),
+        ));
+        let result = self.store.query(&query).await?;
+        Ok(result
+            .entities
+            .iter()
+            .filter_map(entity_to_tenant_ref)
+            .collect())
     }
 
     async fn record_login(
@@ -922,6 +998,235 @@ mod tests {
         assert_eq!(store.count_users().await.unwrap(), 2);
         store.delete_user("alice").await.unwrap();
         assert_eq!(store.count_users().await.unwrap(), 1);
+    }
+
+    fn tenant_membership_schema() -> SchemaDefinition {
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("TenantMembership").unwrap(),
+            vec![
+                FieldDefinition::with_annotations(
+                    FieldName::new(TM_USER_FIELD).unwrap(),
+                    FieldType::Relation {
+                        target: SchemaName::new("User").unwrap(),
+                        cardinality: schema_forge_core::types::Cardinality::One,
+                    },
+                    vec![FieldModifier::Required],
+                    vec![],
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new(TM_TENANT_TYPE_FIELD).unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                    vec![FieldModifier::Required],
+                    vec![],
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new(TM_TENANT_ID_FIELD).unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                    vec![FieldModifier::Required],
+                    vec![],
+                ),
+                FieldDefinition::new(
+                    FieldName::new("role").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                ),
+            ],
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    /// Build an `EntityAuthStore` whose underlying `MemStore` is also
+    /// returned for direct row seeding. The auth store carries the
+    /// `TenantMembership` schema so `list_tenant_memberships` can query
+    /// the seeded rows.
+    fn store_with_tm() -> (EntityAuthStore, Arc<MemStore>, SchemaDefinition) {
+        let mem = Arc::new(MemStore::new());
+        let mem_dyn: Arc<dyn DynEntityStore> = mem.clone();
+        let tm_schema = tenant_membership_schema();
+        let auth = EntityAuthStore::new(
+            mem_dyn,
+            user_schema(),
+            Arc::new(|_role: &str| Some(0)),
+        )
+        .with_tenant_membership_schema(tm_schema.clone());
+        (auth, mem, tm_schema)
+    }
+
+    fn make_tm_row(
+        tm_schema: &SchemaDefinition,
+        user_id: &EntityId,
+        tenant_type: &str,
+        tenant_id: &str,
+    ) -> Entity {
+        let mut fields: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        fields.insert(
+            TM_USER_FIELD.to_string(),
+            DynamicValue::Ref(user_id.clone()),
+        );
+        fields.insert(
+            TM_TENANT_TYPE_FIELD.to_string(),
+            DynamicValue::Text(tenant_type.to_string()),
+        );
+        fields.insert(
+            TM_TENANT_ID_FIELD.to_string(),
+            DynamicValue::Text(tenant_id.to_string()),
+        );
+        Entity::new(tm_schema.name.clone(), fields)
+    }
+
+    #[tokio::test]
+    async fn list_tenant_memberships_returns_empty_for_unknown_user() {
+        let (auth, _mem, _tm) = store_with_tm();
+        let memberships = auth.list_tenant_memberships("ghost").await.unwrap();
+        assert!(memberships.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_tenant_memberships_returns_empty_when_schema_not_attached() {
+        // Without `with_tenant_membership_schema`, list_tenant_memberships
+        // is inert — matches the "tenancy not configured" deployment path.
+        let store = store_with_ranks(&[]);
+        store
+            .create_user("alice", "secret123", &[], "Alice")
+            .await
+            .unwrap();
+        let memberships = store.list_tenant_memberships("alice").await.unwrap();
+        assert!(memberships.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_tenant_memberships_returns_single_row() {
+        let (auth, mem, tm_schema) = store_with_tm();
+        auth.create_user("alice", "secret123", &[], "Alice")
+            .await
+            .unwrap();
+        let alice = auth
+            .find_entity_by_username("alice")
+            .await
+            .unwrap()
+            .unwrap();
+        EntityStore::create(
+            mem.as_ref(),
+            &make_tm_row(&tm_schema, &alice.id, "Organization", "org-a"),
+        )
+        .await
+        .unwrap();
+
+        let memberships = auth.list_tenant_memberships("alice").await.unwrap();
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(memberships[0].schema, "Organization");
+        assert_eq!(memberships[0].entity_id, "org-a");
+    }
+
+    #[tokio::test]
+    async fn list_tenant_memberships_returns_multiple_rows() {
+        let (auth, mem, tm_schema) = store_with_tm();
+        auth.create_user("alice", "secret123", &[], "Alice")
+            .await
+            .unwrap();
+        let alice = auth
+            .find_entity_by_username("alice")
+            .await
+            .unwrap()
+            .unwrap();
+        for (kind, id) in &[("Organization", "org-a"), ("Organization", "org-b")] {
+            EntityStore::create(
+                mem.as_ref(),
+                &make_tm_row(&tm_schema, &alice.id, kind, id),
+            )
+            .await
+            .unwrap();
+        }
+
+        let memberships = auth.list_tenant_memberships("alice").await.unwrap();
+        assert_eq!(memberships.len(), 2);
+        let ids: Vec<&str> = memberships.iter().map(|m| m.entity_id.as_str()).collect();
+        assert!(ids.contains(&"org-a"));
+        assert!(ids.contains(&"org-b"));
+    }
+
+    #[tokio::test]
+    async fn list_tenant_memberships_filters_by_user_ref() {
+        let (auth, mem, tm_schema) = store_with_tm();
+        auth.create_user("alice", "secret123", &[], "Alice")
+            .await
+            .unwrap();
+        auth.create_user("bob", "secret123", &[], "Bob")
+            .await
+            .unwrap();
+        let alice = auth
+            .find_entity_by_username("alice")
+            .await
+            .unwrap()
+            .unwrap();
+        let bob = auth
+            .find_entity_by_username("bob")
+            .await
+            .unwrap()
+            .unwrap();
+
+        EntityStore::create(
+            mem.as_ref(),
+            &make_tm_row(&tm_schema, &alice.id, "Organization", "org-a"),
+        )
+        .await
+        .unwrap();
+        EntityStore::create(
+            mem.as_ref(),
+            &make_tm_row(&tm_schema, &bob.id, "Organization", "org-b"),
+        )
+        .await
+        .unwrap();
+
+        let alice_memberships = auth.list_tenant_memberships("alice").await.unwrap();
+        assert_eq!(alice_memberships.len(), 1);
+        assert_eq!(alice_memberships[0].entity_id, "org-a");
+
+        let bob_memberships = auth.list_tenant_memberships("bob").await.unwrap();
+        assert_eq!(bob_memberships.len(), 1);
+        assert_eq!(bob_memberships[0].entity_id, "org-b");
+    }
+
+    #[test]
+    fn entity_to_tenant_ref_returns_some_for_valid_row() {
+        let mut fields: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        fields.insert(
+            TM_TENANT_TYPE_FIELD.to_string(),
+            DynamicValue::Text("Organization".to_string()),
+        );
+        fields.insert(
+            TM_TENANT_ID_FIELD.to_string(),
+            DynamicValue::Text("org-a".to_string()),
+        );
+        let entity = Entity::new(SchemaName::new("TenantMembership").unwrap(), fields);
+        let tr = entity_to_tenant_ref(&entity).unwrap();
+        assert_eq!(tr.schema, "Organization");
+        assert_eq!(tr.entity_id, "org-a");
+    }
+
+    #[test]
+    fn entity_to_tenant_ref_returns_none_for_missing_fields() {
+        let entity = Entity::new(
+            SchemaName::new("TenantMembership").unwrap(),
+            BTreeMap::new(),
+        );
+        assert!(entity_to_tenant_ref(&entity).is_none());
+    }
+
+    #[test]
+    fn entity_to_tenant_ref_returns_none_for_empty_strings() {
+        let mut fields: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        fields.insert(
+            TM_TENANT_TYPE_FIELD.to_string(),
+            DynamicValue::Text(String::new()),
+        );
+        fields.insert(
+            TM_TENANT_ID_FIELD.to_string(),
+            DynamicValue::Text("org-a".to_string()),
+        );
+        let entity = Entity::new(SchemaName::new("TenantMembership").unwrap(), fields);
+        assert!(entity_to_tenant_ref(&entity).is_none());
     }
 
     #[test]

@@ -25,10 +25,11 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use chrono::Utc;
+use schema_forge_backend::tenant::{TenantConfig, TenantRef};
 use schema_forge_backend::Entity;
 use serde::{Deserialize, Serialize};
 
-use crate::access::OptionalClaims;
+use crate::access::{OptionalClaims, PLATFORM_ADMIN_ROLE};
 use crate::authz::principal_claims::{PrincipalClaimMappings, PrincipalClaimsError};
 use crate::config::SchemaForgeConfig;
 use crate::state::DynAuthStore;
@@ -101,6 +102,7 @@ pub async fn login(
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Extension(generator): Extension<Arc<PasetoGenerator>>,
     Extension(principal_claims): Extension<Arc<PrincipalClaimMappings>>,
+    Extension(tenant_config): Extension<Arc<Option<TenantConfig>>>,
     Json(req): Json<LoginRequest>,
 ) -> Response {
     let user = match auth_store
@@ -131,15 +133,34 @@ pub async fn login(
         None
     };
 
-    let claims =
-        match build_login_claims(&user.username, &user.roles, user_entity.as_ref(), &principal_claims) {
-            Ok(c) => c,
-            Err(BuildLoginClaimsError::NullRequired(_)) => {
-                emit_login_failed(&state, &req.username).await;
-                return unauthorized_response();
-            }
-            Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
-        };
+    let memberships = match auth_store.list_tenant_memberships(&user.username).await {
+        Ok(m) => m,
+        Err(e) => return internal_error_response(format!("auth store error: {e}")),
+    };
+
+    if let Err(refusal) = enforce_tenant_membership_policy(
+        &memberships,
+        &user.roles,
+        tenant_config.as_ref().as_ref(),
+    ) {
+        emit_login_failed(&state, &req.username).await;
+        return refusal.into_response();
+    }
+
+    let claims = match build_login_claims(
+        &user.username,
+        &user.roles,
+        user_entity.as_ref(),
+        &principal_claims,
+        &memberships,
+    ) {
+        Ok(c) => c,
+        Err(BuildLoginClaimsError::NullRequired(_)) => {
+            emit_login_failed(&state, &req.username).await;
+            return unauthorized_response();
+        }
+        Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
+    };
 
     let token = match generator.generate_token_with_expiry(&claims, LOGIN_TOKEN_LIFETIME) {
         Ok(t) => t,
@@ -183,6 +204,7 @@ pub async fn refresh(
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Extension(generator): Extension<Arc<PasetoGenerator>>,
     Extension(principal_claims): Extension<Arc<PrincipalClaimMappings>>,
+    Extension(tenant_config): Extension<Arc<Option<TenantConfig>>>,
 ) -> Response {
     let Some(claims) = claims else {
         return unauthorized_response();
@@ -197,7 +219,8 @@ pub async fn refresh(
     // mutated since the original login (e.g., role change, client_org
     // reassignment) takes effect immediately on the next refresh, which is
     // load-bearing for per-record scoping that depends on `principal.*`
-    // attributes derived from User columns.
+    // attributes derived from User columns. Same contract for memberships
+    // below: a grant or revocation lands on the next refresh.
     let user = match auth_store.get_user(&username).await {
         Ok(Some(u)) if u.active => u,
         Ok(_) => return unauthorized_response(),
@@ -214,12 +237,30 @@ pub async fn refresh(
         None
     };
 
-    let next_claims =
-        match build_login_claims(&user.username, &user.roles, user_entity.as_ref(), &principal_claims) {
-            Ok(c) => c,
-            Err(BuildLoginClaimsError::NullRequired(_)) => return unauthorized_response(),
-            Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
-        };
+    let memberships = match auth_store.list_tenant_memberships(&user.username).await {
+        Ok(m) => m,
+        Err(e) => return internal_error_response(format!("auth store error: {e}")),
+    };
+
+    if let Err(refusal) = enforce_tenant_membership_policy(
+        &memberships,
+        &user.roles,
+        tenant_config.as_ref().as_ref(),
+    ) {
+        return refusal.into_response();
+    }
+
+    let next_claims = match build_login_claims(
+        &user.username,
+        &user.roles,
+        user_entity.as_ref(),
+        &principal_claims,
+        &memberships,
+    ) {
+        Ok(c) => c,
+        Err(BuildLoginClaimsError::NullRequired(_)) => return unauthorized_response(),
+        Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
+    };
 
     let token = match generator.generate_token_with_expiry(&next_claims, LOGIN_TOKEN_LIFETIME) {
         Ok(t) => t,
@@ -305,6 +346,7 @@ pub(crate) fn build_login_claims(
     roles: &[String],
     user_entity: Option<&Entity>,
     principal_claims: &PrincipalClaimMappings,
+    memberships: &[TenantRef],
 ) -> Result<Claims, BuildLoginClaimsError> {
     let mut builder = ClaimsBuilder::new().user(username).username(username);
     for role in roles {
@@ -327,7 +369,75 @@ pub(crate) fn build_login_claims(
         }
     }
 
+    // Project the user's flat tenant-membership set into the token. The
+    // claim name stays `tenant_chain` for backward compatibility with the
+    // existing Cedar adapter and access.rs reads, but it now carries the
+    // user's full membership set — *not* a hierarchy walk. The active
+    // tenant + ancestor chain is materialized per-request by the
+    // `tenant_scope` middleware before downstream handlers see Claims.
+    if !memberships.is_empty() {
+        let value = serde_json::to_value(memberships)
+            .map_err(BuildLoginClaimsError::MembershipSerialize)?;
+        builder = builder.custom_claim("tenant_chain", value);
+    }
+
     builder.build().map_err(BuildLoginClaimsError::Acton)
+}
+
+/// Decide whether login should proceed given the user's membership set,
+/// roles, and the deployment's tenant configuration.
+///
+/// Rules:
+/// - Tenancy not configured (`tenant_config` is `None` or disabled) → always
+///   `Ok(())`. Single-tenant deployments are unaffected.
+/// - `platform_admin` in roles → always `Ok(())`. The platform-admin role
+///   transcends tenancy; this matches the existing access.rs bypass.
+/// - 0 memberships under enabled tenancy → `Err(NoTenantAssigned)`. Closes
+///   the "user logs in and sees every tenant" hole hard. Operators must
+///   explicitly grant a `TenantMembership` row before the user can hit the
+///   API.
+/// - 1+ memberships → `Ok(())`.
+pub(crate) fn enforce_tenant_membership_policy(
+    memberships: &[TenantRef],
+    roles: &[String],
+    tenant_config: Option<&TenantConfig>,
+) -> Result<(), LoginRefusal> {
+    let tenancy_enabled = tenant_config.is_some_and(TenantConfig::is_enabled);
+    if !tenancy_enabled {
+        return Ok(());
+    }
+    if roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE) {
+        return Ok(());
+    }
+    if memberships.is_empty() {
+        return Err(LoginRefusal::NoTenantAssigned);
+    }
+    Ok(())
+}
+
+/// A login or refresh request that must be refused before token mint.
+///
+/// Separate from [`BuildLoginClaimsError`] so callers can distinguish a
+/// policy refusal (user-actionable: contact admin to grant a membership)
+/// from an internal failure (operator-actionable: misconfigured store).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoginRefusal {
+    NoTenantAssigned,
+}
+
+impl IntoResponse for LoginRefusal {
+    fn into_response(self) -> Response {
+        match self {
+            Self::NoTenantAssigned => {
+                let body = LoginErrorBody {
+                    error: "no tenant assigned",
+                    code: "UNAUTHORIZED",
+                    status: 401,
+                };
+                (StatusCode::UNAUTHORIZED, Json(body)).into_response()
+            }
+        }
+    }
 }
 
 /// Errors raised while building PASETO claims for login or refresh.
@@ -340,6 +450,11 @@ pub(crate) enum BuildLoginClaimsError {
     NullRequired(PrincipalClaimsError),
     /// Other principal-claim projection failure (e.g. type mismatch at runtime).
     PrincipalClaim(PrincipalClaimsError),
+    /// Serializing the membership set into the PASETO custom-claim JSON
+    /// failed. `TenantRef` derives Serialize so this is effectively unreachable
+    /// in practice, but kept as a distinct variant so the handler returns a
+    /// 500 (server error) rather than a 401 (user error).
+    MembershipSerialize(serde_json::Error),
     /// `acton-service` failed to assemble the claim envelope.
     Acton(ActonError),
 }
@@ -351,6 +466,7 @@ impl fmt::Display for BuildLoginClaimsError {
                 "principal-claim sources are configured but no user entity row was provided",
             ),
             Self::NullRequired(e) | Self::PrincipalClaim(e) => write!(f, "{e}"),
+            Self::MembershipSerialize(e) => write!(f, "tenant_chain serialize failed: {e}"),
             Self::Acton(e) => write!(f, "{e}"),
         }
     }
@@ -361,6 +477,7 @@ impl std::error::Error for BuildLoginClaimsError {
         match self {
             Self::MissingUserEntity => None,
             Self::NullRequired(e) | Self::PrincipalClaim(e) => Some(e),
+            Self::MembershipSerialize(e) => Some(e),
             Self::Acton(e) => Some(e),
         }
     }
@@ -416,6 +533,7 @@ mod tests {
             &["admin".to_string(), "hr".to_string()],
             None,
             &mappings,
+            &[],
         )
         .unwrap();
         assert_eq!(claims.sub, "user:alice");
@@ -427,8 +545,120 @@ mod tests {
     #[test]
     fn build_login_claims_with_no_roles() {
         let mappings = PrincipalClaimMappings::default();
-        let claims = build_login_claims("bob", &[], None, &mappings).unwrap();
+        let claims = build_login_claims("bob", &[], None, &mappings, &[]).unwrap();
         assert_eq!(claims.sub, "user:bob");
         assert!(claims.roles.is_empty());
+    }
+
+    #[test]
+    fn build_login_claims_with_no_memberships_omits_tenant_chain() {
+        let mappings = PrincipalClaimMappings::default();
+        let claims = build_login_claims("alice", &[], None, &mappings, &[]).unwrap();
+        // The custom map exists, but no `tenant_chain` key should be set.
+        assert!(
+            claims
+                .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
+                .is_none(),
+            "expected no tenant_chain claim when memberships is empty"
+        );
+    }
+
+    #[test]
+    fn build_login_claims_projects_memberships_into_tenant_chain() {
+        let mappings = PrincipalClaimMappings::default();
+        let memberships = vec![
+            TenantRef {
+                schema: "Organization".to_string(),
+                entity_id: "org-a".to_string(),
+            },
+            TenantRef {
+                schema: "Organization".to_string(),
+                entity_id: "org-b".to_string(),
+            },
+        ];
+        let claims =
+            build_login_claims("alice", &[], None, &mappings, &memberships).unwrap();
+        let chain = claims
+            .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
+            .expect("tenant_chain populated");
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].entity_id, "org-a");
+        assert_eq!(chain[1].entity_id, "org-b");
+    }
+
+    #[test]
+    fn enforce_policy_no_tenancy_always_allows() {
+        let res = enforce_tenant_membership_policy(&[], &[], None);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn enforce_policy_platform_admin_bypasses_when_tenancy_enabled() {
+        use schema_forge_core::types::{
+            Annotation, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaId,
+            SchemaName, TenantKind, TextConstraints,
+        };
+        use schema_forge_core::types::SchemaDefinition;
+        // Minimal @tenant(root) schema so TenantConfig::is_enabled() is true.
+        let root = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Organization").unwrap(),
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+                vec![],
+            )],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        )
+        .unwrap();
+        let cfg = TenantConfig::from_schemas(&[root]).unwrap();
+        assert!(cfg.is_enabled());
+
+        let res = enforce_tenant_membership_policy(
+            &[],
+            &[PLATFORM_ADMIN_ROLE.to_string()],
+            Some(&cfg),
+        );
+        assert!(res.is_ok(), "platform_admin must bypass zero-membership refusal");
+    }
+
+    #[test]
+    fn enforce_policy_zero_membership_with_enabled_tenancy_refuses() {
+        use schema_forge_core::types::{
+            Annotation, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaId,
+            SchemaName, TenantKind, TextConstraints,
+        };
+        use schema_forge_core::types::SchemaDefinition;
+        let root = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Organization").unwrap(),
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+                vec![],
+            )],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        )
+        .unwrap();
+        let cfg = TenantConfig::from_schemas(&[root]).unwrap();
+
+        let res = enforce_tenant_membership_policy(
+            &[],
+            &["member".to_string()],
+            Some(&cfg),
+        );
+        assert_eq!(res, Err(LoginRefusal::NoTenantAssigned));
+    }
+
+    #[test]
+    fn enforce_policy_membership_present_allows() {
+        let memberships = vec![TenantRef {
+            schema: "Organization".to_string(),
+            entity_id: "org-a".to_string(),
+        }];
+        let res = enforce_tenant_membership_policy(&memberships, &[], None);
+        assert!(res.is_ok());
     }
 }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use schema_forge_backend::entity::{Entity, QueryResult};
 use schema_forge_backend::error::BackendError;
+use schema_forge_backend::tenant::TenantRef;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
 use schema_forge_backend::user_store::{AuthStore, ForgeUser};
 use schema_forge_core::migration::MigrationStep;
@@ -304,6 +305,13 @@ pub trait DynAuthStore: Send + Sync {
         username: &'a str,
         at: DateTime<Utc>,
     ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>>;
+
+    /// List the user's tenant memberships. See
+    /// [`schema_forge_backend::user_store::AuthStore::list_tenant_memberships`].
+    fn list_tenant_memberships<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<TenantRef>, BackendError>> + Send + 'a>>;
 }
 
 /// Blanket impl: any concrete `AuthStore` automatically implements `DynAuthStore`.
@@ -395,6 +403,13 @@ impl<T: AuthStore + 'static> DynAuthStore for T {
         at: DateTime<Utc>,
     ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
         Box::pin(AuthStore::record_login(self, username, at))
+    }
+
+    fn list_tenant_memberships<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<TenantRef>, BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::list_tenant_memberships(self, username))
     }
 }
 

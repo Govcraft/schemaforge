@@ -329,11 +329,19 @@ pub async fn run(
     //    runtime posture to unauthenticated callers (the login screen).
     let login_auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = auth_store.clone();
     let meta_info = build_meta_info(&db_params);
+    let tenant_config_layer: Arc<Option<schema_forge_backend::tenant::TenantConfig>> =
+        Arc::new(init_data.tenant_config.clone());
+    let tenant_scope_state = schema_forge_acton::middleware::tenant_scope::TenantScopeState {
+        entity_store: entity_store.clone(),
+        tenant_config: tenant_config_layer.clone(),
+    };
     let routes = build_versioned_routes(
         login_auth_store,
         paseto_generator,
         meta_info,
         resolved_principal_claims,
+        tenant_config_layer,
+        tenant_scope_state,
     );
 
     // LOCAL WORKAROUND for issue #55: `acton-service`'s default `/health`
@@ -581,11 +589,17 @@ fn build_entity_auth_store(
     let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =
         Arc::new(move |role: &str| policy_store.current().role_ranks.get(role));
 
-    Ok(Arc::new(schema_forge_backend::EntityAuthStore::new(
-        entity_store,
-        user_schema,
-        resolver,
-    )))
+    let mut store =
+        schema_forge_backend::EntityAuthStore::new(entity_store, user_schema, resolver);
+    // Attach the TenantMembership schema when the system seed registered
+    // it (which is always for non-legacy deployments). Without it,
+    // `list_tenant_memberships` returns an empty `Vec` and the login
+    // handler treats the user as unscoped — which is fine for the
+    // tenancy-disabled path.
+    if let Some(tm_schema) = init_data.registry.get("TenantMembership").cloned() {
+        store = store.with_tenant_membership_schema(tm_schema);
+    }
+    Ok(Arc::new(store))
 }
 
 /// Build a [`PasetoGenerator`] from the loaded acton-service config.
@@ -663,6 +677,8 @@ fn build_versioned_routes(
     paseto_generator: Arc<PasetoGenerator>,
     meta_info: Arc<schema_forge_acton::MetaInfo>,
     principal_claims: Arc<schema_forge_acton::authz::PrincipalClaimMappings>,
+    tenant_config: Arc<Option<schema_forge_backend::tenant::TenantConfig>>,
+    tenant_scope_state: schema_forge_acton::middleware::tenant_scope::TenantScopeState,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
     // Cloned into the add_version closure so the login handler can
     // extract them via axum::Extension.
@@ -670,15 +686,27 @@ fn build_versioned_routes(
     let generator_layer = paseto_generator;
     let meta_layer = meta_info;
     let principal_claims_layer = principal_claims;
+    let tenant_config_layer = tenant_config;
     VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
         .with_base_path("/api")
         .add_version(ApiVersion::V1, move |router| {
             use axum::Extension;
             SchemaForgeExtension::versioned_forge_routes(router)
+                // The tenant_scope middleware runs AFTER acton-service's
+                // token middleware (which injects Claims) and BEFORE the
+                // handlers below. Layer order in axum is reverse: the last
+                // `.layer()` runs first on the request, so wire tenant_scope
+                // BEFORE the Extensions block to ensure handlers see the
+                // mutated Claims.
+                .layer(axum::middleware::from_fn_with_state(
+                    tenant_scope_state.clone(),
+                    schema_forge_acton::middleware::tenant_scope::middleware,
+                ))
                 .layer(Extension(auth_store_layer))
                 .layer(Extension(generator_layer))
                 .layer(Extension(meta_layer))
                 .layer(Extension(principal_claims_layer))
+                .layer(Extension(tenant_config_layer))
         })
         .build_routes()
 }
@@ -906,7 +934,7 @@ mod tests {
         let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =
             Arc::new(|_role: &str| None);
         let auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = Arc::new(
-            EntityAuthStore::new(entity_store, user_schema, resolver),
+            EntityAuthStore::new(entity_store.clone(), user_schema, resolver),
         );
 
         let meta = Arc::new(schema_forge_acton::MetaInfo::new(
@@ -915,6 +943,19 @@ mod tests {
             3600,
         ));
         let principal_claims = Arc::new(schema_forge_acton::authz::PrincipalClaimMappings::default());
-        let _routes = build_versioned_routes(auth_store, generator, meta, principal_claims);
+        let tenant_config = Arc::new(None::<schema_forge_backend::tenant::TenantConfig>);
+        let tenant_scope_state =
+            schema_forge_acton::middleware::tenant_scope::TenantScopeState {
+                entity_store: entity_store.clone(),
+                tenant_config: tenant_config.clone(),
+            };
+        let _routes = build_versioned_routes(
+            auth_store,
+            generator,
+            meta,
+            principal_claims,
+            tenant_config,
+            tenant_scope_state,
+        );
     }
 }

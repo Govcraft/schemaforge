@@ -26,6 +26,8 @@ malformed, and the restart-required hot-reload limitation.
 6. [Hot-reload and restart requirements](#6-hot-reload-and-restart-requirements)
 7. [Reserved names and identifier rules](#7-reserved-names-and-identifier-rules)
 8. [Worked example: per-org file scoping](#8-worked-example-per-org-file-scoping)
+9. [IN-side: projecting User columns into the token at login](#9-in-side-projecting-user-columns-into-the-token-at-login)
+10. [Tenant chain and the `X-Active-Tenant` contract](#10-tenant-chain-and-the-x-active-tenant-contract)
 
 ---
 
@@ -418,3 +420,142 @@ source   = { user_field = "client_org_id" }
 - Operator reassigns alice from `org-42` to `org-99`: alice's existing
   token still carries `org-42` until expiry. On her next `/auth/refresh`
   (or fresh login) the new token carries `org-99`.
+
+---
+
+## 10. Tenant chain and the `X-Active-Tenant` contract
+
+`tenant_chain` is the PASETO custom claim that carries the user's tenant
+scope. It is consumed by two pieces of the runtime:
+
+- the Cedar adapter (`crates/schema-forge-acton/src/authz/adapters.rs`)
+  projects every chain entry into `principal.parents` so policies can
+  express `resource._tenant in principal` for hierarchical scoping, and
+- the query layer (`crates/schema-forge-acton/src/access.rs`) filters
+  reads/writes by `_tenant IN <chain>` so a list endpoint returns rows
+  belonging to any tenant in the chain.
+
+Two distinct concepts share the claim name. Understand both:
+
+### 10.1 Token shape: flat memberships
+
+The token's `tenant_chain` is **the flat set of `TenantMembership` rows
+for the user**. It is NOT a parent → child hierarchy walk. A user
+belonging to three tenants ships a three-entry chain in their token,
+order unspecified. The token captures *available* scope, not *active*
+scope.
+
+`/auth/login` reads `TenantMembership` where `user = <authenticated
+user>` and writes the result into `custom.tenant_chain`. `/auth/refresh`
+re-reads on every call — same contract as §9.3. A grant or revocation
+since the last login takes effect on the next refresh.
+
+### 10.2 Request shape: effective scope via `X-Active-Tenant`
+
+Per request, clients select which membership scopes this request with:
+
+```
+X-Active-Tenant: <schema>:<entity_id>
+```
+
+For example: `X-Active-Tenant: Organization:org_01k...`.
+
+The `tenant_scope` middleware (between the token middleware and the
+forge handlers):
+
+1. Validates the header is in the token's memberships. Header not
+   present in chain → 403 `ACTIVE_TENANT_FORBIDDEN`.
+2. Walks the `@tenant(parent:)` hierarchy from that leaf up to the root,
+   fetching each level's entity to read its parent reference. The
+   resulting walk is the *effective scope* for this request.
+3. Rewrites `tenant_chain` on the request's `Claims` to that effective
+   walk before downstream handlers see it.
+
+Header rules:
+
+- **Header absent + exactly one membership**: middleware uses the sole
+  membership as the active tenant. No 400.
+- **Header absent + multiple memberships**: 400 `ACTIVE_TENANT_REQUIRED`.
+  The client must pick.
+- **Header malformed** (not `<schema>:<entity_id>`): 400
+  `ACTIVE_TENANT_INVALID`.
+- **Header references a tenant the user is not a member of**: 403
+  `ACTIVE_TENANT_FORBIDDEN`. Closes impersonation.
+
+### 10.3 Zero-membership policy
+
+If `@tenant` annotations are present in the deployment's schemas
+(tenancy enabled) and a user has zero `TenantMembership` rows, `/auth/login`
+responds **401 `no tenant assigned`** — except for `platform_admin`,
+which bypasses tenancy entirely (matches the
+`access.rs::inject_tenant_scope` bypass and the Cedar adapter parent
+projection).
+
+This is fail-closed by design: a user with no memberships under enabled
+tenancy has no defensible scope to project. Operators must explicitly
+grant access by writing a `TenantMembership` row.
+
+### 10.4 Hierarchy walk: where the parent fields come from
+
+Schemas declare their tenant level with `@tenant`:
+
+```
+@tenant(root)
+schema Organization { ... }
+
+@tenant(parent: "Organization")
+schema Department {
+    organization: -> Organization required
+    ...
+}
+```
+
+`TenantConfig` reads these and stores, per level, the `parent_field`
+that holds the parent reference (`Department.organization` above). When
+the middleware walks from `Department:dept-1` upward, it fetches
+`Department/dept-1`, reads `organization`, and continues from
+`Organization/<id>`. Stops when the level has no parent (root reached)
+or the entity is missing (logged; chain collapses to leaf only so the
+request stays servable but unlocks no ancestors).
+
+### 10.5 Out-of-band tokens
+
+`schemaforge token generate --tenant-chain '...'` still works for CI /
+operations. The JSON value passed must be a `Vec<TenantRef>` — same
+shape as `tenant_chain.list()` from a `/auth/login` response. The CLI
+contract is unchanged.
+
+### 10.6 Worked example
+
+Tenant model: `Organization` (root) and a flat membership table.
+`alice` belongs to `org-a` only. `bob` belongs to `org-a` AND `org-b`.
+
+```sh
+# alice: sole membership → no header required.
+curl -sf -X POST http://localhost:3000/api/v1/forge/auth/login \
+  -d '{"username":"alice","password":"..."}'
+# token's custom.tenant_chain = [{schema:"Organization", entity_id:"org-a"}]
+
+curl -sf -H "authorization: Bearer $ALICE_TOKEN" \
+     http://localhost:3000/api/v1/forge/schemas/Opportunity/entities
+# returns: rows scoped to org-a only.
+
+# bob: multi-membership → header required.
+curl -sf -X POST http://localhost:3000/api/v1/forge/auth/login \
+  -d '{"username":"bob","password":"..."}'
+# token's custom.tenant_chain = [{...org-a}, {...org-b}]
+
+curl -sf -H "authorization: Bearer $BOB_TOKEN" \
+     http://localhost:3000/api/v1/forge/schemas/Opportunity/entities
+# 400 ACTIVE_TENANT_REQUIRED
+
+curl -sf -H "authorization: Bearer $BOB_TOKEN" \
+     -H "X-Active-Tenant: Organization:org-a" \
+     http://localhost:3000/api/v1/forge/schemas/Opportunity/entities
+# returns: rows scoped to org-a.
+
+curl -sf -H "authorization: Bearer $BOB_TOKEN" \
+     -H "X-Active-Tenant: Organization:org-c" \
+     http://localhost:3000/api/v1/forge/schemas/Opportunity/entities
+# 403 ACTIVE_TENANT_FORBIDDEN — bob isn't a member of org-c.
+```

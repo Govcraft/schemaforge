@@ -300,16 +300,28 @@ pub fn inject_tenant_scope(
     let tenant_chain: Vec<TenantRef> = claims
         .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
         .unwrap_or_default();
-    if let Some(tenant_ref) = tenant_chain.last() {
-        let tenant_filter = Filter::eq(
-            FieldPath::single("_tenant"),
-            DynamicValue::Text(tenant_ref.entity_id.clone()),
-        );
-        query.filter = Some(match query.filter.take() {
-            Some(existing) => Filter::and(vec![existing, tenant_filter]),
-            None => tenant_filter,
-        });
+    if tenant_chain.is_empty() {
+        return;
     }
+    // The Cedar adapter pushes every chain entry into `principal.parents`
+    // so `_tenant in principal` matches any chain entry; the query-time
+    // filter must do the same. The `tenant_scope` middleware has already
+    // narrowed `tenant_chain` to the per-request effective scope (active
+    // leaf + ancestors), so `IN <chain>` here filters by exactly the rows
+    // the policy would also allow.
+    let tenant_values: Vec<DynamicValue> = tenant_chain
+        .iter()
+        .map(|t| DynamicValue::Text(t.entity_id.clone()))
+        .collect();
+    let tenant_filter = if tenant_values.len() == 1 {
+        Filter::eq(FieldPath::single("_tenant"), tenant_values.into_iter().next().unwrap())
+    } else {
+        Filter::in_set(FieldPath::single("_tenant"), tenant_values)
+    };
+    query.filter = Some(match query.filter.take() {
+        Some(existing) => Filter::and(vec![existing, tenant_filter]),
+        None => tenant_filter,
+    });
 }
 
 /// Inject `_tenant` field into entity fields on creation.
@@ -624,6 +636,51 @@ mod tests {
         let mut query = Query::new(SchemaId::new());
 
         inject_tenant_scope(&mut query, None, &tenant_config);
+
+        assert!(query.filter.is_none());
+    }
+
+    #[test]
+    fn inject_tenant_scope_uses_in_set_for_multi_entry_chain() {
+        let tenant_config = make_enabled_tenant_config();
+        let mut claims = make_claims(&["member"]);
+        claims.custom.insert(
+            "tenant_chain".to_string(),
+            serde_json::json!([
+                {"schema": "Organization", "entity_id": "org-a"},
+                {"schema": "Department", "entity_id": "dept-1"},
+            ]),
+        );
+        let mut query = Query::new(SchemaId::new());
+
+        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
+
+        let filter = query.filter.expect("filter set");
+        match filter {
+            Filter::In { path, values } => {
+                assert_eq!(path.root(), "_tenant");
+                assert_eq!(values.len(), 2);
+                let extracted: Vec<&str> = values
+                    .iter()
+                    .filter_map(|v| match v {
+                        DynamicValue::Text(s) => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(extracted.contains(&"org-a"));
+                assert!(extracted.contains(&"dept-1"));
+            }
+            other => panic!("expected In filter, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inject_tenant_scope_noop_when_chain_is_empty() {
+        let tenant_config = make_enabled_tenant_config();
+        let claims = make_claims(&["member"]);
+        let mut query = Query::new(SchemaId::new());
+
+        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
 
         assert!(query.filter.is_none());
     }
