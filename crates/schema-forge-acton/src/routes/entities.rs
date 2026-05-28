@@ -1027,10 +1027,21 @@ async fn execute_entity_query(
     let tenant_config = ask_forge(rx).await?;
     inject_tenant_scope(query, claims, &tenant_config);
 
-    // Push field projection into the query for DB-level column selection
-    if let Some(proj) = projection {
-        query.projection = Some(proj.iter().cloned().collect());
-    }
+    // NOTE: the client `fields` projection is deliberately NOT pushed into the
+    // DB query as a column selection. Record-level authorization
+    // (`filter_visible` below) reconstructs each row as a Cedar resource entity
+    // and validates it in strict mode against the generated schema, where
+    // `required` fields are declared as required attributes. A row stripped to
+    // a projected subset would be missing those required attributes (and any
+    // optional field a custom Cedar policy references), fail strict-mode
+    // validation, and be silently dropped from the result — returning
+    // `entities: []` while `total_count` stayed non-zero (issue #73).
+    //
+    // Authorization therefore sees complete entities; the projection is applied
+    // purely as a presentation concern AFTER filtering, via `fields.retain`
+    // below. `query.projection` remains available for internal sub-queries
+    // (display resolution, derived collections) that don't run user-facing
+    // record authorization.
 
     // Execute query via actor
     let (tx, rx) = oneshot::channel();

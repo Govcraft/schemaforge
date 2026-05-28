@@ -29,8 +29,8 @@ use schema_forge_backend::auth::RecordAccessPolicy;
 use schema_forge_backend::tenant::TenantConfig;
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::types::{
-    Annotation, EntityId, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaDefinition,
-    SchemaId, SchemaName, TenantKind, TextConstraints,
+    Annotation, EntityId, FieldAnnotation, FieldDefinition, FieldModifier, FieldName, FieldType,
+    SchemaDefinition, SchemaId, SchemaName, TenantKind, TextConstraints,
 };
 use schema_forge_surrealdb::SurrealBackend;
 use tokio::sync::oneshot;
@@ -1088,6 +1088,134 @@ async fn demo_all_auth_layers_combined() {
     assert!(
         !author_sees_notes,
         "Layer 3 (@field_access): employee owner should not see confidential_notes"
+    );
+
+    println!("  PASSED\n");
+}
+
+// ===========================================================================
+// REGRESSION (issue #73): `entity list --fields ...` drops every row
+// ===========================================================================
+//
+// The CLI's `--fields` flag becomes a `?fields=...` query parameter that the
+// list handler pushes down into the DB query as a column projection. The
+// projected rows come back carrying only the requested columns. Each row is
+// then run through Cedar `Read` authorization in `filter_visible`, which
+// builds a resource entity from the row's fields and validates it against the
+// generated Cedar schema in strict mode.
+//
+// Required DSL fields are emitted as *required* Cedar attributes
+// (schema_gen.rs: `optional_marker = if field.is_required() { "" } else { "?" }`).
+// A projection that omits a required field therefore produces a resource
+// entity that fails strict-mode entity validation, `authorize` returns Err,
+// and `filter_visible` silently drops the row. Every row is dropped, so the
+// response is `entities: []` / `count: 0` even though the independent
+// `COUNT(*)` still reports the true `total_count`.
+//
+// This test creates a schema with two required fields, inserts a row, and
+// lists it both without and with a `fields` projection that omits one of the
+// required fields. The un-projected list is the control; the projected list
+// is expected to return the same row. On the buggy code path the projected
+// list comes back empty while `total_count` stays at 1.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_field_projection_omitting_required_field_returns_rows() {
+    println!("\n=== REGRESSION #73: --fields projection drops rows ===");
+
+    let backend = SurrealBackend::connect_memory("test", "issue_73_projection")
+        .await
+        .unwrap();
+    let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
+    let mut registry = HashMap::new();
+
+    // Two required fields plus one optional. `@access` with empty read list =
+    // all authenticated users permitted at the schema level, so the row only
+    // gets dropped by the record-level `filter_visible` path under test.
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Widget").unwrap(),
+        vec![
+            FieldDefinition::with_modifiers(
+                FieldName::new("name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+            ),
+            FieldDefinition::with_modifiers(
+                FieldName::new("category").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Required],
+            ),
+            FieldDefinition::new(
+                FieldName::new("notes").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+        ],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+    register_schema(&schema, &backend, &mut registry).await;
+
+    let claims = make_test_claims_with_sub("user:widget-owner", &["member"]);
+    let state = build_test_app_state(backend.clone(), registry.clone(), None, None).await;
+    let app = test_app_with_claims(state, claims);
+
+    // Insert one widget with all fields populated.
+    let (status, _) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Widget/entities",
+        Some(serde_json::json!({
+            "fields": { "name": "Acme", "category": "tools", "notes": "n/a" }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // --- Control: list WITHOUT a projection returns the row ---
+    let (status, json) =
+        json_request(&app, Method::GET, "/schemas/Widget/entities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["total_count"], 1, "control list should count the row");
+    assert_eq!(
+        json["entities"].as_array().unwrap().len(),
+        1,
+        "control list should return the row"
+    );
+
+    // --- Repro: list WITH a projection that omits the required `category`
+    // field. The row must still come back. On the buggy path it is dropped by
+    // strict-mode entity validation inside filter_visible. ---
+    let (status, json) = json_request(
+        &app,
+        Method::GET,
+        "/schemas/Widget/entities?fields=name,notes",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["total_count"], 1,
+        "projected list should still count the row"
+    );
+    assert_eq!(
+        json["count"], 1,
+        "issue #73: projected list reports count 0 — every row dropped by \
+         filter_visible because the projected resource entity fails strict-mode \
+         Cedar validation (missing required `category` attribute)"
+    );
+    let entities = json["entities"].as_array().unwrap();
+    assert_eq!(
+        entities.len(),
+        1,
+        "issue #73: projected list returns entities: [] despite total_count=1"
+    );
+    assert_eq!(
+        entities[0]["fields"]["name"], "Acme",
+        "projected row should carry the requested `name` field"
     );
 
     println!("  PASSED\n");
