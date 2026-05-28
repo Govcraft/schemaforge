@@ -80,6 +80,16 @@ where
     B: Send + 'static,
     Request<B>: Into<Request<axum::body::Body>>,
 {
+    // Auth/identity endpoints (`/api/v1/forge/auth/*`) are not tenant-scoped
+    // entity access. `/auth/me` must return the user's *full* membership set so
+    // a client can build a tenant switcher; subjecting it to the multi-membership
+    // `X-Active-Tenant` requirement below would refuse exactly the users it
+    // exists to serve. Skipping tenancy here also keeps `/auth/refresh` usable
+    // for multi-membership users (a refresh carries no tenant context of its own).
+    if request.uri().path().contains("/forge/auth/") {
+        return next.run(request.into()).await;
+    }
+
     // Tenancy disabled at the deployment level — nothing to do.
     let Some(tenant_config) = state.tenant_config.as_ref() else {
         return next.run(request.into()).await;
@@ -242,7 +252,7 @@ fn select_active_tenant<'a, B>(
 /// Returns `None` for any malformed input. The entity_id half may itself
 /// contain colons (TypeIDs use `_`, not `:`, but we don't enforce that
 /// here — only the first `:` is treated as the separator).
-fn parse_active_tenant(s: &str) -> Option<(String, String)> {
+pub(crate) fn parse_active_tenant(s: &str) -> Option<(String, String)> {
     let (schema, rest) = s.split_once(':')?;
     if schema.is_empty() || rest.is_empty() {
         return None;
