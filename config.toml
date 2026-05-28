@@ -15,6 +15,20 @@ issuer = "schema-forge"
 per_user_rpm = 6000
 per_client_rpm = 60000
 
+# Outbound email (user invitations, issue #71). Disabled by default.
+# The SMTP password is NEVER read from this file — supply it at runtime via
+# the SCHEMAFORGE_SMTP_PASSWORD environment variable so the secret stays out
+# of git. (acton-service's ACTON_-prefixed env layering can't target the
+# `[schema_forge]` section, so this dedicated env var is the supported path.)
+# [schema_forge.email]
+# enabled = true
+# host = "mail.example.gov"
+# port = 465                 # 465 = implicit TLS (default); 587 = STARTTLS
+# tls = "implicit"           # or "start_tls"
+# from = "Example <noreply@example.gov>"
+# username = "noreply@example.gov"
+# public_base_url = "https://app.example.gov"   # used to build invite-accept links
+
 # Webhook notification settings
 # [schema_forge.webhooks]
 # enabled = true

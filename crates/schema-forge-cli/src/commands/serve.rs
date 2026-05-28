@@ -348,7 +348,19 @@ pub async fn run(
     // disabled we still inject a sender — one that fails closed — so the
     // invite endpoints return a clear "email not configured" error rather
     // than 500-ing on a missing extension.
-    let email_cfg = svc_config.custom.schema_forge.email.clone();
+    let mut email_cfg = svc_config.custom.schema_forge.email.clone();
+    // The SMTP password must never live in committed TOML. acton-service's
+    // `ACTON_`-prefixed Figment env layering can't target the `[schema_forge]`
+    // section — `Env::split("_")` shatters the underscore in the section key
+    // — so the secret is accepted through a dedicated env var instead,
+    // matching the `SCHEMAFORGE_*` convention used elsewhere (token, trust
+    // policy). Set `SCHEMAFORGE_SMTP_PASSWORD` to authenticate the relay.
+    if let Some(pw) = std::env::var("SCHEMAFORGE_SMTP_PASSWORD")
+        .ok()
+        .filter(|p| !p.is_empty())
+    {
+        email_cfg.password = Some(pw);
+    }
     let email_sender: Arc<dyn schema_forge_acton::email::EmailSender> = if email_cfg.enabled {
         Arc::new(
             schema_forge_acton::email::SmtpEmailSender::from_config(&email_cfg).map_err(|e| {
