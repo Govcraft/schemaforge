@@ -35,8 +35,27 @@ use crate::messages::{
     CreateEntity, DeleteEntity, GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema,
     GetSchemasBatch, GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
 };
+use crate::rules::{check_requires, RuleError};
 use schema_forge_core::types::HookEvent;
 use std::sync::Arc;
+
+// ---------------------------------------------------------------------------
+// Validation-rule mapping
+// ---------------------------------------------------------------------------
+
+/// Map a [`RuleError`] from CEL `@require` validation onto a [`ForgeError`].
+///
+/// A definite rejection becomes a 422 `ValidationFailed`; a predicate that
+/// could not be evaluated (errored or non-bool) becomes a 500 `Internal`,
+/// preserving the fail-closed contract documented on [`crate::rules`].
+fn rule_error_to_forge(err: RuleError) -> ForgeError {
+    match err {
+        RuleError::Rejected(details) => ForgeError::ValidationFailed { details },
+        RuleError::Eval { field, detail } => ForgeError::Internal {
+            message: format!("@require on field '{field}' could not be evaluated: {detail}"),
+        },
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Actor request helper
@@ -1685,6 +1704,9 @@ pub async fn create_entity(
         .await?;
     }
 
+    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
+    check_requires(&schema_def, &fields, claims.as_ref()).map_err(rule_error_to_forge)?;
+
     // Create the entity, filtering write-restricted fields
     let mut entity = Entity::new(schema_name, fields);
     filter_entity_fields(
@@ -2370,6 +2392,9 @@ pub async fn update_entity(
         .await?;
     }
 
+    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
+    check_requires(&schema_def, &fields, claims.as_ref()).map_err(rule_error_to_forge)?;
+
     // Build entity with specific ID, filtering write-restricted fields
     let mut entity = Entity::with_id(entity_id, schema_name, fields);
     filter_entity_fields(
@@ -2612,6 +2637,11 @@ pub async fn patch_entity(
         )
         .await?;
     }
+
+    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
+    // Evaluated against the full post-patch entity view so predicates that
+    // reference unpatched fields still see their current values.
+    check_requires(&schema_def, &merged, claims.as_ref()).map_err(rule_error_to_forge)?;
 
     // Compute the delta: only keys whose final value differs from the
     // loaded baseline go to the backend. This keeps PATCH's SQL UPDATE

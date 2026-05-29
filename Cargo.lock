@@ -7234,7 +7234,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-acton"
-version = "0.32.0"
+version = "0.33.0"
 dependencies = [
  "acton-service",
  "arc-swap",
@@ -7262,6 +7262,7 @@ dependencies = [
  "reqwest 0.13.3",
  "rustls 0.23.40",
  "schema-forge-backend",
+ "schema-forge-cel",
  "schema-forge-core",
  "schema-forge-dsl",
  "schema-forge-postgres",
@@ -7302,7 +7303,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cel"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -7310,6 +7311,8 @@ dependencies = [
  "prost-build",
  "prost-types",
  "regex",
+ "schema-forge-core",
+ "serde_json",
  "tracing",
 ]
 
@@ -7601,9 +7604,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.149"
+version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
  "indexmap 2.13.0",
  "itoa",

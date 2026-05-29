@@ -12,6 +12,8 @@
 //! (`1 == 1u == 1.0`), `NaN != NaN`, and recursive list/map comparison — live
 //! separately in [`crate::eval::ops::cel_equals`], not in this `PartialEq`.
 
+pub mod bridge;
+
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, TimeDelta, Utc};

@@ -30,6 +30,7 @@ pub use ast::{unparse, BinaryOp, Comprehension, Expr, Literal, UnaryOp};
 pub use error::{CelError, ConversionError, EvalError, ParseError, Position};
 pub use eval::{eval, Scope};
 pub use parser::parse;
+pub use value::bridge::{cel_to_dynamic, dynamic_to_cel};
 pub use value::{CelKey, CelType, CelValue};
 
 use std::collections::BTreeMap;

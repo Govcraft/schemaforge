@@ -375,6 +375,92 @@ async fn create_entity_returns_201() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn require_annotation_rejects_invalid_entity_with_422() {
+    use schema_forge_core::types::{
+        Annotation, FieldAnnotation, FieldDefinition, FieldName, FieldType, IntegerConstraints,
+        SchemaDefinition, SchemaId, SchemaName,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // Schema whose `age` field carries a `@require` predicate.
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Person").unwrap(),
+        vec![FieldDefinition::with_annotations(
+            FieldName::new("age").unwrap(),
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Require {
+                expr: "age >= 18".to_string(),
+                message: "age must be at least 18".to_string(),
+            }],
+        )],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let mut registry = HashMap::new();
+    registry.insert("Person".to_string(), schema.clone());
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry,
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    let app = test_app_with_claims_state(state, make_test_claims(&["platform_admin"]));
+
+    // Valid entity (age >= 18) → 201.
+    let valid = serde_json::json!({ "fields": { "age": 21 } });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Person/entities", Some(valid)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+
+    // Invalid entity (age < 18) → 422 with the require message in the body.
+    let invalid = serde_json::json!({ "fields": { "age": 10 } });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Person/entities", Some(invalid)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422, got {status} with body: {json}"
+    );
+    assert_eq!(json["error"], "validation_failed");
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap()
+            .contains("age must be at least 18"),
+        "expected require message in body, got: {json}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_entity_for_missing_schema_returns_404() {
     let app = test_app().await;
 
