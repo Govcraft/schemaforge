@@ -1224,6 +1224,5 @@ fi
 echo -e "${BOLD}========================================${NC}"
 echo ""
 echo -e "  Server:    ${BASE_URL}"
-echo -e "  Admin UI:  ${BASE_URL}/admin/"
 echo -e "  Schemas:   ${API}"
 echo ""
