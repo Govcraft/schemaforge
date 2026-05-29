@@ -21,5 +21,6 @@
 pub mod serialize;
 
 pub use serialize::{
-    csv_record, to_cell, to_ndjson, BytesPolicy, CellOptions, NoDisplay, RelationDisplay,
+    csv_record, to_cell, to_ndjson, to_xlsx_cell, BytesPolicy, CellOptions, NoDisplay,
+    RelationDisplay, XlsxCell,
 };

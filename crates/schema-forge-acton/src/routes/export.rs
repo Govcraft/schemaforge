@@ -9,12 +9,14 @@
 //! 2. a per-field `@exportable` opt-in — the exported column set is exactly the
 //!    intersection of `@exportable` fields and the fields the caller may read.
 //!
-//! This slice (item 5 of the export epic) implements the **synchronous,
-//! streamable** path: CSV and NDJSON exports whose resolved row count is within
-//! the schema's `@export(max_rows)` cap are serialized inline in the response.
-//! Anything else — a non-streamable format (XLSX/ZIP), `async: true`, or a
-//! result that would exceed the cap — is **rejected** here with a clear error
-//! pointing the caller at the async-job endpoint (items 6-8 build that path).
+//! CSV and NDJSON exports whose resolved row count is within the schema's
+//! `@export(max_rows)` cap are serialized inline in the response (the
+//! **synchronous, streamable** path). Anything else — a non-streamable format
+//! (XLSX; ZIP once it lands), `async: true`, or a result that would exceed the
+//! cap — takes the supervised **async-job** path: a job is registered with the
+//! [`ExportJobActor`](crate::export_job::ExportJobActor) and its id is returned
+//! immediately. XLSX is async-only because `rust_xlsxwriter` buffers the whole
+//! workbook and cannot truly stream.
 //!
 //! Tenant injection ([`inject_tenant_scope`]) and per-field read stripping
 //! ([`filter_entity_fields`]) run identically to the normal query path, so the
@@ -34,7 +36,9 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use schema_forge_backend::entity::Entity;
-use schema_forge_core::export::{to_cell, to_ndjson, CellOptions, RelationDisplay};
+use schema_forge_core::export::{
+    to_cell, to_ndjson, to_xlsx_cell, CellOptions, RelationDisplay, XlsxCell,
+};
 use schema_forge_core::query::{validate_filter, Filter, Query};
 use schema_forge_core::types::{
     DynamicValue, EntityId, ExportFormat, FieldType, SchemaDefinition, SchemaName,
@@ -106,6 +110,18 @@ impl ExportRequestBody {
 /// the async-job path (ADR-0003).
 pub fn is_streamable(format: ExportFormat) -> bool {
     matches!(format, ExportFormat::Csv | ExportFormat::Ndjson)
+}
+
+/// Whether the supervised async-job pipeline can currently materialize `format`.
+///
+/// CSV, NDJSON, and XLSX are supported: the first two also stream synchronously,
+/// while XLSX is async-only because `rust_xlsxwriter` buffers the whole workbook
+/// (ADR-0003). ZIP bundling lands in a later item and is still deferred.
+pub fn async_job_supports(format: ExportFormat) -> bool {
+    matches!(
+        format,
+        ExportFormat::Csv | ExportFormat::Ndjson | ExportFormat::Xlsx
+    )
 }
 
 /// Compute the ordered export column set: every `@exportable` field on the
@@ -222,6 +238,95 @@ pub fn entities_to_ndjson(
         }
     }
     out
+}
+
+/// Number format applied to native datetime cells so Excel renders a UTC
+/// timestamp as a readable date-time rather than a raw serial number.
+const XLSX_DATETIME_FORMAT: &str = "yyyy-mm-dd hh:mm:ss";
+
+/// Serialize already-read, already-field-filtered `entities` into an XLSX
+/// workbook (a header row plus one row per entity) under the export flatten
+/// policy, returning the `.xlsx` file bytes.
+///
+/// XLSX is a rectangular projection like CSV, but cells keep their native
+/// spreadsheet *type* where it helps: numbers, booleans, and datetimes are
+/// written as native cell types (so they sort, sum, and format), while
+/// structured values (relation-many / array / map / composite / json) are
+/// JSON-encoded into a text cell exactly as the CSV path does. The pure
+/// [`to_xlsx_cell`] core decides the cell type; this function only translates
+/// each [`XlsxCell`] into a `rust_xlsxwriter` write. `rust_xlsxwriter` buffers
+/// the whole workbook, which is why XLSX rides the async/buffered path
+/// (ADR-0003) and never streams.
+///
+/// `columns` is the resolved `@exportable` ∩ requested column set; a column
+/// missing from a row (stripped for read access, or simply absent) renders as an
+/// empty cell — fail-closed, never a leak.
+pub fn entities_to_xlsx(
+    entities: &[Entity],
+    columns: &[(String, Option<schema_forge_core::types::ExportFlatten>)],
+    display_map: &HashMap<String, HashMap<String, String>>,
+) -> Result<Vec<u8>, String> {
+    use rust_xlsxwriter::{Format, Workbook};
+
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    let datetime_format = Format::new().set_num_format(XLSX_DATETIME_FORMAT);
+
+    // Header row (row 0): the exportable column names, in declaration order.
+    for (col_idx, (name, _)) in columns.iter().enumerate() {
+        let col = u16::try_from(col_idx).map_err(|_| "too many export columns".to_string())?;
+        worksheet
+            .write_string(0, col, name.as_str())
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Data rows start at row 1.
+    for (row_offset, entity) in entities.iter().enumerate() {
+        let row = u32::try_from(row_offset + 1).map_err(|_| "too many export rows".to_string())?;
+        for (col_idx, (name, flatten)) in columns.iter().enumerate() {
+            let col = u16::try_from(col_idx).map_err(|_| "too many export columns".to_string())?;
+            let cell = match entity.field(name) {
+                Some(value) => {
+                    let displays = FieldDisplay {
+                        id_to_display: display_map.get(name),
+                    };
+                    let opts = CellOptions::new().with_flatten(*flatten);
+                    to_xlsx_cell(value, &opts, &displays)
+                }
+                None => XlsxCell::Empty,
+            };
+            write_xlsx_cell(worksheet, row, col, cell, &datetime_format)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    workbook.save_to_buffer().map_err(|e| e.to_string())
+}
+
+/// Translate one typed [`XlsxCell`] into a `rust_xlsxwriter` write at `(row, col)`.
+///
+/// An [`XlsxCell::Empty`] writes nothing (a blank cell), keeping the fail-closed
+/// "absent field renders empty" contract. Datetimes carry `datetime_format` so
+/// Excel shows a timestamp rather than a serial number.
+fn write_xlsx_cell(
+    worksheet: &mut rust_xlsxwriter::Worksheet,
+    row: u32,
+    col: u16,
+    cell: XlsxCell,
+    datetime_format: &rust_xlsxwriter::Format,
+) -> Result<(), rust_xlsxwriter::XlsxError> {
+    match cell {
+        XlsxCell::Empty => Ok(()),
+        XlsxCell::Text(s) => worksheet.write_string(row, col, &s).map(|_| ()),
+        XlsxCell::Number(n) => worksheet.write_number(row, col, n).map(|_| ()),
+        XlsxCell::Boolean(b) => worksheet.write_boolean(row, col, b).map(|_| ()),
+        // rust_xlsxwriter's chrono feature accepts a tz-naive `NaiveDateTime`;
+        // the value is already UTC, so dropping the (UTC) offset is lossless and
+        // the cell carries the timestamp Excel renders via XLSX_DATETIME_FORMAT.
+        XlsxCell::DateTime(dt) => worksheet
+            .write_datetime_with_format(row, col, dt.naive_utc(), datetime_format)
+            .map(|_| ()),
+    }
 }
 
 /// A fully materialized export: the serialized bytes plus the metadata both the
@@ -374,9 +479,20 @@ pub async fn materialize_export(
             let ndjson = entities_to_ndjson(&visible, &columns, &display_map);
             (ndjson.into_bytes(), "application/x-ndjson")
         }
+        ExportFormat::Xlsx => {
+            let xlsx = entities_to_xlsx(&visible, &columns, &display_map).map_err(|e| {
+                ForgeError::Internal {
+                    message: format!("XLSX serialization failed: {e}"),
+                }
+            })?;
+            (
+                xlsx,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        }
         other => {
             return Err(ForgeError::Internal {
-                message: format!("non-streamable format reached the export pipeline: {other}"),
+                message: format!("unsupported format reached the export pipeline: {other}"),
             });
         }
     };
@@ -645,8 +761,8 @@ struct ResolvedExportAuthz {
 /// Accepted body carrying the job id, leaving generation + upload to the
 /// supervised actor.
 ///
-/// This is reached for non-streamable formats (XLSX/ZIP — once their serializers
-/// land), an explicit `async: true`, or whenever a caller would otherwise block
+/// This is reached for non-streamable formats (XLSX now; ZIP once its serializer
+/// lands), an explicit `async: true`, or whenever a caller would otherwise block
 /// on a large materialization. A 503 is returned if no storage backend is
 /// configured, since the artifact would have nowhere to land.
 async fn spawn_export_job(
@@ -658,15 +774,14 @@ async fn spawn_export_job(
     claims: Option<&Claims>,
     authz: ResolvedExportAuthz,
 ) -> Result<Response, ForgeError> {
-    // The async path can currently only generate streamable serializers
-    // (CSV/NDJSON). XLSX/ZIP serializers land in later items; until then a
-    // declared-but-unsupported format is refused rather than silently failing
-    // the job after accepting it.
-    if !is_streamable(format) {
+    // The async path generates CSV, NDJSON, and XLSX. The ZIP bundle serializer
+    // lands in a later item; until then a declared-but-unsupported format is
+    // refused rather than silently failing the job after accepting it.
+    if !async_job_supports(format) {
         return Err(ForgeError::ExportDeferred {
             message: format!(
                 "format '{}' is not yet supported by the async export pipeline \
-                 (csv and ndjson only); see ADR-0003",
+                 (csv, ndjson, and xlsx only); see ADR-0003",
                 format.as_str()
             ),
         });
@@ -1036,6 +1151,144 @@ mod tests {
         assert!(is_streamable(ExportFormat::Ndjson));
         assert!(!is_streamable(ExportFormat::Xlsx));
         assert!(!is_streamable(ExportFormat::Zip));
+    }
+
+    #[test]
+    fn async_job_supports_csv_ndjson_xlsx_not_zip() {
+        // XLSX is async-only (buffered), so it is NOT streamable but IS a
+        // supported async-job format; ZIP is still deferred.
+        assert!(async_job_supports(ExportFormat::Csv));
+        assert!(async_job_supports(ExportFormat::Ndjson));
+        assert!(async_job_supports(ExportFormat::Xlsx));
+        assert!(!async_job_supports(ExportFormat::Zip));
+    }
+
+    /// Read the first worksheet of an in-memory `.xlsx` back into a grid of
+    /// stringified cells so a test can assert the workbook is well-formed without
+    /// touching the filesystem.
+    fn read_xlsx_grid(bytes: &[u8]) -> Vec<Vec<String>> {
+        use calamine::{Data, Reader, Xlsx};
+        use std::io::Cursor;
+
+        let mut workbook: Xlsx<_> =
+            calamine::open_workbook_from_rs(Cursor::new(bytes.to_vec())).expect("valid xlsx");
+        let sheet_name = workbook.sheet_names()[0].clone();
+        let range = workbook.worksheet_range(&sheet_name).expect("first sheet");
+        range
+            .rows()
+            .map(|r| {
+                r.iter()
+                    .map(|c| match c {
+                        Data::Empty => String::new(),
+                        Data::String(s) => s.clone(),
+                        Data::Float(f) => f.to_string(),
+                        Data::Int(i) => i.to_string(),
+                        Data::Bool(b) => b.to_string(),
+                        Data::DateTime(d) => d.to_string(),
+                        other => other.to_string(),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn xlsx_header_and_rows_use_exportable_columns_only() {
+        let schema = export_schema();
+        let cols = resolve_export_columns(&schema, None);
+        let rows = vec![
+            row("a", &[("name", "Ada"), ("ssn", "111-22-3333"), ("notes", "vip")]),
+            row("b", &[("name", "Bob"), ("ssn", "999-88-7777"), ("notes", "x,y")]),
+        ];
+        let bytes = entities_to_xlsx(&rows, &cols, &HashMap::new()).unwrap();
+
+        // A valid xlsx is a ZIP archive: it starts with the PK signature.
+        assert_eq!(&bytes[..2], b"PK", "not a zip/xlsx container");
+
+        let grid = read_xlsx_grid(&bytes);
+        assert_eq!(grid[0], vec!["name", "notes"]);
+        assert_eq!(grid[1], vec!["Ada", "vip"]);
+        // The comma inside a cell rides as-is in a real spreadsheet cell.
+        assert_eq!(grid[2], vec!["Bob", "x,y"]);
+        // SSN is readable-but-not-@exportable: it must never appear.
+        let flat = grid.concat().join("|");
+        assert!(!flat.contains("111-22-3333"), "leaked secret: {flat}");
+        assert!(!flat.contains("999-88-7777"), "leaked secret: {flat}");
+    }
+
+    #[test]
+    fn xlsx_stripped_field_renders_empty_cell() {
+        // A row missing `notes` (stripped for read access or simply absent)
+        // keeps the column header and renders an empty cell — never another
+        // row's value.
+        let schema = export_schema();
+        let cols = resolve_export_columns(&schema, None);
+        let rows = vec![row("a", &[("name", "Ada")])];
+        let bytes = entities_to_xlsx(&rows, &cols, &HashMap::new()).unwrap();
+        let grid = read_xlsx_grid(&bytes);
+        assert_eq!(grid[0], vec!["name", "notes"]);
+        // calamine trims trailing empty cells, so the data row is just "Ada".
+        assert_eq!(grid[1].first().map(String::as_str), Some("Ada"));
+        assert!(grid[1].get(1).map(String::as_str).unwrap_or("").is_empty());
+    }
+
+    #[test]
+    fn xlsx_empty_entities_yields_header_only() {
+        let schema = export_schema();
+        let cols = resolve_export_columns(&schema, None);
+        let bytes = entities_to_xlsx(&[], &cols, &HashMap::new()).unwrap();
+        let grid = read_xlsx_grid(&bytes);
+        assert_eq!(grid.len(), 1);
+        assert_eq!(grid[0], vec!["name", "notes"]);
+    }
+
+    #[test]
+    fn xlsx_numbers_and_booleans_are_native_typed() {
+        // Build a schema with a numeric + bool exportable column to confirm the
+        // cells round-trip as native (non-string) spreadsheet values.
+        use schema_forge_core::types::IntegerConstraints;
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Metric").unwrap(),
+            vec![
+                FieldDefinition::with_annotations(
+                    FieldName::new("count").unwrap(),
+                    FieldType::Integer(IntegerConstraints::unconstrained()),
+                    vec![],
+                    vec![FieldAnnotation::Exportable { flatten: None }],
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new("active").unwrap(),
+                    FieldType::Boolean,
+                    vec![],
+                    vec![FieldAnnotation::Exportable { flatten: None }],
+                ),
+            ],
+            vec![Annotation::Export {
+                formats: vec![EF::Xlsx],
+                bundle_files: false,
+                max_rows: 100,
+            }],
+        )
+        .unwrap();
+        let cols = resolve_export_columns(&schema, None);
+
+        let mut map: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        map.insert("count".into(), DynamicValue::Integer(42));
+        map.insert("active".into(), DynamicValue::Boolean(true));
+        let entity = Entity::with_id(EntityId::new("m1"), SchemaName::new("Metric").unwrap(), map);
+
+        let bytes = entities_to_xlsx(&[entity], &cols, &HashMap::new()).unwrap();
+
+        use calamine::{Data, Reader, Xlsx};
+        use std::io::Cursor;
+        let mut wb: Xlsx<_> =
+            calamine::open_workbook_from_rs(Cursor::new(bytes)).expect("valid xlsx");
+        let sheet = wb.sheet_names()[0].clone();
+        let range = wb.worksheet_range(&sheet).unwrap();
+        // Row 1 (after header): count is a native number, active a native bool.
+        assert_eq!(range.get_value((1, 0)), Some(&Data::Float(42.0)));
+        assert_eq!(range.get_value((1, 1)), Some(&Data::Bool(true)));
     }
 
     #[test]

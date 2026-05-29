@@ -190,6 +190,87 @@ pub fn to_ndjson<D: RelationDisplay + ?Sized>(value: &DynamicValue, displays: &D
     }
 }
 
+/// A typed XLSX cell: the neutral, dependency-free description of how one
+/// [`DynamicValue`] should land in a spreadsheet cell.
+///
+/// The pure core decides the cell *type* (so numbers sort and sum, datetimes
+/// render as dates) without depending on any spreadsheet writer; the writer
+/// layer ([`crate::export`] consumers, item 7) translates each variant into a
+/// concrete `rust_xlsxwriter` write. Keeping this enum here makes the
+/// scalar-vs-structured typing decision a pure, unit-testable function shared by
+/// the workbook builder.
+#[derive(Debug, Clone, PartialEq)]
+pub enum XlsxCell {
+    /// An empty cell (null, omitted bytes, or an absent field).
+    Empty,
+    /// Plain text — also the rectangular JSON-in-cell rendering for structured
+    /// values (relation-many / array / map / composite / json) and the
+    /// resolved display string for a relation-one.
+    Text(String),
+    /// A numeric value (`int`/`float`), written as a native spreadsheet number.
+    Number(f64),
+    /// A boolean, written as a native spreadsheet boolean.
+    Boolean(bool),
+    /// A UTC timestamp, written as a native spreadsheet datetime.
+    DateTime(chrono::DateTime<chrono::Utc>),
+}
+
+/// Maps a [`DynamicValue`] to a typed [`XlsxCell`] under the same flatten policy
+/// as [`to_cell`], but preserving native cell *types* for the scalars where a
+/// spreadsheet benefits from them.
+///
+/// Scalars that have a natural spreadsheet type — `int`/`float` →
+/// [`XlsxCell::Number`], `bool` → [`XlsxCell::Boolean`], `datetime` →
+/// [`XlsxCell::DateTime`] — are typed so they sort, sum, and format correctly.
+/// `duration` and `enum` stay text (a duration has no native spreadsheet type;
+/// an enum is a label). Structured values (relation-many / array / map /
+/// composite / json) are JSON-encoded into a text cell exactly as [`to_cell`]
+/// does, relation-one becomes its resolved display text, and bytes follow the
+/// same fail-closed [`BytesPolicy`]. A `flatten: json` hint forces the JSON-in-cell
+/// text rendering, identical to the CSV path.
+pub fn to_xlsx_cell<D: RelationDisplay + ?Sized>(
+    value: &DynamicValue,
+    opts: &CellOptions,
+    displays: &D,
+) -> XlsxCell {
+    // A flatten:json hint forces JSON-in-cell text for everything except null,
+    // matching the CSV path so the two rectangular formats stay consistent.
+    if matches!(opts.flatten, Some(ExportFlatten::Json)) && !matches!(value, DynamicValue::Null) {
+        return XlsxCell::Text(json_in_cell(&to_ndjson(value, displays)));
+    }
+
+    match value {
+        DynamicValue::Null => XlsxCell::Empty,
+        DynamicValue::Integer(i) => XlsxCell::Number(*i as f64),
+        DynamicValue::Float(v) => {
+            // Non-finite floats have no spreadsheet number; fall back to the text
+            // rendering (matching to_cell) rather than writing a bogus cell.
+            if v.is_finite() {
+                XlsxCell::Number(*v)
+            } else {
+                XlsxCell::Text(v.to_string())
+            }
+        }
+        DynamicValue::Boolean(b) => XlsxCell::Boolean(*b),
+        DynamicValue::DateTime(dt) => XlsxCell::DateTime(*dt),
+        // Bytes are fail-closed: empty cell unless explicitly base64-opted-in.
+        DynamicValue::Bytes(b) => match opts.bytes {
+            BytesPolicy::Omit => XlsxCell::Empty,
+            BytesPolicy::Base64 => XlsxCell::Text(base64::encode_standard(b)),
+        },
+        // Everything else — text/duration/enum scalars, relations, and the
+        // structured shapes — shares the exact rectangular rendering of to_cell.
+        _ => {
+            let rendered = to_cell(value, opts, displays);
+            if rendered.is_empty() {
+                XlsxCell::Empty
+            } else {
+                XlsxCell::Text(rendered)
+            }
+        }
+    }
+}
+
 /// Builds the `{ "id", "display" }` object used for relations in NDJSON.
 fn relation_object<D: RelationDisplay + ?Sized>(id: &EntityId, displays: &D) -> JsonValue {
     let mut obj = JsonMap::with_capacity(2);
@@ -577,5 +658,147 @@ mod tests {
     #[test]
     fn no_display_resolves_nothing() {
         assert_eq!(NoDisplay.display_for(&id("x")), None);
+    }
+
+    // ---- xlsx cell typing ----
+
+    #[test]
+    fn xlsx_null_is_empty() {
+        assert_eq!(
+            to_xlsx_cell(&DynamicValue::Null, &CellOptions::new(), &NoDisplay),
+            XlsxCell::Empty
+        );
+    }
+
+    #[test]
+    fn xlsx_integer_is_native_number() {
+        assert_eq!(
+            to_xlsx_cell(&DynamicValue::Integer(-42), &CellOptions::new(), &NoDisplay),
+            XlsxCell::Number(-42.0)
+        );
+    }
+
+    #[test]
+    fn xlsx_float_is_native_number() {
+        assert_eq!(
+            to_xlsx_cell(&DynamicValue::Float(2.5), &CellOptions::new(), &NoDisplay),
+            XlsxCell::Number(2.5)
+        );
+    }
+
+    #[test]
+    fn xlsx_non_finite_float_falls_back_to_text() {
+        assert_eq!(
+            to_xlsx_cell(&DynamicValue::Float(f64::NAN), &CellOptions::new(), &NoDisplay),
+            XlsxCell::Text("NaN".to_string())
+        );
+    }
+
+    #[test]
+    fn xlsx_boolean_is_native() {
+        assert_eq!(
+            to_xlsx_cell(&DynamicValue::Boolean(true), &CellOptions::new(), &NoDisplay),
+            XlsxCell::Boolean(true)
+        );
+    }
+
+    #[test]
+    fn xlsx_datetime_is_native() {
+        let dt = chrono::DateTime::parse_from_rfc3339("2026-05-29T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            to_xlsx_cell(&DynamicValue::DateTime(dt), &CellOptions::new(), &NoDisplay),
+            XlsxCell::DateTime(dt)
+        );
+    }
+
+    #[test]
+    fn xlsx_duration_stays_text() {
+        let v = DynamicValue::Duration(chrono::TimeDelta::seconds(90));
+        assert_eq!(
+            to_xlsx_cell(&v, &CellOptions::new(), &NoDisplay),
+            XlsxCell::Text("90s".to_string())
+        );
+    }
+
+    #[test]
+    fn xlsx_text_is_text() {
+        let v = DynamicValue::Text("hello".into());
+        assert_eq!(
+            to_xlsx_cell(&v, &CellOptions::new(), &NoDisplay),
+            XlsxCell::Text("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn xlsx_enum_stays_text() {
+        let v = DynamicValue::Enum("Active".into());
+        assert_eq!(
+            to_xlsx_cell(&v, &CellOptions::new(), &NoDisplay),
+            XlsxCell::Text("Active".to_string())
+        );
+    }
+
+    #[test]
+    fn xlsx_bytes_omitted_by_default() {
+        let v = DynamicValue::Bytes(b"hello".to_vec());
+        assert_eq!(
+            to_xlsx_cell(&v, &CellOptions::new(), &NoDisplay),
+            XlsxCell::Empty
+        );
+    }
+
+    #[test]
+    fn xlsx_bytes_base64_on_opt_in() {
+        let v = DynamicValue::Bytes(b"hello".to_vec());
+        let opts = CellOptions::new().with_bytes(BytesPolicy::Base64);
+        assert_eq!(
+            to_xlsx_cell(&v, &opts, &NoDisplay),
+            XlsxCell::Text("aGVsbG8=".to_string())
+        );
+    }
+
+    #[test]
+    fn xlsx_structured_value_is_json_text() {
+        let v = DynamicValue::Array(vec![
+            DynamicValue::Integer(1),
+            DynamicValue::Text("x".into()),
+        ]);
+        assert_eq!(
+            to_xlsx_cell(&v, &CellOptions::new(), &NoDisplay),
+            XlsxCell::Text("[1,\"x\"]".to_string())
+        );
+    }
+
+    #[test]
+    fn xlsx_relation_one_uses_resolved_display() {
+        let rid = id("user");
+        let target = rid.clone();
+        let resolver = move |q: &EntityId| (q == &target).then(|| "Ada".to_string());
+        let v = DynamicValue::Ref(rid);
+        assert_eq!(
+            to_xlsx_cell(&v, &CellOptions::new(), &resolver),
+            XlsxCell::Text("Ada".to_string())
+        );
+    }
+
+    #[test]
+    fn xlsx_flatten_json_forces_number_to_text() {
+        let v = DynamicValue::Integer(7);
+        let opts = CellOptions::new().with_flatten(Some(ExportFlatten::Json));
+        assert_eq!(
+            to_xlsx_cell(&v, &opts, &NoDisplay),
+            XlsxCell::Text("7".to_string())
+        );
+    }
+
+    #[test]
+    fn xlsx_flatten_json_null_stays_empty() {
+        let opts = CellOptions::new().with_flatten(Some(ExportFlatten::Json));
+        assert_eq!(
+            to_xlsx_cell(&DynamicValue::Null, &opts, &NoDisplay),
+            XlsxCell::Empty
+        );
     }
 }

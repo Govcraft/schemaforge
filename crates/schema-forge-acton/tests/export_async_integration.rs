@@ -408,6 +408,99 @@ async fn async_job_generates_csv_and_uploads_to_store() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn async_job_generates_xlsx_and_uploads_well_formed_workbook() {
+    // XLSX is async-only (rust_xlsxwriter buffers the whole workbook). Drive the
+    // job actor with a mock store, then read the uploaded bytes back with
+    // calamine to confirm a well-formed workbook with the exportable columns and
+    // no leak of the readable-but-not-exportable `secret` field.
+    use calamine::{Data, Reader, Xlsx};
+    use std::io::Cursor;
+
+    let rows = [
+        serde_json::json!({ "fields": { "name": "Ada", "notes": "vip", "secret": "SSN-111" } }),
+        serde_json::json!({ "fields": { "name": "Bob", "notes": "x,y", "secret": "SSN-222" } }),
+    ];
+    let state = seeded_state(export_schema(), &rows).await;
+    let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
+        job_inputs(&state, "Subject").await;
+    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+
+    let store = Arc::new(MockStore::default());
+    let job_id = schema_forge_acton::export_job::new_job_id();
+    let object_key = format!("exports/Subject/{job_id}.xlsx");
+
+    let spec = ExportJobSpec {
+        job_id: job_id.clone(),
+        schema_name: "Subject".into(),
+        schema_def,
+        format: ExportFormat::Xlsx,
+        filter: None,
+        fields: None,
+        max_rows: 100,
+        claims: Some(make_claims(&["platform_admin"])),
+        tenant_config,
+        policy_store,
+        record_access_policy,
+        forge,
+        store: store.clone(),
+        object_key: object_key.clone(),
+        audit_logger: None,
+        subject: Some("user:test-user".into()),
+    };
+
+    job_actor.send(StartExportJob::new(spec)).await;
+    let record = poll_until_terminal(&job_actor, &job_id).await;
+
+    assert_eq!(
+        record.status,
+        ExportJobStatus::Complete,
+        "error: {:?}",
+        record.error
+    );
+    assert_eq!(record.row_count, Some(2));
+
+    // Pull the uploaded artifact out of the mock store and parse it back.
+    let bytes = {
+        let objects = store.objects.lock().unwrap();
+        let (bytes, ctype) = objects.get(&object_key).expect("artifact uploaded");
+        assert!(
+            ctype.contains("spreadsheetml.sheet"),
+            "wrong content type: {ctype}"
+        );
+        // A valid xlsx is a ZIP container starting with the PK signature.
+        assert_eq!(&bytes[..2], b"PK", "not a zip/xlsx container");
+        bytes.clone()
+    };
+
+    let mut wb: Xlsx<_> =
+        calamine::open_workbook_from_rs(Cursor::new(bytes)).expect("valid xlsx workbook");
+    let sheet = wb.sheet_names()[0].clone();
+    let range = wb.worksheet_range(&sheet).expect("first sheet");
+
+    // Header row: exportable columns only (`secret` is excluded).
+    let header: Vec<String> = range
+        .rows()
+        .next()
+        .unwrap()
+        .iter()
+        .map(|c| c.to_string())
+        .collect();
+    assert_eq!(header, vec!["name", "notes"]);
+
+    // Two data rows landed, with the expected values.
+    assert_eq!(range.height(), 3, "header + 2 data rows");
+    assert_eq!(range.get_value((1, 0)), Some(&Data::String("Ada".into())));
+    assert_eq!(range.get_value((2, 1)), Some(&Data::String("x,y".into())));
+
+    // The readable-but-not-exportable secret must never appear in any cell.
+    let any_secret = range
+        .rows()
+        .flat_map(|r| r.iter())
+        .any(|c| c.to_string().contains("SSN-"));
+    assert!(!any_secret, "xlsx leaked the secret field");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn async_job_over_cap_fails_without_uploading() {
     // Cap of 1, two rows: the materialize pipeline returns ExportTooLarge, which
     // the actor records as a failed job — and nothing is written to storage.
@@ -478,6 +571,49 @@ async fn async_request_without_storage_is_unavailable() {
     )
     .await;
 
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {json}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn xlsx_request_takes_async_path_not_deferred() {
+    // A schema that declares `xlsx` in its formats. With no storage configured
+    // the route still takes the async path and fails on missing storage (503),
+    // proving xlsx is an accepted async format — NOT a 422 "deferred" rejection,
+    // and NOT a 403 format-not-allowed.
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Sheet").unwrap(),
+        vec![exportable_field("name")],
+        vec![
+            Annotation::Access {
+                read: vec!["analyst".to_string()],
+                write: vec!["analyst".to_string()],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            },
+            Annotation::Export {
+                formats: vec![ExportFormat::Xlsx],
+                bundle_files: false,
+                max_rows: 100,
+            },
+        ],
+    )
+    .unwrap();
+    let rows = [serde_json::json!({ "fields": { "name": "Ada" } })];
+    let state = seeded_state(schema, &rows).await;
+    let app = app_with_claims(state, make_claims(&["platform_admin"]));
+
+    let (status, json) = raw_request(
+        &app,
+        Method::POST,
+        "/schemas/Sheet/entities/export",
+        Some(serde_json::json!({ "format": "xlsx" })),
+    )
+    .await;
+
+    // Storage is absent in the harness, so the async path is unavailable (503);
+    // the key assertion is that we did NOT get 422 (deferred) or 403 (format not
+    // allowed), i.e. xlsx is routed to the async pipeline.
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {json}");
 }
 

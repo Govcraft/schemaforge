@@ -401,10 +401,15 @@ async fn over_cap_export_is_deferred_with_413() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn xlsx_format_is_deferred_to_async_path() {
+async fn xlsx_format_takes_async_path() {
+    // Item 7 added the XLSX serializer on the async path: xlsx is always
+    // async-only (rust_xlsxwriter buffers the whole workbook), so a POST for it
+    // takes the supervised async-job path rather than being flatly deferred. With
+    // no storage backend configured in this harness the artifact has nowhere to
+    // land, so the request is refused with 503 — NOT a 422 `export_deferred`. The
+    // full accept + generated-workbook lifecycle is covered with a mock store in
+    // `export_async_integration.rs`.
     let rows = [serde_json::json!({ "fields": { "name": "Ada", "notes": "n" } })];
-    // Declare xlsx in the formats vocabulary so the format gate passes and the
-    // streamability gate is what defers it.
     let schema = SchemaDefinition::new(
         SchemaId::new(),
         SchemaName::new("Subject").unwrap(),
@@ -434,8 +439,8 @@ async fn xlsx_format_is_deferred_to_async_path() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
-    assert_eq!(json["error"], "export_deferred");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {json}");
+    assert_ne!(json["error"], "export_deferred");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
