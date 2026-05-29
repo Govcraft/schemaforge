@@ -9,7 +9,7 @@ description: Use when writing, creating, editing, or reviewing SchemaForge .sche
 
 SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `.schema` file produces database tables, REST API endpoints, migrations, Cedar authorization policies, and OpenAPI specs — no recompilation required.
 
-**Version:** 0.33.0
+**Version:** 0.34.0
 
 **Core principle:** Schemas are the single source of truth for the entire entity lifecycle. Authorization is **Cedar-canonical**: every read/write/delete decision flows through the embedded Cedar engine — there are no parallel custom guards.
 
