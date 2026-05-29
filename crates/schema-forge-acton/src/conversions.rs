@@ -24,6 +24,9 @@ pub fn dynamic_value_to_json(value: &DynamicValue) -> serde_json::Value {
         DynamicValue::Duration(d) => {
             serde_json::Value::String(schema_forge_core::types::format_go_duration(d))
         }
+        DynamicValue::Bytes(b) => {
+            serde_json::Value::String(schema_forge_core::types::encode_standard(b))
+        }
         DynamicValue::Enum(s) => serde_json::Value::String(s.clone()),
         DynamicValue::Json(v) => v.clone(),
         DynamicValue::Array(arr) => {

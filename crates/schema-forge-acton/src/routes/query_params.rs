@@ -83,6 +83,9 @@ pub fn coerce_string_value(
         Some(FieldType::Duration) => schema_forge_core::types::parse_go_duration(raw)
             .map(DynamicValue::Duration)
             .map_err(|e| format!("invalid duration '{raw}': {e}")),
+        Some(FieldType::Bytes(_)) => schema_forge_core::types::decode_standard(raw)
+            .map(DynamicValue::Bytes)
+            .map_err(|e| format!("invalid base64 bytes '{raw}': {e}")),
         Some(FieldType::Enum(_)) => Ok(DynamicValue::Enum(raw.to_string())),
         Some(FieldType::Text(_) | FieldType::RichText) | None => {
             Ok(DynamicValue::Text(raw.to_string()))

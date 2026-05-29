@@ -701,6 +701,7 @@ fn field_type_name(ft: &FieldType) -> String {
         FieldType::Boolean => "Boolean",
         FieldType::DateTime => "DateTime",
         FieldType::Duration => "Duration",
+        FieldType::Bytes(_) => "Bytes",
         FieldType::Enum(_) => "Enum",
         FieldType::Json => "Json",
         FieldType::Relation { .. } => "Relation",
@@ -727,6 +728,7 @@ fn check_type_compat(
         FieldType::Boolean => matches!(value, DynamicValue::Boolean(_)),
         FieldType::DateTime => matches!(value, DynamicValue::DateTime(_)),
         FieldType::Duration => matches!(value, DynamicValue::Duration(_)),
+        FieldType::Bytes(_) => matches!(value, DynamicValue::Bytes(_)),
         FieldType::Enum(_) => matches!(value, DynamicValue::Enum(_) | DynamicValue::Text(_)),
         _ => true, // Json, Relation, Array, Composite — accept anything
     };
@@ -748,6 +750,7 @@ fn dynamic_value_type_name(value: &DynamicValue) -> String {
         DynamicValue::Boolean(_) => "Boolean",
         DynamicValue::DateTime(_) => "DateTime",
         DynamicValue::Duration(_) => "Duration",
+        DynamicValue::Bytes(_) => "Bytes",
         DynamicValue::Enum(_) => "Enum",
         DynamicValue::Json(_) => "Json",
         DynamicValue::Array(_) => "Array",

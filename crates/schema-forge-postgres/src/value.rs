@@ -65,6 +65,12 @@ pub fn bind_dynamic_value(
                 message: format!("failed to bind duration: {e}"),
             })?;
         }
+        DynamicValue::Bytes(b) => {
+            // Stored verbatim in a BYTEA column.
+            args.add(b.clone()).map_err(|e| BackendError::Internal {
+                message: format!("failed to bind bytes: {e}"),
+            })?;
+        }
         DynamicValue::Json(v) => {
             args.add(sqlx::types::Json(v))
                 .map_err(|e| BackendError::Internal {
@@ -136,6 +142,8 @@ fn bind_null(args: &mut PgArguments, field_type: Option<&FieldType>) -> Result<(
         Some(FieldType::DateTime) => args.add(None::<chrono::DateTime<chrono::Utc>>),
         // Stored as a BIGINT nanosecond count.
         Some(FieldType::Duration) => args.add(None::<i64>),
+        // Stored as a BYTEA column.
+        Some(FieldType::Bytes(_)) => args.add(None::<Vec<u8>>),
         // Stored as jsonb.
         Some(FieldType::Json | FieldType::Composite(_) | FieldType::File(_)) => {
             args.add(None::<sqlx::types::Json<serde_json::Value>>)
@@ -187,6 +195,7 @@ fn bind_null_array(args: &mut PgArguments, inner: &FieldType) -> Result<(), Back
         FieldType::Boolean => args.add(None::<Vec<bool>>),
         FieldType::DateTime => args.add(None::<Vec<chrono::DateTime<chrono::Utc>>>),
         FieldType::Duration => args.add(None::<Vec<i64>>),
+        FieldType::Bytes(_) => args.add(None::<Vec<Vec<u8>>>),
         // Nested arrays, composites, relations, etc. are stored as JSONB.
         _ => args.add(None::<sqlx::types::Json<serde_json::Value>>),
     };
@@ -248,6 +257,13 @@ fn bind_array(
                 })?;
                 return Ok(());
             }
+            FieldType::Bytes(_) => {
+                let items = array_items_as_bytes(arr)?;
+                args.add(items).map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind bytes array: {e}"),
+                })?;
+                return Ok(());
+            }
             // Nested arrays, composites, relations, json, etc. -- fall through to JSONB.
             _ => {}
         }
@@ -285,6 +301,7 @@ fn dynamic_variant_name(value: &DynamicValue) -> &'static str {
         DynamicValue::Boolean(_) => "Boolean",
         DynamicValue::DateTime(_) => "DateTime",
         DynamicValue::Duration(_) => "Duration",
+        DynamicValue::Bytes(_) => "Bytes",
         DynamicValue::Enum(_) => "Enum",
         DynamicValue::Json(_) => "Json",
         DynamicValue::Array(_) => "Array",
@@ -361,6 +378,19 @@ fn array_items_as_duration_nanos(arr: &[DynamicValue]) -> Result<Vec<i64>, Backe
                 })
             }
             other => Err(array_bind_mismatch(&FieldType::Duration, other)),
+        })
+        .collect()
+}
+
+/// Collect a `bytes[]` array as byte vectors for a BYTEA[] column.
+fn array_items_as_bytes(arr: &[DynamicValue]) -> Result<Vec<Vec<u8>>, BackendError> {
+    arr.iter()
+        .map(|item| match item {
+            DynamicValue::Bytes(b) => Ok(b.clone()),
+            other => Err(array_bind_mismatch(
+                &FieldType::Bytes(schema_forge_core::types::BytesConstraints::unconstrained()),
+                other,
+            )),
         })
         .collect()
 }
@@ -453,6 +483,12 @@ fn read_column(
             Ok(DynamicValue::Duration(chrono::TimeDelta::nanoseconds(
                 nanos,
             )))
+        }
+        Some(FieldType::Bytes(_)) => {
+            let v: Vec<u8> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read bytes column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Bytes(v))
         }
         Some(FieldType::Json) => {
             let v: sqlx::types::Json<serde_json::Value> =
@@ -576,6 +612,14 @@ fn read_array_column(
                     .collect(),
             ))
         }
+        FieldType::Bytes(_) => {
+            let v: Vec<Vec<u8>> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read bytes array column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Array(
+                v.into_iter().map(DynamicValue::Bytes).collect(),
+            ))
+        }
         // Nested arrays, composites, relations, json, etc. -- fall back to JSONB.
         _ => {
             let v: sqlx::types::Json<serde_json::Value> =
@@ -598,6 +642,9 @@ fn dynamic_to_json(value: &DynamicValue) -> serde_json::Value {
         DynamicValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
         DynamicValue::Duration(d) => {
             serde_json::Value::String(schema_forge_core::types::format_go_duration(d))
+        }
+        DynamicValue::Bytes(b) => {
+            serde_json::Value::String(schema_forge_core::types::encode_standard(b))
         }
         DynamicValue::Json(v) => v.clone(),
         DynamicValue::Array(arr) => {
@@ -800,6 +847,48 @@ mod tests {
         assert!(
             bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&FieldType::Duration)).is_ok()
         );
+    }
+
+    #[test]
+    fn bind_bytes_is_ok() {
+        let mut args = PgArguments::default();
+        assert!(bind_dynamic_value(
+            &mut args,
+            &DynamicValue::Bytes(vec![0x00, 0xff, 0x42]),
+            Some(&FieldType::Bytes(
+                schema_forge_core::types::BytesConstraints::unconstrained()
+            ))
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn bytes_variant_name_is_bytes() {
+        assert_eq!(
+            dynamic_variant_name(&DynamicValue::Bytes(vec![1, 2, 3])),
+            "Bytes"
+        );
+    }
+
+    #[test]
+    fn dynamic_to_json_bytes_is_standard_base64() {
+        assert_eq!(
+            dynamic_to_json(&DynamicValue::Bytes(b"hello".to_vec())),
+            serde_json::json!("aGVsbG8=")
+        );
+    }
+
+    #[test]
+    fn bind_null_with_bytes_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        assert!(bind_dynamic_value(
+            &mut args,
+            &DynamicValue::Null,
+            Some(&FieldType::Bytes(
+                schema_forge_core::types::BytesConstraints::unconstrained()
+            ))
+        )
+        .is_ok());
     }
 
     #[test]

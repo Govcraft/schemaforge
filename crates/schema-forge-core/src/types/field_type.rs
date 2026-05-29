@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::bytes_constraints::BytesConstraints;
 use super::cardinality::Cardinality;
 use super::enum_variants::EnumVariants;
 use super::field_definition::FieldDefinition;
@@ -21,6 +22,7 @@ pub enum FieldType {
     Boolean,
     DateTime,
     Duration,
+    Bytes(BytesConstraints),
     Enum(EnumVariants),
     Json,
     Relation {
@@ -42,6 +44,7 @@ impl std::fmt::Display for FieldType {
             Self::Boolean => write!(f, "Boolean"),
             Self::DateTime => write!(f, "DateTime"),
             Self::Duration => write!(f, "Duration"),
+            Self::Bytes(_) => write!(f, "Bytes"),
             Self::Enum(v) => write!(f, "Enum{v}"),
             Self::Json => write!(f, "Json"),
             Self::Relation {
@@ -72,6 +75,30 @@ mod tests {
     fn display_text() {
         let t = FieldType::Text(TextConstraints::with_max_length(255));
         assert_eq!(t.to_string(), "Text");
+    }
+
+    #[test]
+    fn display_bytes() {
+        assert_eq!(
+            FieldType::Bytes(BytesConstraints::unconstrained()).to_string(),
+            "Bytes"
+        );
+        assert_eq!(
+            FieldType::Bytes(BytesConstraints::with_max_size(1024)).to_string(),
+            "Bytes"
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_bytes() {
+        for ft in [
+            FieldType::Bytes(BytesConstraints::unconstrained()),
+            FieldType::Bytes(BytesConstraints::with_max_size(1024)),
+        ] {
+            let json = serde_json::to_string(&ft).unwrap();
+            let back: FieldType = serde_json::from_str(&json).unwrap();
+            assert_eq!(ft, back);
+        }
     }
 
     #[test]

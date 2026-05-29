@@ -221,6 +221,12 @@ fn print_type(field_type: &FieldType, output: &mut String, depth: usize) {
         FieldType::Boolean => output.push_str("boolean"),
         FieldType::DateTime => output.push_str("datetime"),
         FieldType::Duration => output.push_str("duration"),
+        FieldType::Bytes(constraints) => {
+            output.push_str("bytes");
+            if let Some(max) = constraints.max_size {
+                output.push_str(&format!("(max: {max})"));
+            }
+        }
         FieldType::Enum(variants) => {
             output.push_str("enum(");
             for (i, variant) in variants.iter().enumerate() {
@@ -403,8 +409,8 @@ fn print_named_string_list(name: &str, list: &[String], output: &mut String) {
 mod tests {
     use super::*;
     use schema_forge_core::types::{
-        EnumVariants, FieldName, FloatConstraints, IntegerConstraints, SchemaId, SchemaName,
-        SchemaVersion, TextConstraints,
+        BytesConstraints, EnumVariants, FieldName, FloatConstraints, IntegerConstraints, SchemaId,
+        SchemaName, SchemaVersion, TextConstraints,
     };
 
     fn make_schema(
@@ -1151,6 +1157,42 @@ schema S {
         let printed = print(&schema);
         let reparsed = crate::parser::parse(&printed).unwrap();
         assert_eq!(reparsed[0].fields[0].field_type, FieldType::Duration);
+    }
+
+    #[test]
+    fn print_bytes_field() {
+        let plain = make_schema(
+            "S",
+            vec![make_field(
+                "sig",
+                FieldType::Bytes(BytesConstraints::unconstrained()),
+            )],
+            vec![],
+        );
+        assert!(print(&plain).contains("sig: bytes"));
+
+        let with_max = make_schema(
+            "S",
+            vec![make_field(
+                "sig",
+                FieldType::Bytes(BytesConstraints::with_max_size(1024)),
+            )],
+            vec![],
+        );
+        assert!(print(&with_max).contains("sig: bytes(max: 1024)"));
+    }
+
+    #[test]
+    fn roundtrip_bytes_field() {
+        for ft in [
+            FieldType::Bytes(BytesConstraints::unconstrained()),
+            FieldType::Bytes(BytesConstraints::with_max_size(1024)),
+        ] {
+            let schema = make_schema("S", vec![make_field("sig", ft.clone())], vec![]);
+            let printed = print(&schema);
+            let reparsed = crate::parser::parse(&printed).unwrap();
+            assert_eq!(reparsed[0].fields[0].field_type, ft);
+        }
     }
 
     #[test]

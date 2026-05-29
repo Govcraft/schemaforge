@@ -1593,6 +1593,99 @@ async fn create_entity_with_negative_duration_returns_422() {
     );
 }
 
+/// Issue #97: a `bytes` field round-trips request → persist → response. The
+/// wire form is standard base64 with padding; a base64 request body is decoded,
+/// stored as inline binary, and re-serialized as the same base64 on read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_and_read_entity_with_bytes_field() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Record",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "sig", "field_type": "Bytes"}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // "hello" as standard base64 (with padding).
+    let create_body = serde_json::json!({
+        "fields": { "name": "Case file", "sig": "aGVsbG8=" }
+    });
+    let (create_status, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Record/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        create_status,
+        StatusCode::CREATED,
+        "expected 201, got {create_status} body={created}"
+    );
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Record/entities/{entity_id}");
+
+    // GET the entity — the response serializes the bytes as standard base64.
+    let (get_status, fetched) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(
+        fetched["fields"]["sig"], "aGVsbG8=",
+        "bytes should serialize as standard base64 with padding"
+    );
+
+    // PUT the GET body back unchanged — the base64 form must re-parse.
+    let put_body = serde_json::json!({ "fields": fetched["fields"].clone() });
+    let (put_status, put_json) = json_request(&app, Method::PUT, &path, Some(put_body)).await;
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "round-trip PUT should succeed, got {put_status} body={put_json}"
+    );
+    assert_eq!(put_json["fields"]["sig"], "aGVsbG8=");
+}
+
+/// Issue #97: a `bytes` value beyond the field's `max_size` must FAIL CLOSED
+/// with a 422, never truncated or silently stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_entity_with_oversized_bytes_returns_422() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Record",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "sig", "field_type": {"type": "Bytes", "data": {"max_size": 2}}}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // "hello" decodes to 5 bytes, exceeding the 2-byte cap.
+    let create_body = serde_json::json!({
+        "fields": { "name": "Case file", "sig": "aGVsbG8=" }
+    });
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Record/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 for oversized bytes, got {status} body={json}"
+    );
+    assert_eq!(json["error"], "validation_failed");
+    let message = json["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("exceeds") && message.contains("max_size"),
+        "error should explain the size cap, got: {message}"
+    );
+}
+
 /// Regression for issue #10: PATCH must merge a partial payload onto the
 /// existing entity, preserving fields that are not mentioned in the
 /// request body — including required ones.

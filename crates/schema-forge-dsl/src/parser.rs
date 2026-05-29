@@ -6,10 +6,11 @@ use tracing::instrument;
 use std::collections::BTreeMap;
 
 use schema_forge_core::types::{
-    Annotation, Cardinality, DefaultValue, EnumColor, EnumVariants, FieldAnnotation,
-    FieldDefinition, FieldModifier, FieldName, FieldType, FileAccess, FileConstraints,
-    FloatConstraints, FormatType, HookEvent, IntegerConstraints, ListHint, MimePattern,
-    SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind, TextConstraints, WidgetType,
+    Annotation, BytesConstraints, Cardinality, DefaultValue, EnumColor, EnumVariants,
+    FieldAnnotation, FieldDefinition, FieldModifier, FieldName, FieldType, FileAccess,
+    FileConstraints, FloatConstraints, FormatType, HookEvent, IntegerConstraints, ListHint,
+    MimePattern, SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind,
+    TextConstraints, WidgetType,
 };
 
 use crate::error::{DslError, Span};
@@ -817,6 +818,10 @@ impl Parser {
             Token::Boolean => Ok(FieldType::Boolean),
             Token::DateTime => Ok(FieldType::DateTime),
             Token::Duration => Ok(FieldType::Duration),
+            Token::Bytes => {
+                let constraints = self.parse_bytes_params()?;
+                Ok(FieldType::Bytes(constraints))
+            }
             Token::Enum => self.parse_enum_type(),
             Token::Json => Ok(FieldType::Json),
             Token::File => {
@@ -824,7 +829,7 @@ impl Parser {
                 Ok(FieldType::File(constraints))
             }
             _ => Err(DslError::UnexpectedToken {
-                expected: "type name (text, integer, float, boolean, datetime, duration, enum, richtext, json, file, composite, or ->)"
+                expected: "type name (text, integer, float, boolean, datetime, duration, bytes, enum, richtext, json, file, composite, or ->)"
                     .to_string(),
                 found: format!("{} ('{}')", tok.token.description(), tok.text),
                 span: tok.span,
@@ -857,6 +862,34 @@ impl Parser {
         Ok(match max_length {
             Some(max) => TextConstraints::with_max_length(max),
             None => TextConstraints::unconstrained(),
+        })
+    }
+
+    /// Parse optional bytes params: `(max: N)` where `N` is the maximum byte length.
+    fn parse_bytes_params(&mut self) -> Result<BytesConstraints, DslError> {
+        if self.peek_token() != Some(&Token::LParen) {
+            return Ok(BytesConstraints::unconstrained());
+        }
+        self.advance(); // consume (
+        let params = self.parse_named_params()?;
+        self.expect(&Token::RParen)?;
+
+        let max_size = params
+            .iter()
+            .find(|(k, _)| k == "max")
+            .map(|(_, v)| v.parse::<usize>())
+            .transpose()
+            .map_err(|_| {
+                let span = self.current_span();
+                DslError::InvalidIntegerLiteral {
+                    text: "max parameter".to_string(),
+                    span,
+                }
+            })?;
+
+        Ok(match max_size {
+            Some(max) => BytesConstraints::with_max_size(max),
+            None => BytesConstraints::unconstrained(),
         })
     }
 
@@ -1356,6 +1389,7 @@ fn is_contextual_ident(token: &Token) -> bool {
             | Token::Boolean
             | Token::DateTime
             | Token::Duration
+            | Token::Bytes
             | Token::Json
             | Token::Default
             | Token::Required
@@ -1398,6 +1432,7 @@ fn describe_field_type_for_error(ft: &FieldType) -> String {
         FieldType::Boolean => "boolean".to_string(),
         FieldType::DateTime => "datetime".to_string(),
         FieldType::Duration => "duration".to_string(),
+        FieldType::Bytes(_) => "bytes".to_string(),
         FieldType::Enum(_) => "enum".to_string(),
         FieldType::Json => "json".to_string(),
         FieldType::Relation { .. } => "relation".to_string(),
@@ -1699,6 +1734,24 @@ mod tests {
     fn parse_duration() {
         let schema = parse_one("schema S { retention: duration }");
         assert!(matches!(schema.fields[0].field_type, FieldType::Duration));
+    }
+
+    #[test]
+    fn parse_bytes() {
+        let schema = parse_one("schema S { sig: bytes }");
+        assert_eq!(
+            schema.fields[0].field_type,
+            FieldType::Bytes(BytesConstraints::unconstrained())
+        );
+    }
+
+    #[test]
+    fn parse_bytes_with_max() {
+        let schema = parse_one("schema S { sig: bytes(max: 1024) }");
+        assert_eq!(
+            schema.fields[0].field_type,
+            FieldType::Bytes(BytesConstraints::with_max_size(1024))
+        );
     }
 
     #[test]

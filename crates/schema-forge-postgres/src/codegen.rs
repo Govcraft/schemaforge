@@ -5,7 +5,8 @@
 
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::types::{
-    Cardinality, FieldDefinition, FieldModifier, FieldType, IntegerConstraints, TextConstraints,
+    BytesConstraints, Cardinality, FieldDefinition, FieldModifier, FieldType, IntegerConstraints,
+    TextConstraints,
 };
 
 /// Compile a single `MigrationStep` into a list of PostgreSQL DDL statements.
@@ -273,6 +274,10 @@ pub fn field_type_to_pg(field_type: &FieldType) -> String {
         // Durations whose magnitude exceeds the i64-nanosecond range (~292
         // years) are out of range and fail closed on write.
         FieldType::Duration => "BIGINT".to_string(),
+        // Inline binary stored as `BYTEA`: exact byte round-trip, indexable, and
+        // `octet_length` lets the optional `max_size` constraint be enforced by a
+        // CHECK (see `field_check_constraints`).
+        FieldType::Bytes(_) => "BYTEA".to_string(),
         FieldType::Enum(_) => "TEXT".to_string(),
         FieldType::Json => "JSONB".to_string(),
         FieldType::Relation {
@@ -312,6 +317,17 @@ fn field_check_constraints(table: &str, field_name: &str, field_type: &FieldType
                 ));
             }
             constraints
+        }
+        FieldType::Bytes(BytesConstraints {
+            max_size: Some(max),
+        }) => {
+            // Enforce the byte-length cap at the column level so an oversized
+            // value fails closed on write rather than being silently stored.
+            let constraint_name = format!("chk_{table}_{field_name}_size");
+            vec![format!(
+                "CONSTRAINT \"{constraint_name}\" CHECK (\"{field_name}\" IS NULL OR \
+                 octet_length(\"{field_name}\") <= {max})"
+            )]
         }
         FieldType::Enum(variants) => {
             let constraint_name = format!("chk_{table}_{field_name}_enum");
@@ -398,6 +414,9 @@ fn dynamic_value_to_sql_literal(value: &schema_forge_core::types::DynamicValue) 
         DynamicValue::Duration(d) => d
             .num_nanoseconds()
             .map_or_else(|| "NULL".to_string(), |n| n.to_string()),
+        // BYTEA hex-format literal (`'\x...'::bytea`); standard_conforming_strings
+        // is on by default in modern Postgres, so the single backslash is literal.
+        DynamicValue::Bytes(b) => format!("'\\x{}'::bytea", hex_encode(b)),
         DynamicValue::Enum(s) => format!("'{}'", escape_sql_string(s)),
         _ => "NULL".to_string(),
     }
@@ -417,6 +436,16 @@ pub fn tenant_ddl_statements(table: &str) -> Vec<String> {
 /// Escape single quotes in strings for PostgreSQL string literals.
 fn escape_sql_string(s: &str) -> String {
     s.replace('\'', "''")
+}
+
+/// Lowercase hex encoding of a byte slice, for a Postgres `BYTEA` hex literal.
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -678,6 +707,14 @@ mod tests {
         assert_eq!(field_type_to_pg(&FieldType::Boolean), "BOOLEAN");
         assert_eq!(field_type_to_pg(&FieldType::DateTime), "TIMESTAMPTZ");
         assert_eq!(field_type_to_pg(&FieldType::Duration), "BIGINT");
+        assert_eq!(
+            field_type_to_pg(&FieldType::Bytes(BytesConstraints::unconstrained())),
+            "BYTEA"
+        );
+        assert_eq!(
+            field_type_to_pg(&FieldType::Bytes(BytesConstraints::with_max_size(1024))),
+            "BYTEA"
+        );
         assert_eq!(field_type_to_pg(&FieldType::Json), "JSONB");
         assert_eq!(
             field_type_to_pg(&FieldType::Array(Box::new(FieldType::Boolean))),
@@ -719,6 +756,52 @@ mod tests {
         assert!(stmts[0].contains("jsonb_typeof"));
         assert!(stmts[0].contains("? 'status'"));
         assert!(stmts[0].contains("? 'key'"));
+    }
+
+    #[test]
+    fn add_field_bytes_unconstrained_emits_bytea_no_check() {
+        let step = MigrationStep::AddField {
+            field: FieldDefinition::new(
+                FieldName::new("sig").unwrap(),
+                FieldType::Bytes(BytesConstraints::unconstrained()),
+            ),
+        };
+        let stmts = migration_step_to_sql("Doc", &step);
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].contains("\"sig\" BYTEA"), "got: {}", stmts[0]);
+        assert!(
+            !stmts[0].contains("octet_length"),
+            "unconstrained bytes must not emit a size CHECK, got: {}",
+            stmts[0]
+        );
+    }
+
+    #[test]
+    fn add_field_bytes_with_max_emits_octet_length_check() {
+        let step = MigrationStep::AddField {
+            field: FieldDefinition::new(
+                FieldName::new("sig").unwrap(),
+                FieldType::Bytes(BytesConstraints::with_max_size(64)),
+            ),
+        };
+        let stmts = migration_step_to_sql("Doc", &step);
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].contains("\"sig\" BYTEA"), "got: {}", stmts[0]);
+        assert!(
+            stmts[0].contains("CONSTRAINT \"chk_Doc_sig_size\"")
+                && stmts[0].contains("octet_length(\"sig\") <= 64"),
+            "expected size CHECK, got: {}",
+            stmts[0]
+        );
+    }
+
+    #[test]
+    fn bytes_sql_literal_is_hex_bytea() {
+        use schema_forge_core::types::DynamicValue;
+        assert_eq!(
+            dynamic_value_to_sql_literal(&DynamicValue::Bytes(vec![0xde, 0xad, 0xbe, 0xef])),
+            "'\\xdeadbeef'::bytea"
+        );
     }
 
     #[test]

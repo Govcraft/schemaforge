@@ -42,6 +42,7 @@ pub fn dynamic_to_cel(v: &DynamicValue) -> Result<CelValue, ConversionError> {
         DynamicValue::Boolean(b) => Ok(CelValue::Bool(*b)),
         DynamicValue::DateTime(dt) => Ok(CelValue::Timestamp(*dt)),
         DynamicValue::Duration(d) => Ok(CelValue::Duration(*d)),
+        DynamicValue::Bytes(b) => Ok(CelValue::Bytes(b.clone())),
         DynamicValue::Enum(s) => Ok(CelValue::String(s.clone())),
         DynamicValue::Json(j) => json_to_cel(j),
         DynamicValue::Array(items) => {
@@ -151,7 +152,7 @@ pub fn cel_to_dynamic(v: &CelValue) -> Result<DynamicValue, ConversionError> {
             }
             Ok(DynamicValue::Composite(out))
         }
-        CelValue::Bytes(_) => Err(ConversionError::Unsupported("bytes".to_string())),
+        CelValue::Bytes(b) => Ok(DynamicValue::Bytes(b.clone())),
         CelValue::Duration(d) => Ok(DynamicValue::Duration(*d)),
         CelValue::Type(_) => Err(ConversionError::Unsupported("type".to_string())),
         // A present optional unwraps to its inner value (recursively); an absent
@@ -226,6 +227,14 @@ mod tests {
             c,
             CelValue::Duration(chrono::TimeDelta::seconds(220_752_000))
         );
+        assert_eq!(cel_to_dynamic(&c).unwrap(), d);
+    }
+
+    #[test]
+    fn roundtrip_bytes() {
+        let d = DynamicValue::Bytes(vec![0x00, 0x01, 0xff, 0xfe, 0x80]);
+        let c = dynamic_to_cel(&d).unwrap();
+        assert_eq!(c, CelValue::Bytes(vec![0x00, 0x01, 0xff, 0xfe, 0x80]));
         assert_eq!(cel_to_dynamic(&c).unwrap(), d);
     }
 
@@ -353,9 +362,9 @@ mod tests {
     }
 
     #[test]
-    fn bytes_unsupported() {
-        let err = cel_to_dynamic(&CelValue::Bytes(vec![1, 2, 3])).unwrap_err();
-        assert_eq!(err, ConversionError::Unsupported("bytes".to_string()));
+    fn cel_bytes_maps_to_dynamic_bytes() {
+        let got = cel_to_dynamic(&CelValue::Bytes(vec![1, 2, 3])).unwrap();
+        assert_eq!(got, DynamicValue::Bytes(vec![1, 2, 3]));
     }
 
     #[test]

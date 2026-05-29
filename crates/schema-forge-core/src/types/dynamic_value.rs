@@ -16,6 +16,7 @@ pub enum DynamicValue {
     Boolean(bool),
     DateTime(chrono::DateTime<chrono::Utc>),
     Duration(chrono::TimeDelta),
+    Bytes(Vec<u8>),
     Enum(String),
     Json(serde_json::Value),
     Array(Vec<DynamicValue>),
@@ -34,6 +35,7 @@ impl std::fmt::Display for DynamicValue {
             Self::Boolean(b) => write!(f, "{b}"),
             Self::DateTime(dt) => write!(f, "{dt}"),
             Self::Duration(d) => write!(f, "{}", super::duration::format_go_duration(d)),
+            Self::Bytes(b) => write!(f, "{}", super::base64::encode_standard(b)),
             Self::Enum(s) => write!(f, "{s}"),
             Self::Json(v) => write!(f, "{v}"),
             Self::Array(arr) => {
@@ -173,6 +175,20 @@ mod tests {
     fn serde_roundtrip_duration() {
         let d = chrono::TimeDelta::seconds(220_752_000) + chrono::TimeDelta::nanoseconds(123);
         let v = DynamicValue::Duration(d);
+        let json = serde_json::to_string(&v).unwrap();
+        let back: DynamicValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, back);
+    }
+
+    #[test]
+    fn display_bytes_is_standard_base64() {
+        let v = DynamicValue::Bytes(b"hello".to_vec());
+        assert_eq!(v.to_string(), "aGVsbG8=");
+    }
+
+    #[test]
+    fn serde_roundtrip_bytes() {
+        let v = DynamicValue::Bytes(vec![0x00, 0x01, 0xff, 0xfe, 0x80]);
         let json = serde_json::to_string(&v).unwrap();
         let back: DynamicValue = serde_json::from_str(&json).unwrap();
         assert_eq!(v, back);

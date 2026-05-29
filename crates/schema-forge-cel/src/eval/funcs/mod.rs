@@ -16,18 +16,22 @@
 //! - [`time`] — timestamp/duration field accessors and timezone handling.
 //!
 //! ## Deferred standard-library functions (NON-blocking, recorded — no silent gaps)
-//! The `string_ext` / `math_ext` / `encoders_ext` corpus sections are out of the
-//! #109 acceptance scope and are NOT implemented here. They reach `dispatch` and
-//! fall through to `"no such overload"`. Deferred names, by section:
+//! The `string_ext` / `math_ext` corpus sections are out of the #109 acceptance
+//! scope and are NOT implemented here. They reach `dispatch` and fall through to
+//! `"no such overload"`. Deferred names, by section:
 //! - string_ext: `charAt`, `indexOf`, `lastIndexOf`, `lowerAscii`, `upperAscii`,
 //!   `replace`, `split`, `substring`, `trim`, `join`, `quote`, `reverse`,
 //!   `format`.
 //! - math_ext (the namespaced `math.*` calls): `abs`, `ceil`, `floor`, `round`,
 //!   `trunc`, `sign`, `isInf`, `isNaN`, `isFinite`, `greatest`, `least`,
 //!   `bitAnd`, `bitOr`, `bitXor`, `bitNot`, `bitShiftLeft`, `bitShiftRight`.
-//! - encoders_ext: `base64.encode`, `base64.decode` (`.encode()`/`.decode()`).
+//!
+//! ## Implemented standard-library extensions
+//! - encoders_ext: `base64.encode(bytes) -> string`, `base64.decode(string) ->
+//!   bytes` (see [`encoders`]).
 
 pub mod convert;
+pub mod encoders;
 pub mod optional;
 pub mod strings;
 pub mod time;
@@ -65,6 +69,11 @@ pub fn dispatch(
         (None, "optional.of", [x]) => Ok(CelValue::optional_of(x.clone())),
         (None, "optional.none", []) => Ok(CelValue::optional_none()),
         (None, "optional.ofNonZeroValue", [x]) => Ok(optional::of_non_zero_value(x)),
+
+        // Encoders extension (namespaced global calls; the parser lowers
+        // `base64.encode(x)` / `base64.decode(x)` to these function names).
+        (None, "base64.encode", [x]) => encoders::encode(x),
+        (None, "base64.decode", [x]) => encoders::decode(x),
         // Optional methods.
         (Some(CelValue::Optional(o)), "hasValue", []) => Ok(CelValue::Bool(o.is_some())),
         (Some(CelValue::Optional(o)), "value", []) => optional::value(o),

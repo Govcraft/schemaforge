@@ -5,6 +5,7 @@ edition = "2021"
 description = "Minimal, owned CEL (Common Expression Language) evaluator over SchemaForge DynamicValue."
 
 [dependencies]
+base64 = "0.22.1"
 chrono = { version = "0.4", features = ["serde"] }
 # Named IANA timezones for the timestamp accessors (e.g. `Australia/Sydney`).
 # Pure Rust, embeds the IANA database, no native deps — suitable for the

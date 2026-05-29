@@ -228,6 +228,10 @@ fn infer_call(function: &str) -> InferredType {
         "bytes" => CelType::Bytes,
         "timestamp" => CelType::Timestamp,
         "duration" => CelType::Duration,
+        // Encoders extension (cel-spec): `base64.encode(bytes) -> string`,
+        // `base64.decode(string) -> bytes`.
+        "base64.encode" => CelType::String,
+        "base64.decode" => CelType::Bytes,
         "type" => CelType::Type,
         "matches" | "contains" | "startsWith" | "endsWith" | "hasValue" => CelType::Bool,
         "getFullYear" | "getMonth" | "getDayOfMonth" | "getDate" | "getDayOfWeek"
@@ -277,6 +281,7 @@ pub fn field_type_to_inferred(ft: &FieldType) -> InferredType {
         FieldType::Boolean => InferredType::Known(CelType::Bool),
         FieldType::DateTime => InferredType::Known(CelType::Timestamp),
         FieldType::Duration => InferredType::Known(CelType::Duration),
+        FieldType::Bytes(_) => InferredType::Known(CelType::Bytes),
         FieldType::Enum(_) => InferredType::Known(CelType::String),
         FieldType::Json => InferredType::Dyn,
         FieldType::Relation { cardinality, .. } => match cardinality {
@@ -312,6 +317,7 @@ pub fn field_accepts(ft: &FieldType, inferred: &InferredType) -> bool {
         FieldType::Boolean => t == CelType::Bool,
         FieldType::DateTime => matches!(t, CelType::Timestamp | CelType::String),
         FieldType::Duration => matches!(t, CelType::Duration | CelType::String),
+        FieldType::Bytes(_) => matches!(t, CelType::Bytes | CelType::String),
         FieldType::Enum(_) => t == CelType::String,
         // Accept anything: the mapping is complex/rare; avoid false positives.
         FieldType::Json | FieldType::Relation { .. } | FieldType::File(_) => true,
@@ -396,8 +402,8 @@ mod tests {
     use super::*;
     use crate::parse;
     use schema_forge_core::types::{
-        Cardinality, EnumVariants, FloatConstraints, IntegerConstraints, SchemaName,
-        TextConstraints,
+        BytesConstraints, Cardinality, EnumVariants, FloatConstraints, IntegerConstraints,
+        SchemaName, TextConstraints,
     };
 
     fn infer_src(src: &str, env: &TypeEnv) -> InferredType {
@@ -526,10 +532,37 @@ mod tests {
             infer_src("\"abc\".upperAscii()", &env),
             InferredType::Known(CelType::String)
         );
+        // Encoders extension: base64.encode -> string, base64.decode -> bytes.
+        assert_eq!(
+            infer_src("base64.encode(b\"abc\")", &env),
+            InferredType::Known(CelType::String)
+        );
+        assert_eq!(
+            infer_src("base64.decode(\"YWJj\")", &env),
+            InferredType::Known(CelType::Bytes)
+        );
         // Unknown function -> Dyn.
         assert_eq!(infer_src("mysteryFn(1)", &env), InferredType::Dyn);
         // dyn() -> Dyn.
         assert_eq!(infer_src("dyn(1)", &env), InferredType::Dyn);
+    }
+
+    #[test]
+    fn size_of_bytes_field_infers_int() {
+        let bytes = FieldType::Bytes(BytesConstraints::unconstrained());
+        let env = rule_type_env(std::iter::once(("sig", &bytes)));
+        assert_eq!(
+            infer_src("size(sig)", &env),
+            InferredType::Known(CelType::Int)
+        );
+    }
+
+    #[test]
+    fn field_accepts_bytes_accepts_bytes_and_string() {
+        let bytes = FieldType::Bytes(BytesConstraints::unconstrained());
+        assert!(field_accepts(&bytes, &InferredType::Known(CelType::Bytes)));
+        assert!(field_accepts(&bytes, &InferredType::Known(CelType::String)));
+        assert!(!field_accepts(&bytes, &InferredType::Known(CelType::Int)));
     }
 
     // -- infer: comprehensions --
@@ -579,6 +612,10 @@ mod tests {
         assert_eq!(
             field_type_to_inferred(&FieldType::Duration),
             InferredType::Known(CelType::Duration)
+        );
+        assert_eq!(
+            field_type_to_inferred(&FieldType::Bytes(BytesConstraints::unconstrained())),
+            InferredType::Known(CelType::Bytes)
         );
         assert_eq!(field_type_to_inferred(&FieldType::Json), InferredType::Dyn);
         assert_eq!(

@@ -79,7 +79,11 @@ const EXCLUDED: &[&str] = &[
 /// #113 (two-variable comprehension macros) raises it to 1083: the `macros2`
 /// section is now fully green (46/46) — `all`/`exists`/`existsOne`,
 /// `transformList`, and `transformMap` in their two-variable forms.
-const MIN_PASS_BASELINE: usize = 1083;
+///
+/// #97 (first-class `bytes` field type) raises it to 1146: the `encoders_ext`
+/// section is now fully green (4/4) — `base64.encode`/`base64.decode`, including
+/// the cel-spec unpadded-input decode case.
+const MIN_PASS_BASELINE: usize = 1146;
 
 #[derive(Default)]
 struct Tally {

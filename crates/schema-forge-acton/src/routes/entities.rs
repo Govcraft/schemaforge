@@ -616,6 +616,20 @@ pub fn json_to_entity_fields_with_mode(
 }
 
 /// Convert a JSON value to a DynamicValue using the field type as a hint.
+/// Enforce a `bytes` field's optional `max_size` fail-closed.
+///
+/// An oversized value is rejected with an actionable message (the caller maps
+/// this to a 422), never truncated or silently accepted.
+fn enforce_bytes_max_size(bytes: &[u8], max_size: Option<usize>) -> Result<(), String> {
+    match max_size {
+        Some(max) if bytes.len() > max => Err(format!(
+            "bytes value of {} bytes exceeds the field's max_size of {max} bytes",
+            bytes.len()
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn convert_json_with_type_hint(
     value: &serde_json::Value,
     field_type: &FieldType,
@@ -663,6 +677,16 @@ fn convert_json_with_type_hint(
                 .map_err(|e| format!("invalid duration '{s}': {e}")),
             serde_json::Value::Null => Ok(DynamicValue::Null),
             _ => Err(format!("expected duration string, got {value}")),
+        },
+        FieldType::Bytes(constraints) => match value {
+            serde_json::Value::String(s) => {
+                let bytes = schema_forge_core::types::decode_standard(s)
+                    .map_err(|e| format!("invalid base64 bytes: {e}"))?;
+                enforce_bytes_max_size(&bytes, constraints.max_size)?;
+                Ok(DynamicValue::Bytes(bytes))
+            }
+            serde_json::Value::Null => Ok(DynamicValue::Null),
+            _ => Err(format!("expected base64 bytes string, got {value}")),
         },
         FieldType::Enum(_) => match value {
             serde_json::Value::String(s) => Ok(DynamicValue::Enum(s.clone())),
@@ -798,6 +822,20 @@ fn coerce_dynamic_value_with_type_hint(
                 .map(DynamicValue::Duration)
                 .map_err(|e| format!("invalid duration '{s}': {e}")),
             other => Err(format!("expected duration, got {other}")),
+        },
+        FieldType::Bytes(constraints) => match value {
+            DynamicValue::Null => Ok(value),
+            DynamicValue::Bytes(ref b) => {
+                enforce_bytes_max_size(b, constraints.max_size)?;
+                Ok(value)
+            }
+            DynamicValue::Text(s) => {
+                let bytes = schema_forge_core::types::decode_standard(&s)
+                    .map_err(|e| format!("invalid base64 bytes: {e}"))?;
+                enforce_bytes_max_size(&bytes, constraints.max_size)?;
+                Ok(DynamicValue::Bytes(bytes))
+            }
+            other => Err(format!("expected bytes, got {other}")),
         },
         FieldType::Enum(_) => match value {
             DynamicValue::Enum(_) | DynamicValue::Null => Ok(value),
@@ -3592,6 +3630,63 @@ mod tests {
         assert_eq!(
             result,
             DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000))
+        );
+    }
+
+    #[test]
+    fn convert_bytes_json_base64_decodes() {
+        let result = convert_json_with_type_hint(
+            &serde_json::json!("aGVsbG8="),
+            &FieldType::Bytes(schema_forge_core::types::BytesConstraints::unconstrained()),
+        )
+        .unwrap();
+        assert_eq!(result, DynamicValue::Bytes(b"hello".to_vec()));
+    }
+
+    #[test]
+    fn convert_bytes_json_invalid_base64_returns_err() {
+        let err = convert_json_with_type_hint(
+            &serde_json::json!("!!!not base64!!!"),
+            &FieldType::Bytes(schema_forge_core::types::BytesConstraints::unconstrained()),
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid base64"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn convert_bytes_json_oversized_returns_err() {
+        // "aGVsbG8=" decodes to 5 bytes; cap at 2.
+        let err = convert_json_with_type_hint(
+            &serde_json::json!("aGVsbG8="),
+            &FieldType::Bytes(schema_forge_core::types::BytesConstraints::with_max_size(2)),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("exceeds") && err.contains("max_size"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn coerce_bytes_from_text_base64_decodes() {
+        let result = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Text("aGVsbG8=".into()),
+            &FieldType::Bytes(schema_forge_core::types::BytesConstraints::unconstrained()),
+        )
+        .unwrap();
+        assert_eq!(result, DynamicValue::Bytes(b"hello".to_vec()));
+    }
+
+    #[test]
+    fn coerce_bytes_passthrough_enforces_max_size() {
+        let err = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Bytes(vec![1, 2, 3]),
+            &FieldType::Bytes(schema_forge_core::types::BytesConstraints::with_max_size(2)),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("exceeds") && err.contains("max_size"),
+            "unexpected error: {err}"
         );
     }
 

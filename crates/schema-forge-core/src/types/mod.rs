@@ -1,4 +1,6 @@
 mod annotation;
+pub mod base64;
+mod bytes_constraints;
 mod cardinality;
 pub mod cedar_reserved;
 mod default_value;
@@ -23,6 +25,10 @@ mod text_constraints;
 pub use annotation::Annotation;
 pub use annotation::HookEvent;
 pub use annotation::TenantKind;
+pub use base64::{
+    decode_standard, decode_standard_indifferent, encode_standard, Base64DecodeError,
+};
+pub use bytes_constraints::BytesConstraints;
 pub use cardinality::Cardinality;
 pub use default_value::DefaultValue;
 pub use duration::{format_go_duration, parse_go_duration, DurationParseError};

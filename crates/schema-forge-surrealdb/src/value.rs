@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use schema_forge_backend::entity::Entity;
 use schema_forge_backend::error::BackendError;
-use schema_forge_core::types::{DynamicValue, EntityId, SchemaName};
+use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaName};
 use surrealdb::sql::Value as SurrealValue;
 
 /// Convert a `DynamicValue` to a `surrealdb::sql::Value`.
@@ -33,6 +33,11 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
         }
         DynamicValue::Duration(d) => {
             timedelta_to_surreal_duration(d).map_or(SurrealValue::None, SurrealValue::Duration)
+        }
+        DynamicValue::Bytes(b) => {
+            // SurrealDB has a native (unsigned-length) `bytes` type; store the
+            // bytes verbatim.
+            SurrealValue::Bytes(surrealdb::sql::Bytes::from(b.clone()))
         }
         DynamicValue::Enum(s) => SurrealValue::from(s.as_str()),
         DynamicValue::Json(v) => json_to_surreal(v),
@@ -97,6 +102,7 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
             })?;
             Ok(DynamicValue::Duration(delta))
         }
+        SurrealValue::Bytes(b) => Ok(DynamicValue::Bytes(b.to_vec())),
         SurrealValue::Array(arr) => {
             let items: Result<Vec<DynamicValue>, BackendError> =
                 arr.iter().map(surreal_to_dynamic).collect();
@@ -217,6 +223,38 @@ pub(crate) fn first_negative_duration(value: &DynamicValue) -> Option<chrono::Ti
     }
 }
 
+/// Find the first oversized `bytes` value relative to its declared `max_size`,
+/// walking arrays and composites in lock-step with the field type.
+///
+/// The byte-length cap on a `bytes` field must be enforced fail-closed on write:
+/// an oversized value is rejected with a clear error, never silently stored.
+/// Recurses through `Array<bytes>` and `Composite` so a nested oversized value
+/// is also caught.
+///
+/// Returns `(actual_len, max_size)` for the first violation, or `None` when no
+/// `bytes` value in the tree exceeds its cap (or no cap is set).
+pub(crate) fn first_oversized_bytes(
+    field_type: &FieldType,
+    value: &DynamicValue,
+) -> Option<(usize, usize)> {
+    match (field_type, value) {
+        (FieldType::Bytes(constraints), DynamicValue::Bytes(b)) => {
+            let max = constraints.max_size?;
+            (b.len() > max).then_some((b.len(), max))
+        }
+        (FieldType::Array(inner), DynamicValue::Array(items)) => items
+            .iter()
+            .find_map(|item| first_oversized_bytes(inner, item)),
+        (FieldType::Composite(fields), DynamicValue::Composite(map)) => {
+            fields.iter().find_map(|fd| {
+                map.get(fd.name.as_str())
+                    .and_then(|v| first_oversized_bytes(&fd.field_type, v))
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Convert a `serde_json::Value` to a `surrealdb::sql::Value`.
 fn json_to_surreal(json: &serde_json::Value) -> SurrealValue {
     match json {
@@ -301,6 +339,59 @@ mod tests {
         assert!(matches!(sv, SurrealValue::Duration(_)));
         let back = surreal_to_dynamic(&sv).unwrap();
         assert_eq!(back, dv);
+    }
+
+    #[test]
+    fn bytes_round_trip() {
+        let dv = DynamicValue::Bytes(vec![0x00, 0x01, 0xff, 0xfe, 0x80, 0x7f]);
+        let sv = dynamic_to_surreal(&dv);
+        assert!(matches!(sv, SurrealValue::Bytes(_)));
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert_eq!(back, dv);
+    }
+
+    #[test]
+    fn bytes_round_trip_empty() {
+        let dv = DynamicValue::Bytes(Vec::new());
+        let sv = dynamic_to_surreal(&dv);
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert_eq!(back, dv);
+    }
+
+    #[test]
+    fn first_oversized_bytes_flags_top_level_violation() {
+        use schema_forge_core::types::BytesConstraints;
+        let ft = FieldType::Bytes(BytesConstraints::with_max_size(2));
+        let val = DynamicValue::Bytes(vec![1, 2, 3]);
+        assert_eq!(first_oversized_bytes(&ft, &val), Some((3, 2)));
+    }
+
+    #[test]
+    fn first_oversized_bytes_ignores_within_limit_and_unconstrained() {
+        use schema_forge_core::types::BytesConstraints;
+        let capped = FieldType::Bytes(BytesConstraints::with_max_size(8));
+        assert_eq!(
+            first_oversized_bytes(&capped, &DynamicValue::Bytes(vec![1, 2, 3])),
+            None
+        );
+        let uncapped = FieldType::Bytes(BytesConstraints::unconstrained());
+        assert_eq!(
+            first_oversized_bytes(&uncapped, &DynamicValue::Bytes(vec![1; 1024])),
+            None
+        );
+    }
+
+    #[test]
+    fn first_oversized_bytes_recurses_into_array() {
+        use schema_forge_core::types::BytesConstraints;
+        let ft = FieldType::Array(Box::new(FieldType::Bytes(BytesConstraints::with_max_size(
+            2,
+        ))));
+        let val = DynamicValue::Array(vec![
+            DynamicValue::Bytes(vec![1, 2]),
+            DynamicValue::Bytes(vec![1, 2, 3, 4]),
+        ]);
+        assert_eq!(first_oversized_bytes(&ft, &val), Some((4, 2)));
     }
 
     #[test]

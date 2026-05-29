@@ -540,6 +540,18 @@ mod macros {
                     args,
                 });
             }
+            // The encoders extension exposes `base64.encode(bytes)` and
+            // `base64.decode(string)` as namespaced global calls. They parse as a
+            // method call on a bare `base64` identifier; lower them to namespaced
+            // global calls so the evaluator dispatches them as functions rather
+            // than resolving `base64` as a variable.
+            if ns == "base64" && matches!(name.as_str(), "encode" | "decode") {
+                return Ok(Expr::Call {
+                    target: None,
+                    function: format!("base64.{name}"),
+                    args,
+                });
+            }
         }
         let lowered = match (name.as_str(), args.len()) {
             ("all", 2) => Some(lower_all(target.clone(), &args)),
@@ -1315,6 +1327,15 @@ mod tests {
         assert!(matches!(
             p("x.optMap(v, v + 1)"),
             Expr::Call { target: Some(_), ref function, .. } if function == "optMap"
+        ));
+        // base64.* lowers to a namespaced global call (not a method on `base64`).
+        assert!(matches!(
+            p("base64.encode(b\"abc\")"),
+            Expr::Call { target: None, ref function, .. } if function == "base64.encode"
+        ));
+        assert!(matches!(
+            p("base64.decode(\"YWJj\")"),
+            Expr::Call { target: None, ref function, .. } if function == "base64.decode"
         ));
     }
 

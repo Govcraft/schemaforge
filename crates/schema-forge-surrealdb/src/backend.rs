@@ -16,7 +16,9 @@ use surrealdb::Surreal;
 
 use crate::codegen::migration_step_to_surql;
 use crate::query::{count_to_surql_with_schema, query_to_surql_with_schema};
-use crate::value::{entity_to_surreal_map, first_negative_duration, surreal_to_dynamic};
+use crate::value::{
+    entity_to_surreal_map, first_negative_duration, first_oversized_bytes, surreal_to_dynamic,
+};
 
 /// The schema metadata table name used to store `SchemaDefinition` records.
 const SCHEMA_META_TABLE: &str = "_schema_metadata";
@@ -213,6 +215,22 @@ impl SurrealBackend {
                             "SurrealDB duration columns are unsigned; negative duration {} \
                              cannot be stored",
                             schema_forge_core::types::format_go_duration(&neg)
+                        ),
+                    });
+                }
+            }
+
+            // Enforce a `bytes` field's `max_size` fail-closed on write: an
+            // oversized value is rejected (HTTP 422) rather than silently stored.
+            if let (Some(field_value), Some(fd)) = (
+                entity.fields.get(k.as_str()),
+                schema_def.as_ref().and_then(|s| s.field(k)),
+            ) {
+                if let Some((len, max)) = first_oversized_bytes(&fd.field_type, field_value) {
+                    return Err(BackendError::ValidationFailed {
+                        field: k.clone(),
+                        reason: format!(
+                            "bytes value of {len} bytes exceeds the field's max_size of {max} bytes"
                         ),
                     });
                 }
@@ -642,6 +660,9 @@ fn field_surreal_value_to_literal(value: &surrealdb::sql::Value) -> String {
         // Duration literals are bare in SurrealQL (e.g. `2w3d`); the Display impl
         // produces a parseable form.
         surrealdb::sql::Value::Duration(dur) => dur.to_string(),
+        // The `Bytes` Display impl emits a parseable SurrealQL literal of the form
+        // `encoding::base64::decode("...")`, round-tripping to native bytes.
+        surrealdb::sql::Value::Bytes(b) => b.to_string(),
         surrealdb::sql::Value::Array(arr) => {
             let items: Vec<String> = arr.iter().map(field_surreal_value_to_literal).collect();
             format!("[{}]", items.join(", "))
@@ -730,6 +751,59 @@ mod tests {
         let val = surrealdb::sql::Value::Duration(dur);
         // Bare SurrealQL duration literal, no quotes.
         assert_eq!(field_surreal_value_to_literal(&val), "1h");
+    }
+
+    #[test]
+    fn bytes_literal_is_base64_decode_call() {
+        let val = surrealdb::sql::Value::Bytes(surrealdb::sql::Bytes::from(b"hello".to_vec()));
+        // Parseable SurrealQL: decodes back to the same bytes.
+        assert_eq!(
+            field_surreal_value_to_literal(&val),
+            "encoding::base64::decode(\"aGVsbG8\")"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_with_oversized_bytes_is_rejected() {
+        use std::collections::BTreeMap;
+
+        let backend = SurrealBackend::connect_memory("test", "test")
+            .await
+            .expect("failed to connect to in-memory SurrealDB");
+
+        // Register the schema so the write path knows the field's max_size.
+        let schema = SchemaDefinition::new(
+            schema_forge_core::types::SchemaId::new(),
+            SchemaName::new("Record").unwrap(),
+            vec![schema_forge_core::types::FieldDefinition::new(
+                schema_forge_core::types::FieldName::new("sig").unwrap(),
+                FieldType::Bytes(schema_forge_core::types::BytesConstraints::with_max_size(4)),
+            )],
+            vec![],
+        )
+        .unwrap();
+        backend
+            .store_schema_metadata(&schema)
+            .await
+            .expect("store schema metadata");
+
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "sig".to_string(),
+            DynamicValue::Bytes(vec![1, 2, 3, 4, 5, 6]),
+        );
+        let entity = Entity::new(SchemaName::new("Record").unwrap(), fields);
+
+        match backend.create(&entity).await {
+            Err(BackendError::ValidationFailed { field, reason }) => {
+                assert_eq!(field, "sig");
+                assert!(
+                    reason.contains("exceeds") && reason.contains("max_size"),
+                    "error should explain the size cap, got: {reason}"
+                );
+            }
+            other => panic!("expected ValidationFailed, got {other:?}"),
+        }
     }
 
     #[test]

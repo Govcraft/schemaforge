@@ -9,8 +9,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::types::{
-    Annotation, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaDefinition, SchemaId,
-    SchemaName, TextConstraints,
+    Annotation, BytesConstraints, FieldDefinition, FieldModifier, FieldName, FieldType,
+    SchemaDefinition, SchemaId, SchemaName, TextConstraints,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -297,6 +297,7 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
             "Boolean" => Ok(FieldType::Boolean),
             "DateTime" => Ok(FieldType::DateTime),
             "Duration" => Ok(FieldType::Duration),
+            "Bytes" => Ok(FieldType::Bytes(BytesConstraints::unconstrained())),
             "Json" => Ok(FieldType::Json),
             other => Err(ForgeError::ValidationFailed {
                 details: vec![format!("unknown field type '{other}'")],
@@ -319,6 +320,17 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
                 "Boolean" => Ok(FieldType::Boolean),
                 "DateTime" => Ok(FieldType::DateTime),
                 "Duration" => Ok(FieldType::Duration),
+                "Bytes" => {
+                    let max_size = obj
+                        .get("data")
+                        .and_then(|d| d.get("max_size"))
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|n| usize::try_from(n).ok());
+                    Ok(FieldType::Bytes(match max_size {
+                        Some(max) => BytesConstraints::with_max_size(max),
+                        None => BytesConstraints::unconstrained(),
+                    }))
+                }
                 "Json" => Ok(FieldType::Json),
                 other => Err(ForgeError::ValidationFailed {
                     details: vec![format!("unknown field type '{other}'")],
@@ -907,6 +919,29 @@ mod tests {
     fn parse_field_type_structured_duration() {
         let result = parse_field_type(&serde_json::json!({"type": "Duration"})).unwrap();
         assert!(matches!(result, FieldType::Duration));
+    }
+
+    #[test]
+    fn parse_field_type_simple_bytes() {
+        let result = parse_field_type(&serde_json::json!("Bytes")).unwrap();
+        assert_eq!(result, FieldType::Bytes(BytesConstraints::unconstrained()));
+    }
+
+    #[test]
+    fn parse_field_type_structured_bytes_with_max_size() {
+        let result =
+            parse_field_type(&serde_json::json!({"type": "Bytes", "data": {"max_size": 1024}}))
+                .unwrap();
+        assert_eq!(
+            result,
+            FieldType::Bytes(BytesConstraints::with_max_size(1024))
+        );
+    }
+
+    #[test]
+    fn parse_field_type_structured_bytes_no_data_is_unconstrained() {
+        let result = parse_field_type(&serde_json::json!({"type": "Bytes"})).unwrap();
+        assert_eq!(result, FieldType::Bytes(BytesConstraints::unconstrained()));
     }
 
     #[test]

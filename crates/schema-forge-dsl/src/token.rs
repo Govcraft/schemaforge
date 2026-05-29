@@ -44,6 +44,9 @@ pub enum Token {
     #[token("duration")]
     Duration,
 
+    #[token("bytes")]
+    Bytes,
+
     #[token("enum")]
     Enum,
 
@@ -151,6 +154,7 @@ pub const KEYWORDS: &[&str] = &[
     "boolean",
     "datetime",
     "duration",
+    "bytes",
     "enum",
     "json",
     "composite",
@@ -175,6 +179,7 @@ impl Token {
             Self::Boolean => "'boolean'",
             Self::DateTime => "'datetime'",
             Self::Duration => "'duration'",
+            Self::Bytes => "'bytes'",
             Self::Enum => "'enum'",
             Self::Json => "'json'",
             Self::Composite => "'composite'",
@@ -220,7 +225,7 @@ mod tests {
 
     #[test]
     fn keywords() {
-        let tokens = lex("schema text richtext integer float boolean datetime duration enum json composite file required indexed unique default true false");
+        let tokens = lex("schema text richtext integer float boolean datetime duration bytes enum json composite file required indexed unique default true false");
         assert_eq!(
             tokens,
             vec![
@@ -232,6 +237,7 @@ mod tests {
                 Token::Boolean,
                 Token::DateTime,
                 Token::Duration,
+                Token::Bytes,
                 Token::Enum,
                 Token::Json,
                 Token::Composite,
