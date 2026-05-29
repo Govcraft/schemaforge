@@ -54,10 +54,15 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
             "/schemas/{schema}/entities/query",
             post(entities::query_entities),
         )
-        // Bulk export (sync streamable CSV/NDJSON; defers async formats)
+        // Bulk export (sync streamable CSV/NDJSON; async-job for the rest)
         .route(
             "/schemas/{schema}/entities/export",
             post(export::export_entities),
+        )
+        // Async export-job status + presigned download URL
+        .route(
+            "/schemas/{schema}/exports/{job_id}",
+            get(export::get_export_job),
         )
         .route(
             "/schemas/{schema}/entities/{id}",

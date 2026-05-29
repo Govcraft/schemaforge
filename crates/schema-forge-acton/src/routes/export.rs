@@ -224,6 +224,171 @@ pub fn entities_to_ndjson(
     out
 }
 
+/// A fully materialized export: the serialized bytes plus the metadata both the
+/// inline-stream response and the async-job completion record need.
+///
+/// Produced by [`materialize_export`], which runs the identical query / tenant /
+/// field-strip pipeline as the synchronous path so the async artifact can never
+/// contain a row or field the caller could not read.
+pub struct ExportArtifact {
+    /// Serialized file bytes (CSV or NDJSON).
+    pub bytes: Vec<u8>,
+    /// MIME content type for the response / stored object.
+    pub content_type: &'static str,
+    /// Number of rows that survived record-level access filtering.
+    pub row_count: usize,
+    /// The resolved `@exportable` ∩ readable column names, for the audit trail.
+    pub column_names: Vec<String>,
+}
+
+/// The authorization-resolved inputs the export pipeline needs, shared by the
+/// synchronous handler and the async-job actor.
+///
+/// Bundling these keeps [`materialize_export`] to a small argument list and lets
+/// the actor carry exactly what the handler resolved (tenant scope, the compiled
+/// policy store, and the record-access policy) so generation applies the **same**
+/// authz the query path enforces.
+pub struct ExportContext<'a> {
+    /// Handle to the `ForgeActor` for running the query / display lookups.
+    pub forge: &'a acton_service::prelude::ActorHandle,
+    /// Caller claims, used for tenant scoping and record-level filtering.
+    pub claims: Option<&'a Claims>,
+    /// Resolved tenant configuration (injected into the query).
+    pub tenant_config: &'a Option<schema_forge_backend::tenant::TenantConfig>,
+    /// Compiled Cedar policy store driving per-field read stripping.
+    pub policy_store: &'a std::sync::Arc<crate::authz::PolicyStore>,
+    /// Record-level access policy (e.g. `@owner`) applied before serialization.
+    pub record_access_policy:
+        &'a Option<std::sync::Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
+}
+
+/// Run the full export pipeline — query (no page limit, `max_rows`-capped),
+/// tenant injection, record-level access filter, relation-display resolution,
+/// per-field read stripping, and serialization — and return the materialized
+/// artifact.
+///
+/// This is the single source of truth shared by the synchronous streaming
+/// handler and the async export-job actor, so both paths inherit the exact same
+/// fail-closed guarantees. `max_rows` is enforced by probing `max_rows + 1` and
+/// returning [`ForgeError::ExportTooLarge`] on overflow.
+pub async fn materialize_export(
+    ctx: &ExportContext<'_>,
+    schema_def: &SchemaDefinition,
+    format: ExportFormat,
+    filter_json: Option<&serde_json::Value>,
+    requested_fields: Option<&[String]>,
+    max_rows: u64,
+) -> Result<ExportArtifact, ForgeError> {
+    let ExportContext {
+        forge,
+        claims,
+        tenant_config,
+        policy_store,
+        record_access_policy,
+    } = ctx;
+    let claims = *claims;
+
+    // Build the query (an export is a query with no page limit). Cap the read at
+    // max_rows + 1 so an over-cap result is detectable without draining the table.
+    let mut query = Query::new(schema_def.id.clone()).without_total_count();
+    if let Some(filter_json) = filter_json {
+        let filter = crate::routes::entities::json_to_filter(filter_json, schema_def)
+            .map_err(|errors| ForgeError::InvalidQuery {
+                message: errors.join("; "),
+            })?;
+        validate_filter(&filter, schema_def).map_err(|errors| ForgeError::InvalidQuery {
+            message: errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        })?;
+        query = query.with_filter(filter);
+    }
+    let probe_limit = usize::try_from(max_rows)
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    query = query.with_limit(probe_limit);
+
+    // Same tenant injection as the query path.
+    inject_tenant_scope(&mut query, claims, tenant_config);
+
+    // Execute.
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(QueryEntities {
+            query,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let result = ask_forge(rx).await?.map_err(ForgeError::from)?;
+
+    // Over-cap: a result strictly larger than max_rows cannot be exported.
+    if result.entities.len() as u64 > max_rows {
+        return Err(ForgeError::ExportTooLarge {
+            max_rows,
+            message: format!(
+                "export exceeds the {max_rows}-row cap for schema '{}'",
+                schema_def.name.as_str()
+            ),
+        });
+    }
+
+    // Record-level access filtering (e.g. @owner), identical to the query path.
+    let mut visible: Vec<Entity> =
+        if let (Some(policy), Some(c)) = (record_access_policy.as_ref(), claims) {
+            policy.filter_visible(schema_def, c, result.entities).await
+        } else {
+            result.entities
+        };
+
+    // Resolve the export column set (static half of the intersection).
+    let columns = resolve_export_columns(schema_def, requested_fields);
+
+    // Resolve relation displays, then strip read-restricted fields per row
+    // (dynamic half of the intersection).
+    let display_map =
+        resolve_export_displays(forge, schema_def, &visible, &columns, claims, tenant_config)
+            .await?;
+    for entity in &mut visible {
+        filter_entity_fields(
+            policy_store,
+            entity,
+            schema_def,
+            claims,
+            FieldFilterDirection::Read,
+        );
+    }
+
+    let row_count = visible.len();
+    let (bytes, content_type) = match format {
+        ExportFormat::Csv => {
+            let csv = entities_to_csv(&visible, &columns, &display_map).map_err(|e| {
+                ForgeError::Internal {
+                    message: format!("CSV serialization failed: {e}"),
+                }
+            })?;
+            (csv.into_bytes(), "text/csv; charset=utf-8")
+        }
+        ExportFormat::Ndjson => {
+            let ndjson = entities_to_ndjson(&visible, &columns, &display_map);
+            (ndjson.into_bytes(), "application/x-ndjson")
+        }
+        other => {
+            return Err(ForgeError::Internal {
+                message: format!("non-streamable format reached the export pipeline: {other}"),
+            });
+        }
+    };
+
+    Ok(ExportArtifact {
+        bytes,
+        content_type,
+        row_count,
+        column_names: columns.into_iter().map(|(n, _)| n).collect(),
+    })
+}
+
 /// Await an actor response with a timeout, mapping failures to `Internal`.
 async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
     tokio::time::timeout(ACTOR_TIMEOUT, rx)
@@ -359,45 +524,8 @@ pub async fn export_entities(
     )
     .await;
 
-    // Non-streamable format or explicit async => defer to the async-job path.
-    if body.is_async || !is_streamable(format) {
-        return Err(ForgeError::ExportDeferred {
-            message: format!(
-                "format '{}'{} must be exported via the async job endpoint \
-                 (POST with async:true, then GET /schemas/{}/exports/{{job_id}})",
-                format.as_str(),
-                if body.is_async { " (async requested)" } else { "" },
-                schema_name.as_str()
-            ),
-        });
-    }
-
-    // Build the query (an export is a query with no page limit). Cap the read
-    // at max_rows + 1 so we can detect an over-cap result without draining the
-    // whole table.
-    let mut query = Query::new(schema_def.id.clone()).without_total_count();
-    if let Some(filter_json) = &body.filter {
-        let filter = crate::routes::entities::json_to_filter(filter_json, &schema_def)
-            .map_err(|errors| ForgeError::InvalidQuery {
-                message: errors.join("; "),
-            })?;
-        validate_filter(&filter, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
-            message: errors
-                .iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; "),
-        })?;
-        query = query.with_filter(filter);
-    }
-    // A u64 cap from the DSL; usize on the read side. Saturate the +1 probe so
-    // an absurd cap can never wrap.
-    let probe_limit = usize::try_from(max_rows)
-        .unwrap_or(usize::MAX)
-        .saturating_add(1);
-    query = query.with_limit(probe_limit);
-
-    // Same tenant injection as the query path.
+    // Resolve the tenant config + record-access policy once; both the sync and
+    // async paths need them, and they are the same inputs the query path uses.
     let (tx, rx) = oneshot::channel();
     forge
         .send(GetTenantConfig {
@@ -405,45 +533,7 @@ pub async fn export_entities(
         })
         .await;
     let tenant_config = ask_forge(rx).await?;
-    inject_tenant_scope(&mut query, claims.as_ref(), &tenant_config);
 
-    // Execute.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(QueryEntities {
-            query: query.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    let result = ask_forge(rx).await?.map_err(ForgeError::from)?;
-
-    // Over-cap: we read one more than the cap, so a result strictly larger than
-    // max_rows means the export must take the async path. Reject with 413.
-    if result.entities.len() as u64 > max_rows {
-        audit_export(
-            &state,
-            "forge.export.denied",
-            AuditSeverity::Warning,
-            serde_json::json!({
-                "schema": &schema,
-                "reason": "row_cap_exceeded",
-                "max_rows": max_rows,
-                "format": format.as_str(),
-                "user": claims.as_ref().map(|c| &c.sub),
-            }),
-        )
-        .await;
-        return Err(ForgeError::ExportTooLarge {
-            max_rows,
-            message: format!(
-                "export exceeds the {max_rows}-row cap for schema '{}'; use the async job \
-                 endpoint (POST with async:true)",
-                schema_name.as_str()
-            ),
-        });
-    }
-
-    // Record-level access filtering (e.g. @owner), identical to the query path.
     let (tx, rx) = oneshot::channel();
     forge
         .send(GetRecordAccessPolicy {
@@ -451,55 +541,62 @@ pub async fn export_entities(
         })
         .await;
     let record_access_policy = ask_forge(rx).await?;
-    let mut visible: Vec<Entity> =
-        if let (Some(ref policy), Some(c)) = (&record_access_policy, claims.as_ref()) {
-            policy.filter_visible(&schema_def, c, result.entities).await
-        } else {
-            result.entities
+
+    // Non-streamable format or explicit async => take the supervised async-job
+    // path: register a job with the ExportJobActor and return its id immediately.
+    if body.is_async || !is_streamable(format) {
+        let authz = ResolvedExportAuthz {
+            tenant_config,
+            policy_store,
+            record_access_policy,
         };
-
-    // Resolve the export column set (static half of the intersection).
-    let columns = resolve_export_columns(&schema_def, body.fields.as_deref());
-
-    // Resolve relation displays for the exportable relation columns, then strip
-    // read-restricted fields per row (dynamic half of the intersection). The
-    // display resolution happens before stripping so a relation column the
-    // caller cannot read is also dropped from the display map's effect.
-    let display_map =
-        resolve_export_displays(forge, &schema_def, &visible, &columns, claims.as_ref(), &tenant_config)
-            .await?;
-    for entity in &mut visible {
-        filter_entity_fields(
-            &policy_store,
-            entity,
-            &schema_def,
-            claims.as_ref(),
-            FieldFilterDirection::Read,
-        );
+        return spawn_export_job(&state, &schema_def, format, max_rows, &body, claims.as_ref(), authz)
+            .await;
     }
 
-    let row_count = visible.len();
-    let (body_bytes, content_type) = match format {
-        ExportFormat::Csv => {
-            let csv =
-                entities_to_csv(&visible, &columns, &display_map).map_err(|e| ForgeError::Internal {
-                    message: format!("CSV serialization failed: {e}"),
-                })?;
-            (csv.into_bytes(), "text/csv; charset=utf-8")
-        }
-        ExportFormat::Ndjson => {
-            let ndjson = entities_to_ndjson(&visible, &columns, &display_map);
-            (ndjson.into_bytes(), "application/x-ndjson")
-        }
-        // Unreachable: non-streamable formats are rejected above.
-        other => {
-            return Err(ForgeError::Internal {
-                message: format!("non-streamable format reached the stream path: {other}"),
+    // Synchronous streamable path: materialize inline and stream the bytes.
+    let ctx = ExportContext {
+        forge,
+        claims: claims.as_ref(),
+        tenant_config: &tenant_config,
+        policy_store: &policy_store,
+        record_access_policy: &record_access_policy,
+    };
+    let artifact = match materialize_export(
+        &ctx,
+        &schema_def,
+        format,
+        body.filter.as_ref(),
+        body.fields.as_deref(),
+        max_rows,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(ForgeError::ExportTooLarge { max_rows, message }) => {
+            audit_export(
+                &state,
+                "forge.export.denied",
+                AuditSeverity::Warning,
+                serde_json::json!({
+                    "schema": &schema,
+                    "reason": "row_cap_exceeded",
+                    "max_rows": max_rows,
+                    "format": format.as_str(),
+                    "user": claims.as_ref().map(|c| &c.sub),
+                }),
+            )
+            .await;
+            return Err(ForgeError::ExportTooLarge {
+                max_rows,
+                message: format!(
+                    "{message}; use the async job endpoint (POST with async:true)"
+                ),
             });
         }
+        Err(e) => return Err(e),
     };
 
-    let column_names: Vec<&str> = columns.iter().map(|(n, _)| n.as_str()).collect();
     audit_export(
         &state,
         "forge.export.completed",
@@ -508,8 +605,8 @@ pub async fn export_entities(
             "schema": &schema,
             "format": format.as_str(),
             "filter": &body.filter,
-            "fields": column_names,
-            "row_count": row_count,
+            "fields": &artifact.column_names,
+            "row_count": artifact.row_count,
             "user": claims.as_ref().map(|c| &c.sub),
         }),
     )
@@ -519,16 +616,214 @@ pub async fn export_entities(
     let response = (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, content_type.to_string()),
+            (header::CONTENT_TYPE, artifact.content_type.to_string()),
             (
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"{filename}\""),
             ),
         ],
-        body_bytes,
+        artifact.bytes,
     )
         .into_response();
     Ok(response)
+}
+
+/// Owned authorization-resolved inputs handed to the async export job.
+///
+/// The owned counterpart of [`ExportContext`]: the job actor outlives the
+/// request, so it carries the tenant scope, compiled policy store, and
+/// record-access policy by value to apply the **same** authz the query path
+/// enforces when it materializes the artifact later.
+struct ResolvedExportAuthz {
+    tenant_config: Option<schema_forge_backend::tenant::TenantConfig>,
+    policy_store: std::sync::Arc<crate::authz::PolicyStore>,
+    record_access_policy:
+        Option<std::sync::Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
+}
+
+/// Register an async export job with the [`ExportJobActor`] and return a 202
+/// Accepted body carrying the job id, leaving generation + upload to the
+/// supervised actor.
+///
+/// This is reached for non-streamable formats (XLSX/ZIP — once their serializers
+/// land), an explicit `async: true`, or whenever a caller would otherwise block
+/// on a large materialization. A 503 is returned if no storage backend is
+/// configured, since the artifact would have nowhere to land.
+async fn spawn_export_job(
+    state: &AppState<SchemaForgeConfig>,
+    schema_def: &SchemaDefinition,
+    format: ExportFormat,
+    max_rows: u64,
+    body: &ExportRequestBody,
+    claims: Option<&Claims>,
+    authz: ResolvedExportAuthz,
+) -> Result<Response, ForgeError> {
+    // The async path can currently only generate streamable serializers
+    // (CSV/NDJSON). XLSX/ZIP serializers land in later items; until then a
+    // declared-but-unsupported format is refused rather than silently failing
+    // the job after accepting it.
+    if !is_streamable(format) {
+        return Err(ForgeError::ExportDeferred {
+            message: format!(
+                "format '{}' is not yet supported by the async export pipeline \
+                 (csv and ndjson only); see ADR-0003",
+                format.as_str()
+            ),
+        });
+    }
+
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+    let job_actor = state
+        .actor::<crate::export_job::ExportJobActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ExportJobActor not registered".into(),
+        })?;
+    let schema = schema_def.name.as_str();
+
+    // Resolve the storage backend the artifact will land in. Without storage
+    // there is no place to write the file, so the async path is unavailable.
+    let registry = {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(crate::messages::GetStorageRegistry {
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        ask_forge(rx).await?
+    };
+    let Some(store) = crate::export_job::pick_export_store(&registry) else {
+        return Err(ForgeError::HookUnavailable {
+            message: "no storage backend configured for async export artifacts".into(),
+        });
+    };
+
+    let job_id = crate::export_job::new_job_id();
+    let object_key = format!("exports/{}/{}.{}", schema, job_id, format.as_str());
+
+    audit_export(
+        state,
+        "forge.export.initiated",
+        AuditSeverity::Informational,
+        serde_json::json!({
+            "schema": schema,
+            "format": format.as_str(),
+            "filter": &body.filter,
+            "fields": &body.fields,
+            "async": true,
+            "job_id": &job_id,
+            "user": claims.map(|c| &c.sub),
+        }),
+    )
+    .await;
+
+    let spec = crate::export_job::ExportJobSpec {
+        job_id: job_id.clone(),
+        schema_name: schema.to_string(),
+        schema_def: schema_def.clone(),
+        format,
+        filter: body.filter.clone(),
+        fields: body.fields.clone(),
+        max_rows,
+        claims: claims.cloned(),
+        tenant_config: authz.tenant_config,
+        policy_store: authz.policy_store,
+        record_access_policy: authz.record_access_policy,
+        forge: forge.clone(),
+        store,
+        object_key,
+        audit_logger: state.audit_logger().cloned(),
+        subject: claims.map(|c| c.sub.clone()),
+    };
+
+    job_actor
+        .send(crate::export_job::StartExportJob::new(spec))
+        .await;
+
+    let response_body = serde_json::json!({
+        "job_id": job_id,
+        "status": "queued",
+        "schema": schema,
+        "format": format.as_str(),
+    });
+    Ok((StatusCode::ACCEPTED, axum::Json(response_body)).into_response())
+}
+
+/// `GET /schemas/{schema}/exports/{job_id}` — async export job status.
+///
+/// Returns the job's current state (`queued` / `running` / `complete` /
+/// `failed`) and, once complete, a TTL-bounded presigned GET URL to the
+/// generated artifact in object storage. Authorization reuses the distinct
+/// `Export{Schema}` Cedar action, so only a principal who could initiate an
+/// export can poll its status.
+#[instrument(skip_all, fields(schema = %schema, job_id = %job_id))]
+pub async fn get_export_job(
+    State(state): State<AppState<SchemaForgeConfig>>,
+    Path((schema, job_id)): Path<(String, String)>,
+    OptionalClaims(claims): OptionalClaims,
+) -> Result<Response, ForgeError> {
+    let schema_name = SchemaName::new(&schema).map_err(|_| ForgeError::InvalidSchemaName {
+        name: schema.clone(),
+    })?;
+
+    let forge = state
+        .actor::<ForgeActor>()
+        .expect("ForgeActor not registered");
+
+    // Resolve schema + enforce the same export gate as the POST path.
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: schema_name.as_str().to_string(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let schema_def = ask_forge(rx).await?.ok_or(ForgeError::SchemaNotFound {
+        name: schema_name.as_str().to_string(),
+    })?;
+    if !schema_def.is_exportable() {
+        return Err(ForgeError::Forbidden {
+            message: format!(
+                "schema '{}' is not exportable: no @export annotation",
+                schema_name.as_str()
+            ),
+        });
+    }
+    let policy_store = crate::routes::entities::fetch_export_policy_store(&state).await?;
+    check_export_access(&policy_store, &schema_def, claims.as_ref())?;
+
+    let job_actor = state
+        .actor::<crate::export_job::ExportJobActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ExportJobActor not registered".into(),
+        })?;
+    let (tx, rx) = oneshot::channel();
+    job_actor
+        .send(crate::export_job::GetExportJob {
+            job_id: job_id.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let record = ask_forge(rx).await?;
+
+    let Some(record) = record else {
+        return Err(ForgeError::EntityNotFound {
+            schema: format!("{}/exports", schema_name.as_str()),
+            entity_id: job_id,
+        });
+    };
+
+    // A job is scoped to the schema in its URL; refuse a job id that belongs to
+    // a different schema so one schema's job ids cannot probe another's.
+    if record.schema_name != schema_name.as_str() {
+        return Err(ForgeError::EntityNotFound {
+            schema: format!("{}/exports", schema_name.as_str()),
+            entity_id: job_id,
+        });
+    }
+
+    Ok((StatusCode::OK, axum::Json(record.to_status_json().await)).into_response())
 }
 
 /// Resolve `id -> display` maps for the relation columns in `columns`, scoped to

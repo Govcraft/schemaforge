@@ -7,6 +7,7 @@ pub mod conversions;
 pub mod crypto;
 pub mod email;
 pub mod error;
+pub mod export_job;
 pub mod extension;
 pub mod invite;
 #[cfg(feature = "graphql")]
@@ -28,6 +29,7 @@ pub use acton_service;
 pub use actor::ForgeActor;
 pub use config::SchemaForgeConfig;
 pub use error::ForgeError;
+pub use export_job::ExportJobActor;
 pub use extension::{InitForgeData, SchemaForgeExtension};
 pub use hooks::HookDispatchActor;
 pub use messages::{InitForge, ReplyChannel};

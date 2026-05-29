@@ -64,6 +64,7 @@ async fn build_state(
         .with_config(config)
         .with_actor::<ForgeActor>()
         .with_actor::<schema_forge_acton::HookDispatchActor>()
+        .with_actor::<schema_forge_acton::ExportJobActor>()
         .build();
 
     let forge_handle = service
@@ -438,7 +439,12 @@ async fn xlsx_format_is_deferred_to_async_path() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn explicit_async_true_is_deferred() {
+async fn explicit_async_true_without_storage_is_unavailable() {
+    // Item 6 added the async-job path: an explicit `async: true` now takes that
+    // path rather than being flatly deferred. With no storage backend configured
+    // in this harness the artifact has nowhere to land, so the request is refused
+    // with 503 (fail-closed) instead of accepted. The full accept + lifecycle is
+    // covered by `export_async_integration.rs` with a mock store.
     let rows = [serde_json::json!({ "fields": { "name": "Ada", "notes": "n" } })];
     let app = seeded_app(export_schema(100), &rows, &["platform_admin"]).await;
 
@@ -450,8 +456,7 @@ async fn explicit_async_true_is_deferred() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {json}");
-    assert_eq!(json["error"], "export_deferred");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {json}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
