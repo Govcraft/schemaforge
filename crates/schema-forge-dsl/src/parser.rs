@@ -270,6 +270,84 @@ impl Parser {
                     span: site.span.clone(),
                 });
             }
+            // Validate any `related.<F>.<…>` cross-entity-read paths (#95): the
+            // role must be @require, and `F` must be a declared Relation{One}
+            // field on this schema. Deep multi-hop is enforced at runtime, where
+            // the target schemas are available (the per-schema DSL pass does not
+            // have F's target schema fields).
+            self.check_related_paths(fields, site, &expr)?;
+        }
+        Ok(())
+    }
+
+    /// Validate the cross-entity-read paths in one rule expression (#95).
+    ///
+    /// Rejects `related.*` in `@compute`/`@default`, and in `@require` rejects a
+    /// `related.<F>` where `F` is not a declared `Relation{One}` field on this
+    /// schema (unknown / non-relation → [`DslError::CrossEntityReadUnknownRelation`],
+    /// to-many → [`DslError::CrossEntityReadToMany`]).
+    fn check_related_paths(
+        &self,
+        fields: &[FieldDefinition],
+        site: &RuleSite,
+        expr: &schema_forge_cel::Expr,
+    ) -> Result<(), DslError> {
+        use schema_forge_cel::RuleRole;
+        use schema_forge_core::types::{Cardinality, FieldType};
+
+        let paths = schema_forge_cel::related_paths(expr);
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let content_start = site.span.start + 1;
+        let (line, column) = line_col_at(&self.source, content_start);
+
+        for path in &paths {
+            // Cross-entity reads are @require-only.
+            let disallowed_role = match site.role {
+                RuleRole::Require => None,
+                RuleRole::Compute => Some("@compute"),
+                RuleRole::Default => Some("@default"),
+            };
+            if let Some(role) = disallowed_role {
+                return Err(DslError::CrossEntityReadNotAllowedInRole {
+                    role,
+                    relation: path.relation.clone(),
+                    line,
+                    column,
+                    span: site.span.clone(),
+                });
+            }
+
+            // F must be a declared Relation{One} field on this schema.
+            let relation_field = fields.iter().find(|f| f.name.as_str() == path.relation);
+            match relation_field.map(|f| &f.field_type) {
+                Some(FieldType::Relation {
+                    cardinality: Cardinality::One,
+                    ..
+                }) => {}
+                Some(FieldType::Relation {
+                    cardinality: Cardinality::Many,
+                    ..
+                }) => {
+                    return Err(DslError::CrossEntityReadToMany {
+                        relation: path.relation.clone(),
+                        line,
+                        column,
+                        span: site.span.clone(),
+                    });
+                }
+                // Not a declared field, or a non-relation field, or a future
+                // non-exhaustive cardinality: reject as an unresolvable relation.
+                _ => {
+                    return Err(DslError::CrossEntityReadUnknownRelation {
+                        relation: path.relation.clone(),
+                        line,
+                        column,
+                        span: site.span.clone(),
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -3452,5 +3530,96 @@ schema B { title: text @list(primary) }"#,
             "diagnostic should start with line 2, got: {rendered}"
         );
         assert!(rendered.contains("rule type error:"), "got: {rendered}");
+    }
+
+    // -- @require cross-entity reads via `related.<F>.<col>` (#95) --
+
+    #[test]
+    fn cross_entity_read_in_require_over_ref_one_is_accepted() {
+        // `approval` is a single-relation (Relation{One}) field, so
+        // `related.approval.state` in @require is valid.
+        let source = r#"schema Document {
+            approval: -> Approval
+            status: enum("draft", "closed") @require("status != 'closed' || related.approval.state == 'granted'", "closed documents need a granted approval")
+        }"#;
+        let schema = parse_one(source);
+        assert_eq!(schema.fields.len(), 2);
+    }
+
+    #[test]
+    fn cross_entity_read_in_compute_is_rejected() {
+        let source = r#"schema Document {
+            approval: -> Approval
+            note: text @compute("related.approval.state")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::CrossEntityReadNotAllowedInRole { role, relation, .. } => {
+                assert_eq!(*role, "@compute");
+                assert_eq!(relation, "approval");
+            }
+            other => panic!("expected CrossEntityReadNotAllowedInRole, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_entity_read_in_default_is_rejected() {
+        let source = r#"schema Document {
+            approval: -> Approval
+            note: text @default("related.approval.state")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(
+            &errs[0],
+            DslError::CrossEntityReadNotAllowedInRole { role, .. } if *role == "@default"
+        ));
+    }
+
+    #[test]
+    fn cross_entity_read_over_to_many_relation_is_rejected() {
+        // `approvals` is a to-many (Relation{Many}) field — not supported.
+        let source = r#"schema Document {
+            approvals: -> Approval[]
+            status: enum("draft", "closed") @require("related.approvals.state == 'granted'", "x")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::CrossEntityReadToMany { relation, .. } => {
+                assert_eq!(relation, "approvals");
+            }
+            other => panic!("expected CrossEntityReadToMany, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_entity_read_over_non_relation_is_rejected() {
+        // `status` is an enum, not a relation.
+        let source = r#"schema Document {
+            status: enum("draft", "closed") @require("related.status.x == 1", "x")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::CrossEntityReadUnknownRelation { relation, .. } => {
+                assert_eq!(relation, "status");
+            }
+            other => panic!("expected CrossEntityReadUnknownRelation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_entity_read_over_undeclared_field_is_rejected() {
+        let source = r#"schema Document {
+            status: enum("draft", "closed") @require("related.nope.x == 1", "x")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(
+            &errs[0],
+            DslError::CrossEntityReadUnknownRelation { relation, .. } if relation == "nope"
+        ));
     }
 }

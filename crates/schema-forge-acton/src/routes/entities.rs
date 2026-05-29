@@ -35,7 +35,9 @@ use crate::messages::{
     CreateEntity, DeleteEntity, GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema,
     GetSchemasBatch, GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
 };
-use crate::rules::{apply_computed, apply_defaults, check_requires, RuleError};
+use crate::rules::{
+    apply_computed, apply_defaults, build_bindings, check_requires_with_bindings, RuleError,
+};
 use schema_forge_core::types::HookEvent;
 use std::sync::Arc;
 
@@ -1412,6 +1414,258 @@ fn collect_relation_ids(value: &DynamicValue, out: &mut HashSet<String>) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cross-entity reads in @require: prefetch-and-bind (#95)
+// ---------------------------------------------------------------------------
+
+/// Run `@require` validation with cross-entity-read (`related.<F>.<col>`)
+/// support (#95).
+///
+/// The CEL engine stays pure: this resolver performs ALL I/O *before*
+/// evaluation, dereferences each referenced `Relation{One}` field to its
+/// committed, tenant-scoped related row, projects the row to a `CelValue::Map`,
+/// and injects a `related` binding next to `principal`/`now` — exactly the
+/// "prefetch-and-bind" pattern the request clock `now` already uses. It then
+/// calls the pure [`check_requires_with_bindings`].
+///
+/// Fail-closed: if a referenced relation's FK is absent/null, the related row
+/// does not exist, or tenant scope hides it, that `related.F` entry is simply
+/// NOT bound; a `@require` referencing it then hits an absent reference and the
+/// existing fail-closed contract turns it into a rejection/eval-error.
+///
+/// Fast path: when no `@require` on the schema references `related.*`, no I/O is
+/// performed and the pure binding set is used directly.
+async fn check_requires_with_related(
+    forge: &acton_service::prelude::ActorHandle,
+    schema: &SchemaDefinition,
+    fields: &BTreeMap<String, DynamicValue>,
+    claims: Option<&Claims>,
+    now: chrono::DateTime<chrono::Utc>,
+    tenant_config: &Option<schema_forge_backend::tenant::TenantConfig>,
+) -> Result<(), ForgeError> {
+    let mut bindings = build_bindings(fields, claims, now);
+
+    let related_map =
+        resolve_related_bindings(forge, schema, fields, claims, tenant_config).await?;
+    if let Some(map) = related_map {
+        bindings.insert("related".to_string(), map);
+    }
+
+    check_requires_with_bindings(schema, &bindings).map_err(rule_error_to_forge)
+}
+
+/// One distinct relation field referenced via `related.<F>` together with the
+/// trailing column paths seen for it (used for multi-hop detection).
+struct RelatedRef<'a> {
+    /// The relation field definition `F` on the schema being written.
+    field: &'a schema_forge_core::types::FieldDefinition,
+    /// The trailing column paths after `related.F`, for multi-hop detection.
+    trailing_paths: Vec<Vec<String>>,
+}
+
+/// Collect distinct `related.<F>` references across all `@require` expressions
+/// on `schema`, keyed by relation field name.
+fn collect_related_refs(schema: &SchemaDefinition) -> HashMap<String, RelatedRef<'_>> {
+    let mut refs: HashMap<String, RelatedRef<'_>> = HashMap::new();
+    for field in &schema.fields {
+        for annotation in &field.annotations {
+            let schema_forge_core::types::FieldAnnotation::Require { expr, .. } = annotation else {
+                continue;
+            };
+            let Ok(parsed) = schema_forge_cel::parse(expr) else {
+                continue;
+            };
+            for path in schema_forge_cel::related_paths(&parsed) {
+                // Only resolve relations that are declared `Relation{One}` on
+                // this schema. The DSL apply-time pass (#95 part B) already
+                // rejects to-many / non-relation / undeclared, so this is a
+                // defensive skip rather than a new error site.
+                let Some(rel_field) = schema
+                    .fields
+                    .iter()
+                    .find(|f| f.name.as_str() == path.relation)
+                else {
+                    continue;
+                };
+                if !matches!(
+                    &rel_field.field_type,
+                    FieldType::Relation {
+                        cardinality: Cardinality::One,
+                        ..
+                    }
+                ) {
+                    continue;
+                }
+                let entry = refs.entry(path.relation.clone()).or_insert(RelatedRef {
+                    field: rel_field,
+                    trailing_paths: Vec::new(),
+                });
+                entry.trailing_paths.push(path.trailing);
+            }
+        }
+    }
+    refs
+}
+
+/// Build the `related` CEL map for a write, or `None` when the schema has no
+/// `related.*` references in any `@require`.
+async fn resolve_related_bindings(
+    forge: &acton_service::prelude::ActorHandle,
+    schema: &SchemaDefinition,
+    fields: &BTreeMap<String, DynamicValue>,
+    claims: Option<&Claims>,
+    tenant_config: &Option<schema_forge_backend::tenant::TenantConfig>,
+) -> Result<Option<schema_forge_cel::CelValue>, ForgeError> {
+    let refs = collect_related_refs(schema);
+    if refs.is_empty() {
+        return Ok(None);
+    }
+
+    // Batch-fetch every target schema so multi-hop detection can inspect the
+    // target's own relation fields.
+    let target_names: Vec<String> = refs
+        .values()
+        .filter_map(|r| match &r.field.field_type {
+            FieldType::Relation { target, .. } => Some(target.as_str().to_string()),
+            _ => None,
+        })
+        .collect();
+    let target_defs = fetch_schemas_batch(forge, target_names).await?;
+
+    let mut related_entries: std::collections::BTreeMap<
+        schema_forge_cel::CelKey,
+        schema_forge_cel::CelValue,
+    > = std::collections::BTreeMap::new();
+
+    for (relation_name, rel) in &refs {
+        let FieldType::Relation { target, .. } = &rel.field.field_type else {
+            continue;
+        };
+        let Some(target_def) = target_defs.get(target.as_str()) else {
+            // Target schema not registered: fail-closed by not binding. A
+            // predicate referencing it errors → rejection/eval-error.
+            continue;
+        };
+
+        // Multi-hop rejection (#95): if any trailing path crosses a second
+        // relation on the target schema, reject with a clear error. The bound
+        // map only dereferences ONE level (the target's own relations stay
+        // opaque id strings per #102), so a deeper traversal must be an
+        // explicit error rather than a murky eval failure.
+        if let Some(second_relation) = first_multi_hop_relation(target_def, &rel.trailing_paths) {
+            return Err(ForgeError::ValidationFailed {
+                details: vec![format!(
+                    "multi-hop cross-entity read not supported (#95): related.{relation_name}.{second_relation} crosses a second relation; use a before_* hook"
+                )],
+            });
+        }
+
+        // Read the FK id from the in-flight field map. Absent/null → no bind.
+        let Some(fk_id) = fields.get(relation_name).and_then(fk_id_string) else {
+            continue;
+        };
+
+        // Load the related row through the supervised actor with tenant scope
+        // applied — exactly like the read path — so a rule can never read a
+        // related row across a tenant boundary the caller couldn't see.
+        let Some(row) =
+            load_related_row(forge, target_def, &fk_id, claims, tenant_config).await?
+        else {
+            // Missing or tenant-hidden → no bind → fail-closed at eval.
+            continue;
+        };
+
+        let row_map = project_entity_to_cel(&row)?;
+        related_entries.insert(
+            schema_forge_cel::CelKey::String(relation_name.clone()),
+            row_map,
+        );
+    }
+
+    Ok(Some(schema_forge_cel::CelValue::Map(related_entries)))
+}
+
+/// If any trailing path on `related.F` traverses a second `Relation` field `G`
+/// declared on the target schema, return that field name. A trailing path of
+/// `[col]` is a plain column read (single hop, allowed); a trailing path of
+/// `[G, ...]` where `G` is a relation on the target is a multi-hop read.
+fn first_multi_hop_relation(
+    target_def: &SchemaDefinition,
+    trailing_paths: &[Vec<String>],
+) -> Option<String> {
+    for trailing in trailing_paths {
+        // A single trailing segment is a column read on the target row (one
+        // hop). Two or more segments traverse into `trailing[0]`.
+        if trailing.len() < 2 {
+            continue;
+        }
+        let first = &trailing[0];
+        if target_def
+            .fields
+            .iter()
+            .any(|f| f.name.as_str() == first && matches!(f.field_type, FieldType::Relation { .. }))
+        {
+            return Some(first.clone());
+        }
+    }
+    None
+}
+
+/// Extract a non-empty FK id string from a relation field's stored value. A
+/// null / empty / non-id value yields `None` (the related row is not bound).
+fn fk_id_string(value: &DynamicValue) -> Option<String> {
+    match value {
+        DynamicValue::Text(s) if !s.is_empty() => Some(s.clone()),
+        DynamicValue::Ref(id) => Some(id.as_str().to_string()),
+        _ => None,
+    }
+}
+
+/// Load a single related row by id through the supervised `forge` actor, with
+/// tenant scope injected exactly like the read path. Returns `None` when the
+/// row does not exist or is hidden by tenant scope.
+async fn load_related_row(
+    forge: &acton_service::prelude::ActorHandle,
+    target_def: &SchemaDefinition,
+    fk_id: &str,
+    claims: Option<&Claims>,
+    tenant_config: &Option<schema_forge_backend::tenant::TenantConfig>,
+) -> Result<Option<Entity>, ForgeError> {
+    // Use the tenant-scoped query path (not GetEntity, which is NOT
+    // tenant-scoped) so the related read honors the caller's tenant boundary.
+    let mut query = schema_forge_core::query::Query::new(target_def.id.clone())
+        .with_filter(Filter::In {
+            path: FieldPath::single("id"),
+            values: vec![DynamicValue::Text(fk_id.to_string())],
+        })
+        .without_total_count();
+    inject_tenant_scope(&mut query, claims, tenant_config);
+
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(QueryEntities {
+            query,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let result = ask_forge(rx).await?.map_err(ForgeError::from)?;
+    Ok(result.entities.into_iter().next())
+}
+
+/// Project a loaded related [`Entity`] to a `CelValue::Map` using the #102
+/// value-lattice projection (`dynamic_to_cel`), so the target's own relations
+/// surface as opaque id strings (the one-level-deref boundary).
+fn project_entity_to_cel(entity: &Entity) -> Result<schema_forge_cel::CelValue, ForgeError> {
+    let mut map = std::collections::BTreeMap::new();
+    for (name, value) in &entity.fields {
+        let cel = schema_forge_cel::dynamic_to_cel(value).map_err(|e| ForgeError::Internal {
+            message: format!("failed to project related field '{name}' for a cross-entity read: {e}"),
+        })?;
+        map.insert(schema_forge_cel::CelKey::String(name.clone()), cel);
+    }
+    Ok(schema_forge_cel::CelValue::Map(map))
+}
+
 /// Extract the parent-id string from a child entity's foreign-key field
 /// value. The backend may decode the FK column as `Text`, `Ref`, or (for
 /// an unusual NULL edge case) `Null`; all variants normalize to the same
@@ -1760,8 +2014,19 @@ pub async fn create_entity(
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
     apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
-    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
-    check_requires(&schema_def, &fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+    // CEL @require validation rules (#92) — fail-closed, in-transaction,
+    // pre-persistence. Cross-entity reads (#95) are resolved here: any
+    // `related.<F>.<col>` is dereferenced to its tenant-scoped related row and
+    // injected as a CEL binding before the pure evaluator runs.
+    check_requires_with_related(
+        forge,
+        &schema_def,
+        &fields,
+        claims.as_ref(),
+        rules_now,
+        &tenant_config,
+    )
+    .await?;
 
     // before_validate / before_change hooks run *after* the rule phases, on
     // the already-defaulted/computed/validated field set. `before_validate`
@@ -2460,8 +2725,27 @@ pub async fn update_entity(
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
     apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
-    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
-    check_requires(&schema_def, &fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+    // Tenant config for cross-entity-read tenant scoping (#95). Fetched here so
+    // a `related.<F>` prefetch honors the caller's tenant boundary.
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetTenantConfig {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let tenant_config = ask_forge(rx).await?;
+
+    // CEL @require validation rules (#92) — fail-closed, in-transaction,
+    // pre-persistence. Cross-entity reads (#95) resolved before evaluation.
+    check_requires_with_related(
+        forge,
+        &schema_def,
+        &fields,
+        claims.as_ref(),
+        rules_now,
+        &tenant_config,
+    )
+    .await?;
 
     // before_validate / before_change hooks run *after* the rule phases, on
     // the already-computed/validated field set. `before_validate` runs first
@@ -2717,10 +3001,28 @@ pub async fn patch_entity(
     // changes and @require predicates see them.
     apply_computed(&schema_def, &mut merged, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
-    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
-    // Evaluated against the full post-patch entity view so predicates that
-    // reference unpatched fields still see their current values.
-    check_requires(&schema_def, &merged, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+    // Tenant config for cross-entity-read tenant scoping (#95).
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetTenantConfig {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let tenant_config = ask_forge(rx).await?;
+
+    // CEL @require validation rules (#92) — fail-closed, in-transaction,
+    // pre-persistence. Evaluated against the full post-patch entity view so
+    // predicates that reference unpatched fields still see their current
+    // values. Cross-entity reads (#95) resolved before evaluation.
+    check_requires_with_related(
+        forge,
+        &schema_def,
+        &merged,
+        claims.as_ref(),
+        rules_now,
+        &tenant_config,
+    )
+    .await?;
 
     // before_validate / before_change hooks run *after* the rule phases, on
     // the already-computed/validated merged field set so hooks see the

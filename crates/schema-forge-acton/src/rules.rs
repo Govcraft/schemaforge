@@ -201,6 +201,28 @@ pub fn check_requires(
     now: DateTime<Utc>,
 ) -> Result<(), RuleError> {
     let bindings = build_bindings(fields, claims, now);
+    check_requires_with_bindings(schema, &bindings)
+}
+
+/// Evaluate every `@require` annotation against a caller-supplied
+/// [`Bindings`](schema_forge_cel::Bindings).
+///
+/// This is the pure core of [`check_requires`]; it takes the bindings already
+/// built so the route layer can enrich them with the `related` cross-entity-read
+/// map (#95) before evaluation, preserving engine purity (the I/O happens in the
+/// route's async prefetch, never inside [`schema_forge_cel::evaluate`]).
+///
+/// Fail-closed semantics are identical to [`check_requires`]: a predicate passes
+/// only on `Ok(CelValue::Bool(true))`; a definite `false` is a rejection; a
+/// non-boolean or an evaluation error short-circuits to [`RuleError::Eval`]. A
+/// `related.F` whose related row could not be resolved (absent FK, missing row,
+/// or tenant-hidden) is simply NOT present in the `related` map, so the
+/// predicate hits an undeclared/absent reference and fails closed here — never a
+/// silent pass.
+pub fn check_requires_with_bindings(
+    schema: &SchemaDefinition,
+    bindings: &schema_forge_cel::Bindings,
+) -> Result<(), RuleError> {
     let mut rejections = Vec::new();
 
     for field in &schema.fields {
@@ -209,7 +231,7 @@ pub fn check_requires(
                 continue;
             };
 
-            match schema_forge_cel::evaluate(expr, &bindings) {
+            match schema_forge_cel::evaluate(expr, bindings) {
                 Ok(CelValue::Bool(true)) => {}
                 Ok(CelValue::Bool(false)) => rejections.push(message.clone()),
                 Ok(_) => {

@@ -25,6 +25,7 @@ pub mod error;
 pub mod eval;
 pub mod lexer;
 pub mod parser;
+pub mod related;
 pub mod value;
 
 pub use ast::{unparse, BinaryOp, Comprehension, Expr, ListEntry, Literal, MapEntry, UnaryOp};
@@ -35,6 +36,7 @@ pub use check::{
 pub use error::{CelError, ConversionError, EvalError, ParseError, Position};
 pub use eval::{eval, Scope};
 pub use parser::parse;
+pub use related::{related_paths, RelatedPath, RELATED_ROOT};
 pub use value::bridge::{cel_to_dynamic, dynamic_to_cel};
 pub use value::{CelKey, CelType, CelValue};
 

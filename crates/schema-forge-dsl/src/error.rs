@@ -172,6 +172,46 @@ pub enum DslError {
         column: usize,
         span: Span,
     },
+
+    /// A rule expression used the reserved `related.<F>.<col>` cross-entity-read
+    /// namespace (#95) in a `@compute(...)` or `@default(...)` annotation, where
+    /// it is not permitted. Cross-entity reads are allowed only in `@require`,
+    /// because persisting a copy of another row's field is a staleness trap that
+    /// belongs in a hook. `line`/`column` point into the offending expression.
+    CrossEntityReadNotAllowedInRole {
+        /// The annotation role spelled for the message (`@compute` / `@default`).
+        role: &'static str,
+        /// The relation field name `F` that was dereferenced.
+        relation: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
+
+    /// A `@require` rule referenced `related.<F>` where `F` is not a declared
+    /// relation field on the schema being written (#95) — either `F` is not a
+    /// declared field at all, or it is a non-relation field. `line`/`column`
+    /// point into the offending expression.
+    CrossEntityReadUnknownRelation {
+        /// The relation field name `F` that could not be resolved to a
+        /// `Relation{One}` field.
+        relation: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
+
+    /// A `@require` rule referenced `related.<F>` where `F` is a to-many
+    /// (`Relation{Many}`) relation field (#95). To-many cross-entity reads are
+    /// not supported in rules; use a `before_*` hook instead. `line`/`column`
+    /// point into the offending expression.
+    CrossEntityReadToMany {
+        /// The to-many relation field name `F`.
+        relation: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
 }
 
 impl fmt::Display for DslError {
@@ -354,6 +394,40 @@ impl fmt::Display for DslError {
                 ..
             } => {
                 write!(f, "{line}:{column}: rule type error: {message}")
+            }
+            Self::CrossEntityReadNotAllowedInRole {
+                role,
+                relation,
+                line,
+                column,
+                ..
+            } => {
+                write!(
+                    f,
+                    "{line}:{column}: cross-entity read 'related.{relation}' is only allowed in @require, not in {role} (#95); persisting a copy of another row's field is a staleness trap — use a before_* hook"
+                )
+            }
+            Self::CrossEntityReadUnknownRelation {
+                relation,
+                line,
+                column,
+                ..
+            } => {
+                write!(
+                    f,
+                    "{line}:{column}: cross-entity read 'related.{relation}' requires '{relation}' to be a declared single-relation (Relation{{One}}) field on this schema (#95)"
+                )
+            }
+            Self::CrossEntityReadToMany {
+                relation,
+                line,
+                column,
+                ..
+            } => {
+                write!(
+                    f,
+                    "{line}:{column}: cross-entity read 'related.{relation}' is not supported: '{relation}' is a to-many relation; to-many cross-entity reads are not allowed in rules (#95) — use a before_* hook"
+                )
             }
         }
     }

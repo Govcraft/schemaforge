@@ -129,3 +129,66 @@ enumerate them with provenance:
 The pairing is the point: step 1–2 tell the reviewer *what* the rules are, and
 step 3 gives them cryptographic assurance that *those* rules — not a tampered
 variant — are what the running server enforces.
+
+## 3. Cross-entity reads in `@require` — `related.<F>.<col>` (issue #95)
+
+A `@require` predicate may read a **single, committed, tenant-scoped related
+row** through the reserved root identifier `related`. This is the only way a rule
+reaches outside the row being written.
+
+```text
+schema Document {
+  approval: -> Approval                         // a Relation{One} field; stores an opaque id (#102)
+  status:   enum("draft", "closed")
+  @require("status != 'closed' || related.approval.state == 'granted'",
+           "closed documents need a granted approval")
+}
+```
+
+`approval` (the bare field) is the opaque id string (#102 projection, unchanged).
+`related.approval` is the **dereferenced** `Approval` row, bound as a CEL map;
+`.state` is a column on it. The mandatory `related.` prefix makes every
+cross-entity read explicit and greppable in the schema text — an audit
+requirement.
+
+### 3.1 The hard limits (v1)
+
+| Limit | Rule | Where enforced |
+|-------|------|----------------|
+| Single `Relation{One}` only | `related.F` requires `F` to be a declared `Relation{One}` field. `Relation{Many}` (to-many) → rejected; non-relation / undeclared → rejected. | DSL apply-time (`check_rule_types`); runtime resolver defensively re-checks. |
+| `@require` only | `related.*` in `@compute` / `@default` is rejected (persisting a copy of another row's field is a staleness trap that belongs in a hook). | DSL apply-time. |
+| Single hop only | `related.F.G.<…>` where `G` is itself a `Relation` on `F`'s target schema is rejected with a clear multi-hop error. | Runtime resolver (it holds every target schema via the batch fetch). |
+
+### 3.2 The engine stays pure — prefetch-and-bind
+
+The CEL evaluator (`schema-forge-cel`) is unchanged: **no backend handle, no
+async, no I/O inside `evaluate`**. `schema_forge_cel::evaluate`'s signature is
+untouched. Cross-entity reads work by the **same** mechanism the request clock
+`now` uses: the route layer resolves the I/O **before** evaluation and injects
+the result as a CEL binding.
+
+1. A pure AST walker (`schema_forge_cel::related_paths`) extracts every
+   `related.<F>.<…>` path from a `@require` expression.
+2. The route handler
+   (`check_requires_with_related` in `routes/entities.rs`) collects the distinct
+   `Relation{One}` fields referenced, reads each FK id from the in-flight field
+   map, loads the related row through the supervised `forge` actor, projects it
+   with `dynamic_to_cel` (#102 projection — the target's own relations stay
+   opaque id strings), and assembles a `related` map: `{ F -> row_map, … }`.
+3. That map is inserted into the `Bindings` next to `principal` and `now`, then
+   the **pure** `check_requires_with_bindings` evaluates the predicate.
+
+### 3.3 Tenant scope and fail-closed
+
+The related row is loaded through the **same** tenant-scoped query path the read
+endpoints use (`inject_tenant_scope` + a `Filter::In { id }` query via the
+supervised `forge` actor — *not* the unscoped `GetEntity`). A rule therefore can
+**never** read a related row across a tenant boundary the caller couldn't
+otherwise see.
+
+The contract is **fail-closed**. If the FK is absent/null, the related row does
+not exist, or tenant scope hides it, the `related.F` entry is simply **not
+bound**. A `@require` that then references `related.F` hits an absent reference,
+and the existing fail-closed contract in `check_requires` turns that into a
+rejection / eval-error — **never a silent pass and never a null-coerced value**.
+This is covered end-to-end by `crates/schema-forge-acton/tests/cross_entity_reads.rs`.
