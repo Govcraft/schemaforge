@@ -44,6 +44,14 @@ pub enum ForgeError {
     Forbidden { message: String },
     /// Backend storage error. Maps to 502.
     BackendUnavailable { message: String },
+    /// A bulk export must take the async-job path (non-streamable format, an
+    /// explicit `async: true`, etc.). Maps to 422 with a pointer to the
+    /// (forthcoming) async endpoint. See ADR-0003.
+    ExportDeferred { message: String },
+    /// A bulk export would exceed the schema's `@export(max_rows)` cap. Maps to
+    /// 413 Payload Too Large; the caller must take the async-job path. See
+    /// ADR-0003.
+    ExportTooLarge { max_rows: u64, message: String },
     /// A lifecycle hook explicitly aborted the request. Maps to 422.
     HookAborted { reason: String },
     /// A required lifecycle hook timed out or was unreachable. Maps to 503.
@@ -100,6 +108,12 @@ impl fmt::Display for ForgeError {
             Self::BackendUnavailable { message } => {
                 write!(f, "backend unavailable: {message}")
             }
+            Self::ExportDeferred { message } => {
+                write!(f, "export must be performed asynchronously: {message}")
+            }
+            Self::ExportTooLarge { message, .. } => {
+                write!(f, "export too large: {message}")
+            }
             Self::HookAborted { reason } => {
                 write!(f, "hook aborted request: {reason}")
             }
@@ -130,6 +144,8 @@ impl ForgeError {
             Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             Self::Forbidden { .. } => StatusCode::FORBIDDEN,
             Self::BackendUnavailable { .. } => StatusCode::BAD_GATEWAY,
+            Self::ExportDeferred { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::ExportTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::HookAborted { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::HookUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
@@ -151,6 +167,8 @@ impl ForgeError {
             Self::Unauthorized { .. } => "unauthorized",
             Self::Forbidden { .. } => "forbidden",
             Self::BackendUnavailable { .. } => "backend_unavailable",
+            Self::ExportDeferred { .. } => "export_deferred",
+            Self::ExportTooLarge { .. } => "export_too_large",
             Self::HookAborted { .. } => "hook_aborted",
             Self::HookUnavailable { .. } => "hook_unavailable",
             Self::Internal { .. } => "internal_error",
@@ -171,6 +189,11 @@ impl IntoResponse for ForgeError {
                 "error": "unique_violation",
                 "schema": schema,
                 "field": field,
+                "message": self.to_string(),
+            }),
+            Self::ExportTooLarge { max_rows, .. } => serde_json::json!({
+                "error": "export_too_large",
+                "max_rows": max_rows,
                 "message": self.to_string(),
             }),
             _ => serde_json::json!({

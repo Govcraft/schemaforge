@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod entities;
+pub mod export;
 pub mod files;
 pub mod health;
 pub mod invites;
@@ -52,6 +53,11 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
         .route(
             "/schemas/{schema}/entities/query",
             post(entities::query_entities),
+        )
+        // Bulk export (sync streamable CSV/NDJSON; defers async formats)
+        .route(
+            "/schemas/{schema}/entities/export",
+            post(export::export_entities),
         )
         .route(
             "/schemas/{schema}/entities/{id}",

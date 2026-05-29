@@ -81,6 +81,15 @@ async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
         })
 }
 
+/// Crate-internal accessor for the compiled Cedar policy store, reused by the
+/// export route ([`crate::routes::export`]) which needs the same store to run
+/// the distinct `Export{Schema}` authorization check.
+pub(crate) async fn fetch_export_policy_store(
+    state: &AppState<SchemaForgeConfig>,
+) -> Result<std::sync::Arc<crate::authz::PolicyStore>, ForgeError> {
+    fetch_policy_store(state).await
+}
+
 /// Retrieves the compiled Cedar policy store from the `ForgeActor`.
 async fn fetch_policy_store(
     state: &AppState<SchemaForgeConfig>,
