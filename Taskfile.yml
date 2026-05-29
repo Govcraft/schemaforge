@@ -58,15 +58,15 @@ tasks:
       BASE_URL: "{{.BASE_URL}}"
 
   demo:
-    desc: "Build, start server (in-memory DB), seed demo data, then keep running. CONSOLE=1 also serves the ops console at /console."
+    desc: "Build, serve (in-memory DB) backend + ops console at /console, seed demo data, keep running. CONSOLE=0 for API-only."
     cmds:
       - |
         set -euo pipefail
 
-        # CONSOLE is a real environment variable read by this shell (not a
-        # go-task var), so `CONSOLE=1 task demo` works. Set it to embed + serve
-        # the ops console at /console.
-        CONSOLE="${CONSOLE:-}"
+        # The ops console at /console is served by DEFAULT. CONSOLE is a real
+        # environment variable read by this shell (not a go-task var); run
+        # `CONSOLE=0 task demo` to start the backend API only.
+        CONSOLE="${CONSOLE:-1}"
         FEATURES="{{.FEATURES}}"
 
         # Base feature args (backend selection).
@@ -75,13 +75,13 @@ tasks:
           feature_args="--no-default-features --features $FEATURES"
         fi
 
-        # CONSOLE=1: fetch + verify the signed console bundle, then add the
-        # embedded-console feature so `serve` mounts it at /console. This mirrors
-        # the release pipeline (download → identity-pinned cosign verify → sha256
-        # → embed), so it also exercises the supply-chain path locally.
-        if [ "$CONSOLE" = "1" ]; then
+        # Console enabled (default): fetch + verify the signed console bundle,
+        # then add the embedded-console feature so `serve` mounts it at /console.
+        # Mirrors the release pipeline (download → identity-pinned cosign verify
+        # → sha256 → embed), so it also exercises the supply-chain path locally.
+        if [ "$CONSOLE" != "0" ]; then
           for tool in gh cosign; do
-            command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: CONSOLE=1 needs '$tool' on PATH."; exit 1; }
+            command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: serving the console needs '$tool' on PATH — install it, or run 'CONSOLE=0 task demo' for API-only."; exit 1; }
           done
           console_dist="$PWD/target/console-dist"
           echo "Fetching signed console bundle {{.CONSOLE_VERSION}} from {{.CONSOLE_REPO}}..."
@@ -158,13 +158,14 @@ tasks:
         echo "    meta:      {{.BASE_URL}}/api/v1/forge/meta"
         echo "    schemas:   {{.BASE_URL}}/api/v1/forge/schemas"
         echo ""
-        if [ "$CONSOLE" = "1" ]; then
+        if [ "$CONSOLE" != "0" ]; then
           echo "  Ops console (embedded, served same-origin):"
           echo "    {{.BASE_URL}}/console"
+          echo ""
+          echo "  (API-only: CONSOLE=0 task demo)"
         else
-          echo "  Launch the React app site:"
-          echo "    task site:dev          # regenerates site/ and starts Vite on :{{.SITE_DEV_PORT}}"
-          echo "    CONSOLE=1 task demo    # or embed + serve the ops console at /console"
+          echo "  Console disabled (API-only). Other UI options:"
+          echo "    task site:dev   # regenerate site/ and start Vite on :{{.SITE_DEV_PORT}}"
         fi
         echo ""
         echo "  Press Ctrl+C to stop the backend."
