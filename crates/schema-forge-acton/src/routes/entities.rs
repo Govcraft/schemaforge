@@ -35,7 +35,7 @@ use crate::messages::{
     CreateEntity, DeleteEntity, GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema,
     GetSchemasBatch, GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
 };
-use crate::rules::{apply_computed, check_requires, RuleError};
+use crate::rules::{apply_computed, apply_defaults, check_requires, RuleError};
 use schema_forge_core::types::HookEvent;
 use std::sync::Arc;
 
@@ -1663,7 +1663,10 @@ pub async fn create_entity(
     let tenant_config = ask_forge(rx).await?;
     inject_tenant_on_create(&mut fields, claims.as_ref(), &tenant_config);
     inject_owner_on_create(&mut fields, &schema_def, claims.as_ref());
-    inject_audit_columns_on_create(&mut fields, &schema_def, claims.as_ref(), chrono::Utc::now());
+    // Single request-time instant: reused for audit columns and as the `now`
+    // CEL binding so all rules in this write observe the same clock.
+    let rules_now = chrono::Utc::now();
+    inject_audit_columns_on_create(&mut fields, &schema_def, claims.as_ref(), rules_now);
 
     // before_validate / before_change hooks. `before_validate` runs
     // first so a hook can mutate or add fields before any
@@ -1704,11 +1707,14 @@ pub async fn create_entity(
         .await?;
     }
 
+    // CEL @default expression defaults (#94) — insert-only; fills absent/null fields before @compute.
+    apply_defaults(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
-    apply_computed(&schema_def, &mut fields, claims.as_ref()).map_err(rule_error_to_forge)?;
+    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
     // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
-    check_requires(&schema_def, &fields, claims.as_ref()).map_err(rule_error_to_forge)?;
+    check_requires(&schema_def, &fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
     // Create the entity, filtering write-restricted fields
     let mut entity = Entity::new(schema_name, fields);
@@ -2354,7 +2360,9 @@ pub async fn update_entity(
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
     strip_owner_on_update(&mut fields, &schema_def);
-    inject_audit_columns_on_update(&mut fields, &schema_def, claims.as_ref(), chrono::Utc::now());
+    // Single request-time instant reused for audit columns and the `now` CEL binding.
+    let rules_now = chrono::Utc::now();
+    inject_audit_columns_on_update(&mut fields, &schema_def, claims.as_ref(), rules_now);
 
     // before_validate / before_change hooks. `before_validate` runs
     // first so a hook can mutate or add fields before any
@@ -2396,10 +2404,10 @@ pub async fn update_entity(
     }
 
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
-    apply_computed(&schema_def, &mut fields, claims.as_ref()).map_err(rule_error_to_forge)?;
+    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
     // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
-    check_requires(&schema_def, &fields, claims.as_ref()).map_err(rule_error_to_forge)?;
+    check_requires(&schema_def, &fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
     // Build entity with specific ID, filtering write-restricted fields
     let mut entity = Entity::with_id(entity_id, schema_name, fields);
@@ -2591,12 +2599,9 @@ pub async fn patch_entity(
     // Owner field is immutable post-create; refuse to transfer ownership
     // via PATCH the same way we refuse via PUT.
     strip_owner_on_update(&mut patch_fields, &schema_def);
-    inject_audit_columns_on_update(
-        &mut patch_fields,
-        &schema_def,
-        claims.as_ref(),
-        chrono::Utc::now(),
-    );
+    // Single request-time instant reused for audit columns and the `now` CEL binding.
+    let rules_now = chrono::Utc::now();
+    inject_audit_columns_on_update(&mut patch_fields, &schema_def, claims.as_ref(), rules_now);
 
     // Merge the patch onto the existing entity's field map so hooks see
     // the post-patch view of the entity. The merged map is only used to
@@ -2647,12 +2652,12 @@ pub async fn patch_entity(
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
     // Runs on the merged (full post-patch) view so the delta picks up computed
     // changes and @require predicates see them.
-    apply_computed(&schema_def, &mut merged, claims.as_ref()).map_err(rule_error_to_forge)?;
+    apply_computed(&schema_def, &mut merged, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
     // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
     // Evaluated against the full post-patch entity view so predicates that
     // reference unpatched fields still see their current values.
-    check_requires(&schema_def, &merged, claims.as_ref()).map_err(rule_error_to_forge)?;
+    check_requires(&schema_def, &merged, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
     // Compute the delta: only keys whose final value differs from the
     // loaded baseline go to the backend. This keeps PATCH's SQL UPDATE

@@ -554,6 +554,109 @@ async fn compute_annotation_derives_and_overwrites_field() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_annotation_fills_absent_fields_but_preserves_supplied() {
+    use schema_forge_core::types::{
+        Annotation, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaDefinition,
+        SchemaId, SchemaName, TextConstraints,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // `author` defaults to the caller's subject; `recorded_at` defaults to the
+    // request-time `now` timestamp (a variable, not a `now()` call — the engine
+    // is pure). Deliberately NOT named `created_by`/`created_at`, which are
+    // reserved audit columns the server stamps before defaults run.
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Doc").unwrap(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("title").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::with_annotations(
+                FieldName::new("author").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Default {
+                    expr: "principal.sub".to_string(),
+                }],
+            ),
+            FieldDefinition::with_annotations(
+                FieldName::new("recorded_at").unwrap(),
+                FieldType::DateTime,
+                vec![],
+                vec![FieldAnnotation::Default {
+                    expr: "now".to_string(),
+                }],
+            ),
+        ],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let mut registry = HashMap::new();
+    registry.insert("Doc".to_string(), schema.clone());
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry,
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    // make_test_claims sets sub = "user:test-user".
+    let app = test_app_with_claims_state(state, make_test_claims(&["platform_admin"]));
+
+    // POST without the defaulted fields → they should be filled.
+    let body = serde_json::json!({ "fields": { "title": "Hello" } });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Doc/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+    assert_eq!(json["fields"]["author"], "user:test-user");
+    assert!(
+        json["fields"]["recorded_at"].is_string(),
+        "expected recorded_at to be a defaulted `now` timestamp string, got: {json}"
+    );
+
+    // POST WITH an explicit author → the default must not override it.
+    let body = serde_json::json!({
+        "fields": { "title": "Hi", "author": "user:someone-else" }
+    });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Doc/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+    assert_eq!(json["fields"]["author"], "user:someone-else");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_entity_for_missing_schema_returns_404() {
     let app = test_app().await;
 
