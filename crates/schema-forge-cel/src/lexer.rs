@@ -17,6 +17,13 @@ use crate::error::{ParseError, Position};
 pub enum Tok {
     /// A signed integer literal (`int`).
     Int(i64),
+    /// The magnitude `2^63` (`9223372036854775808`), which does not fit `i64`.
+    ///
+    /// CEL has no negative integer literal token, so `i64::MIN` is written as
+    /// unary minus applied to this magnitude. It is legal *only* as the immediate
+    /// operand of a unary `-` (the parser folds `-` + this into `Int(i64::MIN)`);
+    /// anywhere else it is an out-of-range error.
+    IntMinMagnitude,
     /// An unsigned integer literal (`uint`, written with a `u`/`U` suffix).
     Uint(u64),
     /// A floating-point literal (`double`).
@@ -421,9 +428,16 @@ impl<'a> Lexer<'a> {
                 .map(Tok::Uint)
                 .map_err(|_| ParseError::with_position("uint literal out of range", start));
         }
-        i64::from_str_radix(digits, radix)
-            .map(Tok::Int)
-            .map_err(|_| ParseError::with_position("int literal out of range", start))
+        if let Ok(i) = i64::from_str_radix(digits, radix) {
+            return Ok(Tok::Int(i));
+        }
+        // `2^63` overflows `i64` but is legal as the operand of unary minus
+        // (yielding `i64::MIN`); the parser folds it. Any larger magnitude is a
+        // genuine out-of-range error.
+        if u64::from_str_radix(digits, radix) == Ok(1u64 << 63) {
+            return Ok(Tok::IntMinMagnitude);
+        }
+        Err(ParseError::with_position("int literal out of range", start))
     }
 
     /// Scan a string or bytes literal beginning at the cursor. `prefix_len` bytes

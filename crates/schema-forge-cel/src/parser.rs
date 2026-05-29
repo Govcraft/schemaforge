@@ -158,6 +158,14 @@ impl Parser {
             Tok::Minus => UnaryOp::Neg,
             _ => return self.parse_member(),
         };
+        // `-9223372036854775808` is `i64::MIN`: a unary minus directly applied to
+        // the `2^63` magnitude folds to the literal rather than negating it (which
+        // would overflow). The fold applies only to an immediately adjacent token.
+        if op == UnaryOp::Neg && self.peek_at(1) == &Tok::IntMinMagnitude {
+            self.bump(); // -
+            self.bump(); // 2^63 magnitude
+            return Ok(Expr::Literal(Literal::Int(i64::MIN)));
+        }
         self.bump();
         // A run of the same operator nests; `parse_unary` recursion also handles
         // mixed runs such as `!-x` (Not over Neg over member).
@@ -242,6 +250,11 @@ impl Parser {
             Tok::True => Literal::Bool(true),
             Tok::False => Literal::Bool(false),
             Tok::Null => Literal::Null,
+            Tok::IntMinMagnitude => {
+                // `2^63` is only legal as the operand of unary minus (folded in
+                // `parse_unary`); on its own it exceeds the `int` range.
+                return Err(self.error_here("int literal out of range"));
+            }
             Tok::Reserved(word) => {
                 return Err(
                     self.error_here(format!("reserved identifier '{word}' cannot be used here"))
@@ -851,6 +864,19 @@ mod tests {
     #[test]
     fn leading_dot_ident() {
         assert_eq!(p(".x"), Expr::Ident(".x".into()));
+    }
+
+    #[test]
+    fn int_min_literal_folds() {
+        // -9223372036854775808 is i64::MIN, folded directly (not Neg of 2^63).
+        assert_eq!(p("-9223372036854775808"), Expr::Literal(Literal::Int(i64::MIN)));
+        // The bare 2^63 magnitude (no minus) is out of range.
+        assert!(parse("9223372036854775808").is_err());
+        // i64::MAX still parses normally.
+        assert_eq!(
+            p("9223372036854775807"),
+            Expr::Literal(Literal::Int(i64::MAX))
+        );
     }
 
     #[test]

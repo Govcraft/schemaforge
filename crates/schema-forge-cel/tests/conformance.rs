@@ -69,14 +69,13 @@ const EXCLUDED: &[&str] = &[
 /// Stage 1 (harness only) = 0; #107 turns on `parse`/`plumbing`; #108 the core
 /// sections; #109 the stdlib sections.
 ///
-/// #108 (evaluator core) raised this to 815. #109 (standard library) raises it to
-/// 1018: `string` and `fp_math` are fully green; `conversions` (108/109),
-/// `timestamps` (73/76), and `integer_math` (59/64) are green except for
-/// constructs outside the stdlib's responsibility — the `i64::MIN` literal
-/// (#114 parser), qualified type denotation `google.protobuf.Timestamp`
-/// (namespace resolution), and the `dyn` unknown-variable message spelling.
-/// `macros` also reached fully green as a side effect of `startsWith`/conversions.
-const MIN_PASS_BASELINE: usize = 1018;
+/// #108 (evaluator core) raised this to 815. #109 (standard library) raised it to
+/// 1018. #114 (parsing `-9223372036854775808` as `i64::MIN`) raises it to 1037:
+/// `integer_math` is now fully green (64/64), and the fix also lifts `basic`
+/// (42/43) and `comparisons` (330/406). Remaining reds across the subset are
+/// proto-message constructs (out of scope), namespace-qualified type names, and
+/// the `dyn` unknown-variable message spelling — none are engine bugs.
+const MIN_PASS_BASELINE: usize = 1037;
 
 #[derive(Default)]
 struct Tally {
