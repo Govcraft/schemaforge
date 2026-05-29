@@ -104,6 +104,16 @@ async fn setup(
     hooks_config: HooksConfig,
     dispatcher: Option<Arc<MockHookDispatcher>>,
 ) -> AppState<SchemaForgeConfig> {
+    setup_with_schema(hooks_config, dispatcher, translation_schema_with_hooks()).await
+}
+
+/// Like [`setup`], but registers an arbitrary `schema` (so a test can mix
+/// `@require`/`@compute`/`@default` rule annotations with hook bindings).
+async fn setup_with_schema(
+    hooks_config: HooksConfig,
+    dispatcher: Option<Arc<MockHookDispatcher>>,
+    schema: SchemaDefinition,
+) -> AppState<SchemaForgeConfig> {
     use acton_service::service_builder::ServiceBuilder;
 
     let backend = SurrealBackend::connect_memory("test", "test")
@@ -149,9 +159,8 @@ async fn setup(
         .expect("InitForge timeout")
         .expect("InitForge channel dropped");
 
-    // Create the Translation table in the backend and register the
-    // annotated definition in the actor's registry.
-    let schema = translation_schema_with_hooks();
+    // Create the entity table in the backend and register the annotated
+    // definition in the actor's registry.
     let plan = DiffEngine::create_new(&schema);
 
     let (tx, rx) = oneshot::channel();
@@ -238,8 +247,12 @@ async fn post_entity(
 }
 
 fn binding(required: bool, event: HookEvent) -> HookBinding {
+    binding_for("Translation", required, event)
+}
+
+fn binding_for(schema: &str, required: bool, event: HookEvent) -> HookBinding {
     HookBinding {
-        schema: "Translation".to_string(),
+        schema: schema.to_string(),
         event,
         endpoint: "http://mock".to_string(),
         timeout_ms: None,
@@ -852,4 +865,169 @@ async fn hook_not_invoked_when_disabled() {
     assert_eq!(status, StatusCode::CREATED);
     assert!(dispatcher.before_calls().await.is_empty());
     assert!(dispatcher.after_calls().await.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #105 — rule ordering vs hooks: a @require rejection short-circuits
+// the write *before* any before_* hook, persists nothing, and fires no
+// after_* hook.
+// ---------------------------------------------------------------------------
+
+/// A `Person` schema carrying a `@require(age >= 18)` rule *and* both
+/// `before_change` / `after_change` hook annotations. Used to prove the
+/// canonical ordering: rules run ahead of the `before_*` gRPC hooks, so a
+/// rejection never reaches any hook.
+fn person_schema_with_require_and_hooks() -> SchemaDefinition {
+    use schema_forge_core::types::{FieldAnnotation, IntegerConstraints};
+    SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Person").unwrap(),
+        vec![FieldDefinition::with_annotations(
+            FieldName::new("age").unwrap(),
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Require {
+                expr: "age >= 18".to_string(),
+                message: "age must be at least 18".to_string(),
+            }],
+        )],
+        vec![
+            Annotation::Hook {
+                event: HookEvent::BeforeChange,
+                intent: "validate person".to_string(),
+            },
+            Annotation::Hook {
+                event: HookEvent::AfterChange,
+                intent: "notify".to_string(),
+            },
+            Annotation::Access {
+                read: vec![],
+                write: vec![],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            },
+        ],
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn require_rejection_fires_no_before_or_after_hook_and_persists_nothing() {
+    let dispatcher = Arc::new(MockHookDispatcher::new());
+    let config = HooksConfig {
+        enabled: true,
+        bindings: vec![
+            binding_for("Person", true, HookEvent::BeforeChange),
+            binding_for("Person", false, HookEvent::AfterChange),
+        ],
+        ..HooksConfig::default()
+    };
+    let state = setup_with_schema(
+        config,
+        Some(dispatcher.clone()),
+        person_schema_with_require_and_hooks(),
+    )
+    .await;
+    let router = test_router(state);
+
+    // age = 10 violates `@require(age >= 18)`.
+    let (status, json) = post_entity(&router, "Person", serde_json::json!({"age": 10})).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 from @require, got {status} with body: {json}"
+    );
+    assert_eq!(json["error"], "validation_failed");
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap()
+            .contains("age must be at least 18"),
+        "expected require message, got: {json}"
+    );
+
+    // The rule rejection ran *before* the before_change hook, so no before_*
+    // hook was dispatched (proves rules precede the gRPC round-trip).
+    assert!(
+        dispatcher.before_calls().await.is_empty(),
+        "a @require rejection must not dispatch any before_* hook"
+    );
+
+    // after_* hooks are detached; give the runtime a window in which one
+    // *could* have fired, then assert it did not.
+    for _ in 0..20 {
+        if !dispatcher.after_calls().await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        dispatcher.after_calls().await.is_empty(),
+        "a @require rejection must not fire any after_* hook"
+    );
+
+    // Nothing was persisted: the list endpoint returns zero entities.
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/schemas/Person/entities")
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let entities = list["entities"].as_array().expect("entities array");
+    assert!(
+        entities.is_empty(),
+        "a @require rejection must persist nothing, found: {list}"
+    );
+}
+
+/// Counterpart: a *valid* write (age >= 18) does reach both hooks and
+/// persists. Pins the ordering claim from the negative test — the hooks
+/// fire exactly when the rules pass, on the validated field set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passing_require_reaches_before_and_after_hooks() {
+    let dispatcher = Arc::new(MockHookDispatcher::new());
+    let config = HooksConfig {
+        enabled: true,
+        bindings: vec![
+            binding_for("Person", true, HookEvent::BeforeChange),
+            binding_for("Person", false, HookEvent::AfterChange),
+        ],
+        ..HooksConfig::default()
+    };
+    let state = setup_with_schema(
+        config,
+        Some(dispatcher.clone()),
+        person_schema_with_require_and_hooks(),
+    )
+    .await;
+    let router = test_router(state);
+
+    let (status, json) = post_entity(&router, "Person", serde_json::json!({"age": 21})).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {json}");
+
+    let before = dispatcher.before_calls().await;
+    assert_eq!(
+        before.len(),
+        1,
+        "before_change must fire once on a valid write"
+    );
+    assert_eq!(before[0].event, HookEvent::BeforeChange);
+    // The before hook sees the rule-validated field set.
+    assert_eq!(before[0].fields.get("age"), Some(&DynamicValue::Integer(21)));
+
+    for _ in 0..50 {
+        if !dispatcher.after_calls().await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let after = dispatcher.after_calls().await;
+    assert_eq!(
+        after.len(),
+        1,
+        "after_change must fire once on a valid write"
+    );
 }

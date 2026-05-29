@@ -5,12 +5,17 @@
 //! We use the `surrealdb::sql` module types (re-exported from `surrealdb_core`)
 //! for pattern matching on query results. Construction of composite values
 //! goes through the public `surrealdb::Object` wrapper which exposes `insert`.
+//!
+//! A SchemaForge `duration` is a signed [`chrono::TimeDelta`], but SurrealDB's
+//! native `duration` type is unsigned. A negative duration therefore cannot be
+//! stored faithfully and is REJECTED fail-closed on write (see
+//! [`first_negative_duration`]); it is never silently coerced to NULL.
 
 use std::collections::BTreeMap;
 
 use schema_forge_backend::entity::Entity;
 use schema_forge_backend::error::BackendError;
-use schema_forge_core::types::{DynamicValue, EntityId, SchemaName};
+use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaName};
 use surrealdb::sql::Value as SurrealValue;
 
 /// Convert a `DynamicValue` to a `surrealdb::sql::Value`.
@@ -26,13 +31,23 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
             // will wrap it with d'...' for SurrealQL datetime fields.
             SurrealValue::from(dt.to_rfc3339())
         }
+        DynamicValue::Duration(d) => {
+            timedelta_to_surreal_duration(d).map_or(SurrealValue::None, SurrealValue::Duration)
+        }
+        DynamicValue::Bytes(b) => {
+            // SurrealDB has a native (unsigned-length) `bytes` type; store the
+            // bytes verbatim.
+            SurrealValue::Bytes(surrealdb::sql::Bytes::from(b.clone()))
+        }
         DynamicValue::Enum(s) => SurrealValue::from(s.as_str()),
         DynamicValue::Json(v) => json_to_surreal(v),
         DynamicValue::Array(arr) => {
             let items: Vec<SurrealValue> = arr.iter().map(dynamic_to_surreal).collect();
             SurrealValue::from(items)
         }
-        DynamicValue::Composite(map) => {
+        DynamicValue::Composite(map) | DynamicValue::Map(map) => {
+            // A fixed-field `Composite` and a typed open-key `Map` are both
+            // stored as a native string-keyed SurrealDB object.
             let mut obj = surrealdb::Object::new();
             for (k, v) in map {
                 obj.insert(
@@ -82,6 +97,14 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
             let chrono_dt: chrono::DateTime<chrono::Utc> = dt.0;
             Ok(DynamicValue::DateTime(chrono_dt))
         }
+        SurrealValue::Duration(dur) => {
+            // surrealdb::sql::Duration wraps an unsigned std::time::Duration.
+            let delta = chrono::TimeDelta::from_std(dur.0).map_err(|e| BackendError::Internal {
+                message: format!("duration out of representable range: {e}"),
+            })?;
+            Ok(DynamicValue::Duration(delta))
+        }
+        SurrealValue::Bytes(b) => Ok(DynamicValue::Bytes(b.to_vec())),
         SurrealValue::Array(arr) => {
             let items: Result<Vec<DynamicValue>, BackendError> =
                 arr.iter().map(surreal_to_dynamic).collect();
@@ -168,6 +191,77 @@ fn extract_id_string(value: &SurrealValue) -> Result<String, BackendError> {
     }
 }
 
+/// Convert a signed `chrono::TimeDelta` to SurrealDB's native (unsigned)
+/// `surrealdb::sql::Duration`.
+///
+/// SurrealDB durations wrap an unsigned `std::time::Duration`, so a negative
+/// `TimeDelta` has no native representation and yields `None`. A negative value
+/// must NEVER be silently coerced to NULL on write — the write path
+/// ([`crate::backend`]) rejects it fail-closed via
+/// [`first_negative_duration`] before this conversion is reached. Practical
+/// `duration` field uses on a records platform (retention windows, TTLs, SLA
+/// timers) are non-negative, so `None` here is only ever the unreachable
+/// belt-and-braces case for an already-validated value.
+fn timedelta_to_surreal_duration(d: &chrono::TimeDelta) -> Option<surrealdb::sql::Duration> {
+    d.to_std().ok().map(surrealdb::sql::Duration::from)
+}
+
+/// Find the first negative `duration` anywhere in a value tree.
+///
+/// SurrealDB's native `duration` type is unsigned, so a negative
+/// [`chrono::TimeDelta`] cannot be stored faithfully. The write path uses this
+/// to reject such a value with a clear error rather than silently dropping it
+/// to NULL. Recurses through arrays and composites so a negative duration
+/// nested inside a `duration[]` field or a composite is also caught.
+///
+/// Returns the offending [`chrono::TimeDelta`] (the first encountered) or
+/// `None` when every duration in the tree is non-negative.
+pub(crate) fn first_negative_duration(value: &DynamicValue) -> Option<chrono::TimeDelta> {
+    match value {
+        DynamicValue::Duration(d) if *d < chrono::TimeDelta::zero() => Some(*d),
+        DynamicValue::Array(items) => items.iter().find_map(first_negative_duration),
+        DynamicValue::Composite(map) | DynamicValue::Map(map) => {
+            map.values().find_map(first_negative_duration)
+        }
+        _ => None,
+    }
+}
+
+/// Find the first oversized `bytes` value relative to its declared `max_size`,
+/// walking arrays and composites in lock-step with the field type.
+///
+/// The byte-length cap on a `bytes` field must be enforced fail-closed on write:
+/// an oversized value is rejected with a clear error, never silently stored.
+/// Recurses through `Array<bytes>` and `Composite` so a nested oversized value
+/// is also caught.
+///
+/// Returns `(actual_len, max_size)` for the first violation, or `None` when no
+/// `bytes` value in the tree exceeds its cap (or no cap is set).
+pub(crate) fn first_oversized_bytes(
+    field_type: &FieldType,
+    value: &DynamicValue,
+) -> Option<(usize, usize)> {
+    match (field_type, value) {
+        (FieldType::Bytes(constraints), DynamicValue::Bytes(b)) => {
+            let max = constraints.max_size?;
+            (b.len() > max).then_some((b.len(), max))
+        }
+        (FieldType::Array(inner), DynamicValue::Array(items)) => items
+            .iter()
+            .find_map(|item| first_oversized_bytes(inner, item)),
+        (FieldType::Composite(fields), DynamicValue::Composite(map)) => {
+            fields.iter().find_map(|fd| {
+                map.get(fd.name.as_str())
+                    .and_then(|v| first_oversized_bytes(&fd.field_type, v))
+            })
+        }
+        (FieldType::Map { value, .. }, DynamicValue::Map(map)) => {
+            map.values().find_map(|v| first_oversized_bytes(value, v))
+        }
+        _ => None,
+    }
+}
+
 /// Convert a `serde_json::Value` to a `surrealdb::sql::Value`.
 fn json_to_surreal(json: &serde_json::Value) -> SurrealValue {
     match json {
@@ -246,6 +340,127 @@ mod tests {
     }
 
     #[test]
+    fn duration_round_trip_positive() {
+        let dv = DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000));
+        let sv = dynamic_to_surreal(&dv);
+        assert!(matches!(sv, SurrealValue::Duration(_)));
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert_eq!(back, dv);
+    }
+
+    #[test]
+    fn bytes_round_trip() {
+        let dv = DynamicValue::Bytes(vec![0x00, 0x01, 0xff, 0xfe, 0x80, 0x7f]);
+        let sv = dynamic_to_surreal(&dv);
+        assert!(matches!(sv, SurrealValue::Bytes(_)));
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert_eq!(back, dv);
+    }
+
+    #[test]
+    fn bytes_round_trip_empty() {
+        let dv = DynamicValue::Bytes(Vec::new());
+        let sv = dynamic_to_surreal(&dv);
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert_eq!(back, dv);
+    }
+
+    #[test]
+    fn first_oversized_bytes_flags_top_level_violation() {
+        use schema_forge_core::types::BytesConstraints;
+        let ft = FieldType::Bytes(BytesConstraints::with_max_size(2));
+        let val = DynamicValue::Bytes(vec![1, 2, 3]);
+        assert_eq!(first_oversized_bytes(&ft, &val), Some((3, 2)));
+    }
+
+    #[test]
+    fn first_oversized_bytes_ignores_within_limit_and_unconstrained() {
+        use schema_forge_core::types::BytesConstraints;
+        let capped = FieldType::Bytes(BytesConstraints::with_max_size(8));
+        assert_eq!(
+            first_oversized_bytes(&capped, &DynamicValue::Bytes(vec![1, 2, 3])),
+            None
+        );
+        let uncapped = FieldType::Bytes(BytesConstraints::unconstrained());
+        assert_eq!(
+            first_oversized_bytes(&uncapped, &DynamicValue::Bytes(vec![1; 1024])),
+            None
+        );
+    }
+
+    #[test]
+    fn first_oversized_bytes_recurses_into_array() {
+        use schema_forge_core::types::BytesConstraints;
+        let ft = FieldType::Array(Box::new(FieldType::Bytes(BytesConstraints::with_max_size(
+            2,
+        ))));
+        let val = DynamicValue::Array(vec![
+            DynamicValue::Bytes(vec![1, 2]),
+            DynamicValue::Bytes(vec![1, 2, 3, 4]),
+        ]);
+        assert_eq!(first_oversized_bytes(&ft, &val), Some((4, 2)));
+    }
+
+    #[test]
+    fn duration_round_trip_subsecond() {
+        let dv = DynamicValue::Duration(
+            chrono::TimeDelta::seconds(5) + chrono::TimeDelta::nanoseconds(123_456),
+        );
+        let sv = dynamic_to_surreal(&dv);
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert_eq!(back, dv);
+    }
+
+    #[test]
+    fn first_negative_duration_detects_top_level() {
+        let dv = DynamicValue::Duration(chrono::TimeDelta::seconds(-5));
+        assert_eq!(
+            first_negative_duration(&dv),
+            Some(chrono::TimeDelta::seconds(-5))
+        );
+    }
+
+    #[test]
+    fn first_negative_duration_ignores_non_negative() {
+        assert_eq!(
+            first_negative_duration(&DynamicValue::Duration(chrono::TimeDelta::seconds(5))),
+            None
+        );
+        assert_eq!(
+            first_negative_duration(&DynamicValue::Duration(chrono::TimeDelta::zero())),
+            None
+        );
+        assert_eq!(
+            first_negative_duration(&DynamicValue::Integer(-9)),
+            None,
+            "a negative integer is not a duration"
+        );
+    }
+
+    #[test]
+    fn first_negative_duration_recurses_into_array_and_composite() {
+        let arr = DynamicValue::Array(vec![
+            DynamicValue::Duration(chrono::TimeDelta::seconds(5)),
+            DynamicValue::Duration(chrono::TimeDelta::seconds(-3)),
+        ]);
+        assert_eq!(
+            first_negative_duration(&arr),
+            Some(chrono::TimeDelta::seconds(-3))
+        );
+
+        let mut map = BTreeMap::new();
+        map.insert(
+            "ttl".to_string(),
+            DynamicValue::Duration(chrono::TimeDelta::seconds(-1)),
+        );
+        let comp = DynamicValue::Composite(map);
+        assert_eq!(
+            first_negative_duration(&comp),
+            Some(chrono::TimeDelta::seconds(-1))
+        );
+    }
+
+    #[test]
     fn array_round_trip() {
         let dv = DynamicValue::Array(vec![DynamicValue::Integer(1), DynamicValue::Integer(2)]);
         let sv = dynamic_to_surreal(&dv);
@@ -264,6 +479,55 @@ mod tests {
         let sv = dynamic_to_surreal(&dv);
         let back = surreal_to_dynamic(&sv).unwrap();
         assert_eq!(back, DynamicValue::Composite(map));
+    }
+
+    #[test]
+    fn map_serializes_as_object() {
+        // A typed `Map` writes to a native SurrealDB object, exactly like a
+        // Composite. (Reads have no field-type context and come back as a
+        // Composite, which serializes identically to a JSON object.)
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), DynamicValue::Integer(1));
+        map.insert("b".to_string(), DynamicValue::Integer(2));
+        let sv = dynamic_to_surreal(&DynamicValue::Map(map));
+        assert!(matches!(sv, SurrealValue::Object(_)));
+        // Round-trips back to a Composite with the same entries.
+        let back = surreal_to_dynamic(&sv).unwrap();
+        let DynamicValue::Composite(got) = back else {
+            panic!("expected Composite on read-back");
+        };
+        assert_eq!(got.get("a"), Some(&DynamicValue::Integer(1)));
+        assert_eq!(got.get("b"), Some(&DynamicValue::Integer(2)));
+    }
+
+    #[test]
+    fn oversized_bytes_in_map_is_caught() {
+        let value_type =
+            FieldType::Bytes(schema_forge_core::types::BytesConstraints::with_max_size(2));
+        let ft = FieldType::Map {
+            key: Box::new(FieldType::Text(
+                schema_forge_core::types::TextConstraints::unconstrained(),
+            )),
+            value: Box::new(value_type),
+        };
+        let mut map = BTreeMap::new();
+        map.insert("big".to_string(), DynamicValue::Bytes(vec![1, 2, 3, 4]));
+        let dv = DynamicValue::Map(map);
+        assert_eq!(first_oversized_bytes(&ft, &dv), Some((4, 2)));
+    }
+
+    #[test]
+    fn negative_duration_in_map_is_caught() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "ttl".to_string(),
+            DynamicValue::Duration(chrono::TimeDelta::seconds(-5)),
+        );
+        let dv = DynamicValue::Map(map);
+        assert_eq!(
+            first_negative_duration(&dv),
+            Some(chrono::TimeDelta::seconds(-5))
+        );
     }
 
     #[test]

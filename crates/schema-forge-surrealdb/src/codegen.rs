@@ -180,7 +180,7 @@ fn unique_index_name(table: &str, field: &str) -> String {
 fn needs_flexible(field_type: &FieldType) -> bool {
     matches!(
         field_type,
-        FieldType::Json | FieldType::Composite(_) | FieldType::File(_)
+        FieldType::Json | FieldType::Composite(_) | FieldType::Map { .. } | FieldType::File(_)
     )
 }
 
@@ -192,6 +192,8 @@ pub fn field_type_to_surql(field_type: &FieldType) -> String {
         FieldType::Float(_) => "float".to_string(),
         FieldType::Boolean => "bool".to_string(),
         FieldType::DateTime => "datetime".to_string(),
+        FieldType::Duration => "duration".to_string(),
+        FieldType::Bytes(_) => "bytes".to_string(),
         FieldType::Enum(_) => "string".to_string(),
         FieldType::Json => "object".to_string(),
         FieldType::Relation {
@@ -207,6 +209,8 @@ pub fn field_type_to_surql(field_type: &FieldType) -> String {
             format!("array<{inner_type}>")
         }
         FieldType::Composite(_) => "object".to_string(),
+        // A typed `map<string, V>` is stored as a native string-keyed object.
+        FieldType::Map { .. } => "object".to_string(),
         FieldType::File(_) => "object".to_string(),
         _ => "any".to_string(),
     }
@@ -706,11 +710,28 @@ mod tests {
         );
         assert_eq!(field_type_to_surql(&FieldType::Boolean), "bool");
         assert_eq!(field_type_to_surql(&FieldType::DateTime), "datetime");
+        assert_eq!(field_type_to_surql(&FieldType::Duration), "duration");
+        assert_eq!(
+            field_type_to_surql(&FieldType::Bytes(
+                schema_forge_core::types::BytesConstraints::unconstrained()
+            )),
+            "bytes"
+        );
         assert_eq!(field_type_to_surql(&FieldType::Json), "object");
         assert_eq!(
             field_type_to_surql(&FieldType::Array(Box::new(FieldType::Boolean))),
             "array<bool>"
         );
+        let map_ft = FieldType::Map {
+            key: Box::new(FieldType::Text(
+                schema_forge_core::types::TextConstraints::unconstrained(),
+            )),
+            value: Box::new(FieldType::Integer(
+                schema_forge_core::types::IntegerConstraints::unconstrained(),
+            )),
+        };
+        assert_eq!(field_type_to_surql(&map_ft), "object");
+        assert!(needs_flexible(&map_ft));
     }
 
     #[test]

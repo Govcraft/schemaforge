@@ -136,6 +136,11 @@ pub enum DslError {
     /// A `file(...)` parameter value was invalid or a required parameter was missing.
     InvalidFileParam { message: String, span: Span },
 
+    /// A `map<K, V>` type declared a non-`string` key type. Only `string` keys
+    /// are supported for now; non-string keys (int/uint/bool) require lossy
+    /// string key-encoding through JSON/JSONB/object storage.
+    MapKeyNotString { found: String, span: Span },
+
     /// A `max_size` literal in `file(...)` could not be parsed.
     InvalidSizeLiteral { text: String, span: Span },
 
@@ -143,6 +148,70 @@ pub enum DslError {
     /// uniquely indexed (e.g. `richtext`, `json`, `boolean`, array, composite,
     /// relation, or file).
     UniqueOnUnsupportedType { field_type: String, span: Span },
+
+    /// A CEL expression supplied to `@require(...)`, `@compute(...)`, or
+    /// `@default(...)` failed to parse. `line`/`column` are absolute positions
+    /// in the schema source (1-based), computed by mapping the CEL parser's
+    /// intra-expression position onto the position where the expression's
+    /// string content begins. `message` is the underlying CEL parse-error text.
+    InvalidCelExpression {
+        message: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
+
+    /// A CEL expression supplied to `@require(...)`, `@compute(...)`, or
+    /// `@default(...)` parsed correctly but failed static type-checking against
+    /// the schema's field types (#104). `line`/`column` are absolute positions in
+    /// the schema source (1-based), pointing into the offending expression.
+    /// `message` is the underlying CEL type-error text.
+    RuleTypeError {
+        message: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
+
+    /// A rule expression used the reserved `related.<F>.<col>` cross-entity-read
+    /// namespace (#95) in a `@compute(...)` or `@default(...)` annotation, where
+    /// it is not permitted. Cross-entity reads are allowed only in `@require`,
+    /// because persisting a copy of another row's field is a staleness trap that
+    /// belongs in a hook. `line`/`column` point into the offending expression.
+    CrossEntityReadNotAllowedInRole {
+        /// The annotation role spelled for the message (`@compute` / `@default`).
+        role: &'static str,
+        /// The relation field name `F` that was dereferenced.
+        relation: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
+
+    /// A `@require` rule referenced `related.<F>` where `F` is not a declared
+    /// relation field on the schema being written (#95) — either `F` is not a
+    /// declared field at all, or it is a non-relation field. `line`/`column`
+    /// point into the offending expression.
+    CrossEntityReadUnknownRelation {
+        /// The relation field name `F` that could not be resolved to a
+        /// `Relation{One}` field.
+        relation: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
+
+    /// A `@require` rule referenced `related.<F>` where `F` is a to-many
+    /// (`Relation{Many}`) relation field (#95). To-many cross-entity reads are
+    /// not supported in rules; use a `before_*` hook instead. `line`/`column`
+    /// point into the offending expression.
+    CrossEntityReadToMany {
+        /// The to-many relation field name `F`.
+        relation: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
 }
 
 impl fmt::Display for DslError {
@@ -291,6 +360,12 @@ impl fmt::Display for DslError {
             Self::InvalidFileParam { message, span } => {
                 write!(f, "invalid file parameter at {span}: {message}")
             }
+            Self::MapKeyNotString { found, span } => {
+                write!(
+                    f,
+                    "map key type at {span} must be `string`; non-string keys (int/uint/bool) are not yet supported — they require lossy string key-encoding through JSON/JSONB/object storage (found `{found}`)"
+                )
+            }
             Self::InvalidSizeLiteral { text, span } => {
                 write!(
                     f,
@@ -302,6 +377,56 @@ impl fmt::Display for DslError {
                     f,
                     "the 'unique' modifier at {span} cannot be applied to a {field_type} field; \
                      allowed on text, integer, float, datetime, and enum fields"
+                )
+            }
+            Self::InvalidCelExpression {
+                message,
+                line,
+                column,
+                ..
+            } => {
+                write!(f, "{line}:{column}: invalid expression: {message}")
+            }
+            Self::RuleTypeError {
+                message,
+                line,
+                column,
+                ..
+            } => {
+                write!(f, "{line}:{column}: rule type error: {message}")
+            }
+            Self::CrossEntityReadNotAllowedInRole {
+                role,
+                relation,
+                line,
+                column,
+                ..
+            } => {
+                write!(
+                    f,
+                    "{line}:{column}: cross-entity read 'related.{relation}' is only allowed in @require, not in {role} (#95); persisting a copy of another row's field is a staleness trap — use a before_* hook"
+                )
+            }
+            Self::CrossEntityReadUnknownRelation {
+                relation,
+                line,
+                column,
+                ..
+            } => {
+                write!(
+                    f,
+                    "{line}:{column}: cross-entity read 'related.{relation}' requires '{relation}' to be a declared single-relation (Relation{{One}}) field on this schema (#95)"
+                )
+            }
+            Self::CrossEntityReadToMany {
+                relation,
+                line,
+                column,
+                ..
+            } => {
+                write!(
+                    f,
+                    "{line}:{column}: cross-entity read 'related.{relation}' is not supported: '{relation}' is a to-many relation; to-many cross-entity reads are not allowed in rules (#95) — use a before_* hook"
                 )
             }
         }

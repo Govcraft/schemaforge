@@ -9,8 +9,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::types::{
-    Annotation, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaDefinition, SchemaId,
-    SchemaName, TextConstraints,
+    Annotation, BytesConstraints, FieldDefinition, FieldModifier, FieldName, FieldType,
+    SchemaDefinition, SchemaId, SchemaName, TextConstraints,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -296,6 +296,8 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
             )),
             "Boolean" => Ok(FieldType::Boolean),
             "DateTime" => Ok(FieldType::DateTime),
+            "Duration" => Ok(FieldType::Duration),
+            "Bytes" => Ok(FieldType::Bytes(BytesConstraints::unconstrained())),
             "Json" => Ok(FieldType::Json),
             other => Err(ForgeError::ValidationFailed {
                 details: vec![format!("unknown field type '{other}'")],
@@ -317,7 +319,20 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
                 )),
                 "Boolean" => Ok(FieldType::Boolean),
                 "DateTime" => Ok(FieldType::DateTime),
+                "Duration" => Ok(FieldType::Duration),
+                "Bytes" => {
+                    let max_size = obj
+                        .get("data")
+                        .and_then(|d| d.get("max_size"))
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|n| usize::try_from(n).ok());
+                    Ok(FieldType::Bytes(match max_size {
+                        Some(max) => BytesConstraints::with_max_size(max),
+                        None => BytesConstraints::unconstrained(),
+                    }))
+                }
                 "Json" => Ok(FieldType::Json),
+                "Map" => parse_map_field_type(obj),
                 other => Err(ForgeError::ValidationFailed {
                     details: vec![format!("unknown field type '{other}'")],
                 }),
@@ -327,6 +342,41 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
 
     Err(ForgeError::ValidationFailed {
         details: vec![format!("invalid field_type value: {value}")],
+    })
+}
+
+/// Parse a structured `Map` field type: `{"type":"Map","data":{"value":<FieldType>}}`.
+///
+/// The value type is required and parsed recursively. The key type is always
+/// `string` (Text); a caller may supply an explicit `key`, but a non-`string`
+/// key is rejected with an actionable error — JSON/JSONB/object storage is
+/// uniformly string-keyed, so non-string keys cannot round-trip without lossy
+/// string key-encoding.
+fn parse_map_field_type(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<FieldType, ForgeError> {
+    let data = obj.get("data").and_then(|d| d.as_object());
+    let value_json = data
+        .and_then(|d| d.get("value"))
+        .ok_or_else(|| ForgeError::ValidationFailed {
+            details: vec!["Map field type requires a 'value' type in 'data'".to_string()],
+        })?;
+    let value = parse_field_type(value_json)?;
+
+    if let Some(key_json) = data.and_then(|d| d.get("key")) {
+        let key = parse_field_type(key_json)?;
+        if !matches!(key, FieldType::Text(_)) {
+            return Err(ForgeError::ValidationFailed {
+                details: vec![format!(
+                    "map key type must be `string`; non-string keys (int/uint/bool) are not yet supported — they require lossy string key-encoding through JSON/JSONB/object storage (found `{key}`)"
+                )],
+            });
+        }
+    }
+
+    Ok(FieldType::Map {
+        key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+        value: Box::new(value),
     })
 }
 
@@ -366,6 +416,15 @@ fn field_type_to_json(field_type: &FieldType) -> serde_json::Value {
             serde_json::json!({
                 "type": "Array",
                 "data": field_type_to_json(inner),
+            })
+        }
+        FieldType::Map { key, value } => {
+            serde_json::json!({
+                "type": "Map",
+                "data": {
+                    "key": field_type_to_json(key),
+                    "value": field_type_to_json(value),
+                },
             })
         }
         other => serde_json::to_value(other).unwrap_or_default(),
@@ -893,6 +952,41 @@ mod tests {
     fn parse_field_type_simple_datetime() {
         let result = parse_field_type(&serde_json::json!("DateTime")).unwrap();
         assert!(matches!(result, FieldType::DateTime));
+    }
+
+    #[test]
+    fn parse_field_type_simple_duration() {
+        let result = parse_field_type(&serde_json::json!("Duration")).unwrap();
+        assert!(matches!(result, FieldType::Duration));
+    }
+
+    #[test]
+    fn parse_field_type_structured_duration() {
+        let result = parse_field_type(&serde_json::json!({"type": "Duration"})).unwrap();
+        assert!(matches!(result, FieldType::Duration));
+    }
+
+    #[test]
+    fn parse_field_type_simple_bytes() {
+        let result = parse_field_type(&serde_json::json!("Bytes")).unwrap();
+        assert_eq!(result, FieldType::Bytes(BytesConstraints::unconstrained()));
+    }
+
+    #[test]
+    fn parse_field_type_structured_bytes_with_max_size() {
+        let result =
+            parse_field_type(&serde_json::json!({"type": "Bytes", "data": {"max_size": 1024}}))
+                .unwrap();
+        assert_eq!(
+            result,
+            FieldType::Bytes(BytesConstraints::with_max_size(1024))
+        );
+    }
+
+    #[test]
+    fn parse_field_type_structured_bytes_no_data_is_unconstrained() {
+        let result = parse_field_type(&serde_json::json!({"type": "Bytes"})).unwrap();
+        assert_eq!(result, FieldType::Bytes(BytesConstraints::unconstrained()));
     }
 
     #[test]

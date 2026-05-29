@@ -15,6 +15,7 @@ pub mod hooks;
 pub mod messages;
 pub mod middleware;
 pub mod routes;
+pub mod rules;
 pub mod shared;
 pub mod shared_auth;
 pub mod state;

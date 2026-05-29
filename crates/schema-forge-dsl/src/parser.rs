@@ -6,10 +6,11 @@ use tracing::instrument;
 use std::collections::BTreeMap;
 
 use schema_forge_core::types::{
-    Annotation, Cardinality, DefaultValue, EnumColor, EnumVariants, FieldAnnotation,
-    FieldDefinition, FieldModifier, FieldName, FieldType, FileAccess, FileConstraints,
-    FloatConstraints, FormatType, HookEvent, IntegerConstraints, ListHint, MimePattern,
-    SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind, TextConstraints, WidgetType,
+    Annotation, BytesConstraints, Cardinality, DefaultValue, EnumColor, EnumVariants,
+    FieldAnnotation, FieldDefinition, FieldModifier, FieldName, FieldType, FileAccess,
+    FileConstraints, FloatConstraints, FormatType, HookEvent, IntegerConstraints, ListHint,
+    MimePattern, SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind,
+    TextConstraints, WidgetType,
 };
 
 use crate::error::{DslError, Span};
@@ -29,11 +30,33 @@ struct MixedParams {
 struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    /// The full DSL source, retained so that CEL expression diagnostics can be
+    /// mapped to an absolute `line:column` in the schema file.
+    source: String,
+    /// Scratch buffer of rule expressions (`@require`/`@compute`/`@default`)
+    /// collected while parsing the *current* field's annotations. Drained by
+    /// [`Parser::parse_field`] into the per-schema buffer, tagged with the
+    /// just-parsed field name. Each entry is `(role, raw_expr, span)`.
+    current_field_rules: Vec<(schema_forge_cel::RuleRole, String, Span)>,
+}
+
+/// One rule expression collected during a schema's field parse, ready for the
+/// post-parse static type-check pass.
+struct RuleSite {
+    field_name: String,
+    role: schema_forge_cel::RuleRole,
+    expr: String,
+    span: Span,
 }
 
 impl Parser {
-    fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0 }
+    fn new(tokens: Vec<SpannedToken>, source: &str) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            source: source.to_string(),
+            current_field_rules: Vec::new(),
+        }
     }
 
     // -- Cursor helpers --
@@ -130,6 +153,10 @@ impl Parser {
 
     /// schema_def = annotation* "schema" IDENT "{" field_def* "}"
     fn parse_schema(&mut self) -> Result<SchemaDefinition, DslError> {
+        // Reset per-field rule scratch so state never leaks between schemas.
+        self.current_field_rules.clear();
+        let mut rule_sites: Vec<RuleSite> = Vec::new();
+
         let schema_start = self.current_span().start;
         let annotations = self.parse_annotations()?;
 
@@ -144,7 +171,7 @@ impl Parser {
 
         self.expect(&Token::LBrace)?;
 
-        let fields = self.parse_fields()?;
+        let fields = self.parse_fields(&mut rule_sites)?;
 
         let rbrace = self.expect(&Token::RBrace)?;
         let schema_span = Span::new(schema_start, rbrace.span.end);
@@ -166,6 +193,11 @@ impl Parser {
                 });
             }
         }
+
+        // Static type-check every rule expression against the field types.
+        // Field names are now known-unique, so each `RuleSite` maps to exactly
+        // one field. Returns the first type error found (one error per schema).
+        self.check_rule_types(&fields, &rule_sites)?;
 
         // Validate no duplicate annotation kinds
         let mut seen_kinds = HashSet::new();
@@ -201,6 +233,123 @@ impl Parser {
                 span: schema_span,
             }
         })
+    }
+
+    /// Statically type-check each collected rule expression against its field's
+    /// declared type (#104). The expressions were already syntactically validated
+    /// at annotation-parse time; if one somehow fails to re-parse here it is
+    /// skipped (the syntactic-error path already reported it). Returns the first
+    /// type error found.
+    fn check_rule_types(
+        &self,
+        fields: &[FieldDefinition],
+        rule_sites: &[RuleSite],
+    ) -> Result<(), DslError> {
+        if rule_sites.is_empty() {
+            return Ok(());
+        }
+        let env = schema_forge_cel::rule_type_env(
+            fields.iter().map(|f| (f.name.as_str(), &f.field_type)),
+        );
+        for site in rule_sites {
+            let Some(field) = fields.iter().find(|f| f.name.as_str() == site.field_name) else {
+                continue;
+            };
+            let Ok(expr) = schema_forge_cel::parse(&site.expr) else {
+                continue;
+            };
+            if let Err(type_err) =
+                schema_forge_cel::check_rule(site.role, &field.field_type, &env, &expr)
+            {
+                let content_start = site.span.start + 1;
+                let (line, column) = line_col_at(&self.source, content_start);
+                return Err(DslError::RuleTypeError {
+                    message: type_err.message,
+                    line,
+                    column,
+                    span: site.span.clone(),
+                });
+            }
+            // Validate any `related.<F>.<…>` cross-entity-read paths (#95): the
+            // role must be @require, and `F` must be a declared Relation{One}
+            // field on this schema. Deep multi-hop is enforced at runtime, where
+            // the target schemas are available (the per-schema DSL pass does not
+            // have F's target schema fields).
+            self.check_related_paths(fields, site, &expr)?;
+        }
+        Ok(())
+    }
+
+    /// Validate the cross-entity-read paths in one rule expression (#95).
+    ///
+    /// Rejects `related.*` in `@compute`/`@default`, and in `@require` rejects a
+    /// `related.<F>` where `F` is not a declared `Relation{One}` field on this
+    /// schema (unknown / non-relation → [`DslError::CrossEntityReadUnknownRelation`],
+    /// to-many → [`DslError::CrossEntityReadToMany`]).
+    fn check_related_paths(
+        &self,
+        fields: &[FieldDefinition],
+        site: &RuleSite,
+        expr: &schema_forge_cel::Expr,
+    ) -> Result<(), DslError> {
+        use schema_forge_cel::RuleRole;
+        use schema_forge_core::types::{Cardinality, FieldType};
+
+        let paths = schema_forge_cel::related_paths(expr);
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let content_start = site.span.start + 1;
+        let (line, column) = line_col_at(&self.source, content_start);
+
+        for path in &paths {
+            // Cross-entity reads are @require-only.
+            let disallowed_role = match site.role {
+                RuleRole::Require => None,
+                RuleRole::Compute => Some("@compute"),
+                RuleRole::Default => Some("@default"),
+            };
+            if let Some(role) = disallowed_role {
+                return Err(DslError::CrossEntityReadNotAllowedInRole {
+                    role,
+                    relation: path.relation.clone(),
+                    line,
+                    column,
+                    span: site.span.clone(),
+                });
+            }
+
+            // F must be a declared Relation{One} field on this schema.
+            let relation_field = fields.iter().find(|f| f.name.as_str() == path.relation);
+            match relation_field.map(|f| &f.field_type) {
+                Some(FieldType::Relation {
+                    cardinality: Cardinality::One,
+                    ..
+                }) => {}
+                Some(FieldType::Relation {
+                    cardinality: Cardinality::Many,
+                    ..
+                }) => {
+                    return Err(DslError::CrossEntityReadToMany {
+                        relation: path.relation.clone(),
+                        line,
+                        column,
+                        span: site.span.clone(),
+                    });
+                }
+                // Not a declared field, or a non-relation field, or a future
+                // non-exhaustive cardinality: reject as an unresolvable relation.
+                _ => {
+                    return Err(DslError::CrossEntityReadUnknownRelation {
+                        relation: path.relation.clone(),
+                        line,
+                        column,
+                        span: site.span.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// annotation* (zero or more leading annotations)
@@ -427,16 +576,23 @@ impl Parser {
     }
 
     /// field_def* (zero or more fields until '}')
-    fn parse_fields(&mut self) -> Result<Vec<FieldDefinition>, DslError> {
+    fn parse_fields(
+        &mut self,
+        rule_sites: &mut Vec<RuleSite>,
+    ) -> Result<Vec<FieldDefinition>, DslError> {
         let mut fields = Vec::new();
         while self.peek_token() != Some(&Token::RBrace) && self.peek().is_some() {
-            fields.push(self.parse_field()?);
+            fields.push(self.parse_field(rule_sites)?);
         }
         Ok(fields)
     }
 
     /// field_def = IDENT ":" type_expr modifier* field_annotation*
-    fn parse_field(&mut self) -> Result<FieldDefinition, DslError> {
+    ///
+    /// Drains any rule expressions collected for this field (in
+    /// [`Parser::current_field_rules`]) into `rule_sites`, tagging each with the
+    /// just-parsed field name for the schema's post-parse type-check pass.
+    fn parse_field(&mut self, rule_sites: &mut Vec<RuleSite>) -> Result<FieldDefinition, DslError> {
         let name_tok = self.expect_ident("field name")?;
         let field_name =
             FieldName::new(&name_tok.text).map_err(|_| DslError::InvalidFieldName {
@@ -449,6 +605,17 @@ impl Parser {
         let field_type = self.parse_type()?;
         let modifiers = self.parse_modifiers(&field_type)?;
         let field_annotations = self.parse_field_annotations(&field_type)?;
+
+        // The field name is now known; tag every rule collected for this field.
+        let field_name_str = field_name.as_str().to_string();
+        for (role, expr, span) in self.current_field_rules.drain(..) {
+            rule_sites.push(RuleSite {
+                field_name: field_name_str.clone(),
+                role,
+                expr,
+                span,
+            });
+        }
 
         if field_annotations.is_empty() {
             if modifiers.is_empty() {
@@ -544,11 +711,87 @@ impl Parser {
                 self.expect(&Token::RParen)?;
                 Ok(FieldAnnotation::Format { format_type })
             }
+            "require" => {
+                self.expect(&Token::LParen)?;
+                let expr = self.read_cel_string_arg()?;
+                self.expect(&Token::Comma)?;
+                let message_tok = self.expect_string_literal()?;
+                let message = unquote_string(&message_tok.text);
+                self.expect(&Token::RParen)?;
+                self.current_field_rules.push((
+                    schema_forge_cel::RuleRole::Require,
+                    expr.value.clone(),
+                    expr.span,
+                ));
+                Ok(FieldAnnotation::Require {
+                    expr: expr.value,
+                    message,
+                })
+            }
+            "compute" => {
+                self.expect(&Token::LParen)?;
+                let expr = self.read_cel_string_arg()?;
+                self.expect(&Token::RParen)?;
+                self.current_field_rules.push((
+                    schema_forge_cel::RuleRole::Compute,
+                    expr.value.clone(),
+                    expr.span,
+                ));
+                Ok(FieldAnnotation::Compute { expr: expr.value })
+            }
+            "default" => {
+                self.expect(&Token::LParen)?;
+                let expr = self.read_cel_string_arg()?;
+                self.expect(&Token::RParen)?;
+                self.current_field_rules.push((
+                    schema_forge_cel::RuleRole::Default,
+                    expr.value.clone(),
+                    expr.span,
+                ));
+                Ok(FieldAnnotation::Default { expr: expr.value })
+            }
             other => Err(DslError::UnknownAnnotation {
                 name: other.to_string(),
                 span: name_tok.span,
             }),
         }
+    }
+
+    /// Read one positional double-quoted string argument holding raw CEL source,
+    /// then validate it syntactically with the owned CEL parser. On a CEL parse
+    /// error, the error's intra-expression [`schema_forge_cel::Position`] is
+    /// mapped to an absolute `line:column` in the DSL source so the diagnostic
+    /// points *into* the offending expression.
+    ///
+    /// Returns the unquoted (raw) CEL source on success.
+    fn read_cel_string_arg(&mut self) -> Result<CelArg, DslError> {
+        let str_tok = self.expect_string_literal()?;
+        let raw = unquote_string(&str_tok.text);
+        if let Err(parse_err) = schema_forge_cel::parse(&raw) {
+            // The string token's content begins one byte after the opening
+            // quote. Map the CEL parser's byte offset (into the unescaped
+            // content) back onto the raw token text, then resolve absolute
+            // line/column from the full source.
+            let cel_offset = parse_err.position().map(|p| p.offset).unwrap_or(0);
+            let content_start = str_tok.span.start + 1;
+            let abs_offset = map_content_offset_to_source(
+                &self.source,
+                content_start,
+                str_tok.span.end.saturating_sub(1),
+                cel_offset,
+            );
+            let (line, column) = line_col_at(&self.source, abs_offset);
+            return Err(DslError::InvalidCelExpression {
+                message: parse_err.message().to_string(),
+                line,
+                column,
+                span: str_tok.span,
+            });
+        }
+        Ok(CelArg {
+            value: raw,
+            span: str_tok.span.clone(),
+        })
     }
 
     /// Parse `@enum_colors(variant: "color", ...)`. The opening `(` has not
@@ -613,6 +856,7 @@ impl Parser {
         match self.peek_token() {
             Some(Token::Arrow) => self.parse_relation_type(),
             Some(Token::Composite) => self.parse_composite_type(),
+            Some(Token::Map) => self.parse_map_type(),
             _ => {
                 let base_type = self.parse_primitive_type()?;
                 // Check for array suffix []
@@ -652,6 +896,11 @@ impl Parser {
             }
             Token::Boolean => Ok(FieldType::Boolean),
             Token::DateTime => Ok(FieldType::DateTime),
+            Token::Duration => Ok(FieldType::Duration),
+            Token::Bytes => {
+                let constraints = self.parse_bytes_params()?;
+                Ok(FieldType::Bytes(constraints))
+            }
             Token::Enum => self.parse_enum_type(),
             Token::Json => Ok(FieldType::Json),
             Token::File => {
@@ -659,7 +908,7 @@ impl Parser {
                 Ok(FieldType::File(constraints))
             }
             _ => Err(DslError::UnexpectedToken {
-                expected: "type name (text, integer, float, boolean, datetime, enum, richtext, json, file, composite, or ->)"
+                expected: "type name (text, integer, float, boolean, datetime, duration, bytes, enum, richtext, json, file, composite, or ->)"
                     .to_string(),
                 found: format!("{} ('{}')", tok.token.description(), tok.text),
                 span: tok.span,
@@ -692,6 +941,34 @@ impl Parser {
         Ok(match max_length {
             Some(max) => TextConstraints::with_max_length(max),
             None => TextConstraints::unconstrained(),
+        })
+    }
+
+    /// Parse optional bytes params: `(max: N)` where `N` is the maximum byte length.
+    fn parse_bytes_params(&mut self) -> Result<BytesConstraints, DslError> {
+        if self.peek_token() != Some(&Token::LParen) {
+            return Ok(BytesConstraints::unconstrained());
+        }
+        self.advance(); // consume (
+        let params = self.parse_named_params()?;
+        self.expect(&Token::RParen)?;
+
+        let max_size = params
+            .iter()
+            .find(|(k, _)| k == "max")
+            .map(|(_, v)| v.parse::<usize>())
+            .transpose()
+            .map_err(|_| {
+                let span = self.current_span();
+                DslError::InvalidIntegerLiteral {
+                    text: "max parameter".to_string(),
+                    span,
+                }
+            })?;
+
+        Ok(match max_size {
+            Some(max) => BytesConstraints::with_max_size(max),
+            None => BytesConstraints::unconstrained(),
         })
     }
 
@@ -784,24 +1061,18 @@ impl Parser {
                         bucket = Some(unquote_string(&tok.text));
                     }
                     "max_size" => {
-                        let tok = self.advance().ok_or_else(|| {
-                            DslError::UnexpectedEndOfInput {
+                        let tok = self
+                            .advance()
+                            .ok_or_else(|| DslError::UnexpectedEndOfInput {
                                 expected: "integer or string size literal".to_string(),
-                            }
-                        })?;
+                            })?;
                         let (raw, tok_span) = match tok.token {
                             Token::IntegerLiteral => (tok.text.clone(), tok.span.clone()),
-                            Token::StringLiteral => {
-                                (unquote_string(&tok.text), tok.span.clone())
-                            }
+                            Token::StringLiteral => (unquote_string(&tok.text), tok.span.clone()),
                             _ => {
                                 return Err(DslError::UnexpectedToken {
                                     expected: "integer or string size literal".to_string(),
-                                    found: format!(
-                                        "{} ('{}')",
-                                        tok.token.description(),
-                                        tok.text
-                                    ),
+                                    found: format!("{} ('{}')", tok.token.description(), tok.text),
                                     span: tok.span,
                                 });
                             }
@@ -825,11 +1096,9 @@ impl Parser {
                         let patterns = items
                             .into_iter()
                             .map(|s| {
-                                MimePattern::parse(&s).map_err(|e| {
-                                    DslError::CoreSchemaError {
-                                        source: e,
-                                        span: key_span.clone(),
-                                    }
+                                MimePattern::parse(&s).map_err(|e| DslError::CoreSchemaError {
+                                    source: e,
+                                    span: key_span.clone(),
                                 })
                             })
                             .collect::<Result<Vec<_>, _>>()?;
@@ -1026,7 +1295,11 @@ impl Parser {
         self.expect(&Token::Composite)?;
         self.expect(&Token::LBrace)?;
 
-        let fields = self.parse_fields()?;
+        // Composite sub-fields are not top-level schema fields; rule annotations
+        // inside a composite are collected into a throwaway buffer (the #104
+        // type-check pass keys on top-level schema field names).
+        let mut composite_rule_sites: Vec<RuleSite> = Vec::new();
+        let fields = self.parse_fields(&mut composite_rule_sites)?;
 
         self.expect(&Token::RBrace)?;
 
@@ -1042,6 +1315,32 @@ impl Parser {
         }
 
         Ok(FieldType::Composite(fields))
+    }
+
+    /// map_type = "map" "<" type_expr "," type_expr ">"
+    ///
+    /// The key type is parsed for forward-compatibility but constrained to
+    /// `string`: a non-`string` key is rejected with [`DslError::MapKeyNotString`]
+    /// because JSON/JSONB/object storage is uniformly string-keyed and a
+    /// non-string key cannot round-trip without lossy string key-encoding.
+    fn parse_map_type(&mut self) -> Result<FieldType, DslError> {
+        self.expect(&Token::Map)?;
+        let open_span = self.current_span();
+        self.expect(&Token::Lt)?;
+        let key = self.parse_type()?;
+        if !matches!(key, FieldType::Text(_)) {
+            return Err(DslError::MapKeyNotString {
+                found: describe_field_type_for_error(&key),
+                span: open_span,
+            });
+        }
+        self.expect(&Token::Comma)?;
+        let value = self.parse_type()?;
+        self.expect(&Token::Gt)?;
+        Ok(FieldType::Map {
+            key: Box::new(key),
+            value: Box::new(value),
+        })
     }
 
     /// modifier* (zero or more trailing modifiers)
@@ -1194,6 +1493,8 @@ fn is_contextual_ident(token: &Token) -> bool {
             | Token::Float
             | Token::Boolean
             | Token::DateTime
+            | Token::Duration
+            | Token::Bytes
             | Token::Json
             | Token::Default
             | Token::Required
@@ -1221,6 +1522,7 @@ fn field_type_supports_unique(ft: &FieldType) -> bool {
             | FieldType::Integer(_)
             | FieldType::Float(_)
             | FieldType::DateTime
+            | FieldType::Duration
             | FieldType::Enum(_)
     )
 }
@@ -1234,11 +1536,14 @@ fn describe_field_type_for_error(ft: &FieldType) -> String {
         FieldType::Float(_) => "float".to_string(),
         FieldType::Boolean => "boolean".to_string(),
         FieldType::DateTime => "datetime".to_string(),
+        FieldType::Duration => "duration".to_string(),
+        FieldType::Bytes(_) => "bytes".to_string(),
         FieldType::Enum(_) => "enum".to_string(),
         FieldType::Json => "json".to_string(),
         FieldType::Relation { .. } => "relation".to_string(),
         FieldType::Array(_) => "array".to_string(),
         FieldType::Composite(_) => "composite".to_string(),
+        FieldType::Map { .. } => "map".to_string(),
         FieldType::File(_) => "file".to_string(),
         // FieldType is #[non_exhaustive]; any future variant is by default
         // not unique-able until explicitly added to `field_type_supports_unique`.
@@ -1313,6 +1618,72 @@ fn parse_size_literal(raw: &str) -> Option<u64> {
     n.checked_mul(mult)
 }
 
+/// A validated CEL string argument: the raw (unescaped) expression source and
+/// the source span of the string literal that held it.
+struct CelArg {
+    value: String,
+    span: Span,
+}
+
+/// Map a byte offset into a string literal's *unescaped content* back to a byte
+/// offset in the full source text.
+///
+/// `content_start`..`content_end` is the byte range of the literal's content in
+/// `source` (i.e. between the surrounding quotes). `content_offset` is a byte
+/// offset into the unescaped content (as produced by `unquote_string`). Because
+/// a `\"` or `\\` escape occupies two source bytes but one content byte, we walk
+/// the raw content and advance the content counter by one per logical char,
+/// while advancing the source position by the actual byte width of each escape.
+///
+/// If `content_offset` lands at or beyond the end of the content (e.g. an EOF
+/// error from the CEL parser), the offset clamps to `content_end`.
+fn map_content_offset_to_source(
+    source: &str,
+    content_start: usize,
+    content_end: usize,
+    content_offset: usize,
+) -> usize {
+    if content_start >= source.len() || content_start > content_end {
+        return content_start.min(source.len());
+    }
+    let raw_content = &source[content_start..content_end.min(source.len())];
+    let mut content_pos = 0usize;
+    let mut chars = raw_content.char_indices().peekable();
+    while let Some((byte_idx, c)) = chars.next() {
+        if content_pos >= content_offset {
+            return content_start + byte_idx;
+        }
+        if c == '\\' {
+            // Consume the escaped character too; both raw bytes collapse to one
+            // content char.
+            chars.next();
+        }
+        content_pos += 1;
+    }
+    content_end.min(source.len())
+}
+
+/// Resolve a 0-based byte `offset` into `source` to a 1-based `(line, column)`,
+/// where the column is counted in Unicode scalar values (chars), matching the
+/// CEL engine's column convention.
+fn line_col_at(source: &str, offset: usize) -> (usize, usize) {
+    let clamped = offset.min(source.len());
+    let mut line = 1usize;
+    let mut column = 1usize;
+    for (idx, c) in source.char_indices() {
+        if idx >= clamped {
+            break;
+        }
+        if c == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
+}
+
 fn parse_i64(text: &str, span: &Span) -> Result<i64, DslError> {
     text.parse::<i64>()
         .map_err(|_| DslError::InvalidIntegerLiteral {
@@ -1364,7 +1735,7 @@ fn extract_i64_param(
 #[instrument(skip(source), fields(source_len = source.len()))]
 pub fn parse(source: &str) -> Result<Vec<SchemaDefinition>, Vec<DslError>> {
     let tokens = crate::lexer::tokenize(source)?;
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     parser.parse_file()
 }
 
@@ -1466,9 +1837,86 @@ mod tests {
     }
 
     #[test]
+    fn parse_duration() {
+        let schema = parse_one("schema S { retention: duration }");
+        assert!(matches!(schema.fields[0].field_type, FieldType::Duration));
+    }
+
+    #[test]
+    fn parse_bytes() {
+        let schema = parse_one("schema S { sig: bytes }");
+        assert_eq!(
+            schema.fields[0].field_type,
+            FieldType::Bytes(BytesConstraints::unconstrained())
+        );
+    }
+
+    #[test]
+    fn parse_bytes_with_max() {
+        let schema = parse_one("schema S { sig: bytes(max: 1024) }");
+        assert_eq!(
+            schema.fields[0].field_type,
+            FieldType::Bytes(BytesConstraints::with_max_size(1024))
+        );
+    }
+
+    #[test]
     fn parse_richtext() {
         let schema = parse_one("schema S { body: richtext }");
         assert!(matches!(schema.fields[0].field_type, FieldType::RichText));
+    }
+
+    // -- Maps --
+
+    #[test]
+    fn parse_map_string_integer() {
+        // `text` is the DSL's string type; `map<text, V>` is the supported form.
+        let schema = parse_one("schema S { labels: map<text, integer> }");
+        match &schema.fields[0].field_type {
+            FieldType::Map { key, value } => {
+                assert!(matches!(key.as_ref(), FieldType::Text(_)));
+                assert!(matches!(value.as_ref(), FieldType::Integer(_)));
+            }
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_map_string_text() {
+        let schema = parse_one("schema S { meta: map<text, text> }");
+        match &schema.fields[0].field_type {
+            FieldType::Map { key, value } => {
+                assert!(matches!(key.as_ref(), FieldType::Text(_)));
+                assert!(matches!(value.as_ref(), FieldType::Text(_)));
+            }
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_map_of_arrays() {
+        // The value type may itself be a compound type.
+        let schema = parse_one("schema S { buckets: map<text, integer[]> }");
+        match &schema.fields[0].field_type {
+            FieldType::Map { value, .. } => match value.as_ref() {
+                FieldType::Array(inner) => {
+                    assert!(matches!(inner.as_ref(), FieldType::Integer(_)));
+                }
+                other => panic!("expected Array value, got {other:?}"),
+            },
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_map_rejects_non_string_key() {
+        let err = parse("schema S { labels: map<integer, text> }").unwrap_err();
+        assert!(
+            err.iter().any(
+                |e| matches!(e, DslError::MapKeyNotString { found, .. } if found == "integer")
+            ),
+            "expected MapKeyNotString, got {err:?}"
+        );
     }
 
     #[test]
@@ -2326,8 +2774,7 @@ mod tests {
 
     #[test]
     fn error_enum_colors_unknown_variant() {
-        let result =
-            parse(r#"schema S { s: enum("a", "b") @enum_colors(c: "red") }"#);
+        let result = parse(r#"schema S { s: enum("a", "b") @enum_colors(c: "red") }"#);
         let errors = result.expect_err("unknown variant must be rejected");
         match &errors[0] {
             DslError::UnknownEnumColorsVariant { variant, valid, .. } => {
@@ -2340,16 +2787,16 @@ mod tests {
 
     #[test]
     fn error_enum_colors_unknown_color() {
-        let result =
-            parse(r#"schema S { s: enum("a") @enum_colors(a: "chartreuse") }"#);
+        let result = parse(r#"schema S { s: enum("a") @enum_colors(a: "chartreuse") }"#);
         let errors = result.expect_err("unknown color must be rejected");
-        assert!(matches!(&errors[0], DslError::UnknownEnumColor { value, .. } if value == "chartreuse"));
+        assert!(
+            matches!(&errors[0], DslError::UnknownEnumColor { value, .. } if value == "chartreuse")
+        );
     }
 
     #[test]
     fn error_enum_colors_duplicate_variant() {
-        let result =
-            parse(r#"schema S { s: enum("a", "b") @enum_colors(a: "red", a: "green") }"#);
+        let result = parse(r#"schema S { s: enum("a", "b") @enum_colors(a: "red", a: "green") }"#);
         let errors = result.expect_err("duplicate variant must be rejected");
         assert!(matches!(
             &errors[0],
@@ -2359,9 +2806,8 @@ mod tests {
 
     #[test]
     fn parse_enum_colors_accessor_on_field_definition() {
-        let schema = parse_one(
-            r#"schema S { stage: enum("a", "b") @enum_colors(a: "green", b: "red") }"#,
-        );
+        let schema =
+            parse_one(r#"schema S { stage: enum("a", "b") @enum_colors(a: "green", b: "red") }"#);
         let colors = schema.fields[0]
             .enum_colors()
             .expect("enum_colors() must return Some");
@@ -2374,10 +2820,7 @@ mod tests {
     #[test]
     fn parse_list_primary() {
         let schema = parse_one(r#"schema S { title: text @list(primary) }"#);
-        assert_eq!(
-            schema.fields[0].list_hint(),
-            Some(ListHint::Primary)
-        );
+        assert_eq!(schema.fields[0].list_hint(), Some(ListHint::Primary));
     }
 
     #[test]
@@ -2416,9 +2859,7 @@ mod tests {
 
     #[test]
     fn error_list_multiple_primary() {
-        let result = parse(
-            r#"schema S { a: text @list(primary) b: text @list(primary) }"#,
-        );
+        let result = parse(r#"schema S { a: text @list(primary) b: text @list(primary) }"#);
         let errors = result.expect_err("multiple @list(primary) must be rejected");
         match &errors[0] {
             DslError::MultiplePrimaryListHints {
@@ -2708,9 +3149,7 @@ schema B { title: text @list(primary) }"#,
 
     #[test]
     fn parse_file_requires_bucket() {
-        let result = parse(
-            r#"schema S { doc: file(max_size: "5MB", mime: ["application/pdf"]) }"#,
-        );
+        let result = parse(r#"schema S { doc: file(max_size: "5MB", mime: ["application/pdf"]) }"#);
         let err = result.unwrap_err();
         let msg = err[0].to_string();
         assert!(msg.contains("bucket"), "expected bucket error, got: {msg}");
@@ -2718,9 +3157,7 @@ schema B { title: text @list(primary) }"#,
 
     #[test]
     fn parse_file_requires_max_size() {
-        let result = parse(
-            r#"schema S { doc: file(bucket: "docs", mime: ["application/pdf"]) }"#,
-        );
+        let result = parse(r#"schema S { doc: file(bucket: "docs", mime: ["application/pdf"]) }"#);
         let err = result.unwrap_err();
         let msg = err[0].to_string();
         assert!(
@@ -2760,8 +3197,7 @@ schema B { title: text @list(primary) }"#,
 
     #[test]
     fn parse_file_rejects_empty_mime_list() {
-        let result =
-            parse(r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: []) }"#);
+        let result = parse(r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: []) }"#);
         let err = result.unwrap_err();
         let msg = err[0].to_string();
         assert!(
@@ -2772,9 +3208,8 @@ schema B { title: text @list(primary) }"#,
 
     #[test]
     fn parse_file_rejects_bad_mime_pattern() {
-        let result = parse(
-            r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: ["notamime"]) }"#,
-        );
+        let result =
+            parse(r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: ["notamime"]) }"#);
         assert!(result.is_err());
     }
 
@@ -2822,11 +3257,369 @@ schema B { title: text @list(primary) }"#,
         let schema = parse_one(
             r#"schema S { doc: file(bucket: "docs", max_size: "5MB", mime: ["application/pdf"]) required }"#,
         );
-        assert!(
-            schema.fields[0]
-                .modifiers
-                .iter()
-                .any(|m| matches!(m, FieldModifier::Required))
+        assert!(schema.fields[0]
+            .modifiers
+            .iter()
+            .any(|m| matches!(m, FieldModifier::Required)));
+    }
+
+    // -- CEL rule annotations: @require / @compute / @default --
+
+    fn first_field_annotations(source: &str) -> Vec<FieldAnnotation> {
+        parse_one(source).fields[0].annotations.clone()
+    }
+
+    #[test]
+    fn parse_require_two_args() {
+        let anns = first_field_annotations(
+            r#"schema S { age: integer @require("age >= 18", "must be 18 or older") }"#,
         );
+        assert_eq!(
+            anns,
+            vec![FieldAnnotation::Require {
+                expr: "age >= 18".to_string(),
+                message: "must be 18 or older".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_compute_one_arg_with_single_quoted_cel_literal() {
+        let anns = first_field_annotations(
+            r#"schema S { full_name: text @compute("first + ' ' + last") }"#,
+        );
+        assert_eq!(
+            anns,
+            vec![FieldAnnotation::Compute {
+                expr: "first + ' ' + last".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_default_expr_annotation() {
+        let anns =
+            first_field_annotations(r#"schema S { created_at: datetime @default("now()") }"#);
+        assert_eq!(
+            anns,
+            vec![FieldAnnotation::Default {
+                expr: "now()".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_require_missing_message_is_error() {
+        // `@require` requires a second positional message argument.
+        let err = parse(r#"schema S { age: integer @require("age >= 18") }"#).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("UnexpectedToken") || msg.contains("UnexpectedEndOfInput"),
+            "expected arity error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_require_non_string_message_is_error() {
+        let err = parse(r#"schema S { age: integer @require("age >= 18", 42) }"#).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("UnexpectedToken"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_compute_extra_arg_is_error() {
+        // `@compute` takes exactly one argument; a trailing comma/arg must fail.
+        let err = parse(r#"schema S { x: text @compute("a", "b") }"#).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("UnexpectedToken"), "got: {msg}");
+    }
+
+    #[test]
+    fn literal_default_and_default_annotation_coexist() {
+        // The bare-keyword literal `default(5)` modifier and the `@default("...")`
+        // expression annotation must parse independently on different fields.
+        let schema = parse_one(
+            "schema S {\n  count: integer default(5)\n  created_at: datetime @default(\"now()\")\n}",
+        );
+        // count: literal default modifier, no annotations.
+        assert!(schema.fields[0].modifiers.iter().any(|m| matches!(
+            m,
+            FieldModifier::Default {
+                value: DefaultValue::Integer(5)
+            }
+        )));
+        assert!(schema.fields[0].annotations.is_empty());
+        // created_at: expression default annotation, no default modifier.
+        assert_eq!(
+            schema.fields[1].annotations,
+            vec![FieldAnnotation::Default {
+                expr: "now()".to_string()
+            }]
+        );
+        assert!(schema.fields[1].modifiers.is_empty());
+    }
+
+    #[test]
+    fn malformed_cel_diagnostic_points_into_expression() {
+        // `age >>> 18` is invalid CEL; the CEL parser flags the spurious third
+        // `>`. The diagnostic must carry an absolute line:column that lands on
+        // that character inside the expression.
+        let source = "schema S {\n    age: integer @require(\"age >>> 18\", \"bad\")\n}";
+        let err = parse(source).unwrap_err();
+        assert_eq!(err.len(), 1);
+        match &err[0] {
+            DslError::InvalidCelExpression {
+                line,
+                column,
+                message,
+                ..
+            } => {
+                assert_eq!(*line, 2, "error should be on the field's line");
+                // Independently locate the offending `>>>` run; the CEL parser
+                // reports the position of the third `>` (offset 5 within
+                // `age >>> 18`). Compute the expected 1-based column.
+                let line2 = source.lines().nth(1).unwrap();
+                let cel_content_col = line2.find("age >>>").unwrap();
+                // offset 5 into "age >>> 18" -> the 6th char (3rd '>').
+                let expected_col = cel_content_col + 5 + 1;
+                assert_eq!(*column, expected_col, "column should point at the bad `>`");
+                // Sanity-check the character under the reported column really is
+                // the third `>`.
+                let byte_at = line2.chars().nth(column - 1).unwrap();
+                assert_eq!(byte_at, '>');
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected InvalidCelExpression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_cel_diagnostic_display_format() {
+        let source = "schema S {\n    x: text @compute(\"1 +\")\n}";
+        let err = parse(source).unwrap_err();
+        let rendered = err[0].to_string();
+        // Format: `<line>:<col>: invalid expression: <cel message>`.
+        assert!(
+            rendered.starts_with("2:"),
+            "diagnostic should start with line 2, got: {rendered}"
+        );
+        assert!(rendered.contains("invalid expression:"), "got: {rendered}");
+    }
+
+    #[test]
+    fn require_with_escaped_message_roundtrips_quote() {
+        // A message containing a double-quote must be escaped in source and
+        // unescaped back to the raw text on parse.
+        let anns = first_field_annotations(
+            r#"schema S { age: integer @require("age >= 18", "say \"yes\"") }"#,
+        );
+        assert_eq!(
+            anns,
+            vec![FieldAnnotation::Require {
+                expr: "age >= 18".to_string(),
+                message: "say \"yes\"".to_string(),
+            }]
+        );
+    }
+
+    // -- #104: apply-time type-checking of rule expressions --
+
+    #[test]
+    fn typecheck_accepts_boolean_require() {
+        // `age >= 18` is boolean -> valid `@require`.
+        let schema = parse_one(r#"schema S { age: integer @require("age >= 18", "must be 18") }"#);
+        assert_eq!(schema.fields.len(), 1);
+    }
+
+    #[test]
+    fn typecheck_accepts_now_variable_default_on_datetime() {
+        // `now` is the injected Timestamp variable -> assignable to a datetime.
+        let schema = parse_one(r#"schema S { created_at: datetime @default("now") }"#);
+        assert_eq!(schema.fields.len(), 1);
+    }
+
+    #[test]
+    fn typecheck_accepts_dyn_string_concat_compute() {
+        // `first + ' ' + last` over unknown idents infers Dyn -> must not regress.
+        let schema = parse_one(r#"schema S { full_name: text @compute("first + ' ' + last") }"#);
+        assert_eq!(schema.fields.len(), 1);
+    }
+
+    #[test]
+    fn typecheck_accepts_now_call_default_on_datetime() {
+        // `now()` is a call (Dyn), distinct from the `now` variable -> must not
+        // be rejected (back-compat with existing fixtures).
+        let schema = parse_one(r#"schema S { created_at: datetime @default("now()") }"#);
+        assert_eq!(schema.fields.len(), 1);
+    }
+
+    #[test]
+    fn typecheck_rejects_non_boolean_require() {
+        // `age` (an integer) is not boolean -> `@require` type error.
+        let source = r#"schema S { age: integer @require("age", "x") }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::RuleTypeError {
+                message,
+                line,
+                column,
+                ..
+            } => {
+                assert!(message.contains("boolean"), "got: {message}");
+                assert_eq!(*line, 1);
+                assert!(*column >= 1);
+            }
+            other => panic!("expected RuleTypeError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typecheck_rejects_int_compute_into_text() {
+        // sibling `count` is integer -> `count + 1` infers Int, not assignable to
+        // a text field.
+        let source = r#"schema S { label: text @compute("count + 1") count: integer }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::RuleTypeError {
+                message,
+                line,
+                column,
+                ..
+            } => {
+                assert!(message.contains("not assignable"), "got: {message}");
+                assert!(message.contains("Text"), "got: {message}");
+                assert_eq!(*line, 1);
+                assert!(*column >= 1);
+            }
+            other => panic!("expected RuleTypeError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typecheck_rejects_double_default_into_integer() {
+        // `1.0` is a double -> not assignable to an integer field.
+        let source = r#"schema S { n: integer @default("1.0") }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::RuleTypeError {
+                message,
+                line,
+                column,
+                ..
+            } => {
+                assert!(message.contains("not assignable"), "got: {message}");
+                assert!(message.contains("Integer"), "got: {message}");
+                assert_eq!(*line, 1);
+                assert!(*column >= 1);
+            }
+            other => panic!("expected RuleTypeError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typecheck_rule_type_error_display_format() {
+        let source = "schema S {\n    age: integer @require(\"age\", \"x\")\n}";
+        let errs = parse(source).unwrap_err();
+        let rendered = errs[0].to_string();
+        // Format: `<line>:<col>: rule type error: <message>`.
+        assert!(
+            rendered.starts_with("2:"),
+            "diagnostic should start with line 2, got: {rendered}"
+        );
+        assert!(rendered.contains("rule type error:"), "got: {rendered}");
+    }
+
+    // -- @require cross-entity reads via `related.<F>.<col>` (#95) --
+
+    #[test]
+    fn cross_entity_read_in_require_over_ref_one_is_accepted() {
+        // `approval` is a single-relation (Relation{One}) field, so
+        // `related.approval.state` in @require is valid.
+        let source = r#"schema Document {
+            approval: -> Approval
+            status: enum("draft", "closed") @require("status != 'closed' || related.approval.state == 'granted'", "closed documents need a granted approval")
+        }"#;
+        let schema = parse_one(source);
+        assert_eq!(schema.fields.len(), 2);
+    }
+
+    #[test]
+    fn cross_entity_read_in_compute_is_rejected() {
+        let source = r#"schema Document {
+            approval: -> Approval
+            note: text @compute("related.approval.state")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::CrossEntityReadNotAllowedInRole { role, relation, .. } => {
+                assert_eq!(*role, "@compute");
+                assert_eq!(relation, "approval");
+            }
+            other => panic!("expected CrossEntityReadNotAllowedInRole, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_entity_read_in_default_is_rejected() {
+        let source = r#"schema Document {
+            approval: -> Approval
+            note: text @default("related.approval.state")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(
+            &errs[0],
+            DslError::CrossEntityReadNotAllowedInRole { role, .. } if *role == "@default"
+        ));
+    }
+
+    #[test]
+    fn cross_entity_read_over_to_many_relation_is_rejected() {
+        // `approvals` is a to-many (Relation{Many}) field — not supported.
+        let source = r#"schema Document {
+            approvals: -> Approval[]
+            status: enum("draft", "closed") @require("related.approvals.state == 'granted'", "x")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::CrossEntityReadToMany { relation, .. } => {
+                assert_eq!(relation, "approvals");
+            }
+            other => panic!("expected CrossEntityReadToMany, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_entity_read_over_non_relation_is_rejected() {
+        // `status` is an enum, not a relation.
+        let source = r#"schema Document {
+            status: enum("draft", "closed") @require("related.status.x == 1", "x")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::CrossEntityReadUnknownRelation { relation, .. } => {
+                assert_eq!(relation, "status");
+            }
+            other => panic!("expected CrossEntityReadUnknownRelation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_entity_read_over_undeclared_field_is_rejected() {
+        let source = r#"schema Document {
+            status: enum("draft", "closed") @require("related.nope.x == 1", "x")
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(matches!(
+            &errs[0],
+            DslError::CrossEntityReadUnknownRelation { relation, .. } if relation == "nope"
+        ));
     }
 }

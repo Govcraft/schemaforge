@@ -1,0 +1,31 @@
+[package]
+name = "schema-forge-cel"
+version = "0.9.0"
+edition = "2021"
+description = "Minimal, owned CEL (Common Expression Language) evaluator over SchemaForge DynamicValue."
+
+[dependencies]
+base64 = "0.22.1"
+chrono = { version = "0.4", features = ["serde"] }
+# Named IANA timezones for the timestamp accessors (e.g. `Australia/Sydney`).
+# Pure Rust, embeds the IANA database, no native deps — suitable for the
+# government/airgap target. Adding a maintained foundational crate is consistent
+# with the #91 decision (which rejected an *unmaintained CEL* crate, not all
+# third-party crates).
+chrono-tz = "0.10.4"
+# `matches`/`matches(s, re)` regex support. RE2-style, linear-time engine with no
+# catastrophic backtracking (no ReDoS), matching the evaluator's
+# guaranteed-terminating / DoS-hardened posture.
+regex = "1.12.3"
+schema-forge-core = { version = "0.16.0", path = "../schema-forge-core" }
+serde_json = "1.0.150"
+tracing = "0.1"
+
+[build-dependencies]
+prost-build = "0.14"
+
+# prost / prost-types are used only by the conformance test harness (#90) to
+# decode the vendored cel-spec corpus; the engine itself has no protobuf surface.
+[dev-dependencies]
+prost = "0.14"
+prost-types = "0.14"

@@ -491,6 +491,54 @@ mod tests {
         assert!(matches!(err, VerifyError::HashMismatch { .. }));
     }
 
+    /// Issue #106: declarative rules (`@require` / `@compute` / `@default`)
+    /// live as annotation text *inside* the `.schema` file, so the per-file
+    /// signature and the manifest's pinned hash cover them exactly like any
+    /// other byte. Mutating only a rule's CEL expression after signing must be
+    /// rejected under `enforce` — the rules are inside the signed artifact, not
+    /// an opaque out-of-band hook binary. This is what lets a reviewer trust
+    /// that the rules they read in a signed `.schema` are the rules that run.
+    #[test]
+    fn enforce_mode_rejects_tampered_rule_annotation() {
+        let dir = tempdir().unwrap();
+        let schema_path = dir.path().join("invoice.schema");
+        // A schema whose gating logic is entirely declarative: a defaulted
+        // field, a computed field, and a @require predicate.
+        let original = br#"schema Invoice {
+    @default("0")
+    subtotal: float
+    @compute("subtotal * 1.1")
+    total: float
+    @require("total >= 0", "total must be non-negative")
+    status: text
+}
+"#;
+        std::fs::write(&schema_path, original).unwrap();
+        let files = vec![schema_path.clone()];
+        sign_directory(dir.path(), &files, &fixed_signer(), None).unwrap();
+
+        // Sanity: as-signed, the artifact verifies.
+        let cfg = config_with_signer(&fixed_signer(), SigningMode::Enforce);
+        let policy = VerifyPolicy::from_config(&cfg).unwrap();
+        assert!(policy.verify_files(dir.path(), &files).unwrap().overall_ok);
+
+        // Tamper with ONLY the @require threshold: flip `>= 0` to `>= -999999`,
+        // which would silently weaken the gate. The signature does not change
+        // on disk (the attacker can't re-sign), so verification must fail.
+        let tampered = String::from_utf8(original.to_vec())
+            .unwrap()
+            .replace("total >= 0", "total >= -999999");
+        assert!(tampered.contains("-999999"));
+        std::fs::write(&schema_path, tampered.as_bytes()).unwrap();
+
+        let err = policy.verify_files(dir.path(), &files).unwrap_err();
+        // The pinned-hash check catches the altered rule bytes first.
+        assert!(
+            matches!(err, VerifyError::HashMismatch { .. }),
+            "tampered rule annotation must be rejected, got: {err:?}"
+        );
+    }
+
     #[test]
     fn enforce_mode_rejects_missing_signature() {
         let (dir, files) = signed_dir();

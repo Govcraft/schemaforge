@@ -22,6 +22,11 @@
 //!    response before persisting. If `abort_reason` is set, the request
 //!    aborts with [`crate::error::ForgeError::HookAborted`]. If the
 //!    response carries modified fields, they replace the entity payload.
+//!    `before_*` hooks run *after* the in-transaction rule phases
+//!    (`@default` → `@compute` → `@require`; see [`crate::rules`]), so they
+//!    operate on the already-defaulted/computed/validated field set and a
+//!    `@require` rejection short-circuits the write before any hook
+//!    round-trip.
 //! 2. **Detached (`after_*`)**: the route handler queues a
 //!    [`dispatch_actor::DispatchHook`] message on the
 //!    [`dispatch_actor::HookDispatchActor`] and returns immediately to

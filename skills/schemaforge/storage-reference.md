@@ -6,6 +6,13 @@ gives you a typed attachment column, REST endpoints for upload and download,
 a lifecycle state machine, and three hook events where scanner / AV / OCR
 services can intervene. The runtime never handles bytes on the upload path.
 
+> **`file` vs. the `bytes` field type.** Use `file(...)` for large or
+> externally-managed binary artifacts that belong in object storage (the bytes
+> live in S3, the row holds only metadata). For *small* binary that should live
+> inline in the row itself — a hash, a signature, a thumbprint — use the
+> `bytes` / `bytes(max: N)` field type instead (stored natively, no upload
+> flow; see [dsl-reference.md](dsl-reference.md)).
+
 This reference walks through the full loop: declare the field, configure a
 storage backend, use the three-endpoint upload flow from a client, plug in a
 scanner via hooks, and operate the feature in production. If you already have

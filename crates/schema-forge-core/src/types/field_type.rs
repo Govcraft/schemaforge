@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::bytes_constraints::BytesConstraints;
 use super::cardinality::Cardinality;
 use super::enum_variants::EnumVariants;
 use super::field_definition::FieldDefinition;
@@ -20,6 +21,8 @@ pub enum FieldType {
     Float(FloatConstraints),
     Boolean,
     DateTime,
+    Duration,
+    Bytes(BytesConstraints),
     Enum(EnumVariants),
     Json,
     Relation {
@@ -28,6 +31,21 @@ pub enum FieldType {
     },
     Array(Box<FieldType>),
     Composite(Vec<FieldDefinition>),
+    /// A typed, open-keyed map with a homogeneous value type.
+    ///
+    /// Distinct from [`FieldType::Composite`] (a fixed, declared field set) and
+    /// [`FieldType::Json`] (untyped): a `Map` has arbitrary keys but every value
+    /// is validated against the single `value` type. CEL surfaces this as a
+    /// `map<K, V>` so comprehensions (`all`/`exists`/`map`) work over it.
+    ///
+    /// `key` is boxed for forward-compatibility, but the DSL currently only
+    /// accepts `string` keys — JSON objects, Postgres JSONB, and SurrealDB
+    /// objects are all string-keyed, and non-string keys cannot round-trip
+    /// through that storage without lossy string key-encoding.
+    Map {
+        key: Box<FieldType>,
+        value: Box<FieldType>,
+    },
     File(FileConstraints),
 }
 
@@ -40,6 +58,8 @@ impl std::fmt::Display for FieldType {
             Self::Float(_) => write!(f, "Float"),
             Self::Boolean => write!(f, "Boolean"),
             Self::DateTime => write!(f, "DateTime"),
+            Self::Duration => write!(f, "Duration"),
+            Self::Bytes(_) => write!(f, "Bytes"),
             Self::Enum(v) => write!(f, "Enum{v}"),
             Self::Json => write!(f, "Json"),
             Self::Relation {
@@ -48,6 +68,7 @@ impl std::fmt::Display for FieldType {
             } => write!(f, "Relation({target}, {cardinality})"),
             Self::Array(inner) => write!(f, "Array<{inner}>"),
             Self::Composite(fields) => write!(f, "Composite({} fields)", fields.len()),
+            Self::Map { key, value } => write!(f, "Map<{key}, {value}>"),
             Self::File(_) => write!(f, "File"),
         }
     }
@@ -61,6 +82,7 @@ mod tests {
     fn display_simple_types() {
         assert_eq!(FieldType::Boolean.to_string(), "Boolean");
         assert_eq!(FieldType::DateTime.to_string(), "DateTime");
+        assert_eq!(FieldType::Duration.to_string(), "Duration");
         assert_eq!(FieldType::RichText.to_string(), "RichText");
         assert_eq!(FieldType::Json.to_string(), "Json");
     }
@@ -69,6 +91,55 @@ mod tests {
     fn display_text() {
         let t = FieldType::Text(TextConstraints::with_max_length(255));
         assert_eq!(t.to_string(), "Text");
+    }
+
+    #[test]
+    fn display_bytes() {
+        assert_eq!(
+            FieldType::Bytes(BytesConstraints::unconstrained()).to_string(),
+            "Bytes"
+        );
+        assert_eq!(
+            FieldType::Bytes(BytesConstraints::with_max_size(1024)).to_string(),
+            "Bytes"
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_bytes() {
+        for ft in [
+            FieldType::Bytes(BytesConstraints::unconstrained()),
+            FieldType::Bytes(BytesConstraints::with_max_size(1024)),
+        ] {
+            let json = serde_json::to_string(&ft).unwrap();
+            let back: FieldType = serde_json::from_str(&json).unwrap();
+            assert_eq!(ft, back);
+        }
+    }
+
+    #[test]
+    fn display_map() {
+        let t = FieldType::Map {
+            key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+            value: Box::new(FieldType::Integer(IntegerConstraints::unconstrained())),
+        };
+        assert_eq!(t.to_string(), "Map<Text, Integer>");
+    }
+
+    #[test]
+    fn serde_roundtrip_map() {
+        for value in [
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+            FieldType::Text(TextConstraints::unconstrained()),
+        ] {
+            let ft = FieldType::Map {
+                key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+                value: Box::new(value),
+            };
+            let json = serde_json::to_string(&ft).unwrap();
+            let back: FieldType = serde_json::from_str(&json).unwrap();
+            assert_eq!(ft, back);
+        }
     }
 
     #[test]
@@ -91,6 +162,7 @@ mod tests {
         for ft in [
             FieldType::Boolean,
             FieldType::DateTime,
+            FieldType::Duration,
             FieldType::RichText,
             FieldType::Json,
         ] {

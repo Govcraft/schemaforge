@@ -41,6 +41,12 @@ pub enum Token {
     #[token("datetime")]
     DateTime,
 
+    #[token("duration")]
+    Duration,
+
+    #[token("bytes")]
+    Bytes,
+
     #[token("enum")]
     Enum,
 
@@ -49,6 +55,9 @@ pub enum Token {
 
     #[token("composite")]
     Composite,
+
+    #[token("map")]
+    Map,
 
     #[token("file")]
     File,
@@ -99,6 +108,12 @@ pub enum Token {
     #[token("->")]
     Arrow,
 
+    #[token("<")]
+    Lt,
+
+    #[token(">")]
+    Gt,
+
     #[token("@")]
     At,
 
@@ -147,9 +162,12 @@ pub const KEYWORDS: &[&str] = &[
     "float",
     "boolean",
     "datetime",
+    "duration",
+    "bytes",
     "enum",
     "json",
     "composite",
+    "map",
     "file",
     "required",
     "indexed",
@@ -170,9 +188,12 @@ impl Token {
             Self::Float => "'float'",
             Self::Boolean => "'boolean'",
             Self::DateTime => "'datetime'",
+            Self::Duration => "'duration'",
+            Self::Bytes => "'bytes'",
             Self::Enum => "'enum'",
             Self::Json => "'json'",
             Self::Composite => "'composite'",
+            Self::Map => "'map'",
             Self::File => "'file'",
             Self::Required => "'required'",
             Self::Indexed => "'indexed'",
@@ -189,6 +210,8 @@ impl Token {
             Self::Colon => "':'",
             Self::Comma => "','",
             Self::Arrow => "'->'",
+            Self::Lt => "'<'",
+            Self::Gt => "'>'",
             Self::At => "'@'",
             Self::StringLiteral => "string literal",
             Self::TripleStringLiteral => "triple-quoted string literal",
@@ -215,7 +238,7 @@ mod tests {
 
     #[test]
     fn keywords() {
-        let tokens = lex("schema text richtext integer float boolean datetime enum json composite file required indexed unique default true false");
+        let tokens = lex("schema text richtext integer float boolean datetime duration bytes enum json composite map file required indexed unique default true false");
         assert_eq!(
             tokens,
             vec![
@@ -226,9 +249,12 @@ mod tests {
                 Token::Float,
                 Token::Boolean,
                 Token::DateTime,
+                Token::Duration,
+                Token::Bytes,
                 Token::Enum,
                 Token::Json,
                 Token::Composite,
+                Token::Map,
                 Token::File,
                 Token::Required,
                 Token::Indexed,
@@ -273,7 +299,7 @@ mod tests {
 
     #[test]
     fn punctuation() {
-        let tokens = lex("{ } ( ) [ ] : , -> @");
+        let tokens = lex("{ } ( ) [ ] : , -> < > @");
         assert_eq!(
             tokens,
             vec![
@@ -286,6 +312,8 @@ mod tests {
                 Token::Colon,
                 Token::Comma,
                 Token::Arrow,
+                Token::Lt,
+                Token::Gt,
                 Token::At,
             ]
         );

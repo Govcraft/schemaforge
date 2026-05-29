@@ -375,6 +375,412 @@ async fn create_entity_returns_201() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn require_annotation_rejects_invalid_entity_with_422() {
+    use schema_forge_core::types::{
+        Annotation, FieldAnnotation, FieldDefinition, FieldName, FieldType, IntegerConstraints,
+        SchemaDefinition, SchemaId, SchemaName,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // Schema whose `age` field carries a `@require` predicate.
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Person").unwrap(),
+        vec![FieldDefinition::with_annotations(
+            FieldName::new("age").unwrap(),
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+            vec![],
+            vec![FieldAnnotation::Require {
+                expr: "age >= 18".to_string(),
+                message: "age must be at least 18".to_string(),
+            }],
+        )],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let mut registry = HashMap::new();
+    registry.insert("Person".to_string(), schema.clone());
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry,
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    let app = test_app_with_claims_state(state, make_test_claims(&["platform_admin"]));
+
+    // Valid entity (age >= 18) → 201.
+    let valid = serde_json::json!({ "fields": { "age": 21 } });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Person/entities", Some(valid)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+
+    // Invalid entity (age < 18) → 422 with the require message in the body.
+    let invalid = serde_json::json!({ "fields": { "age": 10 } });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Person/entities", Some(invalid)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422, got {status} with body: {json}"
+    );
+    assert_eq!(json["error"], "validation_failed");
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap()
+            .contains("age must be at least 18"),
+        "expected require message in body, got: {json}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compute_annotation_derives_and_overwrites_field() {
+    use schema_forge_core::types::{
+        Annotation, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaDefinition,
+        SchemaId, SchemaName, TextConstraints,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // Schema with a Text `full_name` field computed from `first` + `last`.
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Person").unwrap(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("first").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::new(
+                FieldName::new("last").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::with_annotations(
+                FieldName::new("full_name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Compute {
+                    expr: "first + ' ' + last".to_string(),
+                }],
+            ),
+        ],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let mut registry = HashMap::new();
+    registry.insert("Person".to_string(), schema.clone());
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry,
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    let app = test_app_with_claims_state(state, make_test_claims(&["platform_admin"]));
+
+    // Supply only the inputs; the computed field should be derived.
+    let body = serde_json::json!({
+        "fields": { "first": "Ada", "last": "Lovelace" }
+    });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Person/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+    assert_eq!(json["fields"]["full_name"], "Ada Lovelace");
+
+    // Supplying a bogus value for the computed field must be overwritten.
+    let body = serde_json::json!({
+        "fields": { "first": "Grace", "last": "Hopper", "full_name": "HACKED" }
+    });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Person/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+    assert_eq!(json["fields"]["full_name"], "Grace Hopper");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_annotation_fills_absent_fields_but_preserves_supplied() {
+    use schema_forge_core::types::{
+        Annotation, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaDefinition,
+        SchemaId, SchemaName, TextConstraints,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // `author` defaults to the caller's subject; `recorded_at` defaults to the
+    // request-time `now` timestamp (a variable, not a `now()` call — the engine
+    // is pure). Deliberately NOT named `created_by`/`created_at`, which are
+    // reserved audit columns the server stamps before defaults run.
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Doc").unwrap(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("title").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::with_annotations(
+                FieldName::new("author").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Default {
+                    expr: "principal.sub".to_string(),
+                }],
+            ),
+            FieldDefinition::with_annotations(
+                FieldName::new("recorded_at").unwrap(),
+                FieldType::DateTime,
+                vec![],
+                vec![FieldAnnotation::Default {
+                    expr: "now".to_string(),
+                }],
+            ),
+        ],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let mut registry = HashMap::new();
+    registry.insert("Doc".to_string(), schema.clone());
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry,
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    // make_test_claims sets sub = "user:test-user".
+    let app = test_app_with_claims_state(state, make_test_claims(&["platform_admin"]));
+
+    // POST without the defaulted fields → they should be filled.
+    let body = serde_json::json!({ "fields": { "title": "Hello" } });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Doc/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+    assert_eq!(json["fields"]["author"], "user:test-user");
+    assert!(
+        json["fields"]["recorded_at"].is_string(),
+        "expected recorded_at to be a defaulted `now` timestamp string, got: {json}"
+    );
+
+    // POST WITH an explicit author → the default must not override it.
+    let body = serde_json::json!({
+        "fields": { "title": "Hi", "author": "user:someone-else" }
+    });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Doc/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+    assert_eq!(json["fields"]["author"], "user:someone-else");
+}
+
+/// Issue #105: the in-transaction rule phase runs in the engine-controlled
+/// order `@default` → `@compute` → `@require`. This test makes that order
+/// *observable* end-to-end through a single POST:
+///
+/// * `base` carries `@default("7")` — it is absent in the body, so the
+///   default phase must seed it first.
+/// * `doubled` carries `@compute("base * 2")` — the compute phase must run
+///   *after* defaults, so it reads the seeded `7` and stores `14`.
+/// * `doubled` also carries `@require("doubled >= 10")` — the require phase
+///   must run *after* compute, so it validates the computed `14` (passes).
+///
+/// The mirror case (`base = 2` supplied → `doubled = 4` → `@require` fails)
+/// proves the require phase truly sees the computed value, not the input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rule_phase_order_default_then_compute_then_require_is_observable() {
+    use schema_forge_core::types::{
+        Annotation, FieldAnnotation, FieldDefinition, FieldName, FieldType, IntegerConstraints,
+        SchemaDefinition, SchemaId, SchemaName,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    let int = || FieldType::Integer(IntegerConstraints::unconstrained());
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Calc").unwrap(),
+        vec![
+            // Defaulted first: absent in the body → seeded to 7.
+            FieldDefinition::with_annotations(
+                FieldName::new("base").unwrap(),
+                int(),
+                vec![],
+                vec![FieldAnnotation::Default {
+                    expr: "7".to_string(),
+                }],
+            ),
+            // Computed from the (possibly defaulted) `base`, then required to
+            // be >= 10. The compute must see the default and the require must
+            // see the computed value.
+            FieldDefinition::with_annotations(
+                FieldName::new("doubled").unwrap(),
+                int(),
+                vec![],
+                vec![
+                    FieldAnnotation::Compute {
+                        expr: "base * 2".to_string(),
+                    },
+                    FieldAnnotation::Require {
+                        expr: "doubled >= 10".to_string(),
+                        message: "doubled must be at least 10".to_string(),
+                    },
+                ],
+            ),
+        ],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let mut registry = HashMap::new();
+    registry.insert("Calc".to_string(), schema.clone());
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry,
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    let app = test_app_with_claims_state(state, make_test_claims(&["platform_admin"]));
+
+    // base absent → default 7 → compute 14 → require(14 >= 10) passes.
+    let body = serde_json::json!({ "fields": {} });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Calc/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201 (default→compute→require all run in order), got {status}: {json}"
+    );
+    assert_eq!(json["fields"]["base"], 7, "default phase must seed base=7");
+    assert_eq!(
+        json["fields"]["doubled"], 14,
+        "compute phase must read the defaulted base (7*2=14)"
+    );
+
+    // base = 2 supplied → default skipped → compute 4 → require(4 >= 10) fails.
+    // Proves @require validates the COMPUTED value, not the supplied input.
+    let body = serde_json::json!({ "fields": { "base": 2 } });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Calc/entities", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 because compute(2*2=4) fails require(>=10), got {status}: {json}"
+    );
+    assert_eq!(json["error"], "validation_failed");
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap()
+            .contains("doubled must be at least 10"),
+        "expected the require message about the computed value, got: {json}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_entity_for_missing_schema_returns_404() {
     let app = test_app().await;
 
@@ -1091,6 +1497,282 @@ async fn put_round_trip_after_get_returns_200() {
         "round-trip PUT should succeed, got {put_status} body={put_json}"
     );
     assert_eq!(put_json["fields"]["name"], "Alice");
+}
+
+/// Issue #96: a `duration` field round-trips request → persist → response.
+/// The wire form is the canonical Go-style seconds string consistent with
+/// CEL's `duration()` (e.g. 2555 days = `220752000s`), and a `2555d`-style
+/// input coerces to the same value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_and_read_entity_with_duration_field() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Record",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "retention", "field_type": "Duration"}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // POST with a `2555d`-style duration; the backend coerces it to seconds.
+    let create_body = serde_json::json!({
+        "fields": { "name": "Case file", "retention": "2555d" }
+    });
+    let (create_status, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Record/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        create_status,
+        StatusCode::CREATED,
+        "expected 201, got {create_status} body={created}"
+    );
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Record/entities/{entity_id}");
+
+    // GET the entity — the response serializes the duration as canonical seconds.
+    let (get_status, fetched) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(
+        fetched["fields"]["retention"], "220752000s",
+        "duration should serialize as canonical Go-style seconds"
+    );
+
+    // PUT the GET body back unchanged — the canonical form must re-parse.
+    let put_body = serde_json::json!({ "fields": fetched["fields"].clone() });
+    let (put_status, put_json) = json_request(&app, Method::PUT, &path, Some(put_body)).await;
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "round-trip PUT should succeed, got {put_status} body={put_json}"
+    );
+    assert_eq!(put_json["fields"]["retention"], "220752000s");
+}
+
+/// Issue #96 (review fix): a negative `duration` on a SurrealDB-backed field
+/// must FAIL CLOSED with a clear 422, never silently store NULL. SurrealDB's
+/// native `duration` type is unsigned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_entity_with_negative_duration_returns_422() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Record",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "retention", "field_type": "Duration"}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    let create_body = serde_json::json!({
+        "fields": { "name": "Case file", "retention": "-5s" }
+    });
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Record/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 for a negative duration, got {status} body={json}"
+    );
+    assert_eq!(json["error"], "validation_failed");
+    let message = json["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("unsigned") && message.contains("-5s"),
+        "error should explain the unsigned constraint and echo the value, got: {message}"
+    );
+}
+
+/// Issue #97: a `bytes` field round-trips request → persist → response. The
+/// wire form is standard base64 with padding; a base64 request body is decoded,
+/// stored as inline binary, and re-serialized as the same base64 on read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_and_read_entity_with_bytes_field() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Record",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "sig", "field_type": "Bytes"}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // "hello" as standard base64 (with padding).
+    let create_body = serde_json::json!({
+        "fields": { "name": "Case file", "sig": "aGVsbG8=" }
+    });
+    let (create_status, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Record/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        create_status,
+        StatusCode::CREATED,
+        "expected 201, got {create_status} body={created}"
+    );
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Record/entities/{entity_id}");
+
+    // GET the entity — the response serializes the bytes as standard base64.
+    let (get_status, fetched) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(
+        fetched["fields"]["sig"], "aGVsbG8=",
+        "bytes should serialize as standard base64 with padding"
+    );
+
+    // PUT the GET body back unchanged — the base64 form must re-parse.
+    let put_body = serde_json::json!({ "fields": fetched["fields"].clone() });
+    let (put_status, put_json) = json_request(&app, Method::PUT, &path, Some(put_body)).await;
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "round-trip PUT should succeed, got {put_status} body={put_json}"
+    );
+    assert_eq!(put_json["fields"]["sig"], "aGVsbG8=");
+}
+
+/// Issue #97: a `bytes` value beyond the field's `max_size` must FAIL CLOSED
+/// with a 422, never truncated or silently stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_entity_with_oversized_bytes_returns_422() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Record",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "sig", "field_type": {"type": "Bytes", "data": {"max_size": 2}}}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // "hello" decodes to 5 bytes, exceeding the 2-byte cap.
+    let create_body = serde_json::json!({
+        "fields": { "name": "Case file", "sig": "aGVsbG8=" }
+    });
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Record/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 for oversized bytes, got {status} body={json}"
+    );
+    assert_eq!(json["error"], "validation_failed");
+    let message = json["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("exceeds") && message.contains("max_size"),
+        "error should explain the size cap, got: {message}"
+    );
+}
+
+/// Issue #99: a typed `map<string, integer>` field round-trips through the
+/// REST API — a JSON object request persists and a GET returns the same object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_and_read_entity_with_map_field() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Labeled",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {
+                "name": "metadata",
+                "field_type": {"type": "Map", "data": {"value": "Integer"}}
+            }
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    let create_body = serde_json::json!({
+        "fields": { "name": "Widget", "metadata": { "weight": 3, "count": 12 } }
+    });
+    let (create_status, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Labeled/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        create_status,
+        StatusCode::CREATED,
+        "expected 201, got {create_status} body={created}"
+    );
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Labeled/entities/{entity_id}");
+
+    // GET — the map serializes back as a JSON object with the same entries.
+    let (get_status, fetched) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(fetched["fields"]["metadata"]["weight"], 3);
+    assert_eq!(fetched["fields"]["metadata"]["count"], 12);
+
+    // Round-trip PUT of the GET body must re-parse.
+    let put_body = serde_json::json!({ "fields": fetched["fields"].clone() });
+    let (put_status, put_json) = json_request(&app, Method::PUT, &path, Some(put_body)).await;
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "round-trip PUT should succeed, got {put_status} body={put_json}"
+    );
+    assert_eq!(put_json["fields"]["metadata"]["weight"], 3);
+}
+
+/// Issue #99: a map value whose type does not match the declared value type
+/// must FAIL CLOSED with a 422 rather than being stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_entity_with_map_value_type_mismatch_returns_422() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Labeled",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {
+                "name": "metadata",
+                "field_type": {"type": "Map", "data": {"value": "Integer"}}
+            }
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // A string value against a `map<string, integer>` is a type mismatch.
+    let create_body = serde_json::json!({
+        "fields": { "name": "Widget", "metadata": { "weight": "heavy" } }
+    });
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Labeled/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 for a map value type mismatch, got {status} body={json}"
+    );
 }
 
 /// Regression for issue #10: PATCH must merge a partial payload onto the

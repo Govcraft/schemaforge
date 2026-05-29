@@ -700,11 +700,14 @@ fn field_type_name(ft: &FieldType) -> String {
         FieldType::Float(_) => "Float",
         FieldType::Boolean => "Boolean",
         FieldType::DateTime => "DateTime",
+        FieldType::Duration => "Duration",
+        FieldType::Bytes(_) => "Bytes",
         FieldType::Enum(_) => "Enum",
         FieldType::Json => "Json",
         FieldType::Relation { .. } => "Relation",
         FieldType::Array(_) => "Array",
         FieldType::Composite(_) => "Composite",
+        FieldType::Map { .. } => "Map",
         FieldType::File(_) => "File",
     }
     .to_string()
@@ -725,7 +728,10 @@ fn check_type_compat(
         FieldType::Float(_) => matches!(value, DynamicValue::Float(_) | DynamicValue::Integer(_)),
         FieldType::Boolean => matches!(value, DynamicValue::Boolean(_)),
         FieldType::DateTime => matches!(value, DynamicValue::DateTime(_)),
+        FieldType::Duration => matches!(value, DynamicValue::Duration(_)),
+        FieldType::Bytes(_) => matches!(value, DynamicValue::Bytes(_)),
         FieldType::Enum(_) => matches!(value, DynamicValue::Enum(_) | DynamicValue::Text(_)),
+        FieldType::Map { .. } => matches!(value, DynamicValue::Map(_)),
         _ => true, // Json, Relation, Array, Composite — accept anything
     };
     if !compatible {
@@ -745,10 +751,13 @@ fn dynamic_value_type_name(value: &DynamicValue) -> String {
         DynamicValue::Float(_) => "Float",
         DynamicValue::Boolean(_) => "Boolean",
         DynamicValue::DateTime(_) => "DateTime",
+        DynamicValue::Duration(_) => "Duration",
+        DynamicValue::Bytes(_) => "Bytes",
         DynamicValue::Enum(_) => "Enum",
         DynamicValue::Json(_) => "Json",
         DynamicValue::Array(_) => "Array",
         DynamicValue::Composite(_) => "Composite",
+        DynamicValue::Map(_) => "Map",
         DynamicValue::Ref(_) => "Ref",
         DynamicValue::RefArray(_) => "RefArray",
     }

@@ -12,7 +12,7 @@ annotation      = "@" annotation_name [ "(" annotation_params ")" ] ;
 annotation_name = "version" | "display" | "system" | "access"
                 | "tenant" | "dashboard" | "webhook" | "hook" ;
 
-field_def       = SNAKE_IDENT ":" field_type { modifier } { field_annotation } ;
+field_def       = SNAKE_IDENT ":" field_type { modifier } { field_annotation | rule_annotation } ;
 
 field_annotation_name
                 = "owner" | "widget" | "kanban_column" | "format"
@@ -21,6 +21,7 @@ field_annotation_name
 field_type      = primitive_type [ "[]" ]
                 | "->" PASCAL_IDENT [ "[]" ]
                 | "composite" "{" { field_def } "}"
+                | map_type
                 ;
 
 primitive_type  = "text" [ "(" text_params ")" ]
@@ -29,14 +30,19 @@ primitive_type  = "text" [ "(" text_params ")" ]
                 | "float" [ "(" float_params ")" ]
                 | "boolean"
                 | "datetime"
+                | "duration"
+                | "bytes" [ "(" bytes_params ")" ]
                 | "enum" "(" enum_variants ")"
                 | "json"
                 | "file" "(" file_params ")"
                 ;
 
+map_type        = "map" "<" field_type "," field_type ">" ;  (* key field_type must be "text"; see Map below *)
+
 text_params     = "max" ":" INTEGER ;
 integer_params  = [ "min" ":" INTEGER ] [ "," ] [ "max" ":" INTEGER ] ;
 float_params    = "precision" ":" INTEGER ;
+bytes_params    = "max" ":" INTEGER ;  (* maximum byte length *)
 enum_variants   = STRING { "," STRING } ;
 file_params     = "bucket" ":" STRING "," "max_size" ":" size_literal "," "mime" ":" "[" STRING { "," STRING } "]" [ "," "access" ":" STRING ] ;
 size_literal    = INTEGER | STRING ;  (* string carries KB/MB/GB/KiB/MiB/GiB suffix *)
@@ -45,13 +51,25 @@ modifier        = "required" | "indexed" | "unique" | "default" "(" value ")" ;
 value           = STRING | INTEGER | FLOAT | "true" | "false" ;
 
 field_annotation = "@" field_annotation_name [ "(" field_annotation_params ")" ] ;
+
+(* CEL-backed write-time rules (#92/#93/#94). The expression is double-quoted
+   CEL source, syntax-validated against the owned CEL engine at parse time and
+   type-checked against the schema's field types at apply time (#104). NOTE: the
+   @default rule_annotation (a CEL expression) is distinct from the default(...)
+   modifier (a literal value). *)
+rule_annotation = "@require" "(" CEL_STRING "," STRING ")"
+                | "@compute" "(" CEL_STRING ")"
+                | "@default" "(" CEL_STRING ")" ;
+CEL_STRING      = STRING ;  (* double-quoted CEL expression source *)
 ```
 
 ## Lexer Tokens
 
-**Keywords:** `schema`, `text`, `richtext`, `integer`, `float`, `boolean`, `datetime`, `enum`, `json`, `file`, `composite`, `required`, `indexed`, `default`, `true`, `false`
+**Keywords:** `schema`, `text`, `richtext`, `integer`, `float`, `boolean`, `datetime`, `duration`, `bytes`, `map`, `enum`, `json`, `file`, `composite`, `required`, `indexed`, `unique`, `default`, `true`, `false`
 
-**Punctuation:** `{` `}` `(` `)` `[` `]` `:` `,` `->` `@`
+**Punctuation:** `{` `}` `(` `)` `[` `]` `<` `>` `:` `,` `->` `@`
+
+`<` and `>` delimit a `map<key, value>` type. Rule-annotation arguments (`@require`/`@compute`/`@default`) carry CEL source inside an ordinary double-quoted string.
 
 **Literals:**
 - Strings: `"double-quoted"` with escape sequences
@@ -124,6 +142,34 @@ ISO 8601 timestamp.
 created_at: datetime
 hire_date: datetime required
 ```
+
+### duration
+
+A span of time (not a point in time). No parameters.
+
+```
+retention: duration
+timeout:    duration required
+```
+
+- Stored as **signed nanoseconds**. The representable range is the i64-nanosecond window (≈ ±292 years); a value outside it is rejected, never truncated.
+- Backed by `chrono::TimeDelta`. SurrealDB stores it as a native `duration`; PostgreSQL stores it as `BIGINT` (signed nanoseconds, lossless).
+- **Fail-closed:** SurrealDB has no signed-duration representation, so a *negative* duration is rejected on write with a `422` rather than being silently coerced to null. PostgreSQL round-trips negatives losslessly.
+- In CEL rule expressions a duration field surfaces as a CEL `duration`, so `@require` predicates can compare and do duration arithmetic (e.g. `@require("retention <= timeout", "...")`).
+
+### bytes
+
+A raw binary byte string, optionally length-capped.
+
+```
+sig:       bytes                  // no limit
+thumbprint: bytes(max: 1024)      // at most 1024 bytes
+```
+
+Constraint: `max` is the maximum **byte length** (`usize`).
+
+- SurrealDB stores it as a native `bytes`; PostgreSQL stores it as `BYTEA`. When `max` is set, PostgreSQL adds a column `CHECK (octet_length(field) <= max)` so an oversized value **fails closed** on write instead of being stored.
+- In CEL, a bytes field surfaces as a CEL `bytes` value. The stdlib exposes `base64.encode(bytes) -> string` and `base64.decode(string) -> bytes` (invalid base64 errors rather than panicking), so rules can bridge between the two.
 
 ### enum
 
@@ -251,6 +297,24 @@ address: composite {
 ```
 
 Composites can contain any field type except relations, other composites, and `file` fields.
+
+### Map
+
+A typed, open-keyed map: arbitrary string keys, but every value is validated against one homogeneous value type. Distinct from `composite` (a fixed, declared field set) and `json` (untyped).
+
+```
+labels:  map<text, integer>          // arbitrary keys → integer values
+meta:    map<text, text>
+buckets: map<text, integer[]>         // value type can itself be a container
+```
+
+Syntax: `map<key_type, value_type>`.
+
+- **The key type must be `text`.** A non-`text` key (`map<integer, ...>`) is a parse error (`MapKeyNotString`): JSON/JSONB and SurrealDB objects are uniformly string-keyed, and a non-string key cannot round-trip without lossy key-encoding. The key slot is parsed (not hardcoded) so the constraint surfaces as a clear diagnostic.
+- The value type is any field type, including arrays, composites, or a nested `map`.
+- A `map<...>` cannot take the `[]` array suffix; nest a container in the value position instead (`map<text, integer[]>`).
+- SurrealDB stores it as a `FLEXIBLE object`; PostgreSQL stores it as `JSONB`.
+- In CEL, a map field surfaces as a CEL `map<K, V>`, so comprehension macros (`all` / `exists` / `map`) work over it inside rule expressions, and every value is validated against the declared value type on write (mismatch → `422`, fail-closed).
 
 ## Modifiers — Complete Details
 
@@ -574,6 +638,77 @@ ssn: text(max: 4) @field_access(read: ["hr"], write: ["hr"])
 budget: float(precision: 2) @field_access(read: ["finance", "manager"], write: ["finance"])
 ```
 
+## Write-Time Rules — `@require` / `@compute` / `@default`
+
+These three field annotations carry a **CEL expression** (Common Expression Language) evaluated at write time by SchemaForge's own CEL engine (#92/#93/#94). The expression is double-quoted CEL source: it is syntax-validated at parse time and **type-checked against the schema's field types at apply time** (#104) — a definitely-incompatible expression is rejected before any data is touched.
+
+> The `@default("expr")` *annotation* (a CEL expression) is different from the `default(value)` *modifier* (a literal). Use the modifier for a constant (`active: boolean default(true)`); use the annotation for a computed seed (`created_at: datetime @default("now")`).
+
+### Available bindings
+
+Inside any of these expressions you can reference:
+
+- **Every field of the record** by its snake_case name (the in-flight write, including values already filled by earlier phases).
+- **`now`** — the request-time instant, a CEL `timestamp`. The engine is **pure**: there is no `now()` function (a wall-clock read would be a side effect). Spell the current time as the variable `now`, not as a call.
+- **`principal`** — a CEL map of the caller's identity: `principal.sub`, `principal.email`, `principal.username`, `principal.roles` (list), `principal.perms` (list). Always bound (an empty map when unauthenticated), so `has(principal.sub)` is a clean `false` rather than an error.
+
+### `@require("expr", "message")` — validation
+
+Rejects the write unless the predicate holds. Fail-closed: the write passes **only** when the expression evaluates to exactly boolean `true`. A definite `false` is a `422` rejection carrying `message`; a non-boolean result or an evaluation error is treated as a schema-authoring fault (`500`) — a broken predicate can never let a write through.
+
+```
+age:      integer @require("age >= 18", "must be 18 or older")
+due_date: datetime @require("due_date >= now", "due date cannot be in the past")
+owner_id: text @require("has(principal.sub) && owner_id == principal.sub", "owner must be the caller")
+```
+
+### `@compute("expr")` — server-derived value
+
+Computes the field's value at write time and **stores** it, overwriting any client-supplied value (a client cannot smuggle a value into a computed field). Computes run in field-declaration order with bindings rebuilt from the current field map, so a later compute can read an earlier one (chainable).
+
+```
+full_name: text @compute("first_name + ' ' + last_name")
+```
+
+### `@default("expr")` — computed default
+
+**Insert-only** (create only): fills the field when it is absent or null, *before* `@compute` runs. On update/patch it does not fire. Because audit/owner/tenant columns are injected before the rule phases, an injected non-null value still wins over a `@default` for the same field.
+
+```
+created_at: datetime @default("now")
+status:     enum("open", "closed") @default("'open'")
+```
+
+### Evaluation order
+
+For every write the engine runs a fixed, deterministic sequence:
+
+```
+@default → @compute → @require → before_* hooks → PERSIST → { after_* hooks, webhook }
+```
+
+Rules run **in-transaction, before persistence, and ahead of any hook** — they are pure and cheap, so a `@require` rejection short-circuits the whole write before any hook round-trip and before anything is stored. (`@default` is create-only; update/patch run only `@compute` then `@require`.)
+
+### Cross-entity reads — `related.<F>.<col>` (`@require` only)
+
+A `@require` predicate can assert over a **single related row** without a hook, via the reserved `related` namespace:
+
+```
+status: enum("open", "closed")
+        @require("status != 'closed' || related.approval.state == 'granted'", "closed records need a granted approval")
+approval: -> Approval
+```
+
+`related.<F>` dereferences a **single-valued** relation field `F` (a `-> Target`, i.e. `Relation{One}`) to its committed related row, bound as a CEL map; `related.F.<col>` reads a column on that row. The bare field `F` remains the opaque id string — `related.F` is the dereferenced entity.
+
+Semantics and limits:
+
+- **Single hop only.** `related.F.col` reads a column on F's target. A path that crosses a *second* relation (`related.F.G.x` where `G` is itself a relation on the target) is rejected with a clear error — use a `before_*` hook for multi-hop.
+- **Single-valued only.** `related.F` on a to-many relation (`-> Target[]`) is rejected; aggregate/collection assertions belong in a hook.
+- **`@require` only.** `related.*` in `@compute` or `@default` is a parse/apply-time error — a computed field must not depend on another row's mutable state.
+- **Tenant-scoped.** The related row is loaded with the caller's tenant scope applied, so a rule can never read across a tenant boundary the caller couldn't otherwise see.
+- **Fail-closed.** If the FK is null/absent, the related row does not exist, or tenant scope hides it, `related.F` is simply not bound — the predicate hits an absent reference and the write is **rejected**, never silently allowed.
+
 ## Validation Rules Summary
 
 | Rule | Parser Behavior |
@@ -606,6 +741,10 @@ budget: float(precision: 2) @field_access(read: ["finance", "manager"], write: [
 | `file(access: ...)` must be exactly `"presigned"` or `"proxied"` | Parse error (`InvalidFileParam`) |
 | `file(...)` rejects unknown parameters | Parse error (`InvalidFileParam`: "unknown file parameter") |
 | `file(bucket: ...)` must resolve to a configured `[schema_forge.storage.backends.<name>]` | Startup error (`Internal`: "undeclared storage backends") |
+| `map<K, V>` key type must be `text` | Parse error (`MapKeyNotString`) |
+| `@require` / `@compute` / `@default` expression must be syntactically valid CEL | Parse error (CEL parse error mapped to `line:column`) |
+| `@require` / `@compute` / `@default` expression must type-check against the schema's field types | Apply-time error (`RuleTypeError`, mapped to `line:column`) |
+| `@require(...)` requires both a CEL expression and a message argument | Parse error |
 | `unique` modifier allowed only on `text`/`integer`/`float`/`datetime`/`enum` fields | Parse error (`UniqueOnUnsupportedType`) |
 | Adding `unique` to a column with duplicate existing rows | Migration apply error (`RequiresConfirmation` safety class — operator must clean data first) |
 | Write that collides with a `unique` field | API 409 (`unique_violation`) with `{ schema, field }` body |
@@ -635,8 +774,12 @@ The DSL is backend-agnostic. The backend crate translates field types to native 
 | `float(precision: N)` | `float` | `NUMERIC(N)` |
 | `boolean` | `bool` | `BOOLEAN` |
 | `datetime` | `datetime` | `TIMESTAMPTZ` |
+| `duration` | `duration` | `BIGINT` (signed nanoseconds) |
+| `bytes` | `bytes` | `BYTEA` |
+| `bytes(max: N)` | `bytes` | `BYTEA` + `CHECK (octet_length <= N)` |
 | `enum(...)` | `string` + ASSERT IN | `TEXT` + CHECK IN |
 | `json` | `object` | `JSONB` |
+| `map<text, V>` | `object` (FLEXIBLE) | `JSONB` |
 | `-> Target` | `record<Target>` | `TEXT` (FK) |
 | `-> Target[]` (stored) | `array<record<Target>>` | `TEXT[]` |
 | `-> Target[]` (derived — paired with child FK) | *no column* | *no column* |

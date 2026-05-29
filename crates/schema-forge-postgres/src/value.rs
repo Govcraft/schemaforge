@@ -56,17 +56,34 @@ pub fn bind_dynamic_value(
                 message: format!("failed to bind datetime: {e}"),
             })?;
         }
+        DynamicValue::Duration(d) => {
+            // Stored as a signed nanosecond count in a BIGINT column.
+            let nanos = d.num_nanoseconds().ok_or_else(|| BackendError::Internal {
+                message: "duration is out of the representable nanosecond range".to_string(),
+            })?;
+            args.add(nanos).map_err(|e| BackendError::Internal {
+                message: format!("failed to bind duration: {e}"),
+            })?;
+        }
+        DynamicValue::Bytes(b) => {
+            // Stored verbatim in a BYTEA column.
+            args.add(b.clone()).map_err(|e| BackendError::Internal {
+                message: format!("failed to bind bytes: {e}"),
+            })?;
+        }
         DynamicValue::Json(v) => {
             args.add(sqlx::types::Json(v))
                 .map_err(|e| BackendError::Internal {
                     message: format!("failed to bind json: {e}"),
                 })?;
         }
-        DynamicValue::Composite(map) => {
+        DynamicValue::Composite(map) | DynamicValue::Map(map) => {
+            // A `Composite` (fixed fields) and a typed `Map` (open string keys,
+            // homogeneous values) are both stored as a JSONB object.
             let json_val = composite_to_json(map);
             args.add(sqlx::types::Json(&json_val))
                 .map_err(|e| BackendError::Internal {
-                    message: format!("failed to bind composite: {e}"),
+                    message: format!("failed to bind object: {e}"),
                 })?;
         }
         DynamicValue::Ref(id) => {
@@ -125,10 +142,14 @@ fn bind_null(args: &mut PgArguments, field_type: Option<&FieldType>) -> Result<(
         Some(FieldType::Float(_)) => args.add(None::<f64>),
         Some(FieldType::Boolean) => args.add(None::<bool>),
         Some(FieldType::DateTime) => args.add(None::<chrono::DateTime<chrono::Utc>>),
+        // Stored as a BIGINT nanosecond count.
+        Some(FieldType::Duration) => args.add(None::<i64>),
+        // Stored as a BYTEA column.
+        Some(FieldType::Bytes(_)) => args.add(None::<Vec<u8>>),
         // Stored as jsonb.
-        Some(FieldType::Json | FieldType::Composite(_) | FieldType::File(_)) => {
-            args.add(None::<sqlx::types::Json<serde_json::Value>>)
-        }
+        Some(
+            FieldType::Json | FieldType::Composite(_) | FieldType::Map { .. } | FieldType::File(_),
+        ) => args.add(None::<sqlx::types::Json<serde_json::Value>>),
         // Relation cardinality determines text vs text[].
         Some(FieldType::Relation {
             cardinality: Cardinality::One,
@@ -175,6 +196,8 @@ fn bind_null_array(args: &mut PgArguments, inner: &FieldType) -> Result<(), Back
         FieldType::Float(_) => args.add(None::<Vec<f64>>),
         FieldType::Boolean => args.add(None::<Vec<bool>>),
         FieldType::DateTime => args.add(None::<Vec<chrono::DateTime<chrono::Utc>>>),
+        FieldType::Duration => args.add(None::<Vec<i64>>),
+        FieldType::Bytes(_) => args.add(None::<Vec<Vec<u8>>>),
         // Nested arrays, composites, relations, etc. are stored as JSONB.
         _ => args.add(None::<sqlx::types::Json<serde_json::Value>>),
     };
@@ -229,6 +252,20 @@ fn bind_array(
                 })?;
                 return Ok(());
             }
+            FieldType::Duration => {
+                let items = array_items_as_duration_nanos(arr)?;
+                args.add(items).map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind duration array: {e}"),
+                })?;
+                return Ok(());
+            }
+            FieldType::Bytes(_) => {
+                let items = array_items_as_bytes(arr)?;
+                args.add(items).map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind bytes array: {e}"),
+                })?;
+                return Ok(());
+            }
             // Nested arrays, composites, relations, json, etc. -- fall through to JSONB.
             _ => {}
         }
@@ -265,10 +302,13 @@ fn dynamic_variant_name(value: &DynamicValue) -> &'static str {
         DynamicValue::Float(_) => "Float",
         DynamicValue::Boolean(_) => "Boolean",
         DynamicValue::DateTime(_) => "DateTime",
+        DynamicValue::Duration(_) => "Duration",
+        DynamicValue::Bytes(_) => "Bytes",
         DynamicValue::Enum(_) => "Enum",
         DynamicValue::Json(_) => "Json",
         DynamicValue::Array(_) => "Array",
         DynamicValue::Composite(_) => "Composite",
+        DynamicValue::Map(_) => "Map",
         DynamicValue::Ref(_) => "Ref",
         DynamicValue::RefArray(_) => "RefArray",
         _ => "Unknown",
@@ -327,6 +367,33 @@ fn array_items_as_datetimes(
         .map(|item| match item {
             DynamicValue::DateTime(dt) => Ok(*dt),
             other => Err(array_bind_mismatch(&FieldType::DateTime, other)),
+        })
+        .collect()
+}
+
+/// Collect a `duration[]` array as signed nanosecond counts for a BIGINT[] column.
+fn array_items_as_duration_nanos(arr: &[DynamicValue]) -> Result<Vec<i64>, BackendError> {
+    arr.iter()
+        .map(|item| match item {
+            DynamicValue::Duration(d) => {
+                d.num_nanoseconds().ok_or_else(|| BackendError::Internal {
+                    message: "duration is out of the representable nanosecond range".to_string(),
+                })
+            }
+            other => Err(array_bind_mismatch(&FieldType::Duration, other)),
+        })
+        .collect()
+}
+
+/// Collect a `bytes[]` array as byte vectors for a BYTEA[] column.
+fn array_items_as_bytes(arr: &[DynamicValue]) -> Result<Vec<Vec<u8>>, BackendError> {
+    arr.iter()
+        .map(|item| match item {
+            DynamicValue::Bytes(b) => Ok(b.clone()),
+            other => Err(array_bind_mismatch(
+                &FieldType::Bytes(schema_forge_core::types::BytesConstraints::unconstrained()),
+                other,
+            )),
         })
         .collect()
 }
@@ -412,6 +479,20 @@ fn read_column(
                 })?;
             Ok(DynamicValue::DateTime(v))
         }
+        Some(FieldType::Duration) => {
+            let nanos: i64 = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read duration column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Duration(chrono::TimeDelta::nanoseconds(
+                nanos,
+            )))
+        }
+        Some(FieldType::Bytes(_)) => {
+            let v: Vec<u8> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read bytes column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Bytes(v))
+        }
         Some(FieldType::Json) => {
             let v: sqlx::types::Json<serde_json::Value> =
                 row.try_get(col_name).map_err(|e| BackendError::Internal {
@@ -425,6 +506,13 @@ fn read_column(
                     message: format!("failed to read composite column '{col_name}': {e}"),
                 })?;
             Ok(json_to_composite(&v.0))
+        }
+        Some(FieldType::Map { value, .. }) => {
+            let v: sqlx::types::Json<serde_json::Value> =
+                row.try_get(col_name).map_err(|e| BackendError::Internal {
+                    message: format!("failed to read map column '{col_name}': {e}"),
+                })?;
+            Ok(json_to_map(value, &v.0))
         }
         Some(FieldType::File(_)) => {
             let v: sqlx::types::Json<serde_json::Value> =
@@ -524,6 +612,24 @@ fn read_array_column(
                 v.into_iter().map(DynamicValue::DateTime).collect(),
             ))
         }
+        FieldType::Duration => {
+            let v: Vec<i64> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read duration array column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Array(
+                v.into_iter()
+                    .map(|n| DynamicValue::Duration(chrono::TimeDelta::nanoseconds(n)))
+                    .collect(),
+            ))
+        }
+        FieldType::Bytes(_) => {
+            let v: Vec<Vec<u8>> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read bytes array column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Array(
+                v.into_iter().map(DynamicValue::Bytes).collect(),
+            ))
+        }
         // Nested arrays, composites, relations, json, etc. -- fall back to JSONB.
         _ => {
             let v: sqlx::types::Json<serde_json::Value> =
@@ -544,12 +650,18 @@ fn dynamic_to_json(value: &DynamicValue) -> serde_json::Value {
         DynamicValue::Float(f) => serde_json::json!(*f),
         DynamicValue::Boolean(b) => serde_json::json!(*b),
         DynamicValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        DynamicValue::Duration(d) => {
+            serde_json::Value::String(schema_forge_core::types::format_go_duration(d))
+        }
+        DynamicValue::Bytes(b) => {
+            serde_json::Value::String(schema_forge_core::types::encode_standard(b))
+        }
         DynamicValue::Json(v) => v.clone(),
         DynamicValue::Array(arr) => {
             let items: Vec<serde_json::Value> = arr.iter().map(dynamic_to_json).collect();
             serde_json::Value::Array(items)
         }
-        DynamicValue::Composite(map) => composite_to_json(map),
+        DynamicValue::Composite(map) | DynamicValue::Map(map) => composite_to_json(map),
         DynamicValue::Ref(id) => serde_json::Value::String(id.as_str().to_string()),
         DynamicValue::RefArray(ids) => {
             let items: Vec<serde_json::Value> = ids
@@ -582,6 +694,60 @@ fn json_to_composite(json: &serde_json::Value) -> DynamicValue {
             DynamicValue::Composite(result)
         }
         other => DynamicValue::Json(other.clone()),
+    }
+}
+
+/// Convert a JSON object to a `DynamicValue::Map`, decoding each value against
+/// the map's homogeneous value `FieldType`.
+///
+/// This is the read-side inverse of binding a typed `map<string, V>` as JSONB.
+/// Each value is decoded with the declared `value_type` so e.g. a
+/// `map<string, datetime>` reads back as `DynamicValue::DateTime` values rather
+/// than raw strings. A non-object JSON value (only reachable via a corrupt
+/// column) falls back to a raw `Json` wrapper rather than panicking.
+fn json_to_map(value_type: &FieldType, json: &serde_json::Value) -> DynamicValue {
+    match json {
+        serde_json::Value::Object(map) => {
+            let mut result = BTreeMap::new();
+            for (k, v) in map {
+                result.insert(k.clone(), json_value_to_dynamic_typed(value_type, v));
+            }
+            DynamicValue::Map(result)
+        }
+        other => DynamicValue::Json(other.clone()),
+    }
+}
+
+/// Decode a single JSON value against a known `FieldType`, used by
+/// [`json_to_map`] to give map values their declared type. Falls back to the
+/// untyped [`json_value_to_dynamic`] for types without a string/temporal
+/// encoding.
+fn json_value_to_dynamic_typed(field_type: &FieldType, json: &serde_json::Value) -> DynamicValue {
+    match (field_type, json) {
+        (_, serde_json::Value::Null) => DynamicValue::Null,
+        (FieldType::DateTime, serde_json::Value::String(s)) => s
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .map(DynamicValue::DateTime)
+            .unwrap_or_else(|_| DynamicValue::Text(s.clone())),
+        (FieldType::Duration, serde_json::Value::String(s)) => {
+            schema_forge_core::types::parse_go_duration(s)
+                .map(DynamicValue::Duration)
+                .unwrap_or_else(|_| DynamicValue::Text(s.clone()))
+        }
+        (FieldType::Bytes(_), serde_json::Value::String(s)) => {
+            schema_forge_core::types::decode_standard(s)
+                .map(DynamicValue::Bytes)
+                .unwrap_or_else(|_| DynamicValue::Text(s.clone()))
+        }
+        (FieldType::Enum(_), serde_json::Value::String(s)) => DynamicValue::Enum(s.clone()),
+        (FieldType::Array(inner), serde_json::Value::Array(items)) => DynamicValue::Array(
+            items
+                .iter()
+                .map(|item| json_value_to_dynamic_typed(inner, item))
+                .collect(),
+        ),
+        (FieldType::Map { value, .. }, serde_json::Value::Object(_)) => json_to_map(value, json),
+        _ => json_value_to_dynamic(json),
     }
 }
 
@@ -702,6 +868,91 @@ mod tests {
 
         let mut args = PgArguments::default();
         assert!(bind_dynamic_value(&mut args, &DynamicValue::Enum("Active".into()), None).is_ok());
+
+        let mut args = PgArguments::default();
+        assert!(bind_dynamic_value(
+            &mut args,
+            &DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000)),
+            Some(&FieldType::Duration)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn duration_variant_name_is_duration() {
+        assert_eq!(
+            dynamic_variant_name(&DynamicValue::Duration(chrono::TimeDelta::seconds(1))),
+            "Duration"
+        );
+    }
+
+    #[test]
+    fn duration_nanos_roundtrip_via_timedelta() {
+        // The BIGINT representation is a signed nanosecond count; confirm the
+        // exact round-trip the read path relies on.
+        let d = chrono::TimeDelta::seconds(220_752_000) + chrono::TimeDelta::nanoseconds(123);
+        let nanos = d.num_nanoseconds().unwrap();
+        assert_eq!(chrono::TimeDelta::nanoseconds(nanos), d);
+    }
+
+    #[test]
+    fn dynamic_to_json_duration_is_go_string() {
+        assert_eq!(
+            dynamic_to_json(&DynamicValue::Duration(chrono::TimeDelta::seconds(
+                220_752_000
+            ))),
+            serde_json::json!("220752000s")
+        );
+    }
+
+    #[test]
+    fn bind_null_with_duration_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        assert!(
+            bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&FieldType::Duration)).is_ok()
+        );
+    }
+
+    #[test]
+    fn bind_bytes_is_ok() {
+        let mut args = PgArguments::default();
+        assert!(bind_dynamic_value(
+            &mut args,
+            &DynamicValue::Bytes(vec![0x00, 0xff, 0x42]),
+            Some(&FieldType::Bytes(
+                schema_forge_core::types::BytesConstraints::unconstrained()
+            ))
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn bytes_variant_name_is_bytes() {
+        assert_eq!(
+            dynamic_variant_name(&DynamicValue::Bytes(vec![1, 2, 3])),
+            "Bytes"
+        );
+    }
+
+    #[test]
+    fn dynamic_to_json_bytes_is_standard_base64() {
+        assert_eq!(
+            dynamic_to_json(&DynamicValue::Bytes(b"hello".to_vec())),
+            serde_json::json!("aGVsbG8=")
+        );
+    }
+
+    #[test]
+    fn bind_null_with_bytes_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        assert!(bind_dynamic_value(
+            &mut args,
+            &DynamicValue::Null,
+            Some(&FieldType::Bytes(
+                schema_forge_core::types::BytesConstraints::unconstrained()
+            ))
+        )
+        .is_ok());
     }
 
     #[test]
@@ -874,6 +1125,61 @@ mod tests {
             bind_dynamic_value(&mut args, &DynamicValue::Composite(map), None).is_ok(),
             "Composite should bind as JSONB"
         );
+    }
+
+    #[test]
+    fn bind_map_binds_as_jsonb() {
+        // A typed `map<string, integer>` is stored as a JSONB object.
+        let mut args = PgArguments::default();
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), DynamicValue::Integer(1));
+        map.insert("b".to_string(), DynamicValue::Integer(2));
+        let ft = FieldType::Map {
+            key: Box::new(FieldType::Text(
+                schema_forge_core::types::TextConstraints::unconstrained(),
+            )),
+            value: Box::new(FieldType::Integer(
+                schema_forge_core::types::IntegerConstraints::unconstrained(),
+            )),
+        };
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Map(map), Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn bind_null_map_uses_typed_jsonb_none() {
+        let mut args = PgArguments::default();
+        let ft = FieldType::Map {
+            key: Box::new(FieldType::Text(
+                schema_forge_core::types::TextConstraints::unconstrained(),
+            )),
+            value: Box::new(FieldType::Integer(
+                schema_forge_core::types::IntegerConstraints::unconstrained(),
+            )),
+        };
+        assert!(bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&ft)).is_ok());
+    }
+
+    #[test]
+    fn json_to_map_decodes_values_against_value_type() {
+        // Read-side: a JSONB object decodes to a `DynamicValue::Map` whose
+        // values are typed against the map's declared value `FieldType`.
+        let json = serde_json::json!({"a": 1, "b": 2});
+        let value_type =
+            FieldType::Integer(schema_forge_core::types::IntegerConstraints::unconstrained());
+        let DynamicValue::Map(map) = json_to_map(&value_type, &json) else {
+            panic!("expected Map");
+        };
+        assert_eq!(map.get("a"), Some(&DynamicValue::Integer(1)));
+        assert_eq!(map.get("b"), Some(&DynamicValue::Integer(2)));
+    }
+
+    #[test]
+    fn json_to_map_decodes_datetime_values() {
+        let json = serde_json::json!({"k": "2024-01-02T03:04:05Z"});
+        let DynamicValue::Map(map) = json_to_map(&FieldType::DateTime, &json) else {
+            panic!("expected Map");
+        };
+        assert!(matches!(map.get("k"), Some(DynamicValue::DateTime(_))));
     }
 
     #[test]

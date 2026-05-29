@@ -13,6 +13,18 @@ abort the operation, or just observe. The scaffold command generates a
 complete `acton-service` project from your annotated schemas, so the
 only thing you write by hand is the business logic inside each stub.
 
+> **Hooks vs. write-time rules.** Much of what once required a hook —
+> field and cross-field **validation**, **computed values**, and
+> **computed defaults** — is now better expressed with the in-process CEL
+> rule annotations `@require` / `@compute` / `@default` (see
+> [dsl-reference.md](dsl-reference.md)). Rules need no external service,
+> add no gRPC round-trip, are fail-closed, and run *before* any hook. They
+> can even assert over a single related row (`related.<field>.<col>` in
+> `@require`). Reserve hooks for logic that needs **external I/O**: calling
+> another API, enriching from a third-party source, scanning an upload, or
+> publishing an event. If a check only depends on the record, `now`, the
+> caller, and one related row, write a rule instead of a hook.
+
 This reference walks you through the full loop: declare a hook,
 generate the service, implement the handlers, configure dispatch, and
 run the resulting system. If you already have a running SchemaForge
@@ -110,10 +122,10 @@ or any other event.
 
 ### 2.2 Lifecycle events
 
-SchemaForge supports ten lifecycle events. Nine are wired into the current
-runtime; one is reserved for future use. The last three are file-field
-specific — see [storage-reference.md](storage-reference.md) for the upload
-flow those events fire on.
+SchemaForge supports ten lifecycle events, all wired into the current
+runtime. The last three are file-field specific — see
+[storage-reference.md](storage-reference.md) for the upload flow those events
+fire on.
 
 | Event | DSL keyword | Fires on | Blocking? | May abort? | May modify? | System operation values |
 |---|---|---|---|---|---|---|
@@ -126,7 +138,7 @@ flow those events fire on.
 | Before upload | `before_upload` | `POST /upload-url` (file fields) | yes | yes | n/a | `mint_upload_url` |
 | After upload | `after_upload` | `POST /confirm-upload` (file fields) | no (detached) | no | n/a | `confirm_upload` |
 | On scan complete | `on_scan_complete` | `POST /scan-complete` (file fields) | no (detached) | no | n/a | `scan_complete` |
-| Before validate | `before_validate` | *(reserved)* | — | — | — | — |
+| Before validate | `before_validate` | POST/PUT | yes | yes | yes | `create`, `update` |
 
 A few semantic notes:
 
@@ -142,9 +154,12 @@ A few semantic notes:
   `before_read` only, with `operation` set to `list` or `query`
   respectively. `after_read` is per-entity and currently fires only
   on single-entity GETs.
-- **`before_validate`** is reserved; the variant exists in the DSL
-  today but is not yet wired into the runtime. Use `before_change`
-  for pre-persistence logic.
+- **`before_validate`** is now dispatched (it was previously reserved).
+  It fires on create/update/patch *after* the write-time rule phases
+  (`@default`/`@compute`/`@require`) and *before* `before_change`, so a
+  hook can mutate or add fields ahead of persistence-side validation. It
+  is blocking and may abort or modify, exactly like `before_change`; the
+  only difference is ordering (`before_validate` runs first).
 - **File events** (`before_upload`, `after_upload`, `on_scan_complete`)
   only fire for schemas that declare at least one `file(...)` field,
   and only on the three file-specific REST endpoints. Request messages

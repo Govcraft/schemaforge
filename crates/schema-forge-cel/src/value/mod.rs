@@ -1,0 +1,134 @@
+//! The CEL value model.
+//!
+//! This is the engine's own value type. It bridges to SchemaForge's
+//! `DynamicValue` (the `bridge` submodule lands with the evaluator core, #108)
+//! and additionally carries CEL-internal types the DSL does not yet expose —
+//! `uint`, `bytes`, `duration` (tracked by field-type issues #98/#97/#96).
+//!
+//! Note: equality here is the `derive`d, TYPE-EXACT `PartialEq`, and it stays that
+//! way on purpose. The conformance oracle compares `actual == expected` to grade
+//! results, so it must reject a type-wrong answer (`Int(1)` where `Uint(1)` is
+//! expected). CEL's `==`/`!=` *operator* semantics — cross-type numeric equality
+//! (`1 == 1u == 1.0`), `NaN != NaN`, and recursive list/map comparison — live
+//! separately in [`crate::eval::ops::cel_equals`], not in this `PartialEq`.
+
+pub mod bridge;
+
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, TimeDelta, Utc};
+
+/// A CEL runtime value.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum CelValue {
+    /// The null value.
+    Null,
+    /// A boolean.
+    Bool(bool),
+    /// A signed 64-bit integer (`int`).
+    Int(i64),
+    /// An unsigned 64-bit integer (`uint`).
+    Uint(u64),
+    /// A 64-bit float (`double`).
+    Double(f64),
+    /// A UTF-8 string.
+    String(String),
+    /// A byte string (`bytes`).
+    Bytes(Vec<u8>),
+    /// A point in time (`google.protobuf.Timestamp`).
+    Timestamp(DateTime<Utc>),
+    /// A signed duration (`google.protobuf.Duration`).
+    Duration(TimeDelta),
+    /// A list of values.
+    List(Vec<CelValue>),
+    /// A map keyed by `bool`/`int`/`uint`/`string`.
+    Map(BTreeMap<CelKey, CelValue>),
+    /// A type value (the result of `type(x)` and of type identifiers).
+    Type(String),
+    /// A CEL optional: either present (`optional.of(v)`) or absent
+    /// (`optional.none()`).
+    ///
+    /// This is an evaluation-time type produced by the `optional.*` stdlib and the
+    /// optional navigation operators (`a.?b`, `m[?k]`); it has no `DynamicValue`
+    /// storage representation. The boxed `Some`/`None` keeps the derived,
+    /// TYPE-EXACT `PartialEq` correct: `Optional(Some(Int(1)))` is unequal to
+    /// `Int(1)`, and `optional.none()` is equal only to another `optional.none()`.
+    Optional(Option<Box<CelValue>>),
+}
+
+impl CelValue {
+    /// The CEL runtime type of this value.
+    pub fn cel_type(&self) -> CelType {
+        match self {
+            Self::Null => CelType::Null,
+            Self::Bool(_) => CelType::Bool,
+            Self::Int(_) => CelType::Int,
+            Self::Uint(_) => CelType::Uint,
+            Self::Double(_) => CelType::Double,
+            Self::String(_) => CelType::String,
+            Self::Bytes(_) => CelType::Bytes,
+            Self::Timestamp(_) => CelType::Timestamp,
+            Self::Duration(_) => CelType::Duration,
+            Self::List(_) => CelType::List,
+            Self::Map(_) => CelType::Map,
+            Self::Type(_) => CelType::Type,
+            Self::Optional(_) => CelType::Optional,
+        }
+    }
+
+    /// Construct a present optional wrapping `v`.
+    pub fn optional_of(v: Self) -> Self {
+        Self::Optional(Some(Box::new(v)))
+    }
+
+    /// The absent optional (`optional.none()`).
+    pub fn optional_none() -> Self {
+        Self::Optional(None)
+    }
+}
+
+/// A legal CEL map key. Per `cel.expr.Value`, only `bool`, `int`, `uint`, and
+/// `string` may key a map.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CelKey {
+    /// A boolean key.
+    Bool(bool),
+    /// A signed integer key.
+    Int(i64),
+    /// An unsigned integer key.
+    Uint(u64),
+    /// A string key.
+    String(String),
+}
+
+/// The CEL type lattice (the kinds this engine represents).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CelType {
+    /// `null_type`
+    Null,
+    /// `bool`
+    Bool,
+    /// `int`
+    Int,
+    /// `uint`
+    Uint,
+    /// `double`
+    Double,
+    /// `string`
+    String,
+    /// `bytes`
+    Bytes,
+    /// `google.protobuf.Timestamp`
+    Timestamp,
+    /// `google.protobuf.Duration`
+    Duration,
+    /// `list`
+    List,
+    /// `map`
+    Map,
+    /// `type`
+    Type,
+    /// `optional_type`
+    Optional,
+}
