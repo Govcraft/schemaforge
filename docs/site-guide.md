@@ -2,6 +2,28 @@
 
 `schemaforge site generate` scaffolds a Vite + React 19 + Tailwind 4 + shadcn project that talks to a running `schemaforge serve` instance over `/api/v1/forge/*`. This guide is the starting point for anyone who wants to ship a UI on top of their schemas.
 
+## Two ways to get a UI
+
+1. **Bundled ops console — zero config.** A release binary built with the `embedded-console` feature serves the prebuilt [`schemaforge-console`](https://github.com/Govcraft/schemaforge-console) SPA same-origin at **`/console`** — no Node, no build step, no CORS. Just run the server and open the `Console → http://<host>/console` URL it prints, then sign in with the `--admin-user` / `--admin-password` credentials:
+
+   ```bash
+   schemaforge serve --schemas schemas --admin-password <pw>
+   # → Console → http://127.0.0.1:3000/console
+   ```
+
+   The console is schema-generic (it discovers your schemas at runtime via `/api/v1/forge/schemas`), so one bundle works for any schema — there is nothing to regenerate per schema. Pass `--no-console` to run the JSON API only; a binary built without the `embedded-console` feature also serves the API alone.
+
+   Building from source with the console embedded (release CI verifies a signed bundle; locally, point at a built `dist`):
+
+   ```bash
+   pnpm --filter @schemaforge/console build      # in the schemaforge-console checkout
+   SCHEMAFORGE_CONSOLE_DIST=/path/to/schemaforge-console/apps/console/dist \
+     cargo run -p schema-forge-cli --features embedded-console -- \
+     serve --schemas schemas --admin-password <pw>
+   ```
+
+2. **Generated project — fully customizable.** `schemaforge site generate` scaffolds a Vite + React project with strongly-typed, per-entity pages that you restyle and host yourself. The rest of this guide covers that path.
+
 ## Quick start
 
 ```bash

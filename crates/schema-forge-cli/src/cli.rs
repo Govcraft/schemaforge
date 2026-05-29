@@ -741,6 +741,14 @@ pub struct ServeArgs {
     #[arg(long = "dev-cors")]
     pub dev_cors: bool,
 
+    /// Do not serve the bundled ops console, even in a build that embeds it.
+    ///
+    /// The console (when compiled in via the `embedded-console` feature) is
+    /// served same-origin at `/` as the router fallback. Pass this to run the
+    /// JSON API only. No effect on builds without the console embedded.
+    #[arg(long = "no-console")]
+    pub no_console: bool,
+
     /// Path to a `role_ranks.toml` defining the role-name → numeric-rank
     /// hierarchy. The runtime no-upward-visibility guard for user mgmt
     /// (`principal.role_rank >= resource.role_rank`) reads from this file.

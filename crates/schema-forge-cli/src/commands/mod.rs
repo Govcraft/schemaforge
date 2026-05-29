@@ -12,6 +12,8 @@ pub mod migrate;
 pub mod parse;
 pub mod policies;
 pub mod serve;
+#[cfg(feature = "embedded-console")]
+pub mod serve_console;
 pub mod sign;
 pub mod site;
 pub mod token;

@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
 
+env:
+  # Pinned schemaforge-console release whose signed `dist` bundle is embedded
+  # into the binary. Bump in lockstep with console changes; the build verifies
+  # this release's keyless signature (identity-pinned) before embedding it.
+  CONSOLE_VERSION: v0.1.0
+
 jobs:
   build:
     runs-on: ${{ matrix.runner }}
@@ -47,8 +53,42 @@ jobs:
       - name: Verify Rust toolchain
         run: rustc --version && cargo --version
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Download + verify the signed console bundle
+        env:
+          # GITHUB_TOKEN can read another OSS repo's releases in the same org.
+          # If schemaforge-console is private, swap for a scoped PAT/app token.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download "$CONSOLE_VERSION" \
+            --repo Govcraft/schemaforge-console \
+            --pattern 'console-dist-*.tar.gz' \
+            --pattern 'SHA256SUMS' \
+            --pattern 'SHA256SUMS.sig' \
+            --pattern 'SHA256SUMS.pem'
+          # Identity-pinned keyless verification (FAIL-CLOSED): a SHA256SUMS
+          # signed by any other repo/workflow — or a tampered manifest — aborts
+          # the build here. A bare verify-blob (no identity/issuer) is not enough.
+          cosign verify-blob \
+            --certificate SHA256SUMS.pem \
+            --signature SHA256SUMS.sig \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp '^https://github\.com/Govcraft/schemaforge-console/\.github/workflows/release\.yml@' \
+            SHA256SUMS
+          # Tie the verified manifest to the actual tarball bytes, then extract.
+          sha256sum -c SHA256SUMS
+          mkdir -p console-dist
+          tar -xzf console-dist-*.tar.gz -C console-dist
+
       - name: Build release binary (${{ matrix.backend }} / ${{ matrix.target }})
-        run: cargo build --release --package schema-forge-cli --no-default-features --features ${{ matrix.backend }}
+        env:
+          # Points rust-embed at the verified console bundle (build.rs re-exports
+          # it for the `#[folder = "$SCHEMAFORGE_CONSOLE_DIST"]` interpolation).
+          SCHEMAFORGE_CONSOLE_DIST: ${{ github.workspace }}/console-dist
+        run: cargo build --release --package schema-forge-cli --no-default-features --features ${{ matrix.backend }},embedded-console
 
       - name: Package
         env:
