@@ -90,6 +90,17 @@ pnpm preview        # local sanity check of the production build
 | `relation Many` (derived inverse, issue #34) | *rendered as a read-only linked list on the detail page* | The backend rejects writes on derived collections, so the generator skips them on create/edit forms and their zod schemas (issue #35). Reads flow through the standard relation envelope — `__display` values are populated by the backend's inverse-collection pass and the detail template renders them as a linked list. To edit membership, write to the child-side FK. |
 | `composite { ... }` | Recursive fieldset | Sub-fields are addressed via dot-paths in react-hook-form. |
 | `composite[]`, `text[][]` | `<textarea>` (JSON) | Array-of-composite and nested arrays fall back to a JSON textarea (see #18). |
+| `map<text, V>` | `<textarea>` (JSON) | Typed, open-keyed map with homogeneous values (e.g. `map<text, integer>` labels/metadata). Wire form is a JSON object; each value is validated against `V`. |
+
+### `map<K, V>` vs `composite` vs `json`
+
+These three look similar on the wire (all JSON objects) but mean different things, and choosing the right one is load-bearing for validation:
+
+- **`map<K, V>`** — a *typed, open-keyed* map with *homogeneous* values. Keys are arbitrary strings you don't know ahead of time; every value is validated against the single value type `V`. Use it for labels, tags, counters, or any metadata bag, e.g. `map<text, integer>`. CEL surfaces it as a `map<K, V>`, so rule comprehensions (`metadata.all(k, v, v > 0)`, `metadata.exists(...)`) type-check and evaluate over it.
+- **`composite { ... }`** — a *fixed, declared field set* (a struct). Every key is named in the schema and each has its own type. Use it for a structured value with a known shape, e.g. an address with `street`/`city`/`zip`.
+- **`json`** — *untyped*. Arbitrary shape, no per-value validation. Use it only when the shape is genuinely unknown or free-form.
+
+> **Key type is `string` for now.** Only `map<text, V>` (string keys) is supported. JSON objects, Postgres JSONB, and SurrealDB objects are all string-keyed, so non-string keys (`int`/`uint`/`bool`) are rejected at parse time with an actionable error — they would require lossy string key-encoding to round-trip through that storage. Non-string keys are a noted follow-up.
 
 ## Troubleshooting
 

@@ -45,7 +45,9 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
             let items: Vec<SurrealValue> = arr.iter().map(dynamic_to_surreal).collect();
             SurrealValue::from(items)
         }
-        DynamicValue::Composite(map) => {
+        DynamicValue::Composite(map) | DynamicValue::Map(map) => {
+            // A fixed-field `Composite` and a typed open-key `Map` are both
+            // stored as a native string-keyed SurrealDB object.
             let mut obj = surrealdb::Object::new();
             for (k, v) in map {
                 obj.insert(
@@ -218,7 +220,9 @@ pub(crate) fn first_negative_duration(value: &DynamicValue) -> Option<chrono::Ti
     match value {
         DynamicValue::Duration(d) if *d < chrono::TimeDelta::zero() => Some(*d),
         DynamicValue::Array(items) => items.iter().find_map(first_negative_duration),
-        DynamicValue::Composite(map) => map.values().find_map(first_negative_duration),
+        DynamicValue::Composite(map) | DynamicValue::Map(map) => {
+            map.values().find_map(first_negative_duration)
+        }
         _ => None,
     }
 }
@@ -250,6 +254,9 @@ pub(crate) fn first_oversized_bytes(
                 map.get(fd.name.as_str())
                     .and_then(|v| first_oversized_bytes(&fd.field_type, v))
             })
+        }
+        (FieldType::Map { value, .. }, DynamicValue::Map(map)) => {
+            map.values().find_map(|v| first_oversized_bytes(value, v))
         }
         _ => None,
     }
@@ -472,6 +479,55 @@ mod tests {
         let sv = dynamic_to_surreal(&dv);
         let back = surreal_to_dynamic(&sv).unwrap();
         assert_eq!(back, DynamicValue::Composite(map));
+    }
+
+    #[test]
+    fn map_serializes_as_object() {
+        // A typed `Map` writes to a native SurrealDB object, exactly like a
+        // Composite. (Reads have no field-type context and come back as a
+        // Composite, which serializes identically to a JSON object.)
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), DynamicValue::Integer(1));
+        map.insert("b".to_string(), DynamicValue::Integer(2));
+        let sv = dynamic_to_surreal(&DynamicValue::Map(map));
+        assert!(matches!(sv, SurrealValue::Object(_)));
+        // Round-trips back to a Composite with the same entries.
+        let back = surreal_to_dynamic(&sv).unwrap();
+        let DynamicValue::Composite(got) = back else {
+            panic!("expected Composite on read-back");
+        };
+        assert_eq!(got.get("a"), Some(&DynamicValue::Integer(1)));
+        assert_eq!(got.get("b"), Some(&DynamicValue::Integer(2)));
+    }
+
+    #[test]
+    fn oversized_bytes_in_map_is_caught() {
+        let value_type =
+            FieldType::Bytes(schema_forge_core::types::BytesConstraints::with_max_size(2));
+        let ft = FieldType::Map {
+            key: Box::new(FieldType::Text(
+                schema_forge_core::types::TextConstraints::unconstrained(),
+            )),
+            value: Box::new(value_type),
+        };
+        let mut map = BTreeMap::new();
+        map.insert("big".to_string(), DynamicValue::Bytes(vec![1, 2, 3, 4]));
+        let dv = DynamicValue::Map(map);
+        assert_eq!(first_oversized_bytes(&ft, &dv), Some((4, 2)));
+    }
+
+    #[test]
+    fn negative_duration_in_map_is_caught() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "ttl".to_string(),
+            DynamicValue::Duration(chrono::TimeDelta::seconds(-5)),
+        );
+        let dv = DynamicValue::Map(map);
+        assert_eq!(
+            first_negative_duration(&dv),
+            Some(chrono::TimeDelta::seconds(-5))
+        );
     }
 
     #[test]

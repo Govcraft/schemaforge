@@ -32,7 +32,9 @@ pub fn dynamic_value_to_json(value: &DynamicValue) -> serde_json::Value {
         DynamicValue::Array(arr) => {
             serde_json::Value::Array(arr.iter().map(dynamic_value_to_json).collect())
         }
-        DynamicValue::Composite(map) => {
+        DynamicValue::Composite(map) | DynamicValue::Map(map) => {
+            // Both a fixed-field Composite and an open-key typed Map serialize
+            // to a JSON object on the wire.
             let obj: serde_json::Map<String, serde_json::Value> = map
                 .iter()
                 .map(|(k, v)| (k.clone(), dynamic_value_to_json(v)))

@@ -180,7 +180,7 @@ fn unique_index_name(table: &str, field: &str) -> String {
 fn needs_flexible(field_type: &FieldType) -> bool {
     matches!(
         field_type,
-        FieldType::Json | FieldType::Composite(_) | FieldType::File(_)
+        FieldType::Json | FieldType::Composite(_) | FieldType::Map { .. } | FieldType::File(_)
     )
 }
 
@@ -209,6 +209,8 @@ pub fn field_type_to_surql(field_type: &FieldType) -> String {
             format!("array<{inner_type}>")
         }
         FieldType::Composite(_) => "object".to_string(),
+        // A typed `map<string, V>` is stored as a native string-keyed object.
+        FieldType::Map { .. } => "object".to_string(),
         FieldType::File(_) => "object".to_string(),
         _ => "any".to_string(),
     }
@@ -720,6 +722,16 @@ mod tests {
             field_type_to_surql(&FieldType::Array(Box::new(FieldType::Boolean))),
             "array<bool>"
         );
+        let map_ft = FieldType::Map {
+            key: Box::new(FieldType::Text(
+                schema_forge_core::types::TextConstraints::unconstrained(),
+            )),
+            value: Box::new(FieldType::Integer(
+                schema_forge_core::types::IntegerConstraints::unconstrained(),
+            )),
+        };
+        assert_eq!(field_type_to_surql(&map_ft), "object");
+        assert!(needs_flexible(&map_ft));
     }
 
     #[test]

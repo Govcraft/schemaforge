@@ -52,7 +52,11 @@ pub fn dynamic_to_cel(v: &DynamicValue) -> Result<CelValue, ConversionError> {
             }
             Ok(CelValue::List(out))
         }
-        DynamicValue::Composite(map) => {
+        DynamicValue::Composite(map) | DynamicValue::Map(map) => {
+            // Both a fixed-key `Composite` and an open-key `Map` surface to CEL
+            // as a `map` with `string` keys. The schema's `FieldType` is what
+            // distinguishes them on the storage side; to a predicate they are
+            // both indexable, comprehensible maps.
             let mut out = BTreeMap::new();
             for (k, value) in map {
                 out.insert(CelKey::String(k.clone()), dynamic_to_cel(value)?);
@@ -138,6 +142,11 @@ pub fn cel_to_dynamic(v: &CelValue) -> Result<DynamicValue, ConversionError> {
             Ok(DynamicValue::Array(out))
         }
         CelValue::Map(map) => {
+            // A CEL `map` result has no schema context here, so it is written
+            // back as a `Composite` (the established #93/#94 behavior). A field
+            // declared as a typed `map<string, V>` is reconstructed as
+            // [`DynamicValue::Map`] by the storage layer, which does have the
+            // `FieldType`. Both serialize identically to a JSON object.
             let mut out = BTreeMap::new();
             for (k, value) in map {
                 let key = match k {
@@ -280,6 +289,38 @@ mod tests {
 
         // Map round-trips back to a Composite.
         assert_eq!(cel_to_dynamic(&c).unwrap(), d);
+    }
+
+    #[test]
+    fn dynamic_map_to_cel_map() {
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), DynamicValue::Integer(1));
+        map.insert("b".to_string(), DynamicValue::Integer(2));
+        let d = DynamicValue::Map(map);
+        let c = dynamic_to_cel(&d).unwrap();
+
+        let mut expected = BTreeMap::new();
+        expected.insert(CelKey::String("a".to_string()), CelValue::Int(1));
+        expected.insert(CelKey::String("b".to_string()), CelValue::Int(2));
+        assert_eq!(c, CelValue::Map(expected));
+    }
+
+    #[test]
+    fn dynamic_map_recurses_compound_values() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            "xs".to_string(),
+            DynamicValue::Array(vec![DynamicValue::Integer(1), DynamicValue::Integer(2)]),
+        );
+        let d = DynamicValue::Map(map);
+        let c = dynamic_to_cel(&d).unwrap();
+        let CelValue::Map(m) = c else {
+            panic!("expected map");
+        };
+        assert_eq!(
+            m[&CelKey::String("xs".to_string())],
+            CelValue::List(vec![CelValue::Int(1), CelValue::Int(2)])
+        );
     }
 
     #[test]

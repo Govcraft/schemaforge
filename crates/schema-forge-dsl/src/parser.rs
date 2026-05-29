@@ -778,6 +778,7 @@ impl Parser {
         match self.peek_token() {
             Some(Token::Arrow) => self.parse_relation_type(),
             Some(Token::Composite) => self.parse_composite_type(),
+            Some(Token::Map) => self.parse_map_type(),
             _ => {
                 let base_type = self.parse_primitive_type()?;
                 // Check for array suffix []
@@ -1238,6 +1239,32 @@ impl Parser {
         Ok(FieldType::Composite(fields))
     }
 
+    /// map_type = "map" "<" type_expr "," type_expr ">"
+    ///
+    /// The key type is parsed for forward-compatibility but constrained to
+    /// `string`: a non-`string` key is rejected with [`DslError::MapKeyNotString`]
+    /// because JSON/JSONB/object storage is uniformly string-keyed and a
+    /// non-string key cannot round-trip without lossy string key-encoding.
+    fn parse_map_type(&mut self) -> Result<FieldType, DslError> {
+        self.expect(&Token::Map)?;
+        let open_span = self.current_span();
+        self.expect(&Token::Lt)?;
+        let key = self.parse_type()?;
+        if !matches!(key, FieldType::Text(_)) {
+            return Err(DslError::MapKeyNotString {
+                found: describe_field_type_for_error(&key),
+                span: open_span,
+            });
+        }
+        self.expect(&Token::Comma)?;
+        let value = self.parse_type()?;
+        self.expect(&Token::Gt)?;
+        Ok(FieldType::Map {
+            key: Box::new(key),
+            value: Box::new(value),
+        })
+    }
+
     /// modifier* (zero or more trailing modifiers)
     fn parse_modifiers(&mut self, field_type: &FieldType) -> Result<Vec<FieldModifier>, DslError> {
         let mut modifiers = Vec::new();
@@ -1438,6 +1465,7 @@ fn describe_field_type_for_error(ft: &FieldType) -> String {
         FieldType::Relation { .. } => "relation".to_string(),
         FieldType::Array(_) => "array".to_string(),
         FieldType::Composite(_) => "composite".to_string(),
+        FieldType::Map { .. } => "map".to_string(),
         FieldType::File(_) => "file".to_string(),
         // FieldType is #[non_exhaustive]; any future variant is by default
         // not unique-able until explicitly added to `field_type_supports_unique`.
@@ -1758,6 +1786,59 @@ mod tests {
     fn parse_richtext() {
         let schema = parse_one("schema S { body: richtext }");
         assert!(matches!(schema.fields[0].field_type, FieldType::RichText));
+    }
+
+    // -- Maps --
+
+    #[test]
+    fn parse_map_string_integer() {
+        // `text` is the DSL's string type; `map<text, V>` is the supported form.
+        let schema = parse_one("schema S { labels: map<text, integer> }");
+        match &schema.fields[0].field_type {
+            FieldType::Map { key, value } => {
+                assert!(matches!(key.as_ref(), FieldType::Text(_)));
+                assert!(matches!(value.as_ref(), FieldType::Integer(_)));
+            }
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_map_string_text() {
+        let schema = parse_one("schema S { meta: map<text, text> }");
+        match &schema.fields[0].field_type {
+            FieldType::Map { key, value } => {
+                assert!(matches!(key.as_ref(), FieldType::Text(_)));
+                assert!(matches!(value.as_ref(), FieldType::Text(_)));
+            }
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_map_of_arrays() {
+        // The value type may itself be a compound type.
+        let schema = parse_one("schema S { buckets: map<text, integer[]> }");
+        match &schema.fields[0].field_type {
+            FieldType::Map { value, .. } => match value.as_ref() {
+                FieldType::Array(inner) => {
+                    assert!(matches!(inner.as_ref(), FieldType::Integer(_)));
+                }
+                other => panic!("expected Array value, got {other:?}"),
+            },
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_map_rejects_non_string_key() {
+        let err = parse("schema S { labels: map<integer, text> }").unwrap_err();
+        assert!(
+            err.iter().any(
+                |e| matches!(e, DslError::MapKeyNotString { found, .. } if found == "integer")
+            ),
+            "expected MapKeyNotString, got {err:?}"
+        );
     }
 
     #[test]

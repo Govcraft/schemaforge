@@ -31,6 +31,21 @@ pub enum FieldType {
     },
     Array(Box<FieldType>),
     Composite(Vec<FieldDefinition>),
+    /// A typed, open-keyed map with a homogeneous value type.
+    ///
+    /// Distinct from [`FieldType::Composite`] (a fixed, declared field set) and
+    /// [`FieldType::Json`] (untyped): a `Map` has arbitrary keys but every value
+    /// is validated against the single `value` type. CEL surfaces this as a
+    /// `map<K, V>` so comprehensions (`all`/`exists`/`map`) work over it.
+    ///
+    /// `key` is boxed for forward-compatibility, but the DSL currently only
+    /// accepts `string` keys — JSON objects, Postgres JSONB, and SurrealDB
+    /// objects are all string-keyed, and non-string keys cannot round-trip
+    /// through that storage without lossy string key-encoding.
+    Map {
+        key: Box<FieldType>,
+        value: Box<FieldType>,
+    },
     File(FileConstraints),
 }
 
@@ -53,6 +68,7 @@ impl std::fmt::Display for FieldType {
             } => write!(f, "Relation({target}, {cardinality})"),
             Self::Array(inner) => write!(f, "Array<{inner}>"),
             Self::Composite(fields) => write!(f, "Composite({} fields)", fields.len()),
+            Self::Map { key, value } => write!(f, "Map<{key}, {value}>"),
             Self::File(_) => write!(f, "File"),
         }
     }
@@ -95,6 +111,31 @@ mod tests {
             FieldType::Bytes(BytesConstraints::unconstrained()),
             FieldType::Bytes(BytesConstraints::with_max_size(1024)),
         ] {
+            let json = serde_json::to_string(&ft).unwrap();
+            let back: FieldType = serde_json::from_str(&json).unwrap();
+            assert_eq!(ft, back);
+        }
+    }
+
+    #[test]
+    fn display_map() {
+        let t = FieldType::Map {
+            key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+            value: Box::new(FieldType::Integer(IntegerConstraints::unconstrained())),
+        };
+        assert_eq!(t.to_string(), "Map<Text, Integer>");
+    }
+
+    #[test]
+    fn serde_roundtrip_map() {
+        for value in [
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+            FieldType::Text(TextConstraints::unconstrained()),
+        ] {
+            let ft = FieldType::Map {
+                key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+                value: Box::new(value),
+            };
             let json = serde_json::to_string(&ft).unwrap();
             let back: FieldType = serde_json::from_str(&json).unwrap();
             assert_eq!(ft, back);

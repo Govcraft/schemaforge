@@ -254,6 +254,13 @@ fn print_type(field_type: &FieldType, output: &mut String, depth: usize) {
             print_type(inner, output, depth);
             output.push_str("[]");
         }
+        FieldType::Map { key, value } => {
+            output.push_str("map<");
+            print_type(key, output, depth);
+            output.push_str(", ");
+            print_type(value, output, depth);
+            output.push('>');
+        }
         FieldType::Composite(fields) => {
             output.push_str("composite {\n");
             let indent = "    ".repeat(depth + 1);
@@ -572,6 +579,32 @@ mod tests {
         );
         let output = print(&schema);
         assert!(output.contains("text[]"));
+    }
+
+    #[test]
+    fn print_map() {
+        let schema = make_schema(
+            "S",
+            vec![make_field(
+                "labels",
+                FieldType::Map {
+                    key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+                    value: Box::new(FieldType::Integer(IntegerConstraints::unconstrained())),
+                },
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains("map<text, integer>"), "got: {output}");
+    }
+
+    #[test]
+    fn roundtrip_map() {
+        let source = "schema S {\n    labels: map<text, integer>\n    notes: map<text, text>\n}\n";
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(parsed[0].fields, reparsed[0].fields);
     }
 
     #[test]

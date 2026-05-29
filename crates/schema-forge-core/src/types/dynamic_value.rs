@@ -21,6 +21,11 @@ pub enum DynamicValue {
     Json(serde_json::Value),
     Array(Vec<DynamicValue>),
     Composite(BTreeMap<String, DynamicValue>),
+    /// A typed, open-keyed map with homogeneous values (see
+    /// [`super::FieldType::Map`]). Distinct from [`DynamicValue::Composite`],
+    /// which is a fixed declared field set. Keys are always strings; values are
+    /// each validated against the field's declared value type.
+    Map(BTreeMap<String, DynamicValue>),
     Ref(EntityId),
     RefArray(Vec<EntityId>),
 }
@@ -50,6 +55,16 @@ impl std::fmt::Display for DynamicValue {
             }
             Self::Composite(map) => {
                 write!(f, "{{")?;
+                for (i, (k, v)) in map.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "}}")
+            }
+            Self::Map(map) => {
+                write!(f, "map{{")?;
                 for (i, (k, v)) in map.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -130,6 +145,32 @@ mod tests {
         let json = serde_json::to_string(&v).unwrap();
         let back: DynamicValue = serde_json::from_str(&json).unwrap();
         assert_eq!(v, back);
+    }
+
+    #[test]
+    fn display_map_uses_map_marker() {
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), DynamicValue::Integer(1));
+        let v = DynamicValue::Map(map);
+        assert_eq!(v.to_string(), "map{a: 1}");
+    }
+
+    #[test]
+    fn serde_roundtrip_map() {
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), DynamicValue::Integer(1));
+        map.insert("b".to_string(), DynamicValue::Integer(2));
+        let v = DynamicValue::Map(map);
+        let json = serde_json::to_string(&v).unwrap();
+        let back: DynamicValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, back);
+    }
+
+    #[test]
+    fn map_is_distinct_from_composite() {
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), DynamicValue::Integer(1));
+        assert_ne!(DynamicValue::Map(map.clone()), DynamicValue::Composite(map));
     }
 
     #[test]

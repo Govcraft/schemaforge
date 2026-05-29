@@ -136,6 +136,11 @@ pub enum DslError {
     /// A `file(...)` parameter value was invalid or a required parameter was missing.
     InvalidFileParam { message: String, span: Span },
 
+    /// A `map<K, V>` type declared a non-`string` key type. Only `string` keys
+    /// are supported for now; non-string keys (int/uint/bool) require lossy
+    /// string key-encoding through JSON/JSONB/object storage.
+    MapKeyNotString { found: String, span: Span },
+
     /// A `max_size` literal in `file(...)` could not be parsed.
     InvalidSizeLiteral { text: String, span: Span },
 
@@ -314,6 +319,12 @@ impl fmt::Display for DslError {
             }
             Self::InvalidFileParam { message, span } => {
                 write!(f, "invalid file parameter at {span}: {message}")
+            }
+            Self::MapKeyNotString { found, span } => {
+                write!(
+                    f,
+                    "map key type at {span} must be `string`; non-string keys (int/uint/bool) are not yet supported — they require lossy string key-encoding through JSON/JSONB/object storage (found `{found}`)"
+                )
             }
             Self::InvalidSizeLiteral { text, span } => {
                 write!(

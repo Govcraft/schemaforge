@@ -707,6 +707,7 @@ fn field_type_name(ft: &FieldType) -> String {
         FieldType::Relation { .. } => "Relation",
         FieldType::Array(_) => "Array",
         FieldType::Composite(_) => "Composite",
+        FieldType::Map { .. } => "Map",
         FieldType::File(_) => "File",
     }
     .to_string()
@@ -730,6 +731,7 @@ fn check_type_compat(
         FieldType::Duration => matches!(value, DynamicValue::Duration(_)),
         FieldType::Bytes(_) => matches!(value, DynamicValue::Bytes(_)),
         FieldType::Enum(_) => matches!(value, DynamicValue::Enum(_) | DynamicValue::Text(_)),
+        FieldType::Map { .. } => matches!(value, DynamicValue::Map(_)),
         _ => true, // Json, Relation, Array, Composite — accept anything
     };
     if !compatible {
@@ -755,6 +757,7 @@ fn dynamic_value_type_name(value: &DynamicValue) -> String {
         DynamicValue::Json(_) => "Json",
         DynamicValue::Array(_) => "Array",
         DynamicValue::Composite(_) => "Composite",
+        DynamicValue::Map(_) => "Map",
         DynamicValue::Ref(_) => "Ref",
         DynamicValue::RefArray(_) => "RefArray",
     }

@@ -731,6 +731,21 @@ fn convert_json_with_type_hint(
             serde_json::Value::Null => Ok(DynamicValue::Null),
             _ => Err(format!("expected array, got {value}")),
         },
+        FieldType::Map {
+            value: value_type, ..
+        } => match value {
+            serde_json::Value::Object(obj) => {
+                // Open string keys; every value is validated against the
+                // homogeneous value type (fail-closed on a mismatch).
+                let mut map = BTreeMap::new();
+                for (k, v) in obj {
+                    map.insert(k.clone(), convert_json_with_type_hint(v, value_type)?);
+                }
+                Ok(DynamicValue::Map(map))
+            }
+            serde_json::Value::Null => Ok(DynamicValue::Null),
+            _ => Err(format!("expected map object, got {value}")),
+        },
         _ => convert_json_untyped(value),
     }
 }
@@ -877,6 +892,19 @@ fn coerce_dynamic_value_with_type_hint(
         // coercion over composite structures is not exercised by any
         // in-repo schema today; add recursion here if/when needed.
         FieldType::Composite(_) => Ok(value),
+        FieldType::Map {
+            value: value_type, ..
+        } => match value {
+            DynamicValue::Map(map) => {
+                let mut out = BTreeMap::new();
+                for (k, v) in map {
+                    out.insert(k, coerce_dynamic_value_with_type_hint(v, value_type)?);
+                }
+                Ok(DynamicValue::Map(out))
+            }
+            DynamicValue::Null => Ok(DynamicValue::Null),
+            other => Err(format!("expected map, got {other}")),
+        },
         // `FieldType` is `#[non_exhaustive]`; future variants pass through.
         _ => Ok(value),
     }
@@ -3334,6 +3362,67 @@ mod tests {
     fn convert_json_untyped_object() {
         let result = convert_json_untyped(&serde_json::json!({"key": "value"})).unwrap();
         assert!(matches!(result, DynamicValue::Composite(map) if map.len() == 1));
+    }
+
+    fn map_string_integer_type() -> FieldType {
+        FieldType::Map {
+            key: Box::new(FieldType::Text(
+                schema_forge_core::types::TextConstraints::unconstrained(),
+            )),
+            value: Box::new(FieldType::Integer(
+                schema_forge_core::types::IntegerConstraints::unconstrained(),
+            )),
+        }
+    }
+
+    #[test]
+    fn convert_map_object_with_type_hint() {
+        let ft = map_string_integer_type();
+        let result =
+            convert_json_with_type_hint(&serde_json::json!({"a": 1, "b": 2}), &ft).unwrap();
+        let DynamicValue::Map(map) = result else {
+            panic!("expected Map");
+        };
+        assert_eq!(map.get("a"), Some(&DynamicValue::Integer(1)));
+        assert_eq!(map.get("b"), Some(&DynamicValue::Integer(2)));
+    }
+
+    #[test]
+    fn convert_map_value_type_mismatch_rejected() {
+        // A value that does not match the declared value type fails closed.
+        let ft = map_string_integer_type();
+        let result =
+            convert_json_with_type_hint(&serde_json::json!({"a": "not-an-int"}), &ft);
+        assert!(result.is_err(), "expected mismatch error, got {result:?}");
+    }
+
+    #[test]
+    fn convert_map_null_is_null() {
+        let ft = map_string_integer_type();
+        let result = convert_json_with_type_hint(&serde_json::json!(null), &ft).unwrap();
+        assert_eq!(result, DynamicValue::Null);
+    }
+
+    #[test]
+    fn convert_map_non_object_rejected() {
+        let ft = map_string_integer_type();
+        let result = convert_json_with_type_hint(&serde_json::json!([1, 2]), &ft);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn coerce_map_recurses_values() {
+        // A Map of stringly-typed integers coerces each value against the
+        // declared value type.
+        let ft = map_string_integer_type();
+        let mut map = BTreeMap::new();
+        map.insert("a".to_string(), DynamicValue::Text("7".into()));
+        let result =
+            coerce_dynamic_value_with_type_hint(DynamicValue::Map(map), &ft).unwrap();
+        let DynamicValue::Map(out) = result else {
+            panic!("expected Map");
+        };
+        assert_eq!(out.get("a"), Some(&DynamicValue::Integer(7)));
     }
 
     #[test]

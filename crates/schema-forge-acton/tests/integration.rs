@@ -1686,6 +1686,95 @@ async fn create_entity_with_oversized_bytes_returns_422() {
     );
 }
 
+/// Issue #99: a typed `map<string, integer>` field round-trips through the
+/// REST API — a JSON object request persists and a GET returns the same object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_and_read_entity_with_map_field() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Labeled",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {
+                "name": "metadata",
+                "field_type": {"type": "Map", "data": {"value": "Integer"}}
+            }
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    let create_body = serde_json::json!({
+        "fields": { "name": "Widget", "metadata": { "weight": 3, "count": 12 } }
+    });
+    let (create_status, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Labeled/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        create_status,
+        StatusCode::CREATED,
+        "expected 201, got {create_status} body={created}"
+    );
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Labeled/entities/{entity_id}");
+
+    // GET — the map serializes back as a JSON object with the same entries.
+    let (get_status, fetched) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(fetched["fields"]["metadata"]["weight"], 3);
+    assert_eq!(fetched["fields"]["metadata"]["count"], 12);
+
+    // Round-trip PUT of the GET body must re-parse.
+    let put_body = serde_json::json!({ "fields": fetched["fields"].clone() });
+    let (put_status, put_json) = json_request(&app, Method::PUT, &path, Some(put_body)).await;
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "round-trip PUT should succeed, got {put_status} body={put_json}"
+    );
+    assert_eq!(put_json["fields"]["metadata"]["weight"], 3);
+}
+
+/// Issue #99: a map value whose type does not match the declared value type
+/// must FAIL CLOSED with a 422 rather than being stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_entity_with_map_value_type_mismatch_returns_422() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Labeled",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {
+                "name": "metadata",
+                "field_type": {"type": "Map", "data": {"value": "Integer"}}
+            }
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // A string value against a `map<string, integer>` is a type mismatch.
+    let create_body = serde_json::json!({
+        "fields": { "name": "Widget", "metadata": { "weight": "heavy" } }
+    });
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Labeled/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 for a map value type mismatch, got {status} body={json}"
+    );
+}
+
 /// Regression for issue #10: PATCH must merge a partial payload onto the
 /// existing entity, preserving fields that are not mentioned in the
 /// request body — including required ones.

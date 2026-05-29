@@ -290,6 +290,8 @@ pub fn field_type_to_pg(field_type: &FieldType) -> String {
             format!("{inner_type}[]")
         }
         FieldType::Composite(_) => "JSONB".to_string(),
+        // A typed `map<string, V>` is a string-keyed object → JSONB.
+        FieldType::Map { .. } => "JSONB".to_string(),
         FieldType::File(_) => "JSONB".to_string(),
         _ => "TEXT".to_string(),
     }
@@ -721,6 +723,13 @@ mod tests {
             "BOOLEAN[]"
         );
         assert_eq!(field_type_to_pg(&sample_file_field_type()), "JSONB");
+        assert_eq!(
+            field_type_to_pg(&FieldType::Map {
+                key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+                value: Box::new(FieldType::Integer(IntegerConstraints::unconstrained())),
+            }),
+            "JSONB"
+        );
     }
 
     fn sample_file_field_type() -> FieldType {

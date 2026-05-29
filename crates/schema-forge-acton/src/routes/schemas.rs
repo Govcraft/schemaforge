@@ -332,6 +332,7 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
                     }))
                 }
                 "Json" => Ok(FieldType::Json),
+                "Map" => parse_map_field_type(obj),
                 other => Err(ForgeError::ValidationFailed {
                     details: vec![format!("unknown field type '{other}'")],
                 }),
@@ -341,6 +342,41 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
 
     Err(ForgeError::ValidationFailed {
         details: vec![format!("invalid field_type value: {value}")],
+    })
+}
+
+/// Parse a structured `Map` field type: `{"type":"Map","data":{"value":<FieldType>}}`.
+///
+/// The value type is required and parsed recursively. The key type is always
+/// `string` (Text); a caller may supply an explicit `key`, but a non-`string`
+/// key is rejected with an actionable error — JSON/JSONB/object storage is
+/// uniformly string-keyed, so non-string keys cannot round-trip without lossy
+/// string key-encoding.
+fn parse_map_field_type(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<FieldType, ForgeError> {
+    let data = obj.get("data").and_then(|d| d.as_object());
+    let value_json = data
+        .and_then(|d| d.get("value"))
+        .ok_or_else(|| ForgeError::ValidationFailed {
+            details: vec!["Map field type requires a 'value' type in 'data'".to_string()],
+        })?;
+    let value = parse_field_type(value_json)?;
+
+    if let Some(key_json) = data.and_then(|d| d.get("key")) {
+        let key = parse_field_type(key_json)?;
+        if !matches!(key, FieldType::Text(_)) {
+            return Err(ForgeError::ValidationFailed {
+                details: vec![format!(
+                    "map key type must be `string`; non-string keys (int/uint/bool) are not yet supported — they require lossy string key-encoding through JSON/JSONB/object storage (found `{key}`)"
+                )],
+            });
+        }
+    }
+
+    Ok(FieldType::Map {
+        key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+        value: Box::new(value),
     })
 }
 
@@ -380,6 +416,15 @@ fn field_type_to_json(field_type: &FieldType) -> serde_json::Value {
             serde_json::json!({
                 "type": "Array",
                 "data": field_type_to_json(inner),
+            })
+        }
+        FieldType::Map { key, value } => {
+            serde_json::json!({
+                "type": "Map",
+                "data": {
+                    "key": field_type_to_json(key),
+                    "value": field_type_to_json(value),
+                },
             })
         }
         other => serde_json::to_value(other).unwrap_or_default(),

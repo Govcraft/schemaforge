@@ -292,7 +292,7 @@ pub fn field_type_to_inferred(ft: &FieldType) -> InferredType {
             _ => InferredType::Dyn,
         },
         FieldType::Array(_) => InferredType::Known(CelType::List),
-        FieldType::Composite(_) => InferredType::Known(CelType::Map),
+        FieldType::Composite(_) | FieldType::Map { .. } => InferredType::Known(CelType::Map),
         FieldType::File(_) => InferredType::Dyn,
         // `FieldType` is non_exhaustive; an unknown future type is statically
         // unknown so it never produces a false positive.
@@ -322,7 +322,7 @@ pub fn field_accepts(ft: &FieldType, inferred: &InferredType) -> bool {
         // Accept anything: the mapping is complex/rare; avoid false positives.
         FieldType::Json | FieldType::Relation { .. } | FieldType::File(_) => true,
         FieldType::Array(_) => t == CelType::List,
-        FieldType::Composite(_) => t == CelType::Map,
+        FieldType::Composite(_) | FieldType::Map { .. } => t == CelType::Map,
         // `FieldType` is non_exhaustive; accept anything for an unknown future
         // type to stay false-positive-averse.
         _ => true,
@@ -698,6 +698,37 @@ mod tests {
         let text = FieldType::Text(TextConstraints::unconstrained());
         assert!(field_accepts(&text, &InferredType::Known(CelType::String)));
         assert!(!field_accepts(&text, &InferredType::Known(CelType::Int)));
+    }
+
+    #[test]
+    fn map_field_infers_cel_map() {
+        let ft = FieldType::Map {
+            key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+            value: Box::new(FieldType::Integer(IntegerConstraints::unconstrained())),
+        };
+        assert_eq!(
+            field_type_to_inferred(&ft),
+            InferredType::Known(CelType::Map)
+        );
+        assert!(field_accepts(&ft, &InferredType::Known(CelType::Map)));
+        assert!(!field_accepts(&ft, &InferredType::Known(CelType::List)));
+    }
+
+    #[test]
+    fn map_comprehension_require_typechecks() {
+        // A rule comprehension over a `map<string, integer>` field type-checks
+        // to Bool, so @require accepts it (#104).
+        let metadata = FieldType::Map {
+            key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
+            value: Box::new(FieldType::Integer(IntegerConstraints::unconstrained())),
+        };
+        let env = rule_type_env([("metadata", &metadata)]);
+        let expr = parse("metadata.all(k, v, v > 0)").unwrap();
+        assert_eq!(infer(&expr, &env), InferredType::Known(CelType::Bool));
+        assert!(check_rule(RuleRole::Require, &metadata, &env, &expr).is_ok());
+
+        let exists = parse("metadata.exists(k, v, v > 100)").unwrap();
+        assert!(check_rule(RuleRole::Require, &metadata, &env, &exists).is_ok());
     }
 
     #[test]
