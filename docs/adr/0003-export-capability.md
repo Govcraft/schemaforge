@@ -157,6 +157,16 @@ owns and supervises the task. Job states are
 `queued → running → complete | failed`. The actor generates the artifact to the
 existing S3 backend and the status endpoint returns a TTL-bounded presigned URL.
 
+**Export jobs are owner-scoped.** Schema-level `Export` access is necessary but
+not sufficient to read a job: the status endpoint serves a record — and mints its
+presigned download URL — **only to the subject that initiated the job**. A
+mismatch returns `404 Not Found` (never `403`) so a job id's existence does not
+leak. As defense-in-depth behind that authorization gate, job ids are v4 UUIDs
+(CSPRNG entropy) so they cannot be enumerated even if the ownership check ever
+regressed. Without owner-scoping, any caller merely permitted to export the
+schema could read another subject's job and its download URL — an IDOR that
+becomes a bulk-data-exfiltration path.
+
 ## Consequences
 
 - **Read-one and export-many are independently grantable.** Because `Export` is

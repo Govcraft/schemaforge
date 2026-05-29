@@ -103,6 +103,14 @@ fn make_claims(roles: &[&str]) -> Claims {
     }
 }
 
+/// Claims for a specific subject, same shape as [`make_claims`] otherwise.
+fn make_claims_with_sub(sub: &str, roles: &[&str]) -> Claims {
+    Claims {
+        sub: sub.to_string(),
+        ..make_claims(roles)
+    }
+}
+
 async fn build_state(
     backend: Arc<dyn DynForgeBackend>,
     registry: HashMap<String, SchemaDefinition>,
@@ -549,7 +557,9 @@ async fn status_endpoint_returns_completed_job_with_download_url() {
         store,
         object_key,
         audit_logger: None,
-        subject: None,
+        // Owner of the job must match the subject that later polls the status
+        // endpoint — export artifacts are owner-scoped.
+        subject: Some("user:test-user".into()),
     };
     job_actor.send(StartExportJob::new(spec)).await;
     let record = poll_until_terminal(&job_actor, &job_id).await;
@@ -568,4 +578,61 @@ async fn status_endpoint_returns_completed_job_with_download_url() {
     assert_eq!(json["status"], "complete");
     assert_eq!(json["job_id"], job_id);
     assert!(json["download_url"].as_str().unwrap().starts_with("https://mock.example/"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn status_endpoint_denies_cross_subject_access() {
+    // IDOR regression: a job owned by `user:test-user` must NOT be readable by a
+    // different subject, even one that itself holds export access on the schema.
+    // The status endpoint must answer 404 (not 403) so the job id's existence
+    // does not leak, and must never hand back the artifact's download URL.
+    let rows = [serde_json::json!({ "fields": { "name": "Ada", "notes": "n" } })];
+    let state = seeded_state(export_schema(), &rows).await;
+    let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
+        job_inputs(&state, "Subject").await;
+    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+
+    let store = Arc::new(MockStore::default());
+    let job_id = schema_forge_acton::export_job::new_job_id();
+    let object_key = format!("exports/Subject/{job_id}.ndjson");
+    let spec = ExportJobSpec {
+        job_id: job_id.clone(),
+        schema_name: "Subject".into(),
+        schema_def,
+        format: ExportFormat::Ndjson,
+        filter: None,
+        fields: None,
+        max_rows: 100,
+        claims: Some(make_claims(&["platform_admin"])),
+        tenant_config,
+        policy_store,
+        record_access_policy,
+        forge,
+        store,
+        object_key,
+        audit_logger: None,
+        subject: Some("user:test-user".into()),
+    };
+    job_actor.send(StartExportJob::new(spec)).await;
+    let record = poll_until_terminal(&job_actor, &job_id).await;
+    assert_eq!(record.status, ExportJobStatus::Complete);
+
+    // A different authenticated subject with the same export-capable role.
+    let app = app_with_claims(
+        state,
+        make_claims_with_sub("user:attacker", &["platform_admin"]),
+    );
+    let (status, json) = raw_request(
+        &app,
+        Method::GET,
+        &format!("/schemas/Subject/exports/{job_id}"),
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND, "body: {json}");
+    assert!(
+        json.get("download_url").is_none(),
+        "cross-subject read must not leak a download url"
+    );
 }

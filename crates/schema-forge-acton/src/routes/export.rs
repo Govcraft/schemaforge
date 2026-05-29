@@ -823,7 +823,34 @@ pub async fn get_export_job(
         });
     }
 
+    // Export artifacts are owner-scoped: only the subject that initiated the job
+    // may read its status or mint its download URL. Schema-level export access
+    // (checked above) is necessary but NOT sufficient — without this gate any
+    // caller permitted to export the schema could read another subject's job and
+    // its presigned download URL (IDOR / bulk-data exfiltration). Mismatches
+    // return EntityNotFound, not Forbidden, so a job id's existence never leaks.
+    if !may_read_export_job(
+        record.owner_sub.as_deref(),
+        claims.as_ref().map(|c| c.sub.as_str()),
+    ) {
+        return Err(ForgeError::EntityNotFound {
+            schema: format!("{}/exports", schema_name.as_str()),
+            entity_id: job_id,
+        });
+    }
+
     Ok((StatusCode::OK, axum::Json(record.to_status_json().await)).into_response())
+}
+
+/// Whether `caller` may read an export job owned by `owner`.
+///
+/// Export jobs are strictly owner-scoped: the subjects must match exactly. A job
+/// created by an authenticated subject is readable only by that same subject; an
+/// anonymous job (`owner == None`) is a capability guarded by its unguessable id
+/// and is never readable by an authenticated caller who did not create it. Pure
+/// and total so the authorization decision is unit-testable in isolation.
+fn may_read_export_job(owner: Option<&str>, caller: Option<&str>) -> bool {
+    owner == caller
 }
 
 /// Resolve `id -> display` maps for the relation columns in `columns`, scoped to
@@ -1108,5 +1135,33 @@ mod tests {
         let csv = entities_to_csv(&[], &cols, &HashMap::new()).unwrap();
         assert_eq!(csv.lines().count(), 1);
         assert_eq!(csv.lines().next().unwrap(), "name,notes");
+    }
+
+    #[test]
+    fn export_job_owner_may_read_own() {
+        assert!(may_read_export_job(Some("alice"), Some("alice")));
+    }
+
+    #[test]
+    fn export_job_other_subject_denied() {
+        // The IDOR: a different authenticated subject must not read alice's job,
+        // even though they too can export the schema.
+        assert!(!may_read_export_job(Some("alice"), Some("bob")));
+    }
+
+    #[test]
+    fn export_job_anonymous_caller_denied_owned_job() {
+        assert!(!may_read_export_job(Some("alice"), None));
+    }
+
+    #[test]
+    fn export_job_authenticated_caller_denied_anonymous_job() {
+        assert!(!may_read_export_job(None, Some("bob")));
+    }
+
+    #[test]
+    fn export_job_anonymous_capability_matches() {
+        // An anonymous job is a capability guarded solely by its unguessable id.
+        assert!(may_read_export_job(None, None));
     }
 }

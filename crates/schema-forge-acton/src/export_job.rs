@@ -67,6 +67,10 @@ pub struct ExportJobRecord {
     pub job_id: String,
     /// Schema the export targets; used to scope status lookups.
     pub schema_name: String,
+    /// Subject (user id) that initiated the job, or `None` for an anonymous
+    /// caller. Export artifacts are owner-scoped: the status endpoint only
+    /// serves a record (and mints its download URL) to this same subject.
+    pub owner_sub: Option<String>,
     /// Requested deliverable format.
     pub format: ExportFormat,
     /// Current lifecycle state.
@@ -255,6 +259,7 @@ fn configure_start(actor: &mut ManagedActor<Idle, ExportJobActor>) {
             ExportJobRecord {
                 job_id: spec.job_id.clone(),
                 schema_name: spec.schema_name.clone(),
+                owner_sub: spec.subject.clone(),
                 format: spec.format,
                 status: ExportJobStatus::Queued,
                 object_key: None,
@@ -415,18 +420,13 @@ async fn run_job(spec: &ExportJobSpec) -> std::result::Result<usize, String> {
 // ---------------------------------------------------------------------------
 
 /// Generate a fresh, URL-safe export job id.
+///
+/// Backed by a v4 UUID (122 bits of `getrandom` CSPRNG entropy) so job ids are
+/// unguessable and cannot be enumerated. This is defense-in-depth behind the
+/// owner-scoped status gate: even if that authorization check ever regressed, an
+/// attacker still could not discover another subject's job id by guessing.
 pub fn new_job_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // A timestamp-nanos + counter id is sufficient: it is unique per process and
-    // unguessable enough when combined with the schema-scoped status gate. We
-    // avoid pulling a uuid dependency the crate does not already use.
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("exp_{nanos:x}_{n:x}")
+    format!("exp_{}", uuid::Uuid::new_v4().simple())
 }
 
 /// Choose the storage backend export artifacts land in. Prefers a backend named
@@ -466,6 +466,7 @@ mod tests {
         let record = ExportJobRecord {
             job_id: "exp_1".into(),
             schema_name: "Subject".into(),
+            owner_sub: Some("alice".into()),
             format: ExportFormat::Csv,
             status: ExportJobStatus::Queued,
             object_key: None,
@@ -484,6 +485,7 @@ mod tests {
         let record = ExportJobRecord {
             job_id: "exp_2".into(),
             schema_name: "Subject".into(),
+            owner_sub: Some("alice".into()),
             format: ExportFormat::Ndjson,
             status: ExportJobStatus::Failed,
             object_key: None,
