@@ -18,19 +18,13 @@ Vite proxies `/api/v1/*` to `http://localhost:3000` by default; set `VITE_FORGE_
 
 ## What the generator produces
 
-The output has two independent top-level route trees:
-
 ### `/app/*` — codegen'd, strongly-typed pages
 
 One folder per schema under `src/app/pages/<kebab>/`, with `list.tsx`, `detail.tsx`, and `edit.tsx`. These are **Preserve**-mode: scaffolded once, then yours to restyle. Re-running the generator leaves them alone unless `--force-user-files` is passed.
 
-Pages are strongly typed against the generated `src/generated/entity-types.ts` and `src/generated/zod-schemas.ts`. Forms use react-hook-form + zod; lists use TanStack Query with offset-pagination, click-to-sort, and a column-targeted `contains` filter.
+Pages are strongly typed against the generated `src/generated/entity-types.ts` and `src/generated/zod-schemas.ts`. Forms use react-hook-form + zod; lists use TanStack Query with offset-pagination, click-to-sort, and a column-targeted `contains` filter. The sidebar nav is built at runtime from `/api/v1/forge/schemas`, so it lists exactly the (non-`@system`) schemas the signed-in user can read.
 
-### `/admin/*` — runtime-dynamic admin shell
-
-`src/admin/*` is an **Owned** shell that introspects `/api/v1/forge/schemas` at runtime and renders any schema the authenticated user can read. There is no per-entity codegen on the admin side — add a schema to the backend and it shows up in the admin sidebar after a refresh.
-
-`/admin/users` is the user management surface (list, create, change password, delete), gated on the `admin` role.
+> The runtime-dynamic admin console (the former `/admin/*` shell — schema catalog, generic CRUD, and user management) now lives in its own repo, [`schemaforge-console`](https://github.com/Govcraft/schemaforge-console). `schemaforge site generate` no longer produces it.
 
 ## File ownership modes
 
@@ -38,7 +32,7 @@ Every scaffolded file is either `Owned` or `Preserve`:
 
 | Mode | Behavior | Typical use |
 |------|----------|-------------|
-| `Owned` | Regenerated every run. Manual edits are detected as drift and rejected by `--check`. Overwritten by `schemaforge site generate`. | `src/admin/*`, `src/generated/*`, `src/lib/*`, `src/components/ui/*`, `src/main.tsx`, `index.html`, `vite.config.ts`, `tailwind.config.ts`. |
+| `Owned` | Regenerated every run. Manual edits are detected as drift and rejected by `--check`. Overwritten by `schemaforge site generate`. | `src/generated/*`, `src/lib/*`, `src/components/ui/*`, `src/app/pages/**/*.generated.tsx`, `src/main.tsx`, `index.html`, `vite.config.ts`, `tailwind.config.ts`. |
 | `Preserve` | Scaffolded once. Subsequent runs leave the file alone. `--force-user-files` re-scaffolds. | `src/app/pages/**/*.tsx`, `src/pages/login.tsx`, `package.json`. |
 
 `--check` mode does a pure in-memory render and exits non-zero if any `Owned` file differs from what's on disk. Use it in CI to catch drift.
@@ -55,7 +49,7 @@ schemaforge site generate
 schemaforge site generate --templates-dir ./my-templates
 ```
 
-Files present in the override directory shadow the binary defaults one-for-one. The loader walks the same relative layout as the bundled templates (e.g. `site-templates/src/admin/entity-list.tsx.jinja` overrides `crates/schema-forge-cli/templates/site/src/admin/entity-list.tsx.jinja`). Iterate on a `.jinja` file, re-run `schemaforge site generate`, Vite HMR picks up the new `.tsx`. No CLI rebuild needed.
+Files present in the override directory shadow the binary defaults one-for-one. The loader walks the same relative layout as the bundled templates (e.g. `site-templates/src/app/pages/list.tsx.jinja` overrides `crates/schema-forge-cli/templates/site/src/app/pages/list.tsx.jinja`). Iterate on a `.jinja` file, re-run `schemaforge site generate`, Vite HMR picks up the new `.tsx`. No CLI rebuild needed.
 
 ## Auth bootstrap
 
@@ -68,7 +62,7 @@ The React app's login flow:
 3. Client stores the PASETO token + expiry + roles in `sessionStorage`.
 4. A silent refresh is scheduled ~5 minutes before `expires_at` via `POST /auth/refresh`, and the api-client retries any 401 once through the refresh endpoint before redirecting to `/login`.
 
-The `roles` claim drives client-side enforcement of `@field_access(read=[...], write=[...])` annotations: read-denied fields are hidden from list columns and edit forms, write-denied fields are forced to read-only.
+The `roles` claim is stored alongside the token for role-scoped chrome. Field- and record-level access (`@field_access`, `@access`) is enforced authoritatively server-side: the API omits fields the caller may not read and rejects writes it may not make, so the generated pages only ever render what Cedar already permits.
 
 ## Production builds
 
@@ -100,12 +94,11 @@ pnpm preview        # local sanity check of the production build
 ## Troubleshooting
 
 - **`401` immediately after login** — Vite proxy isn't forwarding the `Authorization` header. Check `VITE_FORGE_UPSTREAM` and that `schemaforge serve` is reachable from the dev machine.
-- **`/admin/*` shows "No schemas visible"** — the logged-in user has zero read access. Either add a `@access(read=[...])` annotation or log in as an admin.
+- **Empty sidebar / "No application schemas yet."** — the logged-in user has zero read access on every non-`@system` schema. Add a `@access(read=[...])` annotation or sign in as a user who can read them.
 - **Stale generated file after a schema change** — `schemaforge site generate` only rewrites `Owned` files. If you edited one, stash the change, regenerate, then re-apply.
 - **`schema-forge site generate --check` fails in CI** — you edited an `Owned` file by hand. Move the edit into a `Preserve` file or override the template via `site-templates/`.
 
 ## See also
 
-- [DSL reference](../crates/schema-forge-cli/templates/site/README.md) inside the generated project
 - [`docs/query-api-reference.md`](query-api-reference.md) — REST query parameter grammar
 - [`docs/hooks-reference.md`](hooks-reference.md) — lifecycle hook service scaffolding

@@ -357,8 +357,8 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
 
     // ---- Top-level login page (Preserve: users restyle freely) ----
     //
-    // Login is mounted at `/login`, outside both the `/app` and `/admin`
-    // subtrees, because both need to fall through to it on auth failure.
+    // Login is mounted at `/login`, outside the `/app` subtree, because the
+    // app routes need to fall through to it on auth failure.
     plan.push(preserve(
         "src/pages/login.tsx",
         renderer.render("src/pages/login.tsx", ctx)?,
@@ -427,39 +427,8 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         ));
     }
 
-    // ---- `/admin/*`: generic schema-aware admin shell (Owned) ----
-    //
-    // The admin UI is schema-agnostic: it fetches `/api/v1/forge/schemas`
-    // at runtime and renders generic CRUD for every schema the authenticated
-    // user has permission to see. Because it's not per-user content, these
-    // files are Owned — users customize the admin by overriding the templates
-    // via `--templates-dir`, not by hand-editing the generated .tsx.
-    //
-    // Phase 2 ships these as placeholder scaffolds; Phase 3 fills them in.
-    for (rel, logical) in ADMIN_TEMPLATES {
-        plan.push(owned(rel, renderer.render(logical, ctx)?));
-    }
-
     Ok(plan)
 }
-
-/// Generic admin shell files. Each tuple is `(output path, template name)`.
-/// Templates live under `templates/site/src/admin/` and are schema-agnostic
-/// (rendered once against the top-level `SiteContext`, not per-entity).
-const ADMIN_TEMPLATES: &[(&str, &str)] = &[
-    ("src/admin/layout.tsx", "src/admin/layout.tsx"),
-    ("src/admin/schemas-index.tsx", "src/admin/schemas-index.tsx"),
-    ("src/admin/entity-list.tsx", "src/admin/entity-list.tsx"),
-    ("src/admin/entity-detail.tsx", "src/admin/entity-detail.tsx"),
-    ("src/admin/entity-edit.tsx", "src/admin/entity-edit.tsx"),
-    ("src/admin/api-client.ts", "src/admin/api-client.ts"),
-    (
-        "src/admin/field-renderer.tsx",
-        "src/admin/field-renderer.tsx",
-    ),
-    ("src/admin/users-list.tsx", "src/admin/users-list.tsx"),
-    ("src/admin/users-edit.tsx", "src/admin/users-edit.tsx"),
-];
 
 fn owned(path: &str, contents: String) -> FilePlan {
     FilePlan {

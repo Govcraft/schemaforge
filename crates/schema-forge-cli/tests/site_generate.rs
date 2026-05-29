@@ -127,20 +127,12 @@ fn fresh_generate_emits_expected_tree() {
         assert!(out_dir.join(f).exists(), "missing {f}");
     }
 
-    // Phase 2: admin shell scaffolds are emitted as Owned placeholders.
-    for f in [
-        "src/admin/layout.tsx",
-        "src/admin/schemas-index.tsx",
-        "src/admin/entity-list.tsx",
-        "src/admin/entity-detail.tsx",
-        "src/admin/entity-edit.tsx",
-        "src/admin/api-client.ts",
-        "src/admin/field-renderer.tsx",
-        "src/admin/users-list.tsx",
-        "src/admin/users-edit.tsx",
-    ] {
-        assert!(out_dir.join(f).exists(), "missing admin scaffold {f}");
-    }
+    // The runtime-dynamic admin shell was moved to the schemaforge-console
+    // repo. The generator must no longer emit a src/admin/ tree.
+    assert!(
+        !out_dir.join("src/admin").exists(),
+        "src/admin/ should not be generated — the admin console moved to schemaforge-console",
+    );
 
     // Spot-check template substitutions
     let api = fs::read_to_string(out_dir.join("src/generated/api-client.ts")).unwrap();
@@ -166,14 +158,15 @@ fn fresh_generate_emits_expected_tree() {
     assert!(auth_ts.contains("export const tokenStore"));
     assert!(auth_ts.contains("export function isAuthenticated"));
 
-    // Task 4 + Phase 2: App.tsx wires RequireAuth, /login, and /app + /admin
-    // subtrees.
+    // App.tsx wires RequireAuth, /login, and the /app subtree. The /admin
+    // shell is gone; the home route redirects to the first app entity.
     let app_tsx = fs::read_to_string(out_dir.join("src/App.tsx")).unwrap();
     assert!(app_tsx.contains("<RequireAuth>"));
     assert!(app_tsx.contains("path=\"/login\""));
     assert!(app_tsx.contains("/app/${r.path}"));
-    assert!(app_tsx.contains("path=\"/admin/*\""));
-    assert!(app_tsx.contains("AdminLayout"));
+    assert!(app_tsx.contains("/app/${defaultEntity}"));
+    assert!(!app_tsx.contains("/admin"), "App.tsx must not reference the removed /admin shell");
+    assert!(!app_tsx.contains("AdminLayout"));
 
     // Phase 2: route-manifest imports from @/app/pages and emits mount-relative
     // paths (no leading /app — that is added by App.tsx).

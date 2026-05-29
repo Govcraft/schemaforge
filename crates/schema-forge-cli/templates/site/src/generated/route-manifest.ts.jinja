@@ -1,8 +1,7 @@
 // Auto-generated route manifest — consumed by `src/App.tsx`.
 //
 // Paths are relative to the `/app` mount, not absolute site paths, so the
-// `App.tsx` `<Route path="/app/*">` subtree can nest these directly. The
-// admin shell lives at `/admin/*` and is registered separately.
+// `App.tsx` `<Route path="/app/*">` subtree can nest these directly.
 import type { ComponentType } from "react"
 {%- for entity in entities %}
 import { {{ entity.pascal }}List } from "@/app/pages/{{ entity.kebab }}/list"

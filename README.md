@@ -845,7 +845,7 @@ let extension = SchemaForgeExtension::builder()
 let app = extension.register_routes(axum::Router::new());
 ```
 
-See [`docs/site-guide.md`](docs/site-guide.md) for the React site generator workflow, including the `/app/*` vs `/admin/*` route trees, template override loader, auth bootstrap, and field-type widget reference.
+See [`docs/site-guide.md`](docs/site-guide.md) for the React site generator workflow, including the `/app/*` route tree, template override loader, auth bootstrap, and field-type widget reference. (The runtime-dynamic admin console moved to the [`schemaforge-console`](https://github.com/Govcraft/schemaforge-console) repo.)
 
 ### Computing Migrations
 
@@ -904,7 +904,7 @@ Token pairs to verify on light theme: `--gc-ink` on `--gc-paper`, `--gc-steel` /
 The baseline also honors three platform-accessibility expectations federal reviewers test for explicitly:
 
 - **`prefers-reduced-motion`** — `src/index.css` clamps all animation and transition durations to ~0.01ms when the OS-level reduce-motion setting is on (Section 508 FPC §302.9, WCAG 2.1 SC 2.3.3 advisory).
-- **Descriptive page titles** — `index.html` ships `<title>{project_name} — Admin</title>` for pre-hydration paint and text-mode browsers; `useDocumentTitle` refines per route at runtime (SC 2.4.2).
+- **Descriptive page titles** — `index.html` ships `<title>{project_name}</title>` for pre-hydration paint and text-mode browsers; `useDocumentTitle` refines per route at runtime (SC 2.4.2).
 - **Session-timeout warning** — `src/lib/auth.ts` surfaces a T-30s warning toast with an "Extend session" action before the PASETO refresh window closes (SC 2.2.1).
 
 ## Project Status

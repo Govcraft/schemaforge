@@ -136,6 +136,7 @@ export function {{ entity.pascal }}List() {
               className="toolbar-select"
               value={filterField}
               onChange={(e) => setFilterField(e.target.value)}
+              aria-label="Filter field"
             >
               {FILTERABLE_FIELDS.map((f) => (
                 <option key={f} value={f}>
@@ -152,6 +153,7 @@ export function {{ entity.pascal }}List() {
               </span>
               <input
                 placeholder="filter…"
+                aria-label="Filter value"
                 value={filterInput}
                 onChange={(e) => setFilterInput(e.target.value)}
               />

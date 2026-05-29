@@ -225,6 +225,83 @@ export async function rawEntityList(
 }
 
 // ---------------------------------------------------------------------------
+// Schema introspection
+// ---------------------------------------------------------------------------
+// The `/app` shell builds its sidebar nav at runtime from the schema list so
+// the nav reflects exactly what Cedar lets the caller read — no static
+// per-user route table to keep in sync.
+
+export type SchemaResponse = {
+  name: string
+  annotations: unknown[]
+  /** Cedar-derived schema-level permissions for the calling user. Absent
+   *  on responses produced by mutations. */
+  permissions?: SchemaPermissions
+}
+
+export type ListSchemasResponse = {
+  schemas: SchemaResponse[]
+  count: number
+}
+
+/** List every schema the caller has permission to see. */
+export async function listSchemas(): Promise<SchemaResponse[]> {
+  const res = await request<ListSchemasResponse>(`${FORGE_API_PREFIX}/schemas`)
+  return res.schemas
+}
+
+/** True when the schema carries the `@system` annotation. System schemas
+ *  (User, TenantMembership, WebhookSubscription) are platform plumbing and
+ *  are hidden from the user-facing entity navigation. */
+export function isSystemSchema(schema: SchemaResponse): boolean {
+  return (schema.annotations ?? []).some(
+    (a) =>
+      typeof a === "object" &&
+      a !== null &&
+      "annotation" in a &&
+      (a as { annotation: unknown }).annotation === "System",
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Runtime posture (`/meta`)
+// ---------------------------------------------------------------------------
+
+/** Wire shape of `GET /api/v1/forge/meta`. The endpoint is unauthenticated
+ *  so the login screen can render real backend / auth / build values
+ *  without first having a token. */
+export type MetaResponse = {
+  /** Stable lowercase backend kind (`"surrealdb"`, `"postgres"`, `"turso"`). */
+  backend: string
+  /** Human-readable backend label (`"SurrealDB 2.x"`). */
+  backend_label: string
+  auth: {
+    /** Token scheme — `"paseto"` today. */
+    kind: string
+    /** Login token TTL, in seconds. The login screen formats this as
+     *  `60m TTL` etc. */
+    ttl_seconds: number
+  }
+  build: {
+    /** Crate version of the running schema-forge-acton. */
+    version: string
+  }
+}
+
+/** Fetch the runtime meta snapshot. Public endpoint — no token required.
+ *  Bypasses the auth-aware `request()` helper so a fetch failure on the
+ *  login screen doesn't trigger a redirect-to-login loop. */
+export async function getMeta(): Promise<MetaResponse> {
+  const res = await fetch(`${API_BASE}${FORGE_API_PREFIX}/meta`, {
+    headers: { "Content-Type": "application/json" },
+  })
+  if (!res.ok) {
+    throw new Error(`API ${res.status}: ${await res.text()}`)
+  }
+  return res.json() as Promise<MetaResponse>
+}
+
+// ---------------------------------------------------------------------------
 // Typed per-schema CRUD
 // ---------------------------------------------------------------------------
 {% for entity in entities %}
