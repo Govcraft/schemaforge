@@ -94,6 +94,7 @@ fn eval_depth(expr: &Expr, scope: &Scope, depth: usize) -> Result<CelValue, Eval
         Expr::Ident(name) => scope
             .lookup(name)
             .cloned()
+            .or_else(|| type_denotation(name))
             .ok_or_else(|| EvalError::new(format!("undeclared reference to '{name}'"))),
         Expr::Unary { op, operand } => eval_unary(*op, operand, scope, d),
         Expr::Binary { op, lhs, rhs } => eval_binary(*op, lhs, rhs, scope, d),
@@ -124,6 +125,31 @@ fn eval_depth(expr: &Expr, scope: &Scope, depth: usize) -> Result<CelValue, Eval
         } => eval_call(target.as_deref(), function, args, scope, d),
         Expr::Comprehension(c) => eval_comprehension(c, scope, d),
     }
+}
+
+/// The CEL standard environment denotes the built-in type names as `type`
+/// values: bare `int` evaluates to `type(int)`, `string` to `type(string)`, and
+/// so on. This is a stdlib environment binding (the type identifiers are part of
+/// the standard library), resolved only as a fallback after a real binding lookup
+/// misses, so a user binding of the same name still wins.
+///
+/// `dyn` is deliberately excluded: it is a pseudo-function with no denotation
+/// (the corpus's `dyn_no_denotation` expects an unknown-variable error).
+fn type_denotation(name: &str) -> Option<CelValue> {
+    matches!(
+        name,
+        "bool"
+            | "int"
+            | "uint"
+            | "double"
+            | "string"
+            | "bytes"
+            | "list"
+            | "map"
+            | "null_type"
+            | "type"
+    )
+    .then(|| CelValue::Type(name.to_string()))
 }
 
 fn literal_to_value(lit: &Literal) -> CelValue {

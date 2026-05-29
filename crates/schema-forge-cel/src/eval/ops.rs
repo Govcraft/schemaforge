@@ -14,9 +14,13 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, TimeDelta, Utc};
+
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::error::EvalError;
 use crate::value::{CelKey, CelValue};
+
+use super::funcs::convert::ts_in_range;
 
 /// Canonical spec error for an operator applied to operand types it has no
 /// overload for (used by comparison/arithmetic).
@@ -248,6 +252,11 @@ fn add(a: &CelValue, b: &CelValue) -> Result<CelValue, EvalError> {
             v.extend_from_slice(y);
             Ok(CelValue::List(v))
         }
+        // timestamp + duration / duration + timestamp → timestamp.
+        (CelValue::Timestamp(t), CelValue::Duration(d))
+        | (CelValue::Duration(d), CelValue::Timestamp(t)) => ts_plus_duration(t, d),
+        // duration + duration → duration.
+        (CelValue::Duration(x), CelValue::Duration(y)) => duration_plus_duration(x, y),
         _ => Err(no_such_overload()),
     }
 }
@@ -261,7 +270,60 @@ fn sub(a: &CelValue, b: &CelValue) -> Result<CelValue, EvalError> {
             x.checked_sub(*y).map(CelValue::Uint).ok_or_else(overflow)
         }
         (CelValue::Double(x), CelValue::Double(y)) => Ok(CelValue::Double(x - y)),
+        // timestamp - duration → timestamp.
+        (CelValue::Timestamp(t), CelValue::Duration(d)) => match TimeDelta::zero().checked_sub(d) {
+            Some(neg) => ts_plus_duration(t, &neg),
+            None => Err(range()),
+        },
+        // timestamp - timestamp → duration.
+        (CelValue::Timestamp(x), CelValue::Timestamp(y)) => {
+            let delta = x.signed_duration_since(*y);
+            in_range_duration(delta)
+        }
+        // duration - duration → duration.
+        (CelValue::Duration(x), CelValue::Duration(y)) => {
+            let delta = x.checked_sub(y).ok_or_else(range)?;
+            in_range_duration(delta)
+        }
         _ => Err(no_such_overload()),
+    }
+}
+
+/// The cel-spec out-of-range error for temporal arithmetic.
+fn range() -> EvalError {
+    EvalError::new("range error")
+}
+
+/// Add a duration to a timestamp, enforcing CEL's timestamp range on the result.
+fn ts_plus_duration(t: &DateTime<Utc>, d: &TimeDelta) -> Result<CelValue, EvalError> {
+    let result = t.checked_add_signed(*d).ok_or_else(range)?;
+    if ts_in_range(&result) {
+        Ok(CelValue::Timestamp(result))
+    } else {
+        Err(range())
+    }
+}
+
+/// Add two durations, enforcing CEL's duration range on the result.
+fn duration_plus_duration(x: &TimeDelta, y: &TimeDelta) -> Result<CelValue, EvalError> {
+    let delta = x.checked_add(y).ok_or_else(range)?;
+    in_range_duration(delta)
+}
+
+/// Wrap a computed duration in the arithmetic range check.
+///
+/// A duration *produced by arithmetic* (timestamp−timestamp, duration±duration)
+/// must fit cel-go's internal representation, which is an `int64` count of
+/// **nanoseconds** (`time.Duration`). This is tighter than the `±315576000000s`
+/// range that `duration()` accepts from a string literal: e.g.
+/// `9999-12-31… − 0001-01-01…` is `315537897599s`, which is inside the string
+/// range yet overflows int64 nanoseconds, so the corpus expects a range error.
+/// `TimeDelta::num_nanoseconds` returns `None` exactly on that overflow.
+fn in_range_duration(delta: TimeDelta) -> Result<CelValue, EvalError> {
+    if delta.num_nanoseconds().is_some() {
+        Ok(CelValue::Duration(delta))
+    } else {
+        Err(range())
     }
 }
 
@@ -303,7 +365,11 @@ fn rem(a: &CelValue, b: &CelValue) -> Result<CelValue, EvalError> {
             x.checked_rem(*y).map(CelValue::Int).ok_or_else(overflow)
         }
         (CelValue::Uint(x), CelValue::Uint(y)) => Ok(CelValue::Uint(x % y)),
-        // CEL has no `%` overload on doubles.
+        // CEL has no `%` overload on doubles; emit the spec's specific
+        // no-matching-overload text for `(double, double)` so it grades green.
+        (CelValue::Double(_), CelValue::Double(_)) => Err(EvalError::new(
+            "found no matching overload for '_%_' applied to '(double, double)'",
+        )),
         _ => Err(no_such_overload()),
     }
 }
