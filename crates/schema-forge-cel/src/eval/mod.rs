@@ -19,7 +19,7 @@ pub mod ops;
 
 use std::collections::BTreeMap;
 
-use crate::ast::{BinaryOp, Comprehension, Expr, Literal, UnaryOp};
+use crate::ast::{BinaryOp, Comprehension, Expr, ListEntry, Literal, MapEntry, UnaryOp};
 use crate::error::EvalError;
 use crate::value::{CelKey, CelValue};
 use crate::Bindings;
@@ -120,23 +120,18 @@ fn eval_depth(expr: &Expr, scope: &Scope, depth: usize) -> Result<CelValue, Eval
         Expr::Unary { op, operand } => eval_unary(*op, operand, scope, d),
         Expr::Binary { op, lhs, rhs } => eval_binary(*op, lhs, rhs, scope, d),
         Expr::Ternary { cond, then, els } => eval_ternary(cond, then, els, scope, d),
-        Expr::Index { operand, index } => {
-            let coll = eval_depth(operand, scope, d)?;
-            let idx = eval_depth(index, scope, d)?;
-            ops::index_value(&coll, &idx)
-        }
+        Expr::Index {
+            operand,
+            index,
+            optional,
+        } => eval_index(operand, index, *optional, scope, d),
         Expr::Select {
             operand,
             field,
             test_only,
-        } => eval_select(operand, field, *test_only, scope, d),
-        Expr::List(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(eval_depth(item, scope, d)?);
-            }
-            Ok(CelValue::List(out))
-        }
+            optional,
+        } => eval_select(operand, field, *test_only, *optional, scope, d),
+        Expr::List(items) => eval_list(items, scope, d),
         Expr::Map(entries) => eval_map(entries, scope, d),
         Expr::Struct { .. } => Err(EvalError::new("no such overload")),
         Expr::Call {
@@ -169,6 +164,7 @@ fn type_denotation(name: &str) -> Option<CelValue> {
             | "map"
             | "null_type"
             | "type"
+            | "optional_type"
     )
     .then(|| CelValue::Type(name.to_string()))
 }
@@ -293,34 +289,162 @@ fn eval_ternary(
     }
 }
 
+/// The outcome of looking a field up in a value: a present value, a definite
+/// absence (no such key on a map), or `None` for "the operand type has no field
+/// access at all" (a non-map, non-optional value).
+enum FieldLookup {
+    Present(CelValue),
+    Absent,
+    NoOverload,
+}
+
+/// Look up `field` (a string key) directly on a plain map value.
+fn lookup_field(target: &CelValue, field: &str) -> FieldLookup {
+    match target {
+        CelValue::Map(m) => match m.get(&CelKey::String(field.to_string())) {
+            Some(v) => FieldLookup::Present(v.clone()),
+            None => FieldLookup::Absent,
+        },
+        _ => FieldLookup::NoOverload,
+    }
+}
+
 fn eval_select(
     operand: &Expr,
     field: &str,
     test_only: bool,
+    optional: bool,
     scope: &Scope,
     depth: usize,
 ) -> Result<CelValue, EvalError> {
     let target = eval_depth(operand, scope, depth)?;
-    let key = CelKey::String(field.to_string());
-    match (&target, test_only) {
-        // has(map.field): presence test, never errors on absence.
-        (CelValue::Map(m), true) => Ok(CelValue::Bool(m.contains_key(&key))),
-        (CelValue::Map(m), false) => m
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| EvalError::new(format!("no such key: {field}"))),
-        // Presence test on a non-map: per spec, absent.
-        (_, true) => Ok(CelValue::Bool(false)),
-        (_, false) => Err(EvalError::new("no such overload")),
+    if test_only {
+        return Ok(CelValue::Bool(presence_test(&target, field)));
+    }
+    // A select on an optional operand always propagates optionality (regardless of
+    // the `.?` marker): `optional.of(m).c`, `optional.none().c`, `optional.of(m).?c`
+    // all yield an optional.
+    if let CelValue::Optional(inner) = &target {
+        return select_through_optional(inner.as_deref(), field);
+    }
+    match (lookup_field(&target, field), optional) {
+        (FieldLookup::Present(v), false) => Ok(v),
+        (FieldLookup::Present(v), true) => Ok(CelValue::optional_of(v)),
+        (FieldLookup::Absent, false) => Err(EvalError::new(format!("no such key: {field}"))),
+        (FieldLookup::Absent, true) => Ok(CelValue::optional_none()),
+        // Optional select on a non-map (e.g. `optional.none()` is handled above;
+        // any other non-map) is absent; a plain select has no overload.
+        (FieldLookup::NoOverload, true) => Ok(CelValue::optional_none()),
+        (FieldLookup::NoOverload, false) => Err(EvalError::new("no such overload")),
     }
 }
 
-fn eval_map(entries: &[(Expr, Expr)], scope: &Scope, depth: usize) -> Result<CelValue, EvalError> {
+/// Select `field` through an optional operand, yielding an optional result.
+///
+/// `optional.none().field` → none (short-circuits, never inspecting a field);
+/// `optional.of(map).field` → `of(map[field])` when present, `none()` when the
+/// key is absent. Selecting a field on a present-but-non-map inner value (e.g.
+/// `optional.of(0).field`) is a `"no such key"` error, matching cel-spec — only
+/// `optional.none()` absorbs the missing field.
+fn select_through_optional(inner: Option<&CelValue>, field: &str) -> Result<CelValue, EvalError> {
+    match inner {
+        None => Ok(CelValue::optional_none()),
+        Some(v) => match lookup_field(v, field) {
+            FieldLookup::Present(found) => Ok(CelValue::optional_of(found)),
+            FieldLookup::Absent => Ok(CelValue::optional_none()),
+            FieldLookup::NoOverload => Err(EvalError::new(format!("no such key: {field}"))),
+        },
+    }
+}
+
+/// `has(target.field)` presence test.
+///
+/// On a map: whether the key is present. On an optional: whether the inner value
+/// has the field present (none → false). On any other type: absent.
+fn presence_test(target: &CelValue, field: &str) -> bool {
+    match target {
+        CelValue::Map(m) => m.contains_key(&CelKey::String(field.to_string())),
+        CelValue::Optional(inner) => match inner.as_deref() {
+            Some(v) => matches!(lookup_field(v, field), FieldLookup::Present(_)),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+fn eval_index(
+    operand: &Expr,
+    index: &Expr,
+    optional: bool,
+    scope: &Scope,
+    depth: usize,
+) -> Result<CelValue, EvalError> {
+    let coll = eval_depth(operand, scope, depth)?;
+    let idx = eval_depth(index, scope, depth)?;
+    // Indexing an optional operand propagates optionality.
+    if let CelValue::Optional(inner) = &coll {
+        return index_through_optional(inner.as_deref(), &idx);
+    }
+    if optional {
+        // `m[?k]` / `l[?i]`: absent → none, present → of(value).
+        return Ok(match ops::index_value(&coll, &idx) {
+            Ok(v) => CelValue::optional_of(v),
+            Err(_) => CelValue::optional_none(),
+        });
+    }
+    ops::index_value(&coll, &idx)
+}
+
+/// Index through an optional operand, yielding an optional result.
+///
+/// `optional.none()[k]` → none. `optional.of(coll)[k]` → `of(coll[k])` when the
+/// key/index is present, `none()` when it is absent. Indexing into a present
+/// inner value that is neither a list nor a map has no overload and errors.
+fn index_through_optional(inner: Option<&CelValue>, idx: &CelValue) -> Result<CelValue, EvalError> {
+    match inner {
+        None => Ok(CelValue::optional_none()),
+        Some(v @ (CelValue::List(_) | CelValue::Map(_))) => Ok(match ops::index_value(v, idx) {
+            Ok(found) => CelValue::optional_of(found),
+            Err(_) => CelValue::optional_none(),
+        }),
+        Some(_) => Err(EvalError::new("no such overload")),
+    }
+}
+
+fn eval_list(items: &[ListEntry], scope: &Scope, depth: usize) -> Result<CelValue, EvalError> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let v = eval_depth(&item.value, scope, depth)?;
+        if item.optional {
+            // An optional entry contributes its inner value only when present.
+            match v {
+                CelValue::Optional(Some(inner)) => out.push(*inner),
+                CelValue::Optional(None) => {}
+                _ => return Err(EvalError::new("no such overload")),
+            }
+        } else {
+            out.push(v);
+        }
+    }
+    Ok(CelValue::List(out))
+}
+
+fn eval_map(entries: &[MapEntry], scope: &Scope, depth: usize) -> Result<CelValue, EvalError> {
     let mut out = BTreeMap::new();
-    for (k, v) in entries {
-        let key_val = eval_depth(k, scope, depth)?;
+    for entry in entries {
+        let val = eval_depth(&entry.value, scope, depth)?;
+        // An optional entry is included only when its value optional is present.
+        let val = if entry.optional {
+            match val {
+                CelValue::Optional(Some(inner)) => *inner,
+                CelValue::Optional(None) => continue,
+                _ => return Err(EvalError::new("no such overload")),
+            }
+        } else {
+            val
+        };
+        let key_val = eval_depth(&entry.key, scope, depth)?;
         let key = ops::to_key(&key_val).ok_or_else(|| EvalError::new("no such overload"))?;
-        let val = eval_depth(v, scope, depth)?;
         if out.insert(key, val).is_some() {
             return Err(EvalError::new("Failed with repeated key"));
         }
@@ -335,6 +459,13 @@ fn eval_call(
     scope: &Scope,
     depth: usize,
 ) -> Result<CelValue, EvalError> {
+    // `optMap` / `optFlatMap` bind a variable to the optional's inner value, so
+    // their body argument is evaluated lazily (only when the receiver has a value)
+    // in an extended scope — they cannot go through the eager-args dispatch path.
+    if let (Some(t), "optMap" | "optFlatMap", [var, body]) = (target, function, args) {
+        return eval_opt_map(t, function, var, body, scope, depth);
+    }
+
     let recv = match target {
         Some(t) => Some(eval_depth(t, scope, depth)?),
         None => None,
@@ -344,6 +475,44 @@ fn eval_call(
         arg_vals.push(eval_depth(arg, scope, depth)?);
     }
     funcs::dispatch(recv.as_ref(), function, &arg_vals)
+}
+
+/// Evaluate `opt.optMap(var, body)` / `opt.optFlatMap(var, body)`.
+///
+/// Both require the receiver to be an optional. When it is absent the result is
+/// `optional.none()` and `body` is never evaluated. When present, `var` is bound
+/// to the inner value and `body` is evaluated: `optMap` wraps the result in
+/// `optional.of(...)`; `optFlatMap`'s body already yields an optional and is
+/// returned as-is.
+fn eval_opt_map(
+    target: &Expr,
+    function: &str,
+    var: &Expr,
+    body: &Expr,
+    scope: &Scope,
+    depth: usize,
+) -> Result<CelValue, EvalError> {
+    let Expr::Ident(var_name) = var else {
+        return Err(EvalError::new("no such overload"));
+    };
+    let recv = eval_depth(target, scope, depth)?;
+    let CelValue::Optional(inner) = recv else {
+        return Err(EvalError::new("no such overload"));
+    };
+    let Some(value) = inner else {
+        return Ok(CelValue::optional_none());
+    };
+    let child = scope.with(var_name, *value);
+    let result = eval_depth(body, &child, depth)?;
+    if function == "optMap" {
+        Ok(CelValue::optional_of(result))
+    } else {
+        // optFlatMap: the body must itself produce an optional.
+        match result {
+            CelValue::Optional(_) => Ok(result),
+            _ => Err(EvalError::new("no such overload")),
+        }
+    }
 }
 
 /// Evaluate a comprehension (the lowered form of `all`/`exists`/`exists_one`/
@@ -780,5 +949,139 @@ mod tests {
     fn size_via_dispatch() {
         assert_eq!(run("size([1, 2, 3])").unwrap(), CelValue::Int(3));
         assert_eq!(run("dyn(1) == 1u").unwrap(), CelValue::Bool(true));
+    }
+
+    // -- Optional types (#100) --
+
+    #[test]
+    fn optional_constructors_and_predicates() {
+        assert_eq!(
+            run("optional.of(1).hasValue()").unwrap(),
+            CelValue::Bool(true)
+        );
+        assert_eq!(
+            run("optional.none().hasValue()").unwrap(),
+            CelValue::Bool(false)
+        );
+        assert_eq!(run("optional.of(7).value()").unwrap(), CelValue::Int(7));
+        // value() on an absent optional is an error.
+        assert!(run("optional.none().value()").is_err());
+    }
+
+    #[test]
+    fn optional_of_non_zero_value() {
+        // Zero values yield none; non-zero yield of.
+        assert_eq!(
+            run("optional.ofNonZeroValue(0).hasValue()").unwrap(),
+            CelValue::Bool(false)
+        );
+        assert_eq!(
+            run("optional.ofNonZeroValue('').hasValue()").unwrap(),
+            CelValue::Bool(false)
+        );
+        assert_eq!(
+            run("optional.ofNonZeroValue('x').value()").unwrap(),
+            CelValue::String("x".into())
+        );
+    }
+
+    #[test]
+    fn optional_or_value_and_or() {
+        assert_eq!(
+            run("optional.none().orValue(42)").unwrap(),
+            CelValue::Int(42)
+        );
+        assert_eq!(run("optional.of(1).orValue(42)").unwrap(), CelValue::Int(1));
+        // or() picks the first present optional.
+        assert_eq!(
+            run("optional.none().or(optional.of(5)).value()").unwrap(),
+            CelValue::Int(5)
+        );
+    }
+
+    #[test]
+    fn optional_select_present_and_absent() {
+        // Present field → of(value); absent field → none.
+        assert_eq!(run("{'a': 1}.?a.value()").unwrap(), CelValue::Int(1));
+        assert_eq!(
+            run("{'a': 1}.?b.hasValue()").unwrap(),
+            CelValue::Bool(false)
+        );
+        // Select through an optional propagates optionality.
+        assert_eq!(
+            run("optional.of({'a': 1}).a.value()").unwrap(),
+            CelValue::Int(1)
+        );
+        assert_eq!(
+            run("optional.of({}).a.hasValue()").unwrap(),
+            CelValue::Bool(false)
+        );
+    }
+
+    #[test]
+    fn optional_index_present_and_absent() {
+        assert_eq!(
+            run("['foo'][?0].value()").unwrap(),
+            CelValue::String("foo".into())
+        );
+        assert_eq!(run("[][?0].hasValue()").unwrap(), CelValue::Bool(false));
+        assert_eq!(run("{'k': 9}[?'k'].value()").unwrap(), CelValue::Int(9));
+        assert_eq!(run("{}[?'k'].hasValue()").unwrap(), CelValue::Bool(false));
+    }
+
+    #[test]
+    fn optional_opt_map_and_flat_map() {
+        // optMap wraps the body; runs only when present.
+        assert_eq!(
+            run("optional.of(42).optMap(y, y + 1).value()").unwrap(),
+            CelValue::Int(43)
+        );
+        assert_eq!(
+            run("optional.none().optMap(y, y + 1).hasValue()").unwrap(),
+            CelValue::Bool(false)
+        );
+        // optFlatMap returns the body's own optional.
+        assert_eq!(
+            run("{'key': {'subkey': 'v'}}.?key.optFlatMap(k, k.?subkey).value()").unwrap(),
+            CelValue::String("v".into())
+        );
+    }
+
+    #[test]
+    fn optional_list_and_map_entry_splicing() {
+        // Optional list entries are spliced in only when present.
+        assert_eq!(
+            run("[?optional.of(42), ?optional.none(), 7]").unwrap(),
+            CelValue::List(vec![CelValue::Int(42), CelValue::Int(7)])
+        );
+        // An optional map entry is omitted when its value is none.
+        assert_eq!(
+            run("{?'a': optional.none(), 'b': 1}").unwrap(),
+            run("{'b': 1}").unwrap()
+        );
+        assert_eq!(
+            run("{?'a': optional.of(9)}").unwrap(),
+            run("{'a': 9}").unwrap()
+        );
+    }
+
+    #[test]
+    fn optional_equality_and_type() {
+        assert_eq!(
+            run("optional.none() == optional.none()").unwrap(),
+            CelValue::Bool(true)
+        );
+        assert_eq!(
+            run("optional.of(1) == optional.of(1)").unwrap(),
+            CelValue::Bool(true)
+        );
+        assert_eq!(
+            run("optional.of(1) == optional.none()").unwrap(),
+            CelValue::Bool(false)
+        );
+        assert_eq!(
+            run("type(optional.none()) == optional_type").unwrap(),
+            CelValue::Bool(true)
+        );
     }
 }

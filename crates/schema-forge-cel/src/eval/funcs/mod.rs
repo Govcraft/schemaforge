@@ -28,6 +28,7 @@
 //! - encoders_ext: `base64.encode`, `base64.decode` (`.encode()`/`.decode()`).
 
 pub mod convert;
+pub mod optional;
 pub mod strings;
 pub mod time;
 
@@ -58,6 +59,17 @@ pub fn dispatch(
         (None, "@mapInsert", [map, key, value]) => map_insert(map, key, value),
         // type(x): the runtime type as a `type` value.
         (None, "type", [x]) => Ok(CelValue::Type(type_name(x.cel_type()).to_string())),
+
+        // Optional constructors (namespaced global calls; the parser lowers
+        // `optional.of(x)` etc. to these function names).
+        (None, "optional.of", [x]) => Ok(CelValue::optional_of(x.clone())),
+        (None, "optional.none", []) => Ok(CelValue::optional_none()),
+        (None, "optional.ofNonZeroValue", [x]) => Ok(optional::of_non_zero_value(x)),
+        // Optional methods.
+        (Some(CelValue::Optional(o)), "hasValue", []) => Ok(CelValue::Bool(o.is_some())),
+        (Some(CelValue::Optional(o)), "value", []) => optional::value(o),
+        (Some(CelValue::Optional(o)), "orValue", [d]) => Ok(optional::or_value(o, d)),
+        (Some(CelValue::Optional(o)), "or", [other]) => optional::or(o, other),
 
         // Type conversions (global one-argument functions).
         (None, "int", [x]) => convert::to_int(x),
@@ -151,6 +163,7 @@ fn type_name(t: CelType) -> &'static str {
         CelType::List => "list",
         CelType::Map => "map",
         CelType::Type => "type",
+        CelType::Optional => "optional_type",
     }
 }
 

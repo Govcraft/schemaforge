@@ -90,6 +90,7 @@ fn cel_type_label(t: CelType) -> &'static str {
         CelType::List => "list",
         CelType::Map => "map",
         CelType::Type => "type",
+        CelType::Optional => "optional",
     }
 }
 
@@ -228,7 +229,7 @@ fn infer_call(function: &str) -> InferredType {
         "timestamp" => CelType::Timestamp,
         "duration" => CelType::Duration,
         "type" => CelType::Type,
-        "matches" | "contains" | "startsWith" | "endsWith" => CelType::Bool,
+        "matches" | "contains" | "startsWith" | "endsWith" | "hasValue" => CelType::Bool,
         "getFullYear" | "getMonth" | "getDayOfMonth" | "getDate" | "getDayOfWeek"
         | "getDayOfYear" | "getHours" | "getMinutes" | "getSeconds" | "getMilliseconds" => {
             CelType::Int

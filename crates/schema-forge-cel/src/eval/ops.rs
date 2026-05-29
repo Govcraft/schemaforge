@@ -137,6 +137,13 @@ pub fn cel_equals(a: &CelValue, b: &CelValue) -> Result<bool, EvalError> {
         (CelValue::Duration(x), CelValue::Duration(y)) => Ok(x == y),
         (CelValue::List(x), CelValue::List(y)) => list_equals(x, y),
         (CelValue::Map(x), CelValue::Map(y)) => map_equals(x, y),
+        // Two optionals are equal when both absent, or both present with equal
+        // inner values (recursively, using the CEL `==` operator).
+        (CelValue::Optional(x), CelValue::Optional(y)) => match (x, y) {
+            (None, None) => Ok(true),
+            (Some(a), Some(b)) => cel_equals(a, b),
+            _ => Ok(false),
+        },
         // Different, non-numeric, non-matching types: unequal, never an error.
         _ => Ok(false),
     }
@@ -417,14 +424,43 @@ fn map_get<'m>(m: &'m BTreeMap<CelKey, CelValue>, key: &CelKey) -> Option<&'m Ce
 pub fn index_value(coll: &CelValue, idx: &CelValue) -> Result<CelValue, EvalError> {
     match coll {
         CelValue::List(items) => index_list(items, idx),
-        CelValue::Map(m) => {
-            let key = to_key(idx).ok_or_else(no_such_overload)?;
-            map_get(m, &key)
-                .cloned()
-                .ok_or_else(|| EvalError::new(format!("no such key: {}", key_display(&key))))
-        }
+        CelValue::Map(m) => index_map(m, idx),
         _ => Err(no_such_overload()),
     }
+}
+
+/// Index a map by a value key, honoring CEL's cross-type numeric key equality.
+///
+/// A whole-number `double` index (`m[3.0]`) matches an `int`/`uint` key of the
+/// same magnitude; a fractional double has no key overload.
+fn index_map(m: &BTreeMap<CelKey, CelValue>, idx: &CelValue) -> Result<CelValue, EvalError> {
+    if let CelValue::Double(d) = idx {
+        return double_map_get(m, *d)
+            .cloned()
+            .ok_or_else(|| EvalError::new(format!("no such key: {d}")));
+    }
+    let key = to_key(idx).ok_or_else(no_such_overload)?;
+    map_get(m, &key)
+        .cloned()
+        .ok_or_else(|| EvalError::new(format!("no such key: {}", key_display(&key))))
+}
+
+/// Look up a whole-number `double` key against int/uint map keys of equal value.
+fn double_map_get(m: &BTreeMap<CelKey, CelValue>, d: f64) -> Option<&CelValue> {
+    if !d.is_finite() || d.fract() != 0.0 {
+        return None;
+    }
+    if (0.0..18_446_744_073_709_551_616.0).contains(&d) {
+        if let Some(v) = m.get(&CelKey::Uint(d as u64)) {
+            return Some(v);
+        }
+    }
+    if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&d) {
+        if let Some(v) = m.get(&CelKey::Int(d as i64)) {
+            return Some(v);
+        }
+    }
+    None
 }
 
 fn index_list(items: &[CelValue], idx: &CelValue) -> Result<CelValue, EvalError> {

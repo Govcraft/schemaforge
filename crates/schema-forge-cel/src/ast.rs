@@ -106,8 +106,9 @@ pub enum Expr {
     Literal(Literal),
     /// An identifier reference.
     Ident(String),
-    /// Field selection (`operand.field`) or a presence test (`has(operand.field)`,
-    /// with `test_only == true`).
+    /// Field selection (`operand.field`), an optional select (`operand.?field`,
+    /// with `optional == true`), or a presence test (`has(operand.field)`, with
+    /// `test_only == true`).
     Select {
         /// The value selected from.
         operand: Box<Expr>,
@@ -115,13 +116,21 @@ pub enum Expr {
         field: String,
         /// Whether this is a `has()` presence test rather than a value select.
         test_only: bool,
+        /// Whether this is an optional select (`a.?b`): yields `optional.of(v)`
+        /// when the field is present and `optional.none()` when absent, rather
+        /// than erroring.
+        optional: bool,
     },
-    /// Index access, `operand[index]`.
+    /// Index access, `operand[index]`, or optional index `operand[?index]` (with
+    /// `optional == true`).
     Index {
         /// The collection being indexed.
         operand: Box<Expr>,
         /// The index expression.
         index: Box<Expr>,
+        /// Whether this is an optional index (`m[?k]`): yields `optional.none()`
+        /// when the key/index is absent rather than erroring.
+        optional: bool,
     },
     /// A function call (`function(args)`) or method call (`target.function(args)`).
     Call {
@@ -132,10 +141,12 @@ pub enum Expr {
         /// The argument expressions.
         args: Vec<Expr>,
     },
-    /// A list construction, `[a, b, ...]`.
-    List(Vec<Expr>),
-    /// A map construction, `{k: v, ...}`.
-    Map(Vec<(Expr, Expr)>),
+    /// A list construction, `[a, b, ...]`, whose entries may be optional
+    /// (`[?optExpr]`): an optional entry is spliced in only when it has a value.
+    List(Vec<ListEntry>),
+    /// A map construction, `{k: v, ...}`, whose entries may be optional
+    /// (`{?k: optExpr}`): an optional entry is included only when it has a value.
+    Map(Vec<MapEntry>),
     /// A message/struct construction, `Type{field: v, ...}` (parsed
     /// syntactically; the evaluator does not build proto messages).
     Struct {
@@ -172,6 +183,55 @@ pub enum Expr {
     /// A comprehension, the lowered form of the iteration macros (`all`, `exists`,
     /// `exists_one`, `map`, `filter`).
     Comprehension(Box<Comprehension>),
+}
+
+/// One entry of a list literal.
+///
+/// A plain entry (`optional == false`) contributes its value unconditionally; an
+/// optional entry (`?expr`, `optional == true`) contributes its inner value only
+/// when the optional has one and is omitted otherwise.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListEntry {
+    /// The element expression.
+    pub value: Expr,
+    /// Whether this is an optional (`?`) entry.
+    pub optional: bool,
+}
+
+impl ListEntry {
+    /// A plain (non-optional) list entry.
+    pub fn plain(value: Expr) -> Self {
+        Self {
+            value,
+            optional: false,
+        }
+    }
+}
+
+/// One entry of a map literal.
+///
+/// A plain entry (`optional == false`) is always inserted; an optional entry
+/// (`?k: expr`, `optional == true`) is inserted only when the value optional has
+/// a value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapEntry {
+    /// The key expression.
+    pub key: Expr,
+    /// The value expression.
+    pub value: Expr,
+    /// Whether this is an optional (`?`) entry.
+    pub optional: bool,
+}
+
+impl MapEntry {
+    /// A plain (non-optional) map entry.
+    pub fn plain(key: Expr, value: Expr) -> Self {
+        Self {
+            key,
+            value,
+            optional: false,
+        }
+    }
 }
 
 /// The lowered form of an iteration macro (cel-spec's comprehension model).
@@ -222,10 +282,18 @@ fn write_expr(out: &mut String, expr: &Expr) {
             operand,
             field,
             test_only,
-        } => write_select(out, operand, field, *test_only),
-        Expr::Index { operand, index } => {
+            optional,
+        } => write_select(out, operand, field, *test_only, *optional),
+        Expr::Index {
+            operand,
+            index,
+            optional,
+        } => {
             write_parens(out, operand);
             out.push('[');
+            if *optional {
+                out.push('?');
+            }
             write_expr(out, index);
             out.push(']');
         }
@@ -234,7 +302,7 @@ fn write_expr(out: &mut String, expr: &Expr) {
             function,
             args,
         } => write_call(out, target.as_deref(), function, args),
-        Expr::List(items) => write_seq(out, '[', ']', items),
+        Expr::List(items) => write_list(out, items),
         Expr::Map(entries) => write_map(out, entries),
         Expr::Struct { type_name, fields } => write_struct(out, type_name, fields),
         Expr::Unary { op, operand } => {
@@ -288,16 +356,22 @@ fn is_atomic(expr: &Expr) -> bool {
     )
 }
 
-fn write_select(out: &mut String, operand: &Expr, field: &str, test_only: bool) {
+fn write_select(out: &mut String, operand: &Expr, field: &str, test_only: bool, optional: bool) {
     if test_only {
         out.push_str("has(");
         write_parens(out, operand);
         out.push('.');
+        if optional {
+            out.push('?');
+        }
         out.push_str(field);
         out.push(')');
     } else {
         write_parens(out, operand);
         out.push('.');
+        if optional {
+            out.push('?');
+        }
         out.push_str(field);
     }
 }
@@ -318,26 +392,32 @@ fn write_call(out: &mut String, target: Option<&Expr>, function: &str, args: &[E
     out.push(')');
 }
 
-fn write_seq(out: &mut String, open: char, close: char, items: &[Expr]) {
-    out.push(open);
+fn write_list(out: &mut String, items: &[ListEntry]) {
+    out.push('[');
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
             out.push_str(", ");
         }
-        write_expr(out, item);
+        if item.optional {
+            out.push('?');
+        }
+        write_expr(out, &item.value);
     }
-    out.push(close);
+    out.push(']');
 }
 
-fn write_map(out: &mut String, entries: &[(Expr, Expr)]) {
+fn write_map(out: &mut String, entries: &[MapEntry]) {
     out.push('{');
-    for (i, (k, v)) in entries.iter().enumerate() {
+    for (i, entry) in entries.iter().enumerate() {
         if i > 0 {
             out.push_str(", ");
         }
-        write_expr(out, k);
+        if entry.optional {
+            out.push('?');
+        }
+        write_expr(out, &entry.key);
         out.push_str(": ");
-        write_expr(out, v);
+        write_expr(out, &entry.value);
     }
     out.push('}');
 }
@@ -469,6 +549,8 @@ fn recover_macro_v2(c: &Comprehension) -> Option<(&'static str, Vec<Expr>)> {
         Expr::List(items) if items.is_empty() => recover_transform_list(c, accu),
         // transformMap: init {}.
         Expr::Map(entries) if entries.is_empty() => recover_transform_map(c, accu),
+        // (Optional list/map literals are never produced as comprehension
+        // accumulator inits, so they do not appear here.)
         _ => None,
     }
 }
@@ -564,11 +646,13 @@ fn map_insert_transform(step: &Expr, accu: &str) -> Option<Expr> {
     None
 }
 
-/// The single element of a one-element list literal, if `expr` is `[t]`.
+/// The single element of a one-element plain list literal, if `expr` is `[t]`.
 fn single_list_item(expr: &Expr) -> Option<Expr> {
     if let Expr::List(items) = expr {
-        if items.len() == 1 {
-            return Some(items[0].clone());
+        if let [entry] = items.as_slice() {
+            if !entry.optional {
+                return Some(entry.value.clone());
+            }
         }
     }
     None
@@ -629,14 +713,7 @@ fn recover_list_macro(c: &Comprehension, accu: &str) -> Option<(&'static str, Ve
             op: BinaryOp::Add,
             lhs,
             rhs,
-        } if is_accu(lhs, accu) => {
-            if let Expr::List(items) = rhs.as_ref() {
-                if items.len() == 1 {
-                    return Some(("map", vec![items[0].clone()]));
-                }
-            }
-            None
-        }
+        } if is_accu(lhs, accu) => single_list_item(rhs).map(|t| ("map", vec![t])),
         // filter(x, p) or map(x, p, t): step is a ternary.
         Expr::Ternary { cond, then, .. } => recover_ternary_list_macro(c, accu, cond, then),
         _ => None,
@@ -656,14 +733,12 @@ fn recover_ternary_list_macro(
     } = then
     {
         if is_accu(lhs, accu) {
-            if let Expr::List(items) = rhs.as_ref() {
-                if items.len() == 1 {
-                    // filter appends the iter var itself; map(3-arg) appends a transform.
-                    if items[0] == Expr::Ident(c.iter_var.clone()) {
-                        return Some(("filter", vec![cond.clone()]));
-                    }
-                    return Some(("map", vec![cond.clone(), items[0].clone()]));
+            if let Some(item) = single_list_item(rhs) {
+                // filter appends the iter var itself; map(3-arg) appends a transform.
+                if item == Expr::Ident(c.iter_var.clone()) {
+                    return Some(("filter", vec![cond.clone()]));
                 }
+                return Some(("map", vec![cond.clone(), item]));
             }
         }
     }

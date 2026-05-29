@@ -27,7 +27,7 @@ pub mod lexer;
 pub mod parser;
 pub mod value;
 
-pub use ast::{unparse, BinaryOp, Comprehension, Expr, Literal, UnaryOp};
+pub use ast::{unparse, BinaryOp, Comprehension, Expr, ListEntry, Literal, MapEntry, UnaryOp};
 pub use check::{
     check_rule, field_accepts, field_type_to_inferred, infer, rule_type_env, InferredType,
     RuleRole, TypeEnv, TypeError,

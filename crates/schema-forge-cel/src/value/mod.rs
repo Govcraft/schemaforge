@@ -46,6 +46,15 @@ pub enum CelValue {
     Map(BTreeMap<CelKey, CelValue>),
     /// A type value (the result of `type(x)` and of type identifiers).
     Type(String),
+    /// A CEL optional: either present (`optional.of(v)`) or absent
+    /// (`optional.none()`).
+    ///
+    /// This is an evaluation-time type produced by the `optional.*` stdlib and the
+    /// optional navigation operators (`a.?b`, `m[?k]`); it has no `DynamicValue`
+    /// storage representation. The boxed `Some`/`None` keeps the derived,
+    /// TYPE-EXACT `PartialEq` correct: `Optional(Some(Int(1)))` is unequal to
+    /// `Int(1)`, and `optional.none()` is equal only to another `optional.none()`.
+    Optional(Option<Box<CelValue>>),
 }
 
 impl CelValue {
@@ -64,7 +73,18 @@ impl CelValue {
             Self::List(_) => CelType::List,
             Self::Map(_) => CelType::Map,
             Self::Type(_) => CelType::Type,
+            Self::Optional(_) => CelType::Optional,
         }
+    }
+
+    /// Construct a present optional wrapping `v`.
+    pub fn optional_of(v: Self) -> Self {
+        Self::Optional(Some(Box::new(v)))
+    }
+
+    /// The absent optional (`optional.none()`).
+    pub fn optional_none() -> Self {
+        Self::Optional(None)
     }
 }
 
@@ -109,4 +129,6 @@ pub enum CelType {
     Map,
     /// `type`
     Type,
+    /// `optional_type`
+    Optional,
 }

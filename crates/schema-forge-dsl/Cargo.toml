@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 schema-forge-core = { path = "../schema-forge-core" }
-schema-forge-cel = { version = "0.7.0", path = "../schema-forge-cel" }
+schema-forge-cel = { version = "0.8.0", path = "../schema-forge-cel" }
 logos = "0.15"
 tracing = "0.1"
 

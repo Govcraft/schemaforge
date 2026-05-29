@@ -6,7 +6,7 @@
 //! `filter`) and `has()` are lowered to comprehension / presence-test nodes at
 //! parse time by the pure functions in the private [`macros`] submodule.
 
-use crate::ast::{BinaryOp, Comprehension, Expr, Literal, UnaryOp};
+use crate::ast::{BinaryOp, Comprehension, Expr, ListEntry, Literal, MapEntry, UnaryOp};
 use crate::error::{ParseError, Position};
 use crate::lexer::{lex, Tok, Token};
 
@@ -187,11 +187,14 @@ impl Parser {
                 }
                 Tok::LBrack => {
                     self.bump();
+                    // Optional index `m[?k]`: a `?` immediately after `[`.
+                    let optional = self.eat(&Tok::Question);
                     let index = self.parse_expr()?;
                     self.expect(&Tok::RBrack, "']' to close index")?;
                     expr = Expr::Index {
                         operand: Box::new(expr),
                         index: Box::new(index),
+                        optional,
                     };
                 }
                 Tok::LBrace => {
@@ -209,10 +212,17 @@ impl Parser {
         }
     }
 
-    /// Parse the suffix after a `.`: either a field selection or a method call.
+    /// Parse the suffix after a `.`: an optional select (`.?field`), a field
+    /// selection, or a method call.
     fn parse_dot_suffix(&mut self, operand: Expr) -> Result<Expr, ParseError> {
+        // Optional select `a.?b`: a `?` immediately after the `.`. There is no
+        // optional method call, so `.?name(...)` is rejected below.
+        let optional = self.eat(&Tok::Question);
         let field = self.expect_member_name("field or method name after '.'")?;
         if self.eat(&Tok::LParen) {
+            if optional {
+                return Err(self.error_here("optional select '.?' cannot be a method call"));
+            }
             let args = self.parse_arg_list()?;
             self.expect(&Tok::RParen, "')' to close call")?;
             return macros::lower_method(operand, field, args);
@@ -221,6 +231,7 @@ impl Parser {
             operand: Box::new(operand),
             field,
             test_only: false,
+            optional,
         })
     }
 
@@ -357,7 +368,10 @@ impl Parser {
         self.bump(); // [
         let mut items = Vec::new();
         while self.peek() != &Tok::RBrack {
-            items.push(self.parse_expr()?);
+            // An optional list entry `[?expr]`: a leading `?`.
+            let optional = self.eat(&Tok::Question);
+            let value = self.parse_expr()?;
+            items.push(ListEntry { value, optional });
             if !self.eat(&Tok::Comma) {
                 break;
             }
@@ -370,10 +384,16 @@ impl Parser {
         self.bump(); // {
         let mut entries = Vec::new();
         while self.peek() != &Tok::RBrace {
+            // An optional map entry `{?k: expr}`: a leading `?` before the key.
+            let optional = self.eat(&Tok::Question);
             let key = self.parse_expr()?;
             self.expect(&Tok::Colon, "':' in map entry")?;
             let value = self.parse_expr()?;
-            entries.push((key, value));
+            entries.push(MapEntry {
+                key,
+                value,
+                optional,
+            });
             if !self.eat(&Tok::Comma) {
                 break;
             }
@@ -382,10 +402,15 @@ impl Parser {
         Ok(Expr::Map(entries))
     }
 
-    // FieldInits = IDENT ":" Expr {"," IDENT ":" Expr}
+    // FieldInits = ["?"] IDENT ":" Expr {"," ["?"] IDENT ":" Expr}
+    //
+    // Optional struct fields (`Type{?field: optExpr}`) are parsed for syntactic
+    // completeness; the evaluator does not build proto messages, so the flag is
+    // recorded but a struct evaluation is a "no such overload" regardless.
     fn parse_field_inits(&mut self) -> Result<Vec<(String, Expr)>, ParseError> {
         let mut fields = Vec::new();
         while self.peek() != &Tok::RBrace {
+            self.eat(&Tok::Question);
             let name = self.expect_member_name("struct field name")?;
             self.expect(&Tok::Colon, "':' in struct field")?;
             let value = self.parse_expr()?;
@@ -465,6 +490,7 @@ fn type_name_of(expr: &Expr) -> Option<String> {
             operand,
             field,
             test_only: false,
+            optional: false,
         } => {
             let base = type_name_of(operand)?;
             Some(format!("{base}.{field}"))
@@ -477,7 +503,7 @@ fn type_name_of(expr: &Expr) -> Option<String> {
 /// presence-test AST. Each only lowers when the name and argument shape match;
 /// otherwise the call is left as an ordinary [`Expr::Call`].
 mod macros {
-    use super::{BinaryOp, Comprehension, Expr, Literal, ParseError, UnaryOp};
+    use super::{BinaryOp, Comprehension, Expr, ListEntry, Literal, ParseError, UnaryOp};
 
     /// The canonical cel-spec accumulator variable name.
     const ACCU: &str = "@result";
@@ -501,6 +527,20 @@ mod macros {
         name: String,
         args: Vec<Expr>,
     ) -> Result<Expr, ParseError> {
+        // The `optional` namespace functions (`optional.of`, `optional.none`,
+        // `optional.ofNonZeroValue`) parse as method calls on a bare `optional`
+        // identifier; lower them to namespaced global calls so the evaluator
+        // dispatches them as functions rather than resolving `optional` as a
+        // variable. `optional` is a reserved namespace, so this is unambiguous.
+        if let Expr::Ident(ns) = &target {
+            if ns == "optional" && matches!(name.as_str(), "of" | "none" | "ofNonZeroValue") {
+                return Ok(Expr::Call {
+                    target: None,
+                    function: format!("optional.{name}"),
+                    args,
+                });
+            }
+        }
         let lowered = match (name.as_str(), args.len()) {
             ("all", 2) => Some(lower_all(target.clone(), &args)),
             ("exists", 2) => Some(lower_exists(target.clone(), &args)),
@@ -538,10 +578,12 @@ mod macros {
                 operand,
                 field,
                 test_only: false,
+                optional,
             } => Ok(Expr::Select {
                 operand,
                 field,
                 test_only: true,
+                optional,
             }),
             _ => Err(ParseError::new("has() requires a field selection argument")),
         }
@@ -783,7 +825,11 @@ mod macros {
         Loop {
             init: Expr::List(Vec::new()),
             cond: Expr::Literal(Literal::Bool(true)),
-            step: super::binary(BinaryOp::Add, accu(), Expr::List(vec![transform])),
+            step: super::binary(
+                BinaryOp::Add,
+                accu(),
+                Expr::List(vec![ListEntry::plain(transform)]),
+            ),
             result: accu(),
         }
     }
@@ -797,7 +843,7 @@ mod macros {
                 then: Box::new(super::binary(
                     BinaryOp::Add,
                     accu(),
-                    Expr::List(vec![transform]),
+                    Expr::List(vec![ListEntry::plain(transform)]),
                 )),
                 els: Box::new(accu()),
             },
@@ -913,9 +959,9 @@ mod tests {
         assert_eq!(
             p("[1, 2, 3]"),
             Expr::List(vec![
-                Expr::Literal(Literal::Int(1)),
-                Expr::Literal(Literal::Int(2)),
-                Expr::Literal(Literal::Int(3)),
+                ListEntry::plain(Expr::Literal(Literal::Int(1))),
+                ListEntry::plain(Expr::Literal(Literal::Int(2))),
+                ListEntry::plain(Expr::Literal(Literal::Int(3))),
             ])
         );
         assert!(matches!(p("{'a': 1}"), Expr::Map(_)));
@@ -941,8 +987,8 @@ mod tests {
         assert_eq!(
             p("[1, 2,]"),
             Expr::List(vec![
-                Expr::Literal(Literal::Int(1)),
-                Expr::Literal(Literal::Int(2)),
+                ListEntry::plain(Expr::Literal(Literal::Int(1))),
+                ListEntry::plain(Expr::Literal(Literal::Int(2))),
             ])
         );
     }
@@ -1016,6 +1062,7 @@ mod tests {
                 operand: Box::new(Expr::Ident("a".into())),
                 field: "b".into(),
                 test_only: true,
+                optional: false,
             }
         );
     }
@@ -1224,6 +1271,78 @@ mod tests {
     }
 
     #[test]
+    fn optional_navigation_parses() {
+        // Optional select sets the flag.
+        assert!(matches!(
+            p("a.?b"),
+            Expr::Select {
+                optional: true,
+                test_only: false,
+                ..
+            }
+        ));
+        // Optional index sets the flag.
+        assert!(matches!(p("m[?k]"), Expr::Index { optional: true, .. }));
+        // Plain select/index keep optional == false.
+        assert!(matches!(
+            p("a.b"),
+            Expr::Select {
+                optional: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            p("m[k]"),
+            Expr::Index {
+                optional: false,
+                ..
+            }
+        ));
+        // optional.* lowers to a namespaced global call (not a method on `optional`).
+        assert!(matches!(
+            p("optional.of(1)"),
+            Expr::Call {
+                target: None,
+                ref function,
+                ..
+            } if function == "optional.of"
+        ));
+        assert!(matches!(
+            p("optional.none()"),
+            Expr::Call { target: None, ref function, .. } if function == "optional.none"
+        ));
+        // optMap / optFlatMap stay as method calls (handled lazily by the evaluator).
+        assert!(matches!(
+            p("x.optMap(v, v + 1)"),
+            Expr::Call { target: Some(_), ref function, .. } if function == "optMap"
+        ));
+    }
+
+    #[test]
+    fn optional_list_and_map_entries_parse() {
+        match p("[?x, y]") {
+            Expr::List(items) => {
+                assert!(items[0].optional);
+                assert!(!items[1].optional);
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+        match p("{?'k': v, 'j': w}") {
+            Expr::Map(entries) => {
+                assert!(entries[0].optional);
+                assert!(!entries[1].optional);
+            }
+            other => panic!("expected map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn optional_method_call_select_is_rejected() {
+        // `.?name(...)` is not a valid optional method call.
+        assert!(parse("a.?b(1)").is_err());
+    }
+
+    #[test]
     fn parse_errors_carry_position() {
         for bad in ["1 +", "(1", "[1, 2", "{1:", "a.", "f(1,"] {
             let err = parse(bad).unwrap_err();
@@ -1264,6 +1383,23 @@ mod tests {
             "7u",
             "'hi'",
             "b'\\x00'",
+            // Optional navigation syntax (#100).
+            "a.?b",
+            "a.?b.c",
+            "m[?k]",
+            "l[?0]",
+            "has(a.?b)",
+            "[?x, y]",
+            "{?'k': v, 'j': w}",
+            "optional.of(1)",
+            "optional.none()",
+            "optional.ofNonZeroValue(x)",
+            "x.hasValue()",
+            "x.value()",
+            "x.orValue(0)",
+            "x.or(y)",
+            "x.optMap(v, v + 1)",
+            "x.optFlatMap(v, v.?k)",
         ];
         for src in cases {
             let first = parse(src).unwrap();

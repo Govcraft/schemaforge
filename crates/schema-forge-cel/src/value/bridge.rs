@@ -153,6 +153,13 @@ pub fn cel_to_dynamic(v: &CelValue) -> Result<DynamicValue, ConversionError> {
         CelValue::Bytes(_) => Err(ConversionError::Unsupported("bytes".to_string())),
         CelValue::Duration(_) => Err(ConversionError::Unsupported("duration".to_string())),
         CelValue::Type(_) => Err(ConversionError::Unsupported("type".to_string())),
+        // A present optional unwraps to its inner value (recursively); an absent
+        // optional has no storage representation and fails closed — we never
+        // fabricate a value for `optional.none()`.
+        CelValue::Optional(Some(inner)) => cel_to_dynamic(inner),
+        CelValue::Optional(None) => Err(ConversionError::Unsupported(
+            "optional.none() has no DynamicValue representation".to_string(),
+        )),
     }
 }
 
