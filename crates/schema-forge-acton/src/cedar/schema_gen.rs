@@ -180,7 +180,7 @@ fn write_schema_actions(out: &mut String, schema: &SchemaDefinition) -> Result<(
     let name = schema.name.as_str();
     writeln!(
         out,
-        "action Read{name}, List{name}, Create{name}, Update{name}, Delete{name} appliesTo {{
+        "action Read{name}, List{name}, Create{name}, Update{name}, Delete{name}, Export{name} appliesTo {{
     principal: [Forge::Principal],
     resource: [{name}],
 }};\n"
@@ -322,7 +322,50 @@ mod tests {
     #[test]
     fn generates_crud_actions_per_schema() {
         let src = generate_cedar_schema(&[contact_schema()]).unwrap();
-        assert!(src.contains("action ReadContact, ListContact, CreateContact, UpdateContact, DeleteContact"));
+        assert!(src.contains("action ReadContact, ListContact, CreateContact, UpdateContact, DeleteContact, ExportContact"));
+    }
+
+    #[test]
+    fn export_action_is_declared_per_schema() {
+        // The Export action must be declared in the Cedar schema (ADR-0003)
+        // so a strict-mode policy referencing `Action::"ExportContact"`
+        // validates rather than being rejected as an unknown action.
+        let src = generate_cedar_schema(&[contact_schema()]).unwrap();
+        assert!(
+            src.contains("ExportContact"),
+            "expected ExportContact action declaration, got:\n{src}"
+        );
+    }
+
+    #[test]
+    fn export_action_strict_validates_in_a_policy() {
+        use cedar_policy::{ValidationMode, Validator};
+
+        let schema_src = generate_cedar_schema(&[contact_schema()]).unwrap();
+        let (schema, _warnings) =
+            cedar_policy::Schema::from_cedarschema_str(&schema_src).expect("schema must parse");
+
+        // A policy that forbids export while saying nothing about read — the
+        // read-vs-export split must be expressible and strict-valid.
+        let policy_src = r#"
+forbid (
+    principal,
+    action == Action::"ExportContact",
+    resource is Contact
+);
+"#;
+        let policy_set: cedar_policy::PolicySet = policy_src.parse().expect("policy must parse");
+        let validator = Validator::new(schema);
+        let result = validator.validate(&policy_set, ValidationMode::Strict);
+        assert!(
+            result.validation_passed(),
+            "strict-mode validation must accept a policy referencing the Export action.\nErrors:\n{}",
+            result
+                .validation_errors()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 
     #[test]

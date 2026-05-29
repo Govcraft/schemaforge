@@ -49,6 +49,12 @@ pub enum ActionVerb {
     Update,
     /// Delete an existing entity.
     Delete,
+    /// Bulk-export many entities of a schema to a file.
+    ///
+    /// Deliberately distinct from [`ActionVerb::Read`]: a policy can grant
+    /// reading one record at a time while forbidding draining the whole
+    /// table to a downloadable file. See ADR-0003.
+    Export,
 }
 
 impl ActionVerb {
@@ -60,6 +66,7 @@ impl ActionVerb {
             Self::Create => "Create",
             Self::Update => "Update",
             Self::Delete => "Delete",
+            Self::Export => "Export",
         }
     }
 }
@@ -101,6 +108,17 @@ mod tests {
             action_uid(ActionVerb::Create, "Order"),
             "Action::\"CreateOrder\""
         );
+    }
+
+    #[test]
+    fn export_action_uid_is_distinct_from_read() {
+        // The read-vs-export split (ADR-0003) hinges on these rendering to
+        // different Cedar action UIDs so a policy can permit one and forbid
+        // the other on the same schema.
+        let read = action_uid(ActionVerb::Read, "Subject");
+        let export = action_uid(ActionVerb::Export, "Subject");
+        assert_eq!(export, "Action::\"ExportSubject\"");
+        assert_ne!(read, export);
     }
 
     #[test]

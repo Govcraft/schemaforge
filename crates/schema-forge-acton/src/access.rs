@@ -39,6 +39,13 @@ pub enum AccessAction {
     Write,
     /// Deleting entities (DELETE).
     Delete,
+    /// Bulk-exporting entities to a file (POST .../entities/export).
+    ///
+    /// Maps to its own Cedar action UID (`Export{X}`) and is deliberately
+    /// **not** an alias for [`AccessAction::Read`]: a policy can permit
+    /// reading one record at a time while denying a bulk export that drains
+    /// the whole table to a downloadable file. See ADR-0003.
+    Export,
 }
 
 impl AccessAction {
@@ -49,6 +56,7 @@ impl AccessAction {
             Self::Create | Self::Write => ActionVerb::Create,
             Self::Update => ActionVerb::Update,
             Self::Delete => ActionVerb::Delete,
+            Self::Export => ActionVerb::Export,
         }
     }
 
@@ -160,6 +168,27 @@ pub fn check_schema_access(
             schema.name.as_str(),
         ),
     })
+}
+
+/// Check whether the authenticated user is permitted to bulk-export `schema`.
+///
+/// A thin wrapper over [`check_schema_access`] pinned to
+/// [`AccessAction::Export`], mirroring how the read path calls it with
+/// [`AccessAction::Read`]. Kept as a distinct entry point so the export
+/// route reads as `check_export_access(...)` and so the read-vs-export split
+/// (ADR-0003) is enforced at a named seam: this resolves to the `Export{X}`
+/// Cedar action, never `Read{X}`, so a policy that permits read-one and
+/// forbids export-many denies here while [`check_schema_access`] with
+/// [`AccessAction::Read`] allows.
+///
+/// Returns `Ok(())` on Allow, `Err(ForgeError::Unauthorized)` when no claims
+/// are present, and `Err(ForgeError::Forbidden)` on Deny.
+pub fn check_export_access(
+    store: &Arc<PolicyStore>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+) -> Result<(), ForgeError> {
+    check_schema_access(store, schema, claims, AccessAction::Export)
 }
 
 /// Summary of schema-level operations the caller may perform.
@@ -489,6 +518,7 @@ fn inject_audit_timestamp_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authz::{PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks};
     use schema_forge_core::types::{
         Annotation, EntityId, FieldDefinition, FieldName, FieldType, SchemaId, SchemaName,
         TenantKind, TextConstraints,
@@ -1010,5 +1040,139 @@ mod tests {
             DynamicValue::Text("user:original".to_string())
         );
         assert_eq!(fields["created_at"], DynamicValue::DateTime(earlier));
+    }
+
+    // -----------------------------------------------------------------------
+    // check_export_access tests (read-vs-export split, ADR-0003)
+    // -----------------------------------------------------------------------
+
+    /// A schema that grants `read`/`delete` to the `analyst` role via
+    /// `@access`. No export role lists exist (and no export policy is
+    /// generated yet), so export is default-denied by Cedar unless a custom
+    /// policy permits it.
+    fn schema_read_for_analyst() -> SchemaDefinition {
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Subject").unwrap(),
+            vec![make_field("name")],
+            vec![Annotation::Access {
+                read: vec!["analyst".to_string()],
+                write: vec![],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            }],
+        )
+        .unwrap()
+    }
+
+    /// Compiles a `PolicyStore` from `schema` plus the optional custom Cedar
+    /// `policy`, mirroring the production `from_schemas` pipeline (generated
+    /// schema + generated policies + custom policies, strict-validated).
+    fn store_for(schema: &SchemaDefinition, custom_policy: Option<&str>) -> Arc<PolicyStore> {
+        let dir = tempfile::tempdir().unwrap();
+        let custom_dir = if let Some(policy) = custom_policy {
+            std::fs::write(dir.path().join("custom.cedar"), policy).unwrap();
+            Some(dir.path())
+        } else {
+            None
+        };
+        let snapshot = PolicyStoreSnapshot::from_schemas(
+            std::slice::from_ref(schema),
+            custom_dir,
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .expect("policy bundle must compile and strict-validate");
+        Arc::new(PolicyStore::new(snapshot))
+    }
+
+    #[test]
+    fn export_unauthenticated_is_rejected() {
+        let schema = schema_read_for_analyst();
+        let store = store_for(&schema, None);
+
+        let err = check_export_access(&store, &schema, None).unwrap_err();
+        assert!(
+            matches!(err, ForgeError::Unauthorized { .. }),
+            "no claims must be Unauthorized, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_grant_does_not_imply_export_grant() {
+        // The core ADR-0003 guarantee: an `analyst` who is granted read-one
+        // gets NO export-many for free. Export is its own Cedar action with
+        // no permit, so it default-denies even though read is allowed.
+        let schema = schema_read_for_analyst();
+        let store = store_for(&schema, None);
+        let claims = make_claims(&["analyst"]);
+
+        // Read is permitted by the generated @access policy...
+        check_schema_access(&store, &schema, Some(&claims), AccessAction::Read)
+            .expect("analyst must be allowed to read");
+
+        // ...but export is denied: no policy permits ExportSubject.
+        let err = check_export_access(&store, &schema, Some(&claims)).unwrap_err();
+        assert!(
+            matches!(err, ForgeError::Forbidden { .. }),
+            "read grant must not leak into export grant, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_permit_and_export_forbid_are_independently_expressible() {
+        // A policy author explicitly forbids export while the generated
+        // policy still permits read. Both decisions must hold simultaneously,
+        // proving the two actions are independently authorizable.
+        let schema = schema_read_for_analyst();
+        let forbid_export = r#"
+@id("test.subject.export_forbid")
+forbid (
+    principal in Forge::Group::"analyst",
+    action == Action::"ExportSubject",
+    resource is Subject
+);
+"#;
+        let store = store_for(&schema, Some(forbid_export));
+        let claims = make_claims(&["analyst"]);
+
+        check_schema_access(&store, &schema, Some(&claims), AccessAction::Read)
+            .expect("read must remain permitted alongside an export forbid");
+
+        let err = check_export_access(&store, &schema, Some(&claims)).unwrap_err();
+        assert!(
+            matches!(err, ForgeError::Forbidden { .. }),
+            "explicit export forbid must deny export, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn export_permit_grants_export_for_that_action_only() {
+        // A custom policy permits ExportSubject for analysts. Export now
+        // allows; the permit is scoped to the Export action and does not
+        // alter the read decision (which the generated @access policy already
+        // grants independently).
+        let schema = schema_read_for_analyst();
+        let permit_export = r#"
+@id("test.subject.export_permit")
+permit (
+    principal in Forge::Group::"analyst",
+    action == Action::"ExportSubject",
+    resource is Subject
+);
+"#;
+        let store = store_for(&schema, Some(permit_export));
+        let claims = make_claims(&["analyst"]);
+
+        check_export_access(&store, &schema, Some(&claims))
+            .expect("explicit export permit must allow export");
+
+        // A principal lacking the analyst role still cannot export.
+        let outsider = make_claims(&["guest"]);
+        let err = check_export_access(&store, &schema, Some(&outsider)).unwrap_err();
+        assert!(
+            matches!(err, ForgeError::Forbidden { .. }),
+            "export permit is role-scoped; outsider must be denied, got: {err:?}"
+        );
     }
 }
