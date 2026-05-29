@@ -308,6 +308,14 @@ pub async fn run(
         // possession of a valid, unconsumed invitation, not a bearer.
         pc.public_paths
             .push("/api/v1/forge/auth/invites/accept".to_string());
+        // The bundled ops console (when embedded) is a static SPA served under
+        // `/console`; its shell + assets + client-side routes must load before
+        // the user has a token (they sign in *through* it). The prefix is
+        // disjoint from `/api`, so the JSON API stays bearer-protected.
+        #[cfg(feature = "embedded-console")]
+        if !args.no_console {
+            pc.public_paths.push("/console".to_string());
+        }
     }
 
     // Opt-in permissive CORS for local development. Warns loudly in logs.
@@ -414,10 +422,23 @@ pub async fn run(
     // (e.g. `Config.service.version` or a `with_service_version` builder).
     let routes = wrap_health_with_schema_forge_version(routes);
 
+    // Mount the embedded ops console as the root fallback (served same-origin at
+    // `/`), unless this build omitted it or the operator passed --no-console.
+    #[cfg(feature = "embedded-console")]
+    let routes = if args.no_console {
+        routes
+    } else {
+        mount_console(routes)
+    };
+    let console_served = cfg!(feature = "embedded-console") && !args.no_console;
+
     let bind_addr = format!("{}:{}", args.host, args.port);
     output.success(&format!(
         "SchemaForge server listening on http://{bind_addr}"
     ));
+    if console_served {
+        output.status(&format!("  Console → http://{bind_addr}/console"));
+    }
     output.status("  Routes:");
     output.status("    GET  /health");
     output.status("    GET  /ready");
@@ -724,9 +745,11 @@ fn build_paseto_generator(
 
 /// Build versioned routes using acton-service's VersionedApiBuilder.
 ///
-/// Nests SchemaForge's JSON API routes under `/api/v1/forge/`. All UI
-/// surfaces are generated client-side by `schemaforge site generate`; this
-/// server only serves the JSON API plus the login endpoint.
+/// Nests SchemaForge's JSON API routes under `/api/v1/forge/`, plus the login
+/// endpoint. A build with the `embedded-console` feature additionally serves
+/// the bundled ops console same-origin at `/` (mounted as the router fallback
+/// by [`mount_console`]); `schemaforge site generate` remains available for a
+/// separately-hosted, per-entity React project.
 #[allow(clippy::too_many_arguments)]
 fn build_versioned_routes(
     auth_store: Arc<dyn schema_forge_acton::DynAuthStore>,
@@ -815,6 +838,44 @@ fn build_paseto_validator(
 /// `VersionedApiBuilder::build_routes()` is documented to always return
 /// `WithState`, but we keep the `WithoutState` branch as a defensive
 /// pass-through in case upstream changes the contract.
+/// Mount the embedded ops console under `/console`, served same-origin by
+/// [`crate::commands::serve_console`]. `/console` is registered as a public
+/// path (see `run`) so the static SPA loads before the user has a token; the
+/// prefix is disjoint from `/api`, which stays bearer-protected. Scoping the
+/// console to its own prefix (rather than the router fallback) is what lets a
+/// single public-path entry exempt the whole SPA without exposing the API.
+///
+/// Mirrors [`wrap_health_with_schema_forge_version`]'s `VersionedRoutes`
+/// destructure so it composes through the same `ServiceBuilder::with_routes`
+/// seam without needing acton-service's htmx-gated `with_frontend_routes`.
+#[cfg(feature = "embedded-console")]
+fn mount_console(
+    routes: acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig>,
+) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
+    use acton_service::service_builder::VersionedRoutes;
+    use axum::routing::get;
+    use crate::commands::serve_console::handler;
+
+    // Three routes cover the SPA: `/console` (no slash), `/console/` (root with
+    // slash), and `/console/{*rest}` (assets + client-side deep links). The
+    // handler strips the `/console` prefix and serves the embedded asset, or
+    // `index.html` for an unknown sub-path (SPA history fallback).
+    fn add<S>(router: axum::Router<S>) -> axum::Router<S>
+    where
+        S: Clone + Send + Sync + 'static,
+    {
+        router
+            .route("/console", get(handler))
+            .route("/console/", get(handler))
+            .route("/console/{*rest}", get(handler))
+    }
+
+    match routes {
+        VersionedRoutes::WithState(router) => VersionedRoutes::WithState(add(router)),
+        VersionedRoutes::WithoutState(router) => VersionedRoutes::WithoutState(add(router)),
+    }
+}
+
 fn wrap_health_with_schema_forge_version(
     routes: acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig>,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
