@@ -6,3 +6,4 @@ This directory holds SchemaForge's Architecture Decision Records (ADRs): short, 
 
 - [ADR-0001](0001-uint-type-vs-unsigned-constraint.md) — `uint`: distinct DSL type vs. unsigned constraint (issue #98)
 - [ADR-0002](0002-cel-expression-substrate.md) — CEL expression substrate: own evaluator over `DynamicValue` (issue #91)
+- [ADR-0003](0003-export-capability.md) — Export capability: bulk export as an authorized, fail-closed query (epic to be filed)
