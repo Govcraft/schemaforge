@@ -361,8 +361,12 @@ in the schema:
 | `Float`           | Parsed as 64-bit float                                 |
 | `Boolean`         | `"true"` / `"1"` → true, `"false"` / `"0"` → false   |
 | `DateTime`        | Parsed as ISO 8601 UTC (e.g. `2024-01-15T09:30:00Z`)  |
+| `Duration`        | Parsed as a Go-style duration string (e.g. `1h30m`, `250ms`) |
+| `Bytes`           | Decoded from standard base64                            |
 | `Enum`            | Accepted as string, validated against schema variants  |
 | `Text` / `RichText` | Kept as string                                      |
+
+`Map`, `Json`, `Composite`, relation, and `File` fields have no scalar filter coercion — a filter value on them is kept as a string and matched as-is.
 
 For GET requests, all values arrive as strings and are coerced using these
 rules. For POST requests, JSON native types (numbers, booleans) are used

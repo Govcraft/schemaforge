@@ -224,6 +224,57 @@ Generated React edit pages catch this via `ApiError.isUniqueViolation()` and cal
 
 For hand-rolled clients, branch on `error === "unique_violation"` and `field` to mark the right form input.
 
+## Write-Time Rules Pattern (`@require` / `@compute` / `@default`)
+
+Express validation, derived values, and computed defaults declaratively in the schema with CEL expressions — evaluated in-process by SchemaForge's own pure CEL engine, **fail-closed**, and *before* any hook. No gRPC service, no round-trip.
+
+### When to use a rule (vs. a hook)
+
+Use a rule when the logic depends only on **the record being written, `now`, the caller (`principal`), and — for `@require` — a single related row**. Reach for a `@hook` only when you need **external I/O** (call another service, enrich from a third party, scan an upload, publish an event). This is the "reduce reliance on gRPC hooks" split: rules cover the common in-process cases that used to force a hook.
+
+### The three annotations
+
+```
+schema Invoice {
+    issued_at:  datetime @default("now")                       // computed insert-time default
+    due_at:     datetime @require("due_at >= issued_at", "due date precedes issue date")
+    subtotal:   float(precision: 2) @require("subtotal >= 0.0", "subtotal cannot be negative")
+    tax:        float(precision: 2) @compute("subtotal * 0.08") // server-derived, stored
+    total:      float(precision: 2) @compute("subtotal + tax")  // chains off an earlier compute
+    status:     enum("draft", "issued") @default("'draft'")
+    owner_id:   text @require("has(principal.sub) && owner_id == principal.sub", "owner must be the caller")
+}
+```
+
+- `@require("expr", "msg")` — rejects the write (`422` with `msg`) unless the predicate is exactly `true`. Runs on create **and** update.
+- `@compute("expr")` — computes and **stores** the value, overwriting any client-supplied input; computes chain in field order.
+- `@default("expr")` — fills an absent/null field on **create only**, before `@compute`.
+
+### Bindings
+
+Every field by snake_case name, plus `now` (request-time `timestamp` — spelled as the variable `now`, **not** `now()`; the engine is pure) and `principal` (`.sub`, `.email`, `.username`, `.roles`, `.perms`).
+
+### Cross-entity reads (single hop, `@require` only)
+
+Assert over one related row without a hook by dereferencing a single-valued relation field:
+
+```
+schema Document {
+    approval:  -> Approval
+    status:    enum("open", "closed")
+               @require("status != 'closed' || related.approval.state == 'granted'", "closed docs need a granted approval")
+}
+```
+
+`related.<F>` loads F's committed, **tenant-scoped** row. Single hop only; if the FK is null, the row is missing, or tenant scope hides it, the predicate fails closed. Multi-hop (`related.F.G.x` crossing a second relation) and to-many relations are rejected with a clear error — route those to a hook.
+
+### Gotchas
+
+- **`@default("expr")` ≠ `default(value)`.** The annotation takes a CEL expression (`@default("now")`); the modifier takes a literal (`default(true)`). Use the modifier for constants, the annotation for computed seeds.
+- **No `now()`.** The clock is the variable `now`. Writing `now()` parses but fails at evaluation.
+- **Fail-closed.** A `@require` that errors or yields a non-boolean blocks the write (it never silently passes); an undeclared/absent reference is a rejection, not a skip.
+- **Type-checked at apply.** A definitely-incompatible expression (e.g. comparing an integer field to a string literal) is rejected at `schema-forge apply`, pointing at the offending `line:column`.
+
 ## Dashboard & Kanban Pattern
 
 Configure visual dashboards with aggregation widgets and kanban layouts.

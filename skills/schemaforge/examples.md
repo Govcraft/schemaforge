@@ -325,6 +325,37 @@ schema Task {
 - Multiple relation targets: `-> Project`, `-> Employee`, `-> Task[]`
 - Kanban dashboard grouped by status
 
+## Write-Time Rules, Duration / Bytes / Map Types
+
+Declarative validation, computed values, and computed defaults via CEL rule annotations — plus the `duration`, `bytes`, and `map<text, V>` field types. All evaluated in-process, fail-closed, before any hook:
+
+```
+@display("reference")
+schema Booking {
+    reference:    text required indexed
+    starts_at:    datetime @require("starts_at >= now", "start time cannot be in the past")
+    seats:        integer(min: 1) @require("seats >= 1 && seats <= 8", "1–8 seats per booking")
+    grace_period: duration                         // signed-nanosecond time span
+    api_signature: bytes(max: 256)                 // raw binary; base64 over the wire
+    attributes:   map<text, text>                  // open-keyed string→string metadata
+    confirmed:    boolean @default("false")
+                  @require("!confirmed || related.customer.status == 'active'", "cannot confirm for an inactive customer")
+    created_at:   datetime @default("now")
+    customer:     -> Customer
+}
+
+schema Customer {
+    name:   text required
+    status: enum("active", "suspended")
+}
+```
+
+**Notable features:**
+- `@require("...", "...")` — field-level and record-level validation; rejects with the message (`422`) unless the CEL predicate is `true`. `now` is a bound `timestamp` variable (not a function).
+- `@default("now")` / `@default("false")` — computed insert-time defaults (CEL expressions), distinct from the literal `default(value)` modifier used elsewhere (e.g. `default("backlog")`).
+- `grace_period: duration` — a time span stored as signed nanoseconds; `api_signature: bytes(max: 256)` — length-capped binary; `attributes: map<text, text>` — a typed open-keyed map.
+- The schema-level `@require(... related.customer.status ...)` performs a **single-hop, tenant-scoped cross-entity read**: it dereferences the `customer` relation to assert on the related row, without a hook. Fail-closed if the customer is missing or hidden.
+
 ## Example 5: Contract Lifecycle with File Attachments and Scanner Integration
 
 Government-facing contract workflow. Each `Contract` carries a single signed

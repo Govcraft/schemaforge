@@ -689,6 +689,26 @@ For every write the engine runs a fixed, deterministic sequence:
 
 Rules run **in-transaction, before persistence, and ahead of any hook** — they are pure and cheap, so a `@require` rejection short-circuits the whole write before any hook round-trip and before anything is stored. (`@default` is create-only; update/patch run only `@compute` then `@require`.)
 
+### Cross-entity reads — `related.<F>.<col>` (`@require` only)
+
+A `@require` predicate can assert over a **single related row** without a hook, via the reserved `related` namespace:
+
+```
+status: enum("open", "closed")
+        @require("status != 'closed' || related.approval.state == 'granted'", "closed records need a granted approval")
+approval: -> Approval
+```
+
+`related.<F>` dereferences a **single-valued** relation field `F` (a `-> Target`, i.e. `Relation{One}`) to its committed related row, bound as a CEL map; `related.F.<col>` reads a column on that row. The bare field `F` remains the opaque id string — `related.F` is the dereferenced entity.
+
+Semantics and limits:
+
+- **Single hop only.** `related.F.col` reads a column on F's target. A path that crosses a *second* relation (`related.F.G.x` where `G` is itself a relation on the target) is rejected with a clear error — use a `before_*` hook for multi-hop.
+- **Single-valued only.** `related.F` on a to-many relation (`-> Target[]`) is rejected; aggregate/collection assertions belong in a hook.
+- **`@require` only.** `related.*` in `@compute` or `@default` is a parse/apply-time error — a computed field must not depend on another row's mutable state.
+- **Tenant-scoped.** The related row is loaded with the caller's tenant scope applied, so a rule can never read across a tenant boundary the caller couldn't otherwise see.
+- **Fail-closed.** If the FK is null/absent, the related row does not exist, or tenant scope hides it, `related.F` is simply not bound — the predicate hits an absent reference and the write is **rejected**, never silently allowed.
+
 ## Validation Rules Summary
 
 | Rule | Parser Behavior |

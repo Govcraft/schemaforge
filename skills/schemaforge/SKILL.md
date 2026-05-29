@@ -1,6 +1,6 @@
 ---
 name: schemaforge
-description: Use when writing, creating, editing, or reviewing SchemaForge .schema files. Use when defining data models, entity schemas, field types, relations, access control, or multi-tenant hierarchies in the SchemaForge DSL syntax. Use when declaring `unique` field constraints (per-tenant for `@tenant(...)` schemas, table-wide otherwise) and handling the 409 `unique_violation` error path. Use when declaring `file` fields backed by S3-compatible storage (MinIO, AWS S3, R2, Wasabi), configuring `[schema_forge.storage]` backends, or wiring upload/download/scan flows. Use when scaffolding or regenerating the React site with `schema-forge site generate`, wiring the `/app/*` per-entity pages or the runtime-dynamic `/admin/*` shell, or iterating with the `--templates-dir` override loader. Use when querying entities via the REST API, filtering, sorting, pagination, or building query parameters. Use when declaring lifecycle hooks via @hook annotations (including `before_upload`, `after_upload`, `on_scan_complete` for file fields), scaffolding hook gRPC services with `schema-forge hooks generate`, configuring [schema_forge.hooks] bindings, or auditing hooks with `hooks list` / `hooks diff`. Use when hitting `/api/v1/forge/auth/login`, `/auth/refresh`, or `/api/v1/forge/users` for the PASETO bootstrap and user management flows. Use when mapping PASETO custom claims onto Cedar `Forge::Principal` attributes via `[schema_forge.authz.principal_claims]` so hand-written custom Cedar policies can read per-bearer values like `principal.client_org_id`, including the IN-side `source = { user_field = "<f>" }` projection that populates those claims from User columns at login/refresh time.
+description: Use when writing, creating, editing, or reviewing SchemaForge .schema files. Use when defining data models, entity schemas, field types (incl. `duration`, `bytes`, and `map<text, V>`), relations, access control, or multi-tenant hierarchies in the SchemaForge DSL syntax. Use when declaring write-time validation, computed fields, or computed defaults via the CEL rule annotations `@require` / `@compute` / `@default` (in-process, fail-closed, no gRPC), including single-hop cross-entity reads (`related.<field>.<col>`) inside `@require`. Use when declaring `unique` field constraints (per-tenant for `@tenant(...)` schemas, table-wide otherwise) and handling the 409 `unique_violation` error path. Use when declaring `file` fields backed by S3-compatible storage (MinIO, AWS S3, R2, Wasabi), configuring `[schema_forge.storage]` backends, or wiring upload/download/scan flows. Use when scaffolding or regenerating the React site with `schema-forge site generate`, wiring the `/app/*` per-entity pages or the runtime-dynamic `/admin/*` shell, or iterating with the `--templates-dir` override loader. Use when querying entities via the REST API, filtering, sorting, pagination, or building query parameters. Use when declaring lifecycle hooks via @hook annotations (including `before_upload`, `after_upload`, `on_scan_complete` for file fields), scaffolding hook gRPC services with `schema-forge hooks generate`, configuring [schema_forge.hooks] bindings, or auditing hooks with `hooks list` / `hooks diff`. Use when hitting `/api/v1/forge/auth/login`, `/auth/refresh`, or `/api/v1/forge/users` for the PASETO bootstrap and user management flows. Use when mapping PASETO custom claims onto Cedar `Forge::Principal` attributes via `[schema_forge.authz.principal_claims]` so hand-written custom Cedar policies can read per-bearer values like `principal.client_org_id`, including the IN-side `source = { user_field = "<f>" }` projection that populates those claims from User columns at login/refresh time.
 ---
 
 # SchemaForge — Schema Authoring & CLI Guide
@@ -9,7 +9,7 @@ description: Use when writing, creating, editing, or reviewing SchemaForge .sche
 
 SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `.schema` file produces database tables, REST API endpoints, migrations, Cedar authorization policies, and OpenAPI specs — no recompilation required.
 
-**Version:** 0.27.0
+**Version:** 0.33.0
 
 **Core principle:** Schemas are the single source of truth for the entire entity lifecycle. Authorization is **Cedar-canonical**: every read/write/delete decision flows through the embedded Cedar engine — there are no parallel custom guards.
 
@@ -23,13 +23,14 @@ SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `schema-forge-core` | 0.14.0 | Core types: schemas, fields (incl. `FieldType::File`), annotations (incl. `@hidden`), modifiers (incl. `unique`), migrations (incl. `AddUnique`/`RemoveUnique` with per-tenant scope), queries, hook events |
-| `schema-forge-dsl` | 0.9.0 | Lexer/parser for `.schema` DSL (logos-based) incl. `file(...)` syntax, size literals, the `@hidden` field annotation, and the `unique` modifier with parse-time type-guard |
-| `schema-forge-backend` | 0.10.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant, `EntityAuthStore` (the user-mgmt impl over the system `User` schema), and the typed `BackendError::UniqueViolation` discriminator |
-| `schema-forge-surrealdb` | 0.8.0 | SurrealDB backend implementation (incl. `DEFINE INDEX ... UNIQUE` codegen and unique-violation reclassification) |
-| `schema-forge-postgres` | 0.7.0 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file columns and SQLSTATE 23505 → typed `UniqueViolation` mapping |
-| `schema-forge-acton` | 0.26.0 | Axum/acton-service integration: REST API, Cedar policy store (hot-recompiled atomically on schema apply), auth, hook dispatcher, S3 storage registry (`aws-sdk-s3`), and the 409 `unique_violation` HTTP error envelope |
-| `schema-forge-cli` | 0.27.0 | CLI binary (`schemaforge`) built with clap derive; routes all configuration through `acton_service::Config<SchemaForgeConfig>` (single source of truth); ships `policies validate`, `bootstrap-admin`, and a site generator that surfaces `unique` as an inline form hint plus a 409-routed `setError` for CI / first-run provisioning |
+| `schema-forge-core` | 0.16.0 | Core types: schemas, fields (incl. `FieldType::File`, `Duration`, `Bytes`, `Map`), annotations (incl. `@hidden` and the CEL rule annotations `@require`/`@compute`/`@default`), modifiers (incl. `unique`), migrations (incl. `AddUnique`/`RemoveUnique` with per-tenant scope), queries, hook events |
+| `schema-forge-cel` | 0.9.0 | First-party CEL evaluator over `DynamicValue` (ADR-0002): lexer/parser, tree-walking evaluator, stdlib (incl. `base64.encode`/`decode`), apply-time type-checker, and the `related_paths` cross-entity-read AST walker. No upstream `cel` dependency; verified against the cel-spec conformance corpus. |
+| `schema-forge-dsl` | 0.12.0 | Lexer/parser for `.schema` DSL (logos-based) incl. `file(...)` syntax, size literals, `duration`/`bytes(max)`/`map<text, V>` types, the `@hidden` field annotation, the `unique` modifier with parse-time type-guard, and `@require`/`@compute`/`@default` rule annotations (CEL syntax-validated at parse, type-checked at apply) |
+| `schema-forge-backend` | 0.13.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant, `EntityAuthStore` (the user-mgmt impl over the system `User` schema), and the typed `BackendError::UniqueViolation` discriminator |
+| `schema-forge-surrealdb` | 0.9.0 | SurrealDB backend implementation (incl. `DEFINE INDEX ... UNIQUE` codegen, unique-violation reclassification, native `duration`/`bytes` storage, and fail-closed rejection of negative durations) |
+| `schema-forge-postgres` | 0.8.0 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file/map columns, `BIGINT`-nanosecond durations, `BYTEA` bytes with octet-length CHECK, and SQLSTATE 23505 → typed `UniqueViolation` mapping |
+| `schema-forge-acton` | 0.34.0 | Axum/acton-service integration: REST API, the write-time rule phases (`@default`→`@compute`→`@require`, incl. tenant-scoped cross-entity reads), Cedar policy store (hot-recompiled atomically on schema apply), auth, hook dispatcher, S3 storage registry (`aws-sdk-s3`), and the 409 `unique_violation` HTTP error envelope |
+| `schema-forge-cli` | 0.33.0 | CLI binary (`schemaforge`) built with clap derive; routes all configuration through `acton_service::Config<SchemaForgeConfig>` (single source of truth); ships `policies validate`, `bootstrap-admin`, and a site generator that surfaces `unique` as an inline form hint plus a 409-routed `setError` for CI / first-run provisioning |
 
 ## When to Use
 
@@ -37,6 +38,8 @@ SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `
 - Adding entities, fields, relations, or annotations to existing schemas
 - Reviewing or validating DSL syntax
 - Designing multi-tenant data models with access control
+- Declaring write-time rules with `@require` (validation), `@compute` (server-derived values), and `@default` (computed insert-time defaults) — CEL expressions evaluated in-process, fail-closed, before any gRPC hook
+- Asserting over a single-hop related entity inside a `@require` via the `related.<field>.<col>` cross-entity-read namespace
 - Running SchemaForge CLI commands (init, parse, apply, serve, migrate, inspect, export, policies, token, hooks, `site generate`, `bootstrap-admin`)
 - Scaffolding or regenerating the React site with `schema-forge site generate`
 - Wiring `/app/*` per-entity pages (codegen'd, Preserve-mode) or iterating on the runtime-dynamic `/admin/*` admin shell
@@ -550,8 +553,11 @@ The two backends are **mutually exclusive** at build time (enforced by acton-ser
 | Float | `float` or `float(precision: N)` | decimal places |
 | Boolean | `boolean` | none |
 | DateTime | `datetime` | ISO 8601 timestamps |
+| Duration | `duration` | time span; signed nanoseconds (≈±292y); negative rejected on SurrealDB |
+| Bytes | `bytes` or `bytes(max: N)` | raw binary; `max` = byte length; `base64.encode/decode` in CEL |
 | Enum | `enum("a", "b", "c")` | 1+ variants, no duplicates |
 | JSON | `json` | flexible unstructured data |
+| Map | `map<text, V>` | open-keyed, homogeneous values; key must be `text` |
 | File | `file(bucket: "docs", max_size: "25MB", mime: [...], access: "presigned")` | S3-backed attachment; see [storage-reference.md](storage-reference.md) |
 | Relation (one) | `-> TargetSchema` | target must be PascalCase |
 | Relation (many) | `-> TargetSchema[]` | Derived inverse view if target has `-> Self` FK back (read-only); else stored array of refs. |
@@ -601,12 +607,45 @@ The two backends are **mutually exclusive** at build time (enforced by acton-ser
 | Field Access | `@field_access(read: [...], write: [...])` | field-level access control |
 | List Hint | `@list(primary\|column\|hidden)` | list-view column curation |
 | Enum Colors | `@enum_colors(variant: "color", ...)` | semantic color tokens per enum variant |
+| Require | `@require("cel_expr", "message")` | write-time validation; rejects with `message` (422) unless the CEL predicate is `true`. Fail-closed. |
+| Compute | `@compute("cel_expr")` | server-derived value; computed at write time and stored, overwriting client input |
+| Default | `@default("cel_expr")` | computed insert-time default; fills an absent/null field on create (distinct from the `default(value)` literal modifier) |
 | Hidden | `@hidden` | language-level secret guard — field is invisible to every API surface (REST, GraphQL, list, query, get) and rejected in any client-supplied request body; Cedar policy generation skips it so it never surfaces as a resource attribute. Backend code that legitimately needs the value (e.g. `EntityAuthStore` reading `password_hash`) reads the entity directly, bypassing the API layer. |
 
 **New in v0.17.0:**
 
 - `@list(hint)` drives the generated list page. Resolution ladder: explicit hint wins → the `@display("...")` field auto-promotes to `primary` when no explicit primary is declared → `rich_text`, `composite`, `array`, `relation_one`, `relation_many`, and `json` fields default to `hidden` → everything else defaults to `column`. At most one `@list(primary)` per schema (parse error otherwise). `@list(column)` on a relation field opts it back in to list display and the generator renders the resolved `<field>__display` label as a linked cell.
 - `@enum_colors(...)` maps enum variant names to a closed color vocabulary: `neutral`, `gray`, `red`, `amber`, `green`, `blue`, `purple`, `violet`, `teal`, `rose`. Only allowed on enum fields; every key must match an existing variant (parse error otherwise). Drives the generated `EnumBadge` component in `list.tsx` with Tailwind classes per token.
+
+## Quick Reference — Write-Time Rules (`@require` / `@compute` / `@default`)
+
+Field-level annotations carrying a **CEL expression** evaluated at write time by SchemaForge's own pure CEL engine (no upstream `cel` dependency; ADR-0002). They are **in-process and fail-closed** — no gRPC round-trip — and run *before* any hook. The expression is syntax-validated at parse time and **type-checked against the schema's field types at apply time**.
+
+```
+schema Booking {
+    starts_at: datetime @require("starts_at >= now", "start cannot be in the past")
+    seats:     integer  @require("seats >= 1 && seats <= 8", "1–8 seats")
+    reference: text     @compute("'BK-' + string(seats)")
+    status:    enum("open", "closed") @default("'open'")
+    created_at: datetime @default("now")
+}
+```
+
+| Annotation | Fires | Effect |
+|---|---|---|
+| `@require("expr", "msg")` | create + update | Rejects the write (422 with `msg`) unless `expr` is exactly `true`. A non-boolean / eval error is a 500 — a broken predicate never lets a write through. |
+| `@compute("expr")` | create + update | Stores the computed value, overwriting any client-supplied value. Computes chain in field order. |
+| `@default("expr")` | create only | Fills the field when absent/null, before `@compute`. Insert-only; no effect on update/patch. |
+
+**Bindings available in any rule expression:** every field by snake_case name · `now` (request-time `timestamp` — a variable, *not* a `now()` function; the engine is pure) · `principal` (`.sub`, `.email`, `.username`, `.roles`, `.perms`).
+
+**Cross-entity reads (`@require` only):** `related.<F>.<col>` dereferences a single-valued relation field `F` to its committed, **tenant-scoped** related row, e.g. `@require("status != 'closed' || related.approval.state == 'granted'", "...")`. Single hop only; fail-closed if the row is absent/null/tenant-hidden; multi-hop and to-many are rejected with a clear error.
+
+**Evaluation order:** `@default → @compute → @require → before_validate / before_change hooks → PERSIST → { after_* hooks, webhook }`. Rules are pure and cheap, so a `@require` rejection short-circuits the whole write before any hook round-trip and before persistence.
+
+**Rules vs. hooks:** reach for `@require`/`@compute`/`@default` for validation, derived values, and defaults that depend only on the record, `now`, the caller, and a single related row — they need no external service. Reach for a `@hook` when the logic needs **external I/O** (call another API, enrich from a third-party source, publish an event). This is the "reduce reliance on gRPC hooks" split.
+
+See [dsl-reference.md](dsl-reference.md) for full semantics, bindings, and fail-closed details.
 
 ## Quick Reference — Lifecycle Hooks
 
@@ -644,9 +683,9 @@ The intent string is natural-language documentation baked into generated stubs a
 | `before_upload` | `POST /upload-url` (file fields) | yes | yes | n/a |
 | `after_upload` | `POST /confirm-upload` (file fields) | no (detached) | no | n/a |
 | `on_scan_complete` | `POST /scan-complete` (file fields) | no (detached) | no | n/a |
-| `before_validate` | *reserved* — parses but not yet dispatched | — | — | — |
+| `before_validate` | POST/PUT | yes | yes | yes |
 
-Use `before_change` for pre-persistence logic until `before_validate` is wired in. For async work use the corresponding `after_*` event — fire-and-forget failures are logged, never reach the client, and the entity is already committed when they fire. For file-field scanners, use `after_upload` to run AV/OCR against the presigned `download_url` in the request, then post the verdict back via the `/scan-complete` endpoint (which in turn fires `on_scan_complete`).
+`before_validate` is now dispatched: it fires on create/update/patch *after* the write-time rule phases (`@default`/`@compute`/`@require`) and *before* `before_change`, so a hook can mutate or add fields ahead of persistence-side validation. For simple record-local validation prefer a `@require` rule (in-process, no gRPC); use `before_validate`/`before_change` when the check needs external I/O. For async work use the corresponding `after_*` event — fire-and-forget failures are logged, never reach the client, and the entity is already committed when they fire. For file-field scanners, use `after_upload` to run AV/OCR against the presigned `download_url` in the request, then post the verdict back via the `/scan-complete` endpoint (which in turn fires `on_scan_complete`).
 
 ### Workflow summary
 
