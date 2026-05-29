@@ -20,6 +20,7 @@
 //! return a `"no such overload"` evaluation error until #109 fills them in.
 
 pub mod ast;
+pub mod check;
 pub mod error;
 pub mod eval;
 pub mod lexer;
@@ -27,6 +28,10 @@ pub mod parser;
 pub mod value;
 
 pub use ast::{unparse, BinaryOp, Comprehension, Expr, Literal, UnaryOp};
+pub use check::{
+    check_rule, field_accepts, field_type_to_inferred, infer, rule_type_env, InferredType,
+    RuleRole, TypeEnv, TypeError,
+};
 pub use error::{CelError, ConversionError, EvalError, ParseError, Position};
 pub use eval::{eval, Scope};
 pub use parser::parse;

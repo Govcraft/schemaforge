@@ -7303,7 +7303,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cel"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -7367,7 +7367,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-dsl"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "logos 0.15.1",
  "proptest",

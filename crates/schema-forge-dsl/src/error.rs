@@ -155,6 +155,18 @@ pub enum DslError {
         column: usize,
         span: Span,
     },
+
+    /// A CEL expression supplied to `@require(...)`, `@compute(...)`, or
+    /// `@default(...)` parsed correctly but failed static type-checking against
+    /// the schema's field types (#104). `line`/`column` are absolute positions in
+    /// the schema source (1-based), pointing into the offending expression.
+    /// `message` is the underlying CEL type-error text.
+    RuleTypeError {
+        message: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
 }
 
 impl fmt::Display for DslError {
@@ -323,6 +335,14 @@ impl fmt::Display for DslError {
                 ..
             } => {
                 write!(f, "{line}:{column}: invalid expression: {message}")
+            }
+            Self::RuleTypeError {
+                message,
+                line,
+                column,
+                ..
+            } => {
+                write!(f, "{line}:{column}: rule type error: {message}")
             }
         }
     }

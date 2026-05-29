@@ -158,6 +158,24 @@ pub fn dsl_error_to_diagnostic(error: &DslError, source: &str, filename: &str) -
             suggestion: Some(format!("Swap the values: integer(min: {max}, max: {min})")),
         },
 
+        DslError::RuleTypeError {
+            message,
+            line,
+            column,
+            span,
+        } => SchemaDiagnostic {
+            src: named_src,
+            span: (span.start, span.end.saturating_sub(span.start)).into(),
+            message: format!("{line}:{column}: {message}"),
+            label: "rule type mismatch".to_string(),
+            suggestion: Some(
+                "Adjust the expression so its result type matches the field type \
+                 (`@require` must be boolean; `@compute`/`@default` must be assignable \
+                 to the field)."
+                    .to_string(),
+            ),
+        },
+
         // Catch future non_exhaustive variants
         _ => SchemaDiagnostic {
             src: named_src,
