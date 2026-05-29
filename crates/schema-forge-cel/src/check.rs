@@ -293,6 +293,10 @@ pub fn field_type_to_inferred(ft: &FieldType) -> InferredType {
         },
         FieldType::Array(_) => InferredType::Known(CelType::List),
         FieldType::Composite(_) | FieldType::Map { .. } => InferredType::Known(CelType::Map),
+        // A File field's stored shape is the `FileAttachment` metadata object
+        // (carried as `DynamicValue::Json`), never the blob (#102). Statically
+        // its content is unknown, so it reads back as `Dyn` rather than claiming
+        // a concrete scalar; the blob bytes are never projected as a value.
         FieldType::File(_) => InferredType::Dyn,
         // `FieldType` is non_exhaustive; an unknown future type is statically
         // unknown so it never produces a false positive.
@@ -307,6 +311,7 @@ pub fn field_type_to_inferred(ft: &FieldType) -> InferredType {
 /// (conservative). For a `Known(t)`, mirrors the runtime coercions so a rule that
 /// would succeed at runtime is never rejected.
 pub fn field_accepts(ft: &FieldType, inferred: &InferredType) -> bool {
+    use schema_forge_core::types::Cardinality;
     let Some(t) = known(inferred) else {
         return true;
     };
@@ -318,9 +323,27 @@ pub fn field_accepts(ft: &FieldType, inferred: &InferredType) -> bool {
         FieldType::DateTime => matches!(t, CelType::Timestamp | CelType::String),
         FieldType::Duration => matches!(t, CelType::Duration | CelType::String),
         FieldType::Bytes(_) => matches!(t, CelType::Bytes | CelType::String),
+        // An Enum is string-backed in this codebase: it projects as the variant
+        // name (#102), so it accepts only a `string` result.
         FieldType::Enum(_) => t == CelType::String,
-        // Accept anything: the mapping is complex/rare; avoid false positives.
-        FieldType::Json | FieldType::Relation { .. } | FieldType::File(_) => true,
+        // A Relation projects as opaque entity id(s) (#102): a one-cardinality
+        // ref is a `string` id, a many-cardinality ref is a `list` of id
+        // strings. Rules compare/inspect the id but cannot dereference the
+        // related entity (cross-entity reads are #95). An unknown future
+        // `Cardinality` variant stays accept-all to avoid a false positive.
+        FieldType::Relation { cardinality, .. } => match cardinality {
+            Cardinality::One => t == CelType::String,
+            Cardinality::Many => t == CelType::List,
+            _ => true,
+        },
+        // A File field is an out-of-band blob (#102): the bytes are never a
+        // value. It surfaces to a rule only as its metadata map (the
+        // `FileAttachment` object), so it accepts a `map` result. The blob
+        // itself is not addressable as a scalar.
+        FieldType::File(_) => t == CelType::Map,
+        // Accept anything: untyped JSON has no single known shape; avoid false
+        // positives.
+        FieldType::Json => true,
         FieldType::Array(_) => t == CelType::List,
         FieldType::Composite(_) | FieldType::Map { .. } => t == CelType::Map,
         // `FieldType` is non_exhaustive; accept anything for an unknown future
@@ -732,18 +755,83 @@ mod tests {
     }
 
     #[test]
-    fn field_accepts_json_relation_file_accept_all() {
+    fn field_accepts_json_accepts_anything() {
+        // Untyped JSON has no single known shape, so it accepts any result.
         assert!(field_accepts(
             &FieldType::Json,
             &InferredType::Known(CelType::Int)
         ));
         assert!(field_accepts(
-            &FieldType::Relation {
-                target: SchemaName::new("Company").unwrap(),
-                cardinality: Cardinality::One,
-            },
-            &InferredType::Known(CelType::Int)
+            &FieldType::Json,
+            &InferredType::Known(CelType::Map)
         ));
+    }
+
+    fn relation(cardinality: Cardinality) -> FieldType {
+        FieldType::Relation {
+            target: SchemaName::new("Company").unwrap(),
+            cardinality,
+        }
+    }
+
+    #[test]
+    fn field_accepts_relation_one_only_string() {
+        // A one-cardinality Relation projects as an opaque id string (#102): it
+        // accepts only a `string` result, not an int or a list.
+        let one = relation(Cardinality::One);
+        assert!(field_accepts(&one, &InferredType::Known(CelType::String)));
+        assert!(!field_accepts(&one, &InferredType::Known(CelType::Int)));
+        assert!(!field_accepts(&one, &InferredType::Known(CelType::List)));
+    }
+
+    #[test]
+    fn field_accepts_relation_many_only_list() {
+        // A many-cardinality Relation projects as a list of id strings (#102).
+        let many = relation(Cardinality::Many);
+        assert!(field_accepts(&many, &InferredType::Known(CelType::List)));
+        assert!(!field_accepts(&many, &InferredType::Known(CelType::String)));
+        assert!(!field_accepts(&many, &InferredType::Known(CelType::Int)));
+    }
+
+    #[test]
+    fn field_accepts_file_accepts_metadata_map_not_scalar() {
+        // A File field surfaces only as its metadata map (the `FileAttachment`
+        // object), never the blob (#102): it accepts a `map`, not a scalar.
+        use schema_forge_core::types::{FileAccess, FileConstraints};
+        let file = FieldType::File(FileConstraints {
+            bucket: "documents".into(),
+            max_size_bytes: 1024,
+            mime_allowlist: vec![],
+            access: FileAccess::Presigned,
+        });
+        assert!(field_accepts(&file, &InferredType::Known(CelType::Map)));
+        assert!(!field_accepts(&file, &InferredType::Known(CelType::Bytes)));
+        assert!(!field_accepts(&file, &InferredType::Known(CelType::String)));
+    }
+
+    #[test]
+    fn enum_field_accepts_string_comparison_rule() {
+        // `status == "Active"` over an Enum field type-checks: the comparison is
+        // Bool, which @require accepts, and the Enum projects as a string so the
+        // operand types are consistent (#102).
+        let status =
+            FieldType::Enum(EnumVariants::new(vec!["Active".into(), "Closed".into()]).unwrap());
+        let env = rule_type_env(std::iter::once(("status", &status)));
+        let expr = parse("status == \"Active\"").unwrap();
+        assert_eq!(infer(&expr, &env), InferredType::Known(CelType::Bool));
+        assert!(check_rule(RuleRole::Require, &FieldType::Boolean, &env, &expr).is_ok());
+    }
+
+    #[test]
+    fn ref_field_accepts_string_comparison_rule() {
+        // `owner == "user_123"` over a one-cardinality Relation field type-checks:
+        // the ref projects as an opaque id string (#102), so comparing it to a
+        // string literal is consistent.
+        let owner = relation(Cardinality::One);
+        let env = rule_type_env(std::iter::once(("owner", &owner)));
+        let expr = parse("owner == \"user_123\"").unwrap();
+        assert_eq!(infer(&expr, &env), InferredType::Known(CelType::Bool));
+        assert!(check_rule(RuleRole::Require, &FieldType::Boolean, &env, &expr).is_ok());
     }
 
     // -- check_rule: pass cases --

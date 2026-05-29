@@ -14,10 +14,27 @@
 //!   representation yet (tracked by #96/#97), so they convert to
 //!   [`ConversionError::Unsupported`].
 //!
-//! Refs are surfaced to predicates as their id strings: a `Ref` becomes the id
-//! string, a `RefArray` becomes a list of id strings. This lets predicates
-//! compare and inspect references without the engine needing a dedicated
-//! ref type.
+//! ## Value-lattice projection of the non-obvious field types (#102)
+//!
+//! Three storage types have no one-to-one CEL counterpart, so their projection
+//! is decided here and mirrored by the type-checker
+//! ([`crate::check::field_type_to_inferred`] / [`crate::check::field_accepts`]):
+//!
+//! | Storage field type        | `DynamicValue`              | `CelValue`                | Rationale |
+//! |---------------------------|-----------------------------|---------------------------|-----------|
+//! | `Enum`                    | `Enum(String)`              | `String` (variant name)   | Storage is string-backed; rules compare against the human-readable variant name, and ordering is lexical/by-name — predictable and matches storage. NOT projected as an int. |
+//! | `Relation{One}` (a Ref)   | `Ref(EntityId)`             | `String` (opaque id)      | No native ref value. Rules may compare/inspect the id but CANNOT dereference the related entity. |
+//! | `Relation{Many}` (RefArray) | `RefArray(Vec<EntityId>)` | `List<String>` (opaque ids) | A list of the opaque ids, same constraints as a single ref. |
+//! | `File`                    | `Json(FileAttachment obj)`  | `Map` (metadata only)     | The blob is out-of-band and NEVER exposed to rules. A File field is stored as its `FileAttachment` metadata object, so rules see only metadata (`size`, `mime`, `status`, …) — never the bytes. |
+//!
+//! Cross-entity *reads* — actually loading the related row behind a `Ref` — are
+//! explicitly OUT OF SCOPE (tracked by #95). The projection here is opaque-id
+//! only: no lookup, no I/O.
+//!
+//! Fail-closed: every variant has an explicit mapping; the `#[non_exhaustive]`
+//! catch-all below returns [`ConversionError::Unsupported`] rather than coercing
+//! an unknown value to `Null`. `EntityId::as_str` is total, so a `Ref`/`RefArray`
+//! never silently drops an id.
 
 use std::collections::BTreeMap;
 
@@ -386,6 +403,41 @@ mod tests {
                 CelValue::String(a.as_str().to_string()),
                 CelValue::String(b.as_str().to_string()),
             ])
+        );
+    }
+
+    #[test]
+    fn file_field_surfaces_as_metadata_map_not_blob() {
+        // A File field is stored as a `DynamicValue::Json` carrying the flat
+        // `FileAttachment` metadata object (see routes/files.rs). It must bridge
+        // to a CEL `Map` of metadata — `size`, `mime`, `status`, etc. — and must
+        // NOT carry any blob bytes (#102: the blob is never exposed to rules).
+        let d = DynamicValue::Json(serde_json::json!({
+            "key": "docs/tenant-a/ent-1/contract/01HX/contract.pdf",
+            "size": 1_048_576,
+            "mime": "application/pdf",
+            "status": "available",
+        }));
+        let c = dynamic_to_cel(&d).unwrap();
+        let CelValue::Map(map) = c else {
+            panic!("expected metadata map, got {c:?}");
+        };
+        assert_eq!(
+            map[&CelKey::String("size".to_string())],
+            CelValue::Int(1_048_576)
+        );
+        assert_eq!(
+            map[&CelKey::String("mime".to_string())],
+            CelValue::String("application/pdf".to_string())
+        );
+        assert_eq!(
+            map[&CelKey::String("status".to_string())],
+            CelValue::String("available".to_string())
+        );
+        // No blob bytes are present anywhere in the projection.
+        assert!(
+            !map.values().any(|v| matches!(v, CelValue::Bytes(_))),
+            "file projection must not expose blob bytes"
         );
     }
 
