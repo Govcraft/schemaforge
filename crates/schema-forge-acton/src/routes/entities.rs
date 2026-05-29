@@ -1668,8 +1668,24 @@ pub async fn create_entity(
     let rules_now = chrono::Utc::now();
     inject_audit_columns_on_create(&mut fields, &schema_def, claims.as_ref(), rules_now);
 
-    // before_validate / before_change hooks. `before_validate` runs
-    // first so a hook can mutate or add fields before any
+    // Canonical write-path ordering (see the `crate::rules` module docs): the
+    // three rule phases run *first* — in-transaction, before persistence, and
+    // ahead of the `before_*` gRPC hooks. Rules are pure and cheap, so a
+    // `@require` rejection (422) short-circuits the whole write before any hook
+    // network round-trip and before persistence.
+
+    // CEL @default expression defaults (#94) — insert-only; fills absent/null fields before @compute.
+    apply_defaults(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+
+    // CEL @compute derived fields (#93) — evaluated before @require, stored.
+    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+
+    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
+    check_requires(&schema_def, &fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+
+    // before_validate / before_change hooks run *after* the rule phases, on
+    // the already-defaulted/computed/validated field set. `before_validate`
+    // runs first so a hook can mutate or add fields before any
     // persistence-side validation, then `before_change` runs on the
     // (possibly mutated) fields.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
@@ -1706,15 +1722,6 @@ pub async fn create_entity(
         )
         .await?;
     }
-
-    // CEL @default expression defaults (#94) — insert-only; fills absent/null fields before @compute.
-    apply_defaults(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
-
-    // CEL @compute derived fields (#93) — evaluated before @require, stored.
-    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
-
-    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
-    check_requires(&schema_def, &fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
     // Create the entity, filtering write-restricted fields
     let mut entity = Entity::new(schema_name, fields);
@@ -2364,10 +2371,22 @@ pub async fn update_entity(
     let rules_now = chrono::Utc::now();
     inject_audit_columns_on_update(&mut fields, &schema_def, claims.as_ref(), rules_now);
 
-    // before_validate / before_change hooks. `before_validate` runs
-    // first so a hook can mutate or add fields before any
-    // persistence-side validation, then `before_change` runs on the
-    // (possibly mutated) fields.
+    // Canonical write-path ordering (see the `crate::rules` module docs): the
+    // rule phases run *first* — in-transaction, before persistence, and ahead
+    // of the `before_*` gRPC hooks. (`@default` is insert-only, so PUT runs
+    // only @compute then @require.) A `@require` rejection (422) short-circuits
+    // before any hook round-trip and before persistence.
+
+    // CEL @compute derived fields (#93) — evaluated before @require, stored.
+    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+
+    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
+    check_requires(&schema_def, &fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+
+    // before_validate / before_change hooks run *after* the rule phases, on
+    // the already-computed/validated field set. `before_validate` runs first
+    // so a hook can mutate or add fields before any persistence-side
+    // validation, then `before_change` runs on the (possibly mutated) fields.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
         fetch_hook_dispatcher(forge).await
@@ -2402,12 +2421,6 @@ pub async fn update_entity(
         )
         .await?;
     }
-
-    // CEL @compute derived fields (#93) — evaluated before @require, stored.
-    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
-
-    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
-    check_requires(&schema_def, &fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
     // Build entity with specific ID, filtering write-restricted fields
     let mut entity = Entity::with_id(entity_id, schema_name, fields);
@@ -2612,8 +2625,26 @@ pub async fn patch_entity(
         merged.insert(k, v);
     }
 
-    // before_change hook — operates on the already-merged field set so
-    // hooks see the post-patch state.
+    // Canonical write-path ordering (see the `crate::rules` module docs): the
+    // rule phases run *first* on the merged (full post-patch) view —
+    // in-transaction, before persistence, and ahead of the `before_*` gRPC
+    // hooks. (`@default` is insert-only, so PATCH runs only @compute then
+    // @require.) A `@require` rejection (422) short-circuits before any hook
+    // round-trip and before persistence.
+
+    // CEL @compute derived fields (#93) — evaluated before @require, stored.
+    // Runs on the merged (full post-patch) view so the delta picks up computed
+    // changes and @require predicates see them.
+    apply_computed(&schema_def, &mut merged, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+
+    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
+    // Evaluated against the full post-patch entity view so predicates that
+    // reference unpatched fields still see their current values.
+    check_requires(&schema_def, &merged, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+
+    // before_validate / before_change hooks run *after* the rule phases, on
+    // the already-computed/validated merged field set so hooks see the
+    // finalized post-patch state.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
         fetch_hook_dispatcher(forge).await
@@ -2648,16 +2679,6 @@ pub async fn patch_entity(
         )
         .await?;
     }
-
-    // CEL @compute derived fields (#93) — evaluated before @require, stored.
-    // Runs on the merged (full post-patch) view so the delta picks up computed
-    // changes and @require predicates see them.
-    apply_computed(&schema_def, &mut merged, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
-
-    // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
-    // Evaluated against the full post-patch entity view so predicates that
-    // reference unpatched fields still see their current values.
-    check_requires(&schema_def, &merged, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
 
     // Compute the delta: only keys whose final value differs from the
     // loaded baseline go to the backend. This keeps PATCH's SQL UPDATE

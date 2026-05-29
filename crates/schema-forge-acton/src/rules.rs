@@ -1,8 +1,48 @@
 //! CEL-backed write-time validation rules.
 //!
-//! This module holds the pure rule-evaluation logic for `@require` (and, in
-//! future, `@compute`/`@default` via #93/#94), deliberately decoupled from the
-//! axum handlers so it can be unit-tested without any HTTP machinery.
+//! This module holds the pure rule-evaluation logic for `@require`, `@compute`,
+//! and `@default` (#92/#93/#94), deliberately decoupled from the axum handlers
+//! so it can be unit-tested without any HTTP machinery.
+//!
+//! ## Canonical write-path ordering (#105)
+//!
+//! For every create/update/patch write, the entity routes
+//! ([`crate::routes::entities`]) execute the following sequence, and this order
+//! is engine-controlled and deterministic — it does not depend on schema
+//! authoring or field declaration order across phases:
+//!
+//! ```text
+//! @default → @compute → @require → before_* hooks → PERSIST → { after_* hooks, webhook }
+//! └──────── rule phases (this module) ───────┘   └ network ┘   └──── detached fan-out ────┘
+//! ```
+//!
+//! Invariants this ordering establishes:
+//!
+//! * **Rules run in-transaction, before persistence, and ahead of the
+//!   `before_*` gRPC hooks.** The rule phases are pure and cheap (no I/O), so a
+//!   rejection can short-circuit the entire write *before* any hook network
+//!   round-trip and before anything is persisted.
+//! * **The in-transaction phase is deterministic and has no reentrancy.**
+//!   [`apply_defaults`] runs first (insert-only, create only), then
+//!   [`apply_computed`], then [`check_requires`]. Each phase visits fields in
+//!   schema declaration order; defaults/computes rebuild their bindings from
+//!   the current field map so a later field may read an earlier-stored one
+//!   (chaining), but a phase never re-invokes an earlier phase.
+//! * **A `@require` rejection prevents persistence and fires NO downstream
+//!   work.** Because `check_requires` returns `Err` *before* the `before_*`
+//!   hooks, the handler's `?` short-circuits with a 422 and never dispatches a
+//!   `before_*` hook, never persists, and therefore never fires an `after_*`
+//!   hook or a webhook.
+//! * **Post-persistence fan-out is detached.** The `after_*` hooks are handed
+//!   to the [`HookDispatchActor`](crate::hooks::HookDispatchActor) and the
+//!   webhook delivery is spawned by the webhook dispatcher; neither blocks the
+//!   API response.
+//!
+//! `@default` is *insert-only* (create only); PUT/PATCH run only `@compute`
+//! then `@require`. On create, the rule phases run *after* the engine has
+//! stamped owner/tenant/audit columns, so those injected non-null values still
+//! win over an expression `@default` for the same field (see
+//! [`apply_defaults`]).
 //!
 //! ## Security: fail-closed
 //!

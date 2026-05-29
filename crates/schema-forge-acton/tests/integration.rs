@@ -656,6 +656,130 @@ async fn default_annotation_fills_absent_fields_but_preserves_supplied() {
     assert_eq!(json["fields"]["author"], "user:someone-else");
 }
 
+/// Issue #105: the in-transaction rule phase runs in the engine-controlled
+/// order `@default` → `@compute` → `@require`. This test makes that order
+/// *observable* end-to-end through a single POST:
+///
+/// * `base` carries `@default("7")` — it is absent in the body, so the
+///   default phase must seed it first.
+/// * `doubled` carries `@compute("base * 2")` — the compute phase must run
+///   *after* defaults, so it reads the seeded `7` and stores `14`.
+/// * `doubled` also carries `@require("doubled >= 10")` — the require phase
+///   must run *after* compute, so it validates the computed `14` (passes).
+///
+/// The mirror case (`base = 2` supplied → `doubled = 4` → `@require` fails)
+/// proves the require phase truly sees the computed value, not the input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rule_phase_order_default_then_compute_then_require_is_observable() {
+    use schema_forge_core::types::{
+        Annotation, FieldAnnotation, FieldDefinition, FieldName, FieldType, IntegerConstraints,
+        SchemaDefinition, SchemaId, SchemaName,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    let int = || FieldType::Integer(IntegerConstraints::unconstrained());
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Calc").unwrap(),
+        vec![
+            // Defaulted first: absent in the body → seeded to 7.
+            FieldDefinition::with_annotations(
+                FieldName::new("base").unwrap(),
+                int(),
+                vec![],
+                vec![FieldAnnotation::Default {
+                    expr: "7".to_string(),
+                }],
+            ),
+            // Computed from the (possibly defaulted) `base`, then required to
+            // be >= 10. The compute must see the default and the require must
+            // see the computed value.
+            FieldDefinition::with_annotations(
+                FieldName::new("doubled").unwrap(),
+                int(),
+                vec![],
+                vec![
+                    FieldAnnotation::Compute {
+                        expr: "base * 2".to_string(),
+                    },
+                    FieldAnnotation::Require {
+                        expr: "doubled >= 10".to_string(),
+                        message: "doubled must be at least 10".to_string(),
+                    },
+                ],
+            ),
+        ],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let mut registry = HashMap::new();
+    registry.insert("Calc".to_string(), schema.clone());
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry,
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    let app = test_app_with_claims_state(state, make_test_claims(&["platform_admin"]));
+
+    // base absent → default 7 → compute 14 → require(14 >= 10) passes.
+    let body = serde_json::json!({ "fields": {} });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Calc/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201 (default→compute→require all run in order), got {status}: {json}"
+    );
+    assert_eq!(json["fields"]["base"], 7, "default phase must seed base=7");
+    assert_eq!(
+        json["fields"]["doubled"], 14,
+        "compute phase must read the defaulted base (7*2=14)"
+    );
+
+    // base = 2 supplied → default skipped → compute 4 → require(4 >= 10) fails.
+    // Proves @require validates the COMPUTED value, not the supplied input.
+    let body = serde_json::json!({ "fields": { "base": 2 } });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Calc/entities", Some(body)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 because compute(2*2=4) fails require(>=10), got {status}: {json}"
+    );
+    assert_eq!(json["error"], "validation_failed");
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap()
+            .contains("doubled must be at least 10"),
+        "expected the require message about the computed value, got: {json}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_entity_for_missing_schema_returns_404() {
     let app = test_app().await;
