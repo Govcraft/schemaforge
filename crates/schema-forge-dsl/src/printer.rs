@@ -171,6 +171,11 @@ fn print_annotation(annotation: &Annotation, output: &mut String) {
             output.push_str(intent);
             output.push_str("\"\"\"");
         }
+        Annotation::Export { .. } => {
+            // The core `Display` impl emits the exact DSL form, so delegating
+            // guarantees print/parse round-trip fidelity.
+            output.push_str(&annotation.to_string());
+        }
         _ => {
             // Future annotation kinds -- print as @unknown for forward compatibility
             output.push_str("@unknown");
@@ -386,7 +391,8 @@ fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
         FieldAnnotation::Hidden => output.push_str("@hidden"),
         FieldAnnotation::Require { .. }
         | FieldAnnotation::Compute { .. }
-        | FieldAnnotation::Default { .. } => {
+        | FieldAnnotation::Default { .. }
+        | FieldAnnotation::Exportable { .. } => {
             // The core `Display` impl already emits the exact DSL form,
             // including the same string escaping the lexer accepts on input,
             // so delegating guarantees print/parse round-trip fidelity.
@@ -1260,6 +1266,28 @@ schema S {
         assert_eq!(
             parsed[0].fields[0].annotations,
             reparsed[0].fields[0].annotations
+        );
+    }
+
+    #[test]
+    fn roundtrip_export_and_exportable() {
+        let source = r#"@export(formats: [csv, ndjson, zip], bundle_files: true, max_rows: 100000)
+schema Report {
+    title: text @exportable
+    tags: text[] @exportable(flatten: json)
+}
+"#;
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(parsed[0].annotations, reparsed[0].annotations);
+        assert_eq!(
+            parsed[0].fields[0].annotations,
+            reparsed[0].fields[0].annotations
+        );
+        assert_eq!(
+            parsed[0].fields[1].annotations,
+            reparsed[0].fields[1].annotations
         );
     }
 }

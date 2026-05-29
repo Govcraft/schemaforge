@@ -23,8 +23,10 @@ mod schema_version;
 mod text_constraints;
 
 pub use annotation::Annotation;
+pub use annotation::ExportFormat;
 pub use annotation::HookEvent;
 pub use annotation::TenantKind;
+pub use annotation::EXPORT_BUNDLE_FILES_DEFAULT;
 pub use base64::{
     decode_standard, decode_standard_indifferent, encode_standard, Base64DecodeError,
 };
@@ -36,7 +38,7 @@ pub use dynamic_value::DynamicValue;
 pub use entity_id::EntityId;
 pub use enum_variants::EnumVariants;
 pub use field_annotation::{
-    sanitize_schema_metadata_json, EnumColor, FieldAnnotation, FormatType, ListHint,
+    sanitize_schema_metadata_json, EnumColor, ExportFlatten, FieldAnnotation, FormatType, ListHint,
     UnknownEnumColor, UnknownFormatType, UnknownListHint, UnknownWidgetType, WidgetRepair,
     WidgetType,
 };

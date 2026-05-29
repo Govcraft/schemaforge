@@ -212,6 +212,49 @@ pub enum DslError {
         column: usize,
         span: Span,
     },
+
+    /// An `@export(formats: [...])` annotation listed a format token that is not
+    /// in the canonical export-format vocabulary (`csv`, `ndjson`, `xlsx`,
+    /// `zip`).
+    UnknownExportFormat {
+        value: String,
+        valid: &'static [&'static str],
+        span: Span,
+    },
+
+    /// An `@export(...)` annotation had an empty `formats` list. Export is
+    /// fail-closed: enabling it with no deliverable shape is meaningless and
+    /// almost certainly an authoring mistake.
+    EmptyExportFormats { span: Span },
+
+    /// An `@export(...)` annotation omitted a required parameter (`formats` or
+    /// `max_rows`).
+    MissingExportParam {
+        param: &'static str,
+        span: Span,
+    },
+
+    /// An `@exportable(flatten: ...)` annotation used a flatten hint that is not
+    /// in the canonical vocabulary (currently only `json`).
+    UnknownExportFlatten {
+        value: String,
+        valid: &'static [&'static str],
+        span: Span,
+    },
+
+    /// A field carried `@exportable` on an entity that has no `@export`
+    /// annotation. Fail-closed: a field can only be exportable on an entity
+    /// whose export is itself enabled. `line`/`column` point at the offending
+    /// `@exportable` annotation.
+    ExportableWithoutExport {
+        /// The field the `@exportable` annotation was attached to.
+        field: String,
+        /// The schema the field belongs to.
+        schema: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
 }
 
 impl fmt::Display for DslError {
@@ -427,6 +470,44 @@ impl fmt::Display for DslError {
                 write!(
                     f,
                     "{line}:{column}: cross-entity read 'related.{relation}' is not supported: '{relation}' is a to-many relation; to-many cross-entity reads are not allowed in rules (#95) — use a before_* hook"
+                )
+            }
+            Self::UnknownExportFormat { value, valid, span } => {
+                write!(
+                    f,
+                    "unknown export format '{value}' at {span}\n  valid formats: {}",
+                    valid.join(", "),
+                )
+            }
+            Self::EmptyExportFormats { span } => {
+                write!(
+                    f,
+                    "@export at {span} has an empty `formats` list; list at least one of: csv, ndjson, xlsx, zip"
+                )
+            }
+            Self::MissingExportParam { param, span } => {
+                write!(
+                    f,
+                    "@export at {span} is missing the required `{param}` parameter"
+                )
+            }
+            Self::UnknownExportFlatten { value, valid, span } => {
+                write!(
+                    f,
+                    "unknown @exportable flatten hint '{value}' at {span}\n  valid hints: {}",
+                    valid.join(", "),
+                )
+            }
+            Self::ExportableWithoutExport {
+                field,
+                schema,
+                line,
+                column,
+                ..
+            } => {
+                write!(
+                    f,
+                    "{line}:{column}: @exportable on field '{field}' requires schema '{schema}' to declare @export; export is fail-closed (a field cannot be exportable on an entity whose export is not enabled)"
                 )
             }
         }

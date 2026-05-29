@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 
 use schema_forge_core::types::{
     Annotation, BytesConstraints, Cardinality, DefaultValue, EnumColor, EnumVariants,
-    FieldAnnotation, FieldDefinition, FieldModifier, FieldName, FieldType, FileAccess,
-    FileConstraints, FloatConstraints, FormatType, HookEvent, IntegerConstraints, ListHint,
-    MimePattern, SchemaDefinition, SchemaId, SchemaName, SchemaVersion, TenantKind,
-    TextConstraints, WidgetType,
+    ExportFlatten, ExportFormat, FieldAnnotation, FieldDefinition, FieldModifier, FieldName,
+    FieldType, FileAccess, FileConstraints, FloatConstraints, FormatType, HookEvent,
+    IntegerConstraints, ListHint, MimePattern, SchemaDefinition, SchemaId, SchemaName,
+    SchemaVersion, TenantKind, TextConstraints, WidgetType, EXPORT_BUNDLE_FILES_DEFAULT,
 };
 
 use crate::error::{DslError, Span};
@@ -22,6 +22,12 @@ struct MixedParams {
     lists: Vec<(String, Vec<String>)>,
     scalars: Vec<(String, String)>,
 }
+
+/// Canonical export-format token list, for `@export(formats: [...])` diagnostics.
+const VALID_EXPORT_FORMATS: &[&str] = &["csv", "ndjson", "xlsx", "zip"];
+
+/// Canonical `@exportable(flatten: ...)` hint vocabulary, for diagnostics.
+const VALID_EXPORT_FLATTEN: &[&str] = &["json"];
 
 /// Recursive descent parser for the SchemaDSL grammar.
 ///
@@ -38,6 +44,18 @@ struct Parser {
     /// [`Parser::parse_field`] into the per-schema buffer, tagged with the
     /// just-parsed field name. Each entry is `(role, raw_expr, span)`.
     current_field_rules: Vec<(schema_forge_cel::RuleRole, String, Span)>,
+    /// Spans of `@exportable` annotations seen on the *current* field. Drained by
+    /// [`Parser::parse_field`] into a per-schema buffer so the fail-closed
+    /// "`@exportable` without `@export`" check can report a `line:column` that
+    /// points at the offending annotation.
+    current_field_exportable_spans: Vec<Span>,
+}
+
+/// One `@exportable` annotation site collected during a schema's field parse,
+/// ready for the post-parse fail-closed check against the entity's `@export`.
+struct ExportableSite {
+    field_name: String,
+    span: Span,
 }
 
 /// One rule expression collected during a schema's field parse, ready for the
@@ -56,6 +74,7 @@ impl Parser {
             pos: 0,
             source: source.to_string(),
             current_field_rules: Vec::new(),
+            current_field_exportable_spans: Vec::new(),
         }
     }
 
@@ -155,7 +174,9 @@ impl Parser {
     fn parse_schema(&mut self) -> Result<SchemaDefinition, DslError> {
         // Reset per-field rule scratch so state never leaks between schemas.
         self.current_field_rules.clear();
+        self.current_field_exportable_spans.clear();
         let mut rule_sites: Vec<RuleSite> = Vec::new();
+        let mut exportable_sites: Vec<ExportableSite> = Vec::new();
 
         let schema_start = self.current_span().start;
         let annotations = self.parse_annotations()?;
@@ -171,7 +192,7 @@ impl Parser {
 
         self.expect(&Token::LBrace)?;
 
-        let fields = self.parse_fields(&mut rule_sites)?;
+        let fields = self.parse_fields(&mut rule_sites, &mut exportable_sites)?;
 
         let rbrace = self.expect(&Token::RBrace)?;
         let schema_span = Span::new(schema_start, rbrace.span.end);
@@ -206,6 +227,26 @@ impl Parser {
                 return Err(DslError::DuplicateAnnotation {
                     kind: ann.kind().to_string(),
                     span: schema_span,
+                });
+            }
+        }
+
+        // Fail-closed export gate: a field may only carry `@exportable` on an
+        // entity that itself declares `@export`. The absence of `@export` denies
+        // every field's export eligibility, regardless of read access.
+        if !exportable_sites.is_empty() {
+            let has_export = annotations
+                .iter()
+                .any(|a| matches!(a, Annotation::Export { .. }));
+            if !has_export {
+                let site = &exportable_sites[0];
+                let (line, column) = line_col_at(&self.source, site.span.start);
+                return Err(DslError::ExportableWithoutExport {
+                    field: site.field_name.clone(),
+                    schema: schema_name.as_str().to_string(),
+                    line,
+                    column,
+                    span: site.span.clone(),
                 });
             }
         }
@@ -496,6 +537,7 @@ impl Parser {
                     }
                 }
             }
+            "export" => self.parse_export_annotation()?,
             other => {
                 return Err(DslError::UnknownAnnotation {
                     name: other.to_string(),
@@ -505,6 +547,101 @@ impl Parser {
         };
 
         Ok(annotation)
+    }
+
+    /// Parse `@export(formats: [csv, ndjson, ...], bundle_files: bool, max_rows: N)`.
+    /// The annotation name has been consumed. `formats` is a bracketed list of
+    /// bare format idents (validated against the canonical vocabulary and
+    /// required to be non-empty), `bundle_files` is a `true`/`false` keyword
+    /// (defaulting to `false` when omitted), and `max_rows` is an integer literal.
+    fn parse_export_annotation(&mut self) -> Result<Annotation, DslError> {
+        self.expect(&Token::LParen)?;
+
+        let mut formats: Option<Vec<ExportFormat>> = None;
+        let mut bundle_files: Option<bool> = None;
+        let mut max_rows: Option<u64> = None;
+
+        if self.peek_token() != Some(&Token::RParen) {
+            loop {
+                let key_tok = self.expect_ident("export parameter name")?;
+                self.expect(&Token::Colon)?;
+                match key_tok.text.as_str() {
+                    "formats" => formats = Some(self.parse_export_formats()?),
+                    "bundle_files" => bundle_files = Some(self.expect_bool_literal()?),
+                    "max_rows" => {
+                        let val_tok = self.expect_integer_literal()?;
+                        let n = parse_i64(&val_tok.text, &val_tok.span)?;
+                        max_rows = Some(u64::try_from(n).map_err(|_| {
+                            DslError::InvalidIntegerLiteral {
+                                text: val_tok.text.clone(),
+                                span: val_tok.span.clone(),
+                            }
+                        })?);
+                    }
+                    other => {
+                        return Err(DslError::UnexpectedToken {
+                            expected: "one of: formats, bundle_files, max_rows".to_string(),
+                            found: format!("'{other}'"),
+                            span: key_tok.span,
+                        });
+                    }
+                }
+                if self.peek_token() == Some(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let close = self.expect(&Token::RParen)?;
+
+        let formats = formats.ok_or(DslError::MissingExportParam {
+            param: "formats",
+            span: close.span.clone(),
+        })?;
+        let max_rows = max_rows.ok_or(DslError::MissingExportParam {
+            param: "max_rows",
+            span: close.span,
+        })?;
+
+        Ok(Annotation::Export {
+            formats,
+            bundle_files: bundle_files.unwrap_or(EXPORT_BUNDLE_FILES_DEFAULT),
+            max_rows,
+        })
+    }
+
+    /// Parse the bracketed `formats: [...]` list of bare export-format idents,
+    /// validating each token against the canonical vocabulary and rejecting an
+    /// empty list (export is fail-closed).
+    fn parse_export_formats(&mut self) -> Result<Vec<ExportFormat>, DslError> {
+        let open = self.expect(&Token::LBracket)?;
+        let mut formats = Vec::new();
+        if self.peek_token() == Some(&Token::RBracket) {
+            let close = self.advance().expect("peeked RBracket");
+            return Err(DslError::EmptyExportFormats {
+                span: Span::new(open.span.start, close.span.end),
+            });
+        }
+        loop {
+            let fmt_tok = self.expect_ident("export format")?;
+            let fmt = ExportFormat::from_str(&fmt_tok.text).map_err(|()| {
+                DslError::UnknownExportFormat {
+                    value: fmt_tok.text.clone(),
+                    valid: VALID_EXPORT_FORMATS,
+                    span: fmt_tok.span.clone(),
+                }
+            })?;
+            formats.push(fmt);
+            if self.peek_token() == Some(&Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(&Token::RBracket)?;
+        Ok(formats)
     }
 
     /// Parse named string lists: `key: ["a", "b"], key2: ["c"]`
@@ -579,10 +716,11 @@ impl Parser {
     fn parse_fields(
         &mut self,
         rule_sites: &mut Vec<RuleSite>,
+        exportable_sites: &mut Vec<ExportableSite>,
     ) -> Result<Vec<FieldDefinition>, DslError> {
         let mut fields = Vec::new();
         while self.peek_token() != Some(&Token::RBrace) && self.peek().is_some() {
-            fields.push(self.parse_field(rule_sites)?);
+            fields.push(self.parse_field(rule_sites, exportable_sites)?);
         }
         Ok(fields)
     }
@@ -590,9 +728,15 @@ impl Parser {
     /// field_def = IDENT ":" type_expr modifier* field_annotation*
     ///
     /// Drains any rule expressions collected for this field (in
-    /// [`Parser::current_field_rules`]) into `rule_sites`, tagging each with the
-    /// just-parsed field name for the schema's post-parse type-check pass.
-    fn parse_field(&mut self, rule_sites: &mut Vec<RuleSite>) -> Result<FieldDefinition, DslError> {
+    /// [`Parser::current_field_rules`]) into `rule_sites`, and any `@exportable`
+    /// annotation spans (in [`Parser::current_field_exportable_spans`]) into
+    /// `exportable_sites`, tagging each with the just-parsed field name for the
+    /// schema's post-parse type-check and fail-closed passes.
+    fn parse_field(
+        &mut self,
+        rule_sites: &mut Vec<RuleSite>,
+        exportable_sites: &mut Vec<ExportableSite>,
+    ) -> Result<FieldDefinition, DslError> {
         let name_tok = self.expect_ident("field name")?;
         let field_name =
             FieldName::new(&name_tok.text).map_err(|_| DslError::InvalidFieldName {
@@ -613,6 +757,12 @@ impl Parser {
                 field_name: field_name_str.clone(),
                 role,
                 expr,
+                span,
+            });
+        }
+        for span in self.current_field_exportable_spans.drain(..) {
+            exportable_sites.push(ExportableSite {
+                field_name: field_name_str.clone(),
                 span,
             });
         }
@@ -749,6 +899,37 @@ impl Parser {
                     expr.span,
                 ));
                 Ok(FieldAnnotation::Default { expr: expr.value })
+            }
+            "exportable" => {
+                self.current_field_exportable_spans
+                    .push(name_tok.span.clone());
+                if self.peek_token() == Some(&Token::LParen) {
+                    self.expect(&Token::LParen)?;
+                    let key_tok = self.expect_ident("export flatten parameter (flatten)")?;
+                    if key_tok.text != "flatten" {
+                        return Err(DslError::UnexpectedToken {
+                            expected: "'flatten'".to_string(),
+                            found: format!("'{}'", key_tok.text),
+                            span: key_tok.span,
+                        });
+                    }
+                    self.expect(&Token::Colon)?;
+                    let hint_tok = self.expect_ident("flatten hint (json)")?;
+                    let flatten =
+                        ExportFlatten::from_str(&hint_tok.text).map_err(|()| {
+                            DslError::UnknownExportFlatten {
+                                value: hint_tok.text.clone(),
+                                valid: VALID_EXPORT_FLATTEN,
+                                span: hint_tok.span.clone(),
+                            }
+                        })?;
+                    self.expect(&Token::RParen)?;
+                    Ok(FieldAnnotation::Exportable {
+                        flatten: Some(flatten),
+                    })
+                } else {
+                    Ok(FieldAnnotation::Exportable { flatten: None })
+                }
             }
             other => Err(DslError::UnknownAnnotation {
                 name: other.to_string(),
@@ -1299,7 +1480,22 @@ impl Parser {
         // inside a composite are collected into a throwaway buffer (the #104
         // type-check pass keys on top-level schema field names).
         let mut composite_rule_sites: Vec<RuleSite> = Vec::new();
-        let fields = self.parse_fields(&mut composite_rule_sites)?;
+        let mut composite_exportable_sites: Vec<ExportableSite> = Vec::new();
+        let fields = self.parse_fields(&mut composite_rule_sites, &mut composite_exportable_sites)?;
+
+        // `@exportable` is a top-level field opt-in; a composite sub-field cannot
+        // carry it (the whole composite is exported as a single value). Reject it
+        // rather than silently dropping the gate, which would be fail-open.
+        if let Some(site) = composite_exportable_sites.first() {
+            let (line, column) = line_col_at(&self.source, site.span.start);
+            return Err(DslError::ExportableWithoutExport {
+                field: site.field_name.clone(),
+                schema: "<composite>".to_string(),
+                line,
+                column,
+                span: site.span.clone(),
+            });
+        }
 
         self.expect(&Token::RBrace)?;
 
@@ -1463,6 +1659,21 @@ impl Parser {
             }),
             None => Err(DslError::UnexpectedEndOfInput {
                 expected: "integer literal".to_string(),
+            }),
+        }
+    }
+
+    fn expect_bool_literal(&mut self) -> Result<bool, DslError> {
+        match self.advance() {
+            Some(st) if st.token == Token::True => Ok(true),
+            Some(st) if st.token == Token::False => Ok(false),
+            Some(st) => Err(DslError::UnexpectedToken {
+                expected: "boolean literal (true or false)".to_string(),
+                found: format!("{} ('{}')", st.token.description(), st.text),
+                span: st.span,
+            }),
+            None => Err(DslError::UnexpectedEndOfInput {
+                expected: "boolean literal (true or false)".to_string(),
             }),
         }
     }
@@ -3621,5 +3832,223 @@ schema B { title: text @list(primary) }"#,
             &errs[0],
             DslError::CrossEntityReadUnknownRelation { relation, .. } if relation == "nope"
         ));
+    }
+
+    // -- @export / @exportable --
+
+    #[test]
+    fn parse_export_full() {
+        let schema = parse_one(
+            r#"@export(formats: [csv, ndjson, xlsx], bundle_files: false, max_rows: 100000)
+            schema Report {
+                title: text @exportable
+            }"#,
+        );
+        let export = schema
+            .annotations
+            .iter()
+            .find_map(|a| match a {
+                Annotation::Export {
+                    formats,
+                    bundle_files,
+                    max_rows,
+                } => Some((formats.clone(), *bundle_files, *max_rows)),
+                _ => None,
+            })
+            .expect("expected @export annotation");
+        assert_eq!(
+            export.0,
+            vec![ExportFormat::Csv, ExportFormat::Ndjson, ExportFormat::Xlsx]
+        );
+        assert!(!export.1);
+        assert_eq!(export.2, 100_000);
+    }
+
+    #[test]
+    fn parse_export_zip_and_bundle_files_true() {
+        let schema = parse_one(
+            r#"@export(formats: [zip], bundle_files: true, max_rows: 10)
+            schema Report { title: text @exportable }"#,
+        );
+        assert!(schema.annotations.iter().any(|a| matches!(
+            a,
+            Annotation::Export { formats, bundle_files, max_rows }
+                if *formats == vec![ExportFormat::Zip] && *bundle_files && *max_rows == 10
+        )));
+    }
+
+    #[test]
+    fn parse_export_bundle_files_defaults_false() {
+        let schema = parse_one(
+            r#"@export(formats: [csv], max_rows: 5)
+            schema Report { title: text @exportable }"#,
+        );
+        assert!(schema.annotations.iter().any(|a| matches!(
+            a,
+            Annotation::Export { bundle_files, .. } if !*bundle_files
+        )));
+    }
+
+    #[test]
+    fn parse_export_rejects_unknown_format() {
+        let errs = parse(
+            r#"@export(formats: [csv, yaml], max_rows: 5)
+            schema Report { title: text }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &errs[0],
+            DslError::UnknownExportFormat { value, .. } if value == "yaml"
+        ));
+    }
+
+    #[test]
+    fn parse_export_rejects_empty_formats() {
+        let errs = parse(
+            r#"@export(formats: [], max_rows: 5)
+            schema Report { title: text }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(&errs[0], DslError::EmptyExportFormats { .. }));
+    }
+
+    #[test]
+    fn parse_export_rejects_missing_max_rows() {
+        let errs = parse(
+            r#"@export(formats: [csv])
+            schema Report { title: text }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &errs[0],
+            DslError::MissingExportParam { param, .. } if *param == "max_rows"
+        ));
+    }
+
+    #[test]
+    fn parse_export_rejects_missing_formats() {
+        let errs = parse(
+            r#"@export(max_rows: 5)
+            schema Report { title: text }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &errs[0],
+            DslError::MissingExportParam { param, .. } if *param == "formats"
+        ));
+    }
+
+    #[test]
+    fn parse_export_rejects_unknown_param() {
+        let errs = parse(
+            r#"@export(formats: [csv], max_rows: 5, frequency: 3)
+            schema Report { title: text }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(&errs[0], DslError::UnexpectedToken { .. }));
+    }
+
+    #[test]
+    fn parse_exportable_bare() {
+        let schema = parse_one(
+            r#"@export(formats: [csv], max_rows: 5)
+            schema Report { title: text @exportable }"#,
+        );
+        assert!(schema.fields[0]
+            .annotations
+            .iter()
+            .any(|a| matches!(a, FieldAnnotation::Exportable { flatten: None })));
+    }
+
+    #[test]
+    fn parse_exportable_flatten_json() {
+        let schema = parse_one(
+            r#"@export(formats: [ndjson], max_rows: 5)
+            schema Report { tags: text[] @exportable(flatten: json) }"#,
+        );
+        assert!(schema.fields[0].annotations.iter().any(|a| matches!(
+            a,
+            FieldAnnotation::Exportable {
+                flatten: Some(ExportFlatten::Json)
+            }
+        )));
+    }
+
+    #[test]
+    fn parse_exportable_rejects_unknown_flatten() {
+        let errs = parse(
+            r#"@export(formats: [csv], max_rows: 5)
+            schema Report { title: text @exportable(flatten: xml) }"#,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &errs[0],
+            DslError::UnknownExportFlatten { value, .. } if value == "xml"
+        ));
+    }
+
+    #[test]
+    fn exportable_without_export_is_rejected_fail_closed() {
+        let errs = parse("schema Report { title: text @exportable }").unwrap_err();
+        assert_eq!(errs.len(), 1);
+        match &errs[0] {
+            DslError::ExportableWithoutExport {
+                field,
+                schema,
+                line,
+                column,
+                ..
+            } => {
+                assert_eq!(field, "title");
+                assert_eq!(schema, "Report");
+                // The `@exportable` annotation sits on the single source line at
+                // the documented column of its bare identifier (after the `@`).
+                assert_eq!(*line, 1);
+                assert_eq!(*column, 30);
+            }
+            other => panic!("expected ExportableWithoutExport, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exportable_without_export_reports_first_offender_line() {
+        let source = "@version(1)\nschema Report {\n    title: text @exportable\n}";
+        let errs = parse(source).unwrap_err();
+        match &errs[0] {
+            DslError::ExportableWithoutExport { line, .. } => assert_eq!(*line, 3),
+            other => panic!("expected ExportableWithoutExport, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exportable_inside_composite_is_rejected() {
+        let source = r#"@export(formats: [csv], max_rows: 5)
+        schema Report {
+            meta: composite {
+                note: text @exportable
+            }
+        }"#;
+        let errs = parse(source).unwrap_err();
+        assert!(matches!(
+            &errs[0],
+            DslError::ExportableWithoutExport { field, .. } if field == "note"
+        ));
+    }
+
+    #[test]
+    fn export_annotation_display_roundtrips_through_parse() {
+        let schema = parse_one(
+            r#"@export(formats: [csv, zip], bundle_files: true, max_rows: 42)
+            schema Report { title: text @exportable }"#,
+        );
+        let export = schema
+            .annotations
+            .iter()
+            .find(|a| matches!(a, Annotation::Export { .. }))
+            .expect("expected @export");
+        assert_eq!(
+            export.to_string(),
+            "@export(formats: [csv, zip], bundle_files: true, max_rows: 42)"
+        );
     }
 }
