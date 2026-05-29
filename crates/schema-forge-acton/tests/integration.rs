@@ -1322,8 +1322,8 @@ async fn put_missing_required_field_suggests_patch() {
 /// Applies migrations and stores metadata so the backend has live tables.
 async fn setup_paired_schemas() -> (AppState<SchemaForgeConfig>, Router) {
     use schema_forge_core::types::{
-        Cardinality, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaDefinition,
-        SchemaId, SchemaName, TextConstraints,
+        Annotation, Cardinality, FieldDefinition, FieldModifier, FieldName, FieldType,
+        SchemaDefinition, SchemaId, SchemaName, TextConstraints,
     };
 
     let backend = SurrealBackend::connect_memory("test", "test")
@@ -1348,7 +1348,11 @@ async fn setup_paired_schemas() -> (AppState<SchemaForgeConfig>, Router) {
                 },
             ),
         ],
-        vec![],
+        // `@display("title")` so a relation_one → Opportunity resolves a
+        // `<field>__display` sibling (regression coverage for #87).
+        vec![Annotation::Display {
+            field: FieldName::new("title").unwrap(),
+        }],
     )
     .unwrap();
 
@@ -1510,6 +1514,70 @@ async fn derived_collection_populated_on_list() {
         let docs = entity["fields"]["documents"].as_array().unwrap();
         assert_eq!(docs.len(), 2, "each parent should see its two children");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relation_one_display_sibling_resolves_on_surrealdb() {
+    // Regression for #87: `Document.opportunity` is relation_one → Opportunity,
+    // and Opportunity carries `@display("title")`. On the SurrealDB backend the
+    // display-resolve query filtered the target table with `id IN ['…']`, which
+    // never matched the Thing-typed `id`, so `opportunity__display` came back
+    // empty. Both single-GET and list must now carry the resolved sibling.
+    let (_state, app) = setup_paired_schemas().await;
+
+    let (status, opp) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Opportunity/entities",
+        Some(serde_json::json!({ "fields": { "title": "Platform v2.0" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let opp_id = opp["id"].as_str().unwrap().to_string();
+
+    let (status, doc) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Document/entities",
+        Some(serde_json::json!({
+            "fields": { "title": "Spec sheet", "opportunity": opp_id }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let doc_id = doc["id"].as_str().unwrap().to_string();
+
+    // Single GET.
+    let (status, body) = json_request(
+        &app,
+        Method::GET,
+        &format!("/schemas/Document/entities/{doc_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["fields"]["opportunity"].as_str(),
+        Some(opp_id.as_str()),
+        "raw relation id should still be present"
+    );
+    assert_eq!(
+        body["fields"]["opportunity__display"].as_str(),
+        Some("Platform v2.0"),
+        "single GET must carry the resolved __display sibling: {body}"
+    );
+
+    // List.
+    let (status, body) =
+        json_request(&app, Method::GET, "/schemas/Document/entities", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let entities = body["entities"].as_array().unwrap();
+    assert_eq!(entities.len(), 1);
+    assert_eq!(
+        entities[0]["fields"]["opportunity__display"].as_str(),
+        Some("Platform v2.0"),
+        "list must carry the resolved __display sibling: {body}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

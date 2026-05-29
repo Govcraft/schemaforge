@@ -200,8 +200,10 @@ pub fn filter_to_surql_with_schema(
 }
 
 /// If `path` is a single-segment field on `schema` typed as a relation,
-/// emit the value as a record-link literal. Otherwise fall back to the
-/// generic literal renderer.
+/// emit the value as a record-link literal. The implicit `id` primary key is
+/// handled the same way against the query's own table: SurrealDB's `id` is a
+/// `Thing`, so an `id IN ['…']` comparison against plain string literals never
+/// matches. Other paths fall back to the generic literal renderer.
 fn value_for_path(
     value: &DynamicValue,
     path: &FieldPath,
@@ -210,6 +212,11 @@ fn value_for_path(
     if let Some(schema) = schema {
         let segments: Vec<&str> = path.segments().iter().map(|s| s.as_str()).collect();
         if segments.len() == 1 {
+            // `id` is the implicit primary key (not a declared field), so it
+            // resolves against this schema's own table as a record link.
+            if segments[0] == "id" {
+                return relation_value_literal(value, schema.name.as_str());
+            }
             if let Some(field) = schema.field(segments[0]) {
                 if let FieldType::Relation { target, .. } = &field.field_type {
                     return relation_value_literal(value, target.as_str());
@@ -520,6 +527,48 @@ mod tests {
         assert!(sql.contains("ORDER BY name ASC"));
         assert!(sql.contains("LIMIT 10"));
         assert!(sql.contains("START 0"));
+    }
+
+    #[test]
+    fn id_in_filter_emits_record_links_not_strings() {
+        // Regression for #87: the relation-display resolve query filters the
+        // target table with `id IN [referenced ids]`. SurrealDB's `id` is a
+        // `Thing`, so plain string literals never match and the `__display`
+        // siblings come back empty. `id` is the implicit primary key (not a
+        // declared field), so it must resolve against the query's own table.
+        use schema_forge_core::types::{FieldDefinition, FieldName, SchemaName, TextConstraints};
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Project").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![],
+        )
+        .expect("schema definition must be valid");
+
+        let q = Query::new(schema.id.clone())
+            .with_projection(vec!["id".to_string(), "name".to_string()])
+            .with_filter(Filter::in_set(
+                FieldPath::single("id"),
+                vec![
+                    DynamicValue::Text("project_01ksrhny5cfqr80wmspkk9rhbn".into()),
+                    DynamicValue::Text("project_02abc".into()),
+                ],
+            ));
+        let sql = query_to_surql_with_schema(&q, "Project", Some(&schema));
+        assert_eq!(
+            sql,
+            "SELECT id, name FROM Project WHERE id IN \
+             [Project:`project_01ksrhny5cfqr80wmspkk9rhbn`, Project:`project_02abc`];"
+        );
+        // Guard against the regressed form (plain string literals).
+        assert!(
+            !sql.contains("'project_01ksrhny5cfqr80wmspkk9rhbn'"),
+            "id filter must not emit a plain string literal: {sql}"
+        );
     }
 
     #[test]
