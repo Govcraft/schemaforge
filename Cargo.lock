@@ -7273,6 +7273,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "schema-forge-cel"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "prost 0.14.3",
+ "prost-build",
+ "prost-types",
+ "tracing",
+]
+
+[[package]]
 name = "schema-forge-cli"
 version = "0.33.0"
 dependencies = [
