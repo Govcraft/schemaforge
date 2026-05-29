@@ -5,6 +5,11 @@
 //! We use the `surrealdb::sql` module types (re-exported from `surrealdb_core`)
 //! for pattern matching on query results. Construction of composite values
 //! goes through the public `surrealdb::Object` wrapper which exposes `insert`.
+//!
+//! A SchemaForge `duration` is a signed [`chrono::TimeDelta`], but SurrealDB's
+//! native `duration` type is unsigned. A negative duration therefore cannot be
+//! stored faithfully and is REJECTED fail-closed on write (see
+//! [`first_negative_duration`]); it is never silently coerced to NULL.
 
 use std::collections::BTreeMap;
 
@@ -25,6 +30,9 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
             // Store as ISO 8601 string — the literal serializer in backend.rs
             // will wrap it with d'...' for SurrealQL datetime fields.
             SurrealValue::from(dt.to_rfc3339())
+        }
+        DynamicValue::Duration(d) => {
+            timedelta_to_surreal_duration(d).map_or(SurrealValue::None, SurrealValue::Duration)
         }
         DynamicValue::Enum(s) => SurrealValue::from(s.as_str()),
         DynamicValue::Json(v) => json_to_surreal(v),
@@ -81,6 +89,13 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
             // surrealdb_core::sql::Datetime wraps chrono::DateTime<Utc> as pub field .0
             let chrono_dt: chrono::DateTime<chrono::Utc> = dt.0;
             Ok(DynamicValue::DateTime(chrono_dt))
+        }
+        SurrealValue::Duration(dur) => {
+            // surrealdb::sql::Duration wraps an unsigned std::time::Duration.
+            let delta = chrono::TimeDelta::from_std(dur.0).map_err(|e| BackendError::Internal {
+                message: format!("duration out of representable range: {e}"),
+            })?;
+            Ok(DynamicValue::Duration(delta))
         }
         SurrealValue::Array(arr) => {
             let items: Result<Vec<DynamicValue>, BackendError> =
@@ -168,6 +183,40 @@ fn extract_id_string(value: &SurrealValue) -> Result<String, BackendError> {
     }
 }
 
+/// Convert a signed `chrono::TimeDelta` to SurrealDB's native (unsigned)
+/// `surrealdb::sql::Duration`.
+///
+/// SurrealDB durations wrap an unsigned `std::time::Duration`, so a negative
+/// `TimeDelta` has no native representation and yields `None`. A negative value
+/// must NEVER be silently coerced to NULL on write — the write path
+/// ([`crate::backend`]) rejects it fail-closed via
+/// [`first_negative_duration`] before this conversion is reached. Practical
+/// `duration` field uses on a records platform (retention windows, TTLs, SLA
+/// timers) are non-negative, so `None` here is only ever the unreachable
+/// belt-and-braces case for an already-validated value.
+fn timedelta_to_surreal_duration(d: &chrono::TimeDelta) -> Option<surrealdb::sql::Duration> {
+    d.to_std().ok().map(surrealdb::sql::Duration::from)
+}
+
+/// Find the first negative `duration` anywhere in a value tree.
+///
+/// SurrealDB's native `duration` type is unsigned, so a negative
+/// [`chrono::TimeDelta`] cannot be stored faithfully. The write path uses this
+/// to reject such a value with a clear error rather than silently dropping it
+/// to NULL. Recurses through arrays and composites so a negative duration
+/// nested inside a `duration[]` field or a composite is also caught.
+///
+/// Returns the offending [`chrono::TimeDelta`] (the first encountered) or
+/// `None` when every duration in the tree is non-negative.
+pub(crate) fn first_negative_duration(value: &DynamicValue) -> Option<chrono::TimeDelta> {
+    match value {
+        DynamicValue::Duration(d) if *d < chrono::TimeDelta::zero() => Some(*d),
+        DynamicValue::Array(items) => items.iter().find_map(first_negative_duration),
+        DynamicValue::Composite(map) => map.values().find_map(first_negative_duration),
+        _ => None,
+    }
+}
+
 /// Convert a `serde_json::Value` to a `surrealdb::sql::Value`.
 fn json_to_surreal(json: &serde_json::Value) -> SurrealValue {
     match json {
@@ -243,6 +292,74 @@ mod tests {
         let sv = dynamic_to_surreal(&dv);
         let back = surreal_to_dynamic(&sv).unwrap();
         assert_eq!(back, DynamicValue::Boolean(true));
+    }
+
+    #[test]
+    fn duration_round_trip_positive() {
+        let dv = DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000));
+        let sv = dynamic_to_surreal(&dv);
+        assert!(matches!(sv, SurrealValue::Duration(_)));
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert_eq!(back, dv);
+    }
+
+    #[test]
+    fn duration_round_trip_subsecond() {
+        let dv = DynamicValue::Duration(
+            chrono::TimeDelta::seconds(5) + chrono::TimeDelta::nanoseconds(123_456),
+        );
+        let sv = dynamic_to_surreal(&dv);
+        let back = surreal_to_dynamic(&sv).unwrap();
+        assert_eq!(back, dv);
+    }
+
+    #[test]
+    fn first_negative_duration_detects_top_level() {
+        let dv = DynamicValue::Duration(chrono::TimeDelta::seconds(-5));
+        assert_eq!(
+            first_negative_duration(&dv),
+            Some(chrono::TimeDelta::seconds(-5))
+        );
+    }
+
+    #[test]
+    fn first_negative_duration_ignores_non_negative() {
+        assert_eq!(
+            first_negative_duration(&DynamicValue::Duration(chrono::TimeDelta::seconds(5))),
+            None
+        );
+        assert_eq!(
+            first_negative_duration(&DynamicValue::Duration(chrono::TimeDelta::zero())),
+            None
+        );
+        assert_eq!(
+            first_negative_duration(&DynamicValue::Integer(-9)),
+            None,
+            "a negative integer is not a duration"
+        );
+    }
+
+    #[test]
+    fn first_negative_duration_recurses_into_array_and_composite() {
+        let arr = DynamicValue::Array(vec![
+            DynamicValue::Duration(chrono::TimeDelta::seconds(5)),
+            DynamicValue::Duration(chrono::TimeDelta::seconds(-3)),
+        ]);
+        assert_eq!(
+            first_negative_duration(&arr),
+            Some(chrono::TimeDelta::seconds(-3))
+        );
+
+        let mut map = BTreeMap::new();
+        map.insert(
+            "ttl".to_string(),
+            DynamicValue::Duration(chrono::TimeDelta::seconds(-1)),
+        );
+        let comp = DynamicValue::Composite(map);
+        assert_eq!(
+            first_negative_duration(&comp),
+            Some(chrono::TimeDelta::seconds(-1))
+        );
     }
 
     #[test]

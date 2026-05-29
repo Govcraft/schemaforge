@@ -20,6 +20,7 @@ pub enum FieldType {
     Float(FloatConstraints),
     Boolean,
     DateTime,
+    Duration,
     Enum(EnumVariants),
     Json,
     Relation {
@@ -40,6 +41,7 @@ impl std::fmt::Display for FieldType {
             Self::Float(_) => write!(f, "Float"),
             Self::Boolean => write!(f, "Boolean"),
             Self::DateTime => write!(f, "DateTime"),
+            Self::Duration => write!(f, "Duration"),
             Self::Enum(v) => write!(f, "Enum{v}"),
             Self::Json => write!(f, "Json"),
             Self::Relation {
@@ -61,6 +63,7 @@ mod tests {
     fn display_simple_types() {
         assert_eq!(FieldType::Boolean.to_string(), "Boolean");
         assert_eq!(FieldType::DateTime.to_string(), "DateTime");
+        assert_eq!(FieldType::Duration.to_string(), "Duration");
         assert_eq!(FieldType::RichText.to_string(), "RichText");
         assert_eq!(FieldType::Json.to_string(), "Json");
     }
@@ -91,6 +94,7 @@ mod tests {
         for ft in [
             FieldType::Boolean,
             FieldType::DateTime,
+            FieldType::Duration,
             FieldType::RichText,
             FieldType::Json,
         ] {

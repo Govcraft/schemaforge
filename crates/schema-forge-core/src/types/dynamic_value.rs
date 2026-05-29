@@ -15,6 +15,7 @@ pub enum DynamicValue {
     Float(f64),
     Boolean(bool),
     DateTime(chrono::DateTime<chrono::Utc>),
+    Duration(chrono::TimeDelta),
     Enum(String),
     Json(serde_json::Value),
     Array(Vec<DynamicValue>),
@@ -32,6 +33,7 @@ impl std::fmt::Display for DynamicValue {
             Self::Float(v) => write!(f, "{v}"),
             Self::Boolean(b) => write!(f, "{b}"),
             Self::DateTime(dt) => write!(f, "{dt}"),
+            Self::Duration(d) => write!(f, "{}", super::duration::format_go_duration(d)),
             Self::Enum(s) => write!(f, "{s}"),
             Self::Json(v) => write!(f, "{v}"),
             Self::Array(arr) => {
@@ -156,6 +158,21 @@ mod tests {
     fn serde_roundtrip_datetime() {
         let dt = chrono::Utc::now();
         let v = DynamicValue::DateTime(dt);
+        let json = serde_json::to_string(&v).unwrap();
+        let back: DynamicValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, back);
+    }
+
+    #[test]
+    fn display_duration() {
+        let v = DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000));
+        assert_eq!(v.to_string(), "220752000s");
+    }
+
+    #[test]
+    fn serde_roundtrip_duration() {
+        let d = chrono::TimeDelta::seconds(220_752_000) + chrono::TimeDelta::nanoseconds(123);
+        let v = DynamicValue::Duration(d);
         let json = serde_json::to_string(&v).unwrap();
         let back: DynamicValue = serde_json::from_str(&json).unwrap();
         assert_eq!(v, back);

@@ -657,6 +657,13 @@ fn convert_json_with_type_hint(
             serde_json::Value::Null => Ok(DynamicValue::Null),
             _ => Err(format!("expected datetime string, got {value}")),
         },
+        FieldType::Duration => match value {
+            serde_json::Value::String(s) => schema_forge_core::types::parse_go_duration(s)
+                .map(DynamicValue::Duration)
+                .map_err(|e| format!("invalid duration '{s}': {e}")),
+            serde_json::Value::Null => Ok(DynamicValue::Null),
+            _ => Err(format!("expected duration string, got {value}")),
+        },
         FieldType::Enum(_) => match value {
             serde_json::Value::String(s) => Ok(DynamicValue::Enum(s.clone())),
             serde_json::Value::Null => Ok(DynamicValue::Null),
@@ -784,6 +791,13 @@ fn coerce_dynamic_value_with_type_hint(
                 .map(DynamicValue::DateTime)
                 .map_err(|e| format!("invalid datetime '{s}': {e}")),
             other => Err(format!("expected datetime, got {other}")),
+        },
+        FieldType::Duration => match value {
+            DynamicValue::Duration(_) | DynamicValue::Null => Ok(value),
+            DynamicValue::Text(s) => schema_forge_core::types::parse_go_duration(&s)
+                .map(DynamicValue::Duration)
+                .map_err(|e| format!("invalid duration '{s}': {e}")),
+            other => Err(format!("expected duration, got {other}")),
         },
         FieldType::Enum(_) => match value {
             DynamicValue::Enum(_) | DynamicValue::Null => Ok(value),
@@ -3543,6 +3557,42 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("invalid datetime"), "unexpected error: {err}");
         assert!(err.contains("not-a-date"));
+    }
+
+    #[test]
+    fn coerce_duration_from_text_succeeds() {
+        let result = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Text("220752000s".into()),
+            &FieldType::Duration,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000))
+        );
+    }
+
+    #[test]
+    fn coerce_duration_from_text_invalid_returns_err() {
+        let err = coerce_dynamic_value_with_type_hint(
+            DynamicValue::Text("not-a-duration".into()),
+            &FieldType::Duration,
+        )
+        .unwrap_err();
+        assert!(err.contains("invalid duration"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn convert_duration_json_string_parses() {
+        let result = convert_json_with_type_hint(
+            &serde_json::json!("2555d"),
+            &FieldType::Duration,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000))
+        );
     }
 
     #[test]

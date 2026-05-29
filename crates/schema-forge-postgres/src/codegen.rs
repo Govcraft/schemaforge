@@ -267,6 +267,12 @@ pub fn field_type_to_pg(field_type: &FieldType) -> String {
         FieldType::Float(_) => "DOUBLE PRECISION".to_string(),
         FieldType::Boolean => "BOOLEAN".to_string(),
         FieldType::DateTime => "TIMESTAMPTZ".to_string(),
+        // A `duration` is stored as a signed count of nanoseconds in a BIGINT:
+        // exact, range-comparable, and indexable. Postgres `INTERVAL` cannot
+        // round-trip a chrono `TimeDelta` losslessly, so nanoseconds are used.
+        // Durations whose magnitude exceeds the i64-nanosecond range (~292
+        // years) are out of range and fail closed on write.
+        FieldType::Duration => "BIGINT".to_string(),
         FieldType::Enum(_) => "TEXT".to_string(),
         FieldType::Json => "JSONB".to_string(),
         FieldType::Relation {
@@ -387,6 +393,11 @@ fn dynamic_value_to_sql_literal(value: &schema_forge_core::types::DynamicValue) 
         DynamicValue::Float(f) => format!("{f}"),
         DynamicValue::Boolean(b) => b.to_string(),
         DynamicValue::DateTime(dt) => format!("'{}'", dt.to_rfc3339()),
+        // Stored as a signed nanosecond count (see `field_type_to_pg`).
+        // Out-of-range durations cannot be represented; fall back to NULL.
+        DynamicValue::Duration(d) => d
+            .num_nanoseconds()
+            .map_or_else(|| "NULL".to_string(), |n| n.to_string()),
         DynamicValue::Enum(s) => format!("'{}'", escape_sql_string(s)),
         _ => "NULL".to_string(),
     }
@@ -666,6 +677,7 @@ mod tests {
         );
         assert_eq!(field_type_to_pg(&FieldType::Boolean), "BOOLEAN");
         assert_eq!(field_type_to_pg(&FieldType::DateTime), "TIMESTAMPTZ");
+        assert_eq!(field_type_to_pg(&FieldType::Duration), "BIGINT");
         assert_eq!(field_type_to_pg(&FieldType::Json), "JSONB");
         assert_eq!(
             field_type_to_pg(&FieldType::Array(Box::new(FieldType::Boolean))),

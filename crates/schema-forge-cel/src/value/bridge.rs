@@ -41,6 +41,7 @@ pub fn dynamic_to_cel(v: &DynamicValue) -> Result<CelValue, ConversionError> {
         DynamicValue::Float(f) => Ok(CelValue::Double(*f)),
         DynamicValue::Boolean(b) => Ok(CelValue::Bool(*b)),
         DynamicValue::DateTime(dt) => Ok(CelValue::Timestamp(*dt)),
+        DynamicValue::Duration(d) => Ok(CelValue::Duration(*d)),
         DynamicValue::Enum(s) => Ok(CelValue::String(s.clone())),
         DynamicValue::Json(j) => json_to_cel(j),
         DynamicValue::Array(items) => {
@@ -151,7 +152,7 @@ pub fn cel_to_dynamic(v: &CelValue) -> Result<DynamicValue, ConversionError> {
             Ok(DynamicValue::Composite(out))
         }
         CelValue::Bytes(_) => Err(ConversionError::Unsupported("bytes".to_string())),
-        CelValue::Duration(_) => Err(ConversionError::Unsupported("duration".to_string())),
+        CelValue::Duration(d) => Ok(DynamicValue::Duration(*d)),
         CelValue::Type(_) => Err(ConversionError::Unsupported("type".to_string())),
         // A present optional unwraps to its inner value (recursively); an absent
         // optional has no storage representation and fails closed — we never
@@ -214,6 +215,17 @@ mod tests {
         let d = DynamicValue::DateTime(dt);
         let c = dynamic_to_cel(&d).unwrap();
         assert_eq!(c, CelValue::Timestamp(dt));
+        assert_eq!(cel_to_dynamic(&c).unwrap(), d);
+    }
+
+    #[test]
+    fn roundtrip_duration() {
+        let d = DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000));
+        let c = dynamic_to_cel(&d).unwrap();
+        assert_eq!(
+            c,
+            CelValue::Duration(chrono::TimeDelta::seconds(220_752_000))
+        );
         assert_eq!(cel_to_dynamic(&c).unwrap(), d);
     }
 
@@ -347,9 +359,9 @@ mod tests {
     }
 
     #[test]
-    fn duration_unsupported() {
-        let err = cel_to_dynamic(&CelValue::Duration(chrono::TimeDelta::seconds(1))).unwrap_err();
-        assert_eq!(err, ConversionError::Unsupported("duration".to_string()));
+    fn cel_duration_maps_to_dynamic_duration() {
+        let got = cel_to_dynamic(&CelValue::Duration(chrono::TimeDelta::seconds(1))).unwrap();
+        assert_eq!(got, DynamicValue::Duration(chrono::TimeDelta::seconds(1)));
     }
 
     #[test]

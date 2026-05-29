@@ -16,7 +16,7 @@ use surrealdb::Surreal;
 
 use crate::codegen::migration_step_to_surql;
 use crate::query::{count_to_surql_with_schema, query_to_surql_with_schema};
-use crate::value::{entity_to_surreal_map, surreal_to_dynamic};
+use crate::value::{entity_to_surreal_map, first_negative_duration, surreal_to_dynamic};
 
 /// The schema metadata table name used to store `SchemaDefinition` records.
 const SCHEMA_META_TABLE: &str = "_schema_metadata";
@@ -199,6 +199,23 @@ impl SurrealBackend {
         for (k, v) in &field_map {
             if k == "id" {
                 continue;
+            }
+
+            // Fail closed on a negative duration: SurrealDB's native `duration`
+            // type is unsigned, so a negative value cannot be stored faithfully.
+            // Reject the write with a clear, actionable error rather than
+            // silently coercing the supplied value to NULL.
+            if let Some(field_value) = entity.fields.get(k.as_str()) {
+                if let Some(neg) = first_negative_duration(field_value) {
+                    return Err(BackendError::ValidationFailed {
+                        field: k.clone(),
+                        reason: format!(
+                            "SurrealDB duration columns are unsigned; negative duration {} \
+                             cannot be stored",
+                            schema_forge_core::types::format_go_duration(&neg)
+                        ),
+                    });
+                }
             }
 
             let literal = match (
@@ -622,6 +639,9 @@ fn field_surreal_value_to_literal(value: &surrealdb::sql::Value) -> String {
             }
         }
         surrealdb::sql::Value::Datetime(dt) => format!("d'{}'", dt.0.to_rfc3339()),
+        // Duration literals are bare in SurrealQL (e.g. `2w3d`); the Display impl
+        // produces a parseable form.
+        surrealdb::sql::Value::Duration(dur) => dur.to_string(),
         surrealdb::sql::Value::Array(arr) => {
             let items: Vec<String> = arr.iter().map(field_surreal_value_to_literal).collect();
             format!("[{}]", items.join(", "))
@@ -674,6 +694,42 @@ mod tests {
         let strand = surrealdb::sql::Strand::from("entity_abc123");
         let strand_val = surrealdb::sql::Value::Strand(strand);
         assert_eq!(extract_id_from_surreal(&strand_val), "entity_abc123");
+    }
+
+    #[tokio::test]
+    async fn create_with_negative_duration_is_rejected() {
+        use std::collections::BTreeMap;
+
+        let backend = SurrealBackend::connect_memory("test", "test")
+            .await
+            .expect("failed to connect to in-memory SurrealDB");
+
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "retention".to_string(),
+            DynamicValue::Duration(chrono::TimeDelta::seconds(-5)),
+        );
+        let entity = Entity::new(SchemaName::new("Record").unwrap(), fields);
+
+        let result = backend.create(&entity).await;
+        match result {
+            Err(BackendError::ValidationFailed { field, reason }) => {
+                assert_eq!(field, "retention");
+                assert!(
+                    reason.contains("unsigned") && reason.contains("-5s"),
+                    "error should explain the unsigned constraint and echo the value, got: {reason}"
+                );
+            }
+            other => panic!("expected ValidationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duration_literal_is_bare() {
+        let dur = surrealdb::sql::Duration::from(std::time::Duration::from_secs(3600));
+        let val = surrealdb::sql::Value::Duration(dur);
+        // Bare SurrealQL duration literal, no quotes.
+        assert_eq!(field_surreal_value_to_literal(&val), "1h");
     }
 
     #[test]

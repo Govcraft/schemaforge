@@ -276,6 +276,7 @@ pub fn field_type_to_inferred(ft: &FieldType) -> InferredType {
         FieldType::Float(_) => InferredType::Known(CelType::Double),
         FieldType::Boolean => InferredType::Known(CelType::Bool),
         FieldType::DateTime => InferredType::Known(CelType::Timestamp),
+        FieldType::Duration => InferredType::Known(CelType::Duration),
         FieldType::Enum(_) => InferredType::Known(CelType::String),
         FieldType::Json => InferredType::Dyn,
         FieldType::Relation { cardinality, .. } => match cardinality {
@@ -310,6 +311,7 @@ pub fn field_accepts(ft: &FieldType, inferred: &InferredType) -> bool {
         FieldType::Float(_) => matches!(t, CelType::Double | CelType::Int | CelType::Uint),
         FieldType::Boolean => t == CelType::Bool,
         FieldType::DateTime => matches!(t, CelType::Timestamp | CelType::String),
+        FieldType::Duration => matches!(t, CelType::Duration | CelType::String),
         FieldType::Enum(_) => t == CelType::String,
         // Accept anything: the mapping is complex/rare; avoid false positives.
         FieldType::Json | FieldType::Relation { .. } | FieldType::File(_) => true,
@@ -574,6 +576,10 @@ mod tests {
             field_type_to_inferred(&FieldType::DateTime),
             InferredType::Known(CelType::Timestamp)
         );
+        assert_eq!(
+            field_type_to_inferred(&FieldType::Duration),
+            InferredType::Known(CelType::Duration)
+        );
         assert_eq!(field_type_to_inferred(&FieldType::Json), InferredType::Dyn);
         assert_eq!(
             field_type_to_inferred(&FieldType::Relation {
@@ -623,6 +629,22 @@ mod tests {
         ));
         assert!(!field_accepts(
             &FieldType::DateTime,
+            &InferredType::Known(CelType::Int)
+        ));
+    }
+
+    #[test]
+    fn field_accepts_duration_accepts_duration_and_string() {
+        assert!(field_accepts(
+            &FieldType::Duration,
+            &InferredType::Known(CelType::Duration)
+        ));
+        assert!(field_accepts(
+            &FieldType::Duration,
+            &InferredType::Known(CelType::String)
+        ));
+        assert!(!field_accepts(
+            &FieldType::Duration,
             &InferredType::Known(CelType::Int)
         ));
     }
@@ -704,6 +726,24 @@ mod tests {
         let env = rule_type_env(std::iter::empty());
         let expr = parse("now()").unwrap();
         assert!(check_rule(RuleRole::Default, &FieldType::DateTime, &env, &expr).is_ok());
+    }
+
+    #[test]
+    fn check_require_timestamp_minus_now_against_duration_typechecks() {
+        // The retention rule from issue #96: `now - created_at < duration('220752000s')`.
+        // `now - created_at` is timestamp-timestamp = duration; comparing two durations
+        // yields a bool, which @require accepts.
+        let created = FieldType::DateTime;
+        let env = rule_type_env(std::iter::once(("created_at", &created)));
+        let expr = parse("now - created_at < duration('220752000s')").unwrap();
+        assert!(check_rule(RuleRole::Require, &FieldType::Boolean, &env, &expr).is_ok());
+    }
+
+    #[test]
+    fn check_compute_duration_assignable_to_duration_field() {
+        let env = rule_type_env(std::iter::empty());
+        let expr = parse("duration('60s')").unwrap();
+        assert!(check_rule(RuleRole::Compute, &FieldType::Duration, &env, &expr).is_ok());
     }
 
     // -- check_rule: fail cases --

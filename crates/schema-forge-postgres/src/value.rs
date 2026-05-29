@@ -56,6 +56,15 @@ pub fn bind_dynamic_value(
                 message: format!("failed to bind datetime: {e}"),
             })?;
         }
+        DynamicValue::Duration(d) => {
+            // Stored as a signed nanosecond count in a BIGINT column.
+            let nanos = d.num_nanoseconds().ok_or_else(|| BackendError::Internal {
+                message: "duration is out of the representable nanosecond range".to_string(),
+            })?;
+            args.add(nanos).map_err(|e| BackendError::Internal {
+                message: format!("failed to bind duration: {e}"),
+            })?;
+        }
         DynamicValue::Json(v) => {
             args.add(sqlx::types::Json(v))
                 .map_err(|e| BackendError::Internal {
@@ -125,6 +134,8 @@ fn bind_null(args: &mut PgArguments, field_type: Option<&FieldType>) -> Result<(
         Some(FieldType::Float(_)) => args.add(None::<f64>),
         Some(FieldType::Boolean) => args.add(None::<bool>),
         Some(FieldType::DateTime) => args.add(None::<chrono::DateTime<chrono::Utc>>),
+        // Stored as a BIGINT nanosecond count.
+        Some(FieldType::Duration) => args.add(None::<i64>),
         // Stored as jsonb.
         Some(FieldType::Json | FieldType::Composite(_) | FieldType::File(_)) => {
             args.add(None::<sqlx::types::Json<serde_json::Value>>)
@@ -175,6 +186,7 @@ fn bind_null_array(args: &mut PgArguments, inner: &FieldType) -> Result<(), Back
         FieldType::Float(_) => args.add(None::<Vec<f64>>),
         FieldType::Boolean => args.add(None::<Vec<bool>>),
         FieldType::DateTime => args.add(None::<Vec<chrono::DateTime<chrono::Utc>>>),
+        FieldType::Duration => args.add(None::<Vec<i64>>),
         // Nested arrays, composites, relations, etc. are stored as JSONB.
         _ => args.add(None::<sqlx::types::Json<serde_json::Value>>),
     };
@@ -229,6 +241,13 @@ fn bind_array(
                 })?;
                 return Ok(());
             }
+            FieldType::Duration => {
+                let items = array_items_as_duration_nanos(arr)?;
+                args.add(items).map_err(|e| BackendError::Internal {
+                    message: format!("failed to bind duration array: {e}"),
+                })?;
+                return Ok(());
+            }
             // Nested arrays, composites, relations, json, etc. -- fall through to JSONB.
             _ => {}
         }
@@ -265,6 +284,7 @@ fn dynamic_variant_name(value: &DynamicValue) -> &'static str {
         DynamicValue::Float(_) => "Float",
         DynamicValue::Boolean(_) => "Boolean",
         DynamicValue::DateTime(_) => "DateTime",
+        DynamicValue::Duration(_) => "Duration",
         DynamicValue::Enum(_) => "Enum",
         DynamicValue::Json(_) => "Json",
         DynamicValue::Array(_) => "Array",
@@ -327,6 +347,20 @@ fn array_items_as_datetimes(
         .map(|item| match item {
             DynamicValue::DateTime(dt) => Ok(*dt),
             other => Err(array_bind_mismatch(&FieldType::DateTime, other)),
+        })
+        .collect()
+}
+
+/// Collect a `duration[]` array as signed nanosecond counts for a BIGINT[] column.
+fn array_items_as_duration_nanos(arr: &[DynamicValue]) -> Result<Vec<i64>, BackendError> {
+    arr.iter()
+        .map(|item| match item {
+            DynamicValue::Duration(d) => {
+                d.num_nanoseconds().ok_or_else(|| BackendError::Internal {
+                    message: "duration is out of the representable nanosecond range".to_string(),
+                })
+            }
+            other => Err(array_bind_mismatch(&FieldType::Duration, other)),
         })
         .collect()
 }
@@ -411,6 +445,14 @@ fn read_column(
                     message: format!("failed to read datetime column '{col_name}': {e}"),
                 })?;
             Ok(DynamicValue::DateTime(v))
+        }
+        Some(FieldType::Duration) => {
+            let nanos: i64 = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read duration column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Duration(chrono::TimeDelta::nanoseconds(
+                nanos,
+            )))
         }
         Some(FieldType::Json) => {
             let v: sqlx::types::Json<serde_json::Value> =
@@ -524,6 +566,16 @@ fn read_array_column(
                 v.into_iter().map(DynamicValue::DateTime).collect(),
             ))
         }
+        FieldType::Duration => {
+            let v: Vec<i64> = row.try_get(col_name).map_err(|e| BackendError::Internal {
+                message: format!("failed to read duration array column '{col_name}': {e}"),
+            })?;
+            Ok(DynamicValue::Array(
+                v.into_iter()
+                    .map(|n| DynamicValue::Duration(chrono::TimeDelta::nanoseconds(n)))
+                    .collect(),
+            ))
+        }
         // Nested arrays, composites, relations, json, etc. -- fall back to JSONB.
         _ => {
             let v: sqlx::types::Json<serde_json::Value> =
@@ -544,6 +596,9 @@ fn dynamic_to_json(value: &DynamicValue) -> serde_json::Value {
         DynamicValue::Float(f) => serde_json::json!(*f),
         DynamicValue::Boolean(b) => serde_json::json!(*b),
         DynamicValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        DynamicValue::Duration(d) => {
+            serde_json::Value::String(schema_forge_core::types::format_go_duration(d))
+        }
         DynamicValue::Json(v) => v.clone(),
         DynamicValue::Array(arr) => {
             let items: Vec<serde_json::Value> = arr.iter().map(dynamic_to_json).collect();
@@ -702,6 +757,49 @@ mod tests {
 
         let mut args = PgArguments::default();
         assert!(bind_dynamic_value(&mut args, &DynamicValue::Enum("Active".into()), None).is_ok());
+
+        let mut args = PgArguments::default();
+        assert!(bind_dynamic_value(
+            &mut args,
+            &DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000)),
+            Some(&FieldType::Duration)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn duration_variant_name_is_duration() {
+        assert_eq!(
+            dynamic_variant_name(&DynamicValue::Duration(chrono::TimeDelta::seconds(1))),
+            "Duration"
+        );
+    }
+
+    #[test]
+    fn duration_nanos_roundtrip_via_timedelta() {
+        // The BIGINT representation is a signed nanosecond count; confirm the
+        // exact round-trip the read path relies on.
+        let d = chrono::TimeDelta::seconds(220_752_000) + chrono::TimeDelta::nanoseconds(123);
+        let nanos = d.num_nanoseconds().unwrap();
+        assert_eq!(chrono::TimeDelta::nanoseconds(nanos), d);
+    }
+
+    #[test]
+    fn dynamic_to_json_duration_is_go_string() {
+        assert_eq!(
+            dynamic_to_json(&DynamicValue::Duration(chrono::TimeDelta::seconds(
+                220_752_000
+            ))),
+            serde_json::json!("220752000s")
+        );
+    }
+
+    #[test]
+    fn bind_null_with_duration_field_type_uses_typed_none() {
+        let mut args = PgArguments::default();
+        assert!(
+            bind_dynamic_value(&mut args, &DynamicValue::Null, Some(&FieldType::Duration)).is_ok()
+        );
     }
 
     #[test]

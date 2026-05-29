@@ -1499,6 +1499,100 @@ async fn put_round_trip_after_get_returns_200() {
     assert_eq!(put_json["fields"]["name"], "Alice");
 }
 
+/// Issue #96: a `duration` field round-trips request → persist → response.
+/// The wire form is the canonical Go-style seconds string consistent with
+/// CEL's `duration()` (e.g. 2555 days = `220752000s`), and a `2555d`-style
+/// input coerces to the same value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_and_read_entity_with_duration_field() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Record",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "retention", "field_type": "Duration"}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    // POST with a `2555d`-style duration; the backend coerces it to seconds.
+    let create_body = serde_json::json!({
+        "fields": { "name": "Case file", "retention": "2555d" }
+    });
+    let (create_status, created) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Record/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        create_status,
+        StatusCode::CREATED,
+        "expected 201, got {create_status} body={created}"
+    );
+    let entity_id = created["id"].as_str().unwrap().to_string();
+    let path = format!("/schemas/Record/entities/{entity_id}");
+
+    // GET the entity — the response serializes the duration as canonical seconds.
+    let (get_status, fetched) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(get_status, StatusCode::OK);
+    assert_eq!(
+        fetched["fields"]["retention"], "220752000s",
+        "duration should serialize as canonical Go-style seconds"
+    );
+
+    // PUT the GET body back unchanged — the canonical form must re-parse.
+    let put_body = serde_json::json!({ "fields": fetched["fields"].clone() });
+    let (put_status, put_json) = json_request(&app, Method::PUT, &path, Some(put_body)).await;
+    assert_eq!(
+        put_status,
+        StatusCode::OK,
+        "round-trip PUT should succeed, got {put_status} body={put_json}"
+    );
+    assert_eq!(put_json["fields"]["retention"], "220752000s");
+}
+
+/// Issue #96 (review fix): a negative `duration` on a SurrealDB-backed field
+/// must FAIL CLOSED with a clear 422, never silently store NULL. SurrealDB's
+/// native `duration` type is unsigned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_entity_with_negative_duration_returns_422() {
+    let app = test_app().await;
+
+    let schema_body = serde_json::json!({
+        "name": "Record",
+        "fields": [
+            {"name": "name", "field_type": "Text", "modifiers": ["required"]},
+            {"name": "retention", "field_type": "Duration"}
+        ]
+    });
+    json_request(&app, Method::POST, "/schemas", Some(schema_body)).await;
+
+    let create_body = serde_json::json!({
+        "fields": { "name": "Case file", "retention": "-5s" }
+    });
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Record/entities",
+        Some(create_body),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 422 for a negative duration, got {status} body={json}"
+    );
+    assert_eq!(json["error"], "validation_failed");
+    let message = json["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("unsigned") && message.contains("-5s"),
+        "error should explain the unsigned constraint and echo the value, got: {message}"
+    );
+}
+
 /// Regression for issue #10: PATCH must merge a partial payload onto the
 /// existing entity, preserving fields that are not mentioned in the
 /// request body — including required ones.

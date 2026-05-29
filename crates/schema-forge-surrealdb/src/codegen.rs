@@ -192,6 +192,7 @@ pub fn field_type_to_surql(field_type: &FieldType) -> String {
         FieldType::Float(_) => "float".to_string(),
         FieldType::Boolean => "bool".to_string(),
         FieldType::DateTime => "datetime".to_string(),
+        FieldType::Duration => "duration".to_string(),
         FieldType::Enum(_) => "string".to_string(),
         FieldType::Json => "object".to_string(),
         FieldType::Relation {
@@ -706,6 +707,7 @@ mod tests {
         );
         assert_eq!(field_type_to_surql(&FieldType::Boolean), "bool");
         assert_eq!(field_type_to_surql(&FieldType::DateTime), "datetime");
+        assert_eq!(field_type_to_surql(&FieldType::Duration), "duration");
         assert_eq!(field_type_to_surql(&FieldType::Json), "object");
         assert_eq!(
             field_type_to_surql(&FieldType::Array(Box::new(FieldType::Boolean))),

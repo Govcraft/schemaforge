@@ -220,6 +220,7 @@ fn print_type(field_type: &FieldType, output: &mut String, depth: usize) {
         }
         FieldType::Boolean => output.push_str("boolean"),
         FieldType::DateTime => output.push_str("datetime"),
+        FieldType::Duration => output.push_str("duration"),
         FieldType::Enum(variants) => {
             output.push_str("enum(");
             for (i, variant) in variants.iter().enumerate() {
@@ -1127,6 +1128,29 @@ schema S {
         );
         let output = print(&schema);
         assert!(output.contains(r#"created_at: datetime @default("now()")"#));
+    }
+
+    #[test]
+    fn print_duration_field() {
+        let schema = make_schema(
+            "S",
+            vec![make_field("retention", FieldType::Duration)],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains("retention: duration"));
+    }
+
+    #[test]
+    fn roundtrip_duration_field() {
+        let schema = make_schema(
+            "S",
+            vec![make_field("retention", FieldType::Duration)],
+            vec![],
+        );
+        let printed = print(&schema);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(reparsed[0].fields[0].field_type, FieldType::Duration);
     }
 
     #[test]

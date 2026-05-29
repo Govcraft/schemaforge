@@ -296,6 +296,7 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
             )),
             "Boolean" => Ok(FieldType::Boolean),
             "DateTime" => Ok(FieldType::DateTime),
+            "Duration" => Ok(FieldType::Duration),
             "Json" => Ok(FieldType::Json),
             other => Err(ForgeError::ValidationFailed {
                 details: vec![format!("unknown field type '{other}'")],
@@ -317,6 +318,7 @@ fn parse_field_type(value: &serde_json::Value) -> Result<FieldType, ForgeError> 
                 )),
                 "Boolean" => Ok(FieldType::Boolean),
                 "DateTime" => Ok(FieldType::DateTime),
+                "Duration" => Ok(FieldType::Duration),
                 "Json" => Ok(FieldType::Json),
                 other => Err(ForgeError::ValidationFailed {
                     details: vec![format!("unknown field type '{other}'")],
@@ -893,6 +895,18 @@ mod tests {
     fn parse_field_type_simple_datetime() {
         let result = parse_field_type(&serde_json::json!("DateTime")).unwrap();
         assert!(matches!(result, FieldType::DateTime));
+    }
+
+    #[test]
+    fn parse_field_type_simple_duration() {
+        let result = parse_field_type(&serde_json::json!("Duration")).unwrap();
+        assert!(matches!(result, FieldType::Duration));
+    }
+
+    #[test]
+    fn parse_field_type_structured_duration() {
+        let result = parse_field_type(&serde_json::json!({"type": "Duration"})).unwrap();
+        assert!(matches!(result, FieldType::Duration));
     }
 
     #[test]

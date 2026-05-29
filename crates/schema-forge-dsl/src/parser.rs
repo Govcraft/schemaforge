@@ -816,6 +816,7 @@ impl Parser {
             }
             Token::Boolean => Ok(FieldType::Boolean),
             Token::DateTime => Ok(FieldType::DateTime),
+            Token::Duration => Ok(FieldType::Duration),
             Token::Enum => self.parse_enum_type(),
             Token::Json => Ok(FieldType::Json),
             Token::File => {
@@ -823,7 +824,7 @@ impl Parser {
                 Ok(FieldType::File(constraints))
             }
             _ => Err(DslError::UnexpectedToken {
-                expected: "type name (text, integer, float, boolean, datetime, enum, richtext, json, file, composite, or ->)"
+                expected: "type name (text, integer, float, boolean, datetime, duration, enum, richtext, json, file, composite, or ->)"
                     .to_string(),
                 found: format!("{} ('{}')", tok.token.description(), tok.text),
                 span: tok.span,
@@ -1354,6 +1355,7 @@ fn is_contextual_ident(token: &Token) -> bool {
             | Token::Float
             | Token::Boolean
             | Token::DateTime
+            | Token::Duration
             | Token::Json
             | Token::Default
             | Token::Required
@@ -1381,6 +1383,7 @@ fn field_type_supports_unique(ft: &FieldType) -> bool {
             | FieldType::Integer(_)
             | FieldType::Float(_)
             | FieldType::DateTime
+            | FieldType::Duration
             | FieldType::Enum(_)
     )
 }
@@ -1394,6 +1397,7 @@ fn describe_field_type_for_error(ft: &FieldType) -> String {
         FieldType::Float(_) => "float".to_string(),
         FieldType::Boolean => "boolean".to_string(),
         FieldType::DateTime => "datetime".to_string(),
+        FieldType::Duration => "duration".to_string(),
         FieldType::Enum(_) => "enum".to_string(),
         FieldType::Json => "json".to_string(),
         FieldType::Relation { .. } => "relation".to_string(),
@@ -1689,6 +1693,12 @@ mod tests {
     fn parse_datetime() {
         let schema = parse_one("schema S { created: datetime }");
         assert!(matches!(schema.fields[0].field_type, FieldType::DateTime));
+    }
+
+    #[test]
+    fn parse_duration() {
+        let schema = parse_one("schema S { retention: duration }");
+        assert!(matches!(schema.fields[0].field_type, FieldType::Duration));
     }
 
     #[test]
