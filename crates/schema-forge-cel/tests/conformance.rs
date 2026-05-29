@@ -75,7 +75,11 @@ const EXCLUDED: &[&str] = &[
 /// (42/43) and `comparisons` (330/406). Remaining reds across the subset are
 /// proto-message constructs (out of scope), namespace-qualified type names, and
 /// the `dyn` unknown-variable message spelling — none are engine bugs.
-const MIN_PASS_BASELINE: usize = 1037;
+///
+/// #113 (two-variable comprehension macros) raises it to 1083: the `macros2`
+/// section is now fully green (46/46) — `all`/`exists`/`existsOne`,
+/// `transformList`, and `transformMap` in their two-variable forms.
+const MIN_PASS_BASELINE: usize = 1083;
 
 #[derive(Default)]
 struct Tally {

@@ -508,6 +508,15 @@ mod macros {
             ("filter", 2) => Some(lower_filter(target.clone(), &args)),
             ("map", 2) => Some(lower_map2(target.clone(), &args)),
             ("map", 3) => Some(lower_map3(target.clone(), &args)),
+            // Two-variable comprehension macros (cel-spec `macros2`). The first two
+            // arguments bind the index/key and the element/value.
+            ("all", 3) => Some(lower_all_v2(target.clone(), &args)),
+            ("exists", 3) => Some(lower_exists_v2(target.clone(), &args)),
+            ("existsOne", 3) => Some(lower_exists_one_v2(target.clone(), &args)),
+            ("transformList", 3) => Some(lower_transform_list3(target.clone(), &args)),
+            ("transformList", 4) => Some(lower_transform_list4(target.clone(), &args)),
+            ("transformMap", 3) => Some(lower_transform_map3(target.clone(), &args)),
+            ("transformMap", 4) => Some(lower_transform_map4(target.clone(), &args)),
             _ => None,
         };
         match lowered {
@@ -538,10 +547,9 @@ mod macros {
         }
     }
 
-    /// Extract the loop variable name (must be a bare identifier) from the macro's
-    /// first argument.
-    fn iter_var(args: &[Expr]) -> Result<String, ParseError> {
-        match &args[0] {
+    /// Extract a loop variable name (must be a bare identifier) from `args[idx]`.
+    fn iter_var_at(args: &[Expr], idx: usize) -> Result<String, ParseError> {
+        match &args[idx] {
             Expr::Ident(name) => Ok(name.clone()),
             _ => Err(ParseError::new(
                 "macro iteration variable must be a simple identifier",
@@ -549,26 +557,40 @@ mod macros {
         }
     }
 
+    /// The single-variable loop variable (the macro's first argument).
+    fn iter_var(args: &[Expr]) -> Result<String, ParseError> {
+        iter_var_at(args, 0)
+    }
+
     fn accu() -> Expr {
         Expr::Ident(ACCU.to_string())
     }
 
-    fn comprehension(
-        var: String,
-        range: Expr,
+    /// The accumulator-defining parts of a comprehension: the cel-spec
+    /// `accu_init` / `loop_condition` / `loop_step` / `result` quadruple. Grouped
+    /// into one struct so the comprehension constructors stay within the
+    /// argument-count lint and read as `(iteration) over (range) accumulating (loop)`.
+    struct Loop {
         init: Expr,
         cond: Expr,
         step: Expr,
         result: Expr,
-    ) -> Expr {
+    }
+
+    fn comprehension(var: String, range: Expr, lp: Loop) -> Expr {
+        comprehension2(var, None, range, lp)
+    }
+
+    fn comprehension2(var: String, var2: Option<String>, range: Expr, lp: Loop) -> Expr {
         Expr::Comprehension(Box::new(Comprehension {
             iter_var: var,
+            iter_var2: var2,
             iter_range: range,
             accu_var: ACCU.to_string(),
-            accu_init: init,
-            loop_condition: cond,
-            loop_step: step,
-            result,
+            accu_init: lp.init,
+            loop_condition: lp.cond,
+            loop_step: lp.step,
+            result: lp.result,
         }))
     }
 
@@ -584,119 +606,203 @@ mod macros {
     // source of truth for absorption.
     fn lower_all(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
         let var = iter_var(args)?;
-        let pred = args[1].clone();
-        Ok(comprehension(
-            var,
-            range,
-            Expr::Literal(Literal::Bool(true)),
-            accu(),
-            super::binary(BinaryOp::And, accu(), pred),
-            accu(),
-        ))
+        Ok(comprehension(var, range, all_loop(args[1].clone())))
     }
 
     // exists(x, p): init false; while !@result; step @result || p; result @result.
     fn lower_exists(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
         let var = iter_var(args)?;
-        let pred = args[1].clone();
-        let cond = Expr::Unary {
-            op: UnaryOp::Not,
-            operand: Box::new(accu()),
-        };
-        Ok(comprehension(
-            var,
-            range,
-            Expr::Literal(Literal::Bool(false)),
-            cond,
-            super::binary(BinaryOp::Or, accu(), pred),
-            accu(),
-        ))
+        Ok(comprehension(var, range, exists_loop(args[1].clone())))
     }
 
     // exists_one(x, p): init 0; step p ? @result + 1 : @result; result @result == 1.
     fn lower_exists_one(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
         let var = iter_var(args)?;
-        let pred = args[1].clone();
-        let step = Expr::Ternary {
-            cond: Box::new(pred),
-            then: Box::new(super::binary(
-                BinaryOp::Add,
-                accu(),
-                Expr::Literal(Literal::Int(1)),
-            )),
-            els: Box::new(accu()),
-        };
-        let result = super::binary(BinaryOp::Eq, accu(), Expr::Literal(Literal::Int(1)));
-        Ok(comprehension(
-            var,
-            range,
-            Expr::Literal(Literal::Int(0)),
-            Expr::Literal(Literal::Bool(true)),
-            step,
-            result,
-        ))
+        Ok(comprehension(var, range, exists_one_loop(args[1].clone())))
     }
 
     // map(x, t): init []; step @result + [t]; result @result.
     fn lower_map2(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
         let var = iter_var(args)?;
-        let transform = args[1].clone();
-        let step = super::binary(BinaryOp::Add, accu(), Expr::List(vec![transform]));
-        Ok(comprehension(
-            var,
-            range,
-            Expr::List(Vec::new()),
-            Expr::Literal(Literal::Bool(true)),
-            step,
-            accu(),
-        ))
+        Ok(comprehension(var, range, list_build_loop(args[1].clone())))
     }
 
     // map(x, p, t): init []; step p ? @result + [t] : @result; result @result.
     fn lower_map3(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
         let var = iter_var(args)?;
-        let pred = args[1].clone();
-        let transform = args[2].clone();
-        let step = Expr::Ternary {
-            cond: Box::new(pred),
-            then: Box::new(super::binary(
-                BinaryOp::Add,
-                accu(),
-                Expr::List(vec![transform]),
-            )),
-            els: Box::new(accu()),
-        };
-        Ok(comprehension(
-            var,
-            range,
-            Expr::List(Vec::new()),
-            Expr::Literal(Literal::Bool(true)),
-            step,
-            accu(),
-        ))
+        let lp = list_build_filtered_loop(args[1].clone(), args[2].clone());
+        Ok(comprehension(var, range, lp))
     }
 
     // filter(x, p): init []; step p ? @result + [x] : @result; result @result.
     fn lower_filter(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
         let var = iter_var(args)?;
-        let pred = args[1].clone();
+        let lp = list_build_filtered_loop(args[1].clone(), Expr::Ident(var.clone()));
+        Ok(comprehension(var, range, lp))
+    }
+
+    // -- Two-variable macros (cel-spec `macros2`). --
+    //
+    // The loop shapes mirror the single-variable forms exactly; the only
+    // difference is the second iteration variable, materialized by the evaluator.
+
+    fn lower_all_v2(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
+        let (v1, v2) = iter_vars2(args)?;
+        Ok(comprehension2(
+            v1,
+            Some(v2),
+            range,
+            all_loop(args[2].clone()),
+        ))
+    }
+
+    fn lower_exists_v2(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
+        let (v1, v2) = iter_vars2(args)?;
+        Ok(comprehension2(
+            v1,
+            Some(v2),
+            range,
+            exists_loop(args[2].clone()),
+        ))
+    }
+
+    fn lower_exists_one_v2(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
+        let (v1, v2) = iter_vars2(args)?;
+        Ok(comprehension2(
+            v1,
+            Some(v2),
+            range,
+            exists_one_loop(args[2].clone()),
+        ))
+    }
+
+    // transformList(i, v, t): init []; step @result + [t]; result @result.
+    fn lower_transform_list3(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
+        let (v1, v2) = iter_vars2(args)?;
+        Ok(comprehension2(
+            v1,
+            Some(v2),
+            range,
+            list_build_loop(args[2].clone()),
+        ))
+    }
+
+    // transformList(i, v, f, t): init []; step f ? @result + [t] : @result.
+    fn lower_transform_list4(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
+        let (v1, v2) = iter_vars2(args)?;
+        let lp = list_build_filtered_loop(args[2].clone(), args[3].clone());
+        Ok(comprehension2(v1, Some(v2), range, lp))
+    }
+
+    // transformMap(k, v, t): init {}; step @mapInsert(@result, k, t); result @result.
+    fn lower_transform_map3(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
+        let (v1, v2) = iter_vars2(args)?;
+        let step = map_insert_step(&v1, args[2].clone());
+        let lp = Loop {
+            init: Expr::Map(Vec::new()),
+            cond: Expr::Literal(Literal::Bool(true)),
+            step,
+            result: accu(),
+        };
+        Ok(comprehension2(v1, Some(v2), range, lp))
+    }
+
+    // transformMap(k, v, f, t): init {}; step f ? @mapInsert(@result, k, t) : @result.
+    fn lower_transform_map4(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
+        let (v1, v2) = iter_vars2(args)?;
+        let insert = map_insert_step(&v1, args[3].clone());
         let step = Expr::Ternary {
-            cond: Box::new(pred),
-            then: Box::new(super::binary(
-                BinaryOp::Add,
-                accu(),
-                Expr::List(vec![Expr::Ident(var.clone())]),
-            )),
+            cond: Box::new(args[2].clone()),
+            then: Box::new(insert),
             els: Box::new(accu()),
         };
-        Ok(comprehension(
-            var,
-            range,
-            Expr::List(Vec::new()),
-            Expr::Literal(Literal::Bool(true)),
+        let lp = Loop {
+            init: Expr::Map(Vec::new()),
+            cond: Expr::Literal(Literal::Bool(true)),
             step,
-            accu(),
-        ))
+            result: accu(),
+        };
+        Ok(comprehension2(v1, Some(v2), range, lp))
+    }
+
+    /// Extract the two iteration variable names (both must be bare identifiers).
+    fn iter_vars2(args: &[Expr]) -> Result<(String, String), ParseError> {
+        Ok((iter_var_at(args, 0)?, iter_var_at(args, 1)?))
+    }
+
+    /// Build the internal `@mapInsert(@result, key, value)` step call. `@mapInsert`
+    /// is an engine-internal function (the `@` prefix is unspellable in surface
+    /// CEL) dispatched only from generated `transformMap` steps.
+    fn map_insert_step(key_var: &str, value: Expr) -> Expr {
+        Expr::Call {
+            target: None,
+            function: "@mapInsert".to_string(),
+            args: vec![accu(), Expr::Ident(key_var.to_string()), value],
+        }
+    }
+
+    fn all_loop(pred: Expr) -> Loop {
+        Loop {
+            init: Expr::Literal(Literal::Bool(true)),
+            cond: accu(),
+            step: super::binary(BinaryOp::And, accu(), pred),
+            result: accu(),
+        }
+    }
+
+    fn exists_loop(pred: Expr) -> Loop {
+        Loop {
+            init: Expr::Literal(Literal::Bool(false)),
+            cond: Expr::Unary {
+                op: UnaryOp::Not,
+                operand: Box::new(accu()),
+            },
+            step: super::binary(BinaryOp::Or, accu(), pred),
+            result: accu(),
+        }
+    }
+
+    fn exists_one_loop(pred: Expr) -> Loop {
+        Loop {
+            init: Expr::Literal(Literal::Int(0)),
+            cond: Expr::Literal(Literal::Bool(true)),
+            step: Expr::Ternary {
+                cond: Box::new(pred),
+                then: Box::new(super::binary(
+                    BinaryOp::Add,
+                    accu(),
+                    Expr::Literal(Literal::Int(1)),
+                )),
+                els: Box::new(accu()),
+            },
+            result: super::binary(BinaryOp::Eq, accu(), Expr::Literal(Literal::Int(1))),
+        }
+    }
+
+    fn list_build_loop(transform: Expr) -> Loop {
+        Loop {
+            init: Expr::List(Vec::new()),
+            cond: Expr::Literal(Literal::Bool(true)),
+            step: super::binary(BinaryOp::Add, accu(), Expr::List(vec![transform])),
+            result: accu(),
+        }
+    }
+
+    fn list_build_filtered_loop(pred: Expr, transform: Expr) -> Loop {
+        Loop {
+            init: Expr::List(Vec::new()),
+            cond: Expr::Literal(Literal::Bool(true)),
+            step: Expr::Ternary {
+                cond: Box::new(pred),
+                then: Box::new(super::binary(
+                    BinaryOp::Add,
+                    accu(),
+                    Expr::List(vec![transform]),
+                )),
+                els: Box::new(accu()),
+            },
+            result: accu(),
+        }
     }
 }
 
@@ -869,7 +975,10 @@ mod tests {
     #[test]
     fn int_min_literal_folds() {
         // -9223372036854775808 is i64::MIN, folded directly (not Neg of 2^63).
-        assert_eq!(p("-9223372036854775808"), Expr::Literal(Literal::Int(i64::MIN)));
+        assert_eq!(
+            p("-9223372036854775808"),
+            Expr::Literal(Literal::Int(i64::MIN))
+        );
         // The bare 2^63 magnitude (no minus) is out of range.
         assert!(parse("9223372036854775808").is_err());
         // i64::MAX still parses normally.
@@ -989,6 +1098,131 @@ mod tests {
         ));
     }
 
+    /// A two-variable macro lowers to a comprehension carrying `iter_var2`.
+    fn two_var(src: &str) -> Comprehension {
+        match p(src) {
+            Expr::Comprehension(c) => {
+                assert!(c.iter_var2.is_some(), "expected iter_var2 for {src:?}");
+                *c
+            }
+            other => panic!("expected two-var comprehension for {src:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_var_all_exists_existsone_lower() {
+        let all = two_var("e.all(i, v, v > i)");
+        assert_eq!(all.iter_var, "i");
+        assert_eq!(all.iter_var2.as_deref(), Some("v"));
+        assert_eq!(all.accu_init, Expr::Literal(Literal::Bool(true)));
+
+        let exists = two_var("e.exists(i, v, v > i)");
+        assert_eq!(exists.accu_init, Expr::Literal(Literal::Bool(false)));
+
+        let one = two_var("e.existsOne(i, v, v > i)");
+        assert_eq!(one.accu_init, Expr::Literal(Literal::Int(0)));
+        assert_eq!(
+            one.result,
+            binary(
+                BinaryOp::Eq,
+                Expr::Ident("@result".into()),
+                Expr::Literal(Literal::Int(1))
+            )
+        );
+    }
+
+    #[test]
+    fn transform_list_lowers_3_and_4_arg() {
+        let three = two_var("e.transformList(i, v, v + i)");
+        assert_eq!(three.accu_init, Expr::List(Vec::new()));
+        // 3-arg step is `@result + [v + i]`.
+        assert!(matches!(
+            three.loop_step,
+            Expr::Binary {
+                op: BinaryOp::Add,
+                ..
+            }
+        ));
+        let four = two_var("e.transformList(i, v, i > 0, v + i)");
+        // 4-arg step is a filter ternary.
+        assert!(matches!(four.loop_step, Expr::Ternary { .. }));
+    }
+
+    #[test]
+    fn transform_map_lowers_to_map_insert() {
+        let three = two_var("e.transformMap(k, v, k + v)");
+        assert_eq!(three.accu_init, Expr::Map(Vec::new()));
+        match &three.loop_step {
+            Expr::Call {
+                target: None,
+                function,
+                args,
+            } => {
+                assert_eq!(function, "@mapInsert");
+                assert_eq!(args.len(), 3);
+                assert_eq!(args[0], Expr::Ident("@result".into()));
+                assert_eq!(args[1], Expr::Ident("k".into()));
+            }
+            other => panic!("expected @mapInsert step, got {other:?}"),
+        }
+        // 4-arg form wraps the insert in a filter ternary.
+        let four = two_var("e.transformMap(k, v, k != 'x', k + v)");
+        assert!(matches!(four.loop_step, Expr::Ternary { .. }));
+    }
+
+    #[test]
+    fn two_var_iteration_var_must_be_ident() {
+        // Non-ident first var.
+        assert!(parse("e.all(1, v, v > 0)").is_err());
+        // Non-ident second var.
+        assert!(parse("e.all(i, 2, i > 0)").is_err());
+    }
+
+    #[test]
+    fn two_var_wrong_arity_falls_back_to_call() {
+        // transformList needs 3 or 4 args; 2 args is an ordinary method call.
+        assert!(matches!(
+            p("e.transformList(i, v)"),
+            Expr::Call {
+                target: Some(_),
+                ..
+            }
+        ));
+        // existsOne with 4 args is not a defined shape → method call.
+        assert!(matches!(
+            p("e.existsOne(i, v, p, q)"),
+            Expr::Call {
+                target: Some(_),
+                ..
+            }
+        ));
+        // transformMap with 5 args → method call.
+        assert!(matches!(
+            p("e.transformMap(k, v, a, b, c)"),
+            Expr::Call {
+                target: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn single_var_macros_unaffected_by_two_var_addition() {
+        // The 2-arg single-variable forms still lower with iter_var2 == None.
+        for src in [
+            "e.all(x, x > 0)",
+            "e.exists(x, x > 0)",
+            "e.exists_one(x, x > 0)",
+            "e.map(x, x + 1)",
+            "e.filter(x, x > 0)",
+        ] {
+            match p(src) {
+                Expr::Comprehension(c) => assert!(c.iter_var2.is_none(), "{src:?}"),
+                other => panic!("expected comprehension for {src:?}, got {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn parse_errors_carry_position() {
         for bad in ["1 +", "(1", "[1, 2", "{1:", "a.", "f(1,"] {
@@ -1018,6 +1252,14 @@ mod tests {
             "e.exists_one(x, x > 0)",
             "e.map(x, x + 1)",
             "e.filter(x, x > 0)",
+            // Two-variable macros (macros2).
+            "e.all(i, v, v > i)",
+            "e.exists(i, v, v > i)",
+            "e.existsOne(i, v, v > i)",
+            "e.transformList(i, v, v + i)",
+            "e.transformList(i, v, i > 0, v + i)",
+            "e.transformMap(k, v, k + v)",
+            "e.transformMap(k, v, k != 'x', k + v)",
             "1.5e-3",
             "7u",
             "'hi'",

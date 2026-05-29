@@ -179,7 +179,16 @@ pub enum Expr {
 #[non_exhaustive]
 pub struct Comprehension {
     /// The loop variable name (the macro's first argument).
+    ///
+    /// For a two-variable macro this binds the index (lists) or key (maps); for a
+    /// single-variable macro it binds the element (lists) or key (maps).
     pub iter_var: String,
+    /// The second iteration variable, for the two-variable macros (`all(i, v, …)`,
+    /// `exists(i, v, …)`, `existsOne`, `transformList`, `transformMap`).
+    ///
+    /// `None` selects single-variable behavior; `Some(name)` binds `name` to the
+    /// list element / map value while `iter_var` binds the index / key.
+    pub iter_var2: Option<String>,
     /// The range being iterated.
     pub iter_range: Expr,
     /// The accumulator variable name (always `@result`).
@@ -407,12 +416,21 @@ fn write_quoted_bytes(out: &mut String, b: &[u8]) {
 /// transform can be recovered from `loop_step` / `result` to produce a
 /// re-parseable `range.macro(var, ...)` call.
 fn write_comprehension(out: &mut String, c: &Comprehension) {
-    if let Some((name, extra_args)) = recover_macro(c) {
+    let recovered = if c.iter_var2.is_some() {
+        recover_macro_v2(c)
+    } else {
+        recover_macro(c)
+    };
+    if let Some((name, extra_args)) = recovered {
         write_parens(out, &c.iter_range);
         out.push('.');
         out.push_str(name);
         out.push('(');
         out.push_str(&c.iter_var);
+        if let Some(v2) = &c.iter_var2 {
+            out.push_str(", ");
+            out.push_str(v2);
+        }
         for arg in extra_args {
             out.push_str(", ");
             write_expr(out, &arg);
@@ -427,6 +445,133 @@ fn write_comprehension(out: &mut String, c: &Comprehension) {
         write_expr(out, &c.iter_range);
         out.push(')');
     }
+}
+
+/// Recover the trailing arguments of a two-variable macro (`all`/`exists`/
+/// `existsOne`/`transformList`/`transformMap`), inverting the lowerings in
+/// [`crate::parser`]. The iteration variables are emitted by the caller; this
+/// returns the camelCase macro name and the predicate / filter / transform args.
+fn recover_macro_v2(c: &Comprehension) -> Option<(&'static str, Vec<Expr>)> {
+    let accu = c.accu_var.as_str();
+    match &c.accu_init {
+        // all: init true, step `@result && p`.
+        Expr::Literal(Literal::Bool(true)) => recover_and_pred(c, accu, "all"),
+        // exists: init false, step `@result || p`.
+        Expr::Literal(Literal::Bool(false)) => recover_or_pred(c, accu, "exists"),
+        // existsOne: init 0, step `p ? @result + 1 : @result`.
+        Expr::Literal(Literal::Int(0)) => {
+            if let Expr::Ternary { cond, .. } = &c.loop_step {
+                return Some(("existsOne", vec![(**cond).clone()]));
+            }
+            None
+        }
+        // transformList: init [].
+        Expr::List(items) if items.is_empty() => recover_transform_list(c, accu),
+        // transformMap: init {}.
+        Expr::Map(entries) if entries.is_empty() => recover_transform_map(c, accu),
+        _ => None,
+    }
+}
+
+fn recover_and_pred(
+    c: &Comprehension,
+    accu: &str,
+    name: &'static str,
+) -> Option<(&'static str, Vec<Expr>)> {
+    if let Expr::Binary {
+        op: BinaryOp::And,
+        lhs,
+        rhs,
+    } = &c.loop_step
+    {
+        if is_accu(lhs, accu) {
+            return Some((name, vec![(**rhs).clone()]));
+        }
+    }
+    None
+}
+
+fn recover_or_pred(
+    c: &Comprehension,
+    accu: &str,
+    name: &'static str,
+) -> Option<(&'static str, Vec<Expr>)> {
+    if let Expr::Binary {
+        op: BinaryOp::Or,
+        lhs,
+        rhs,
+    } = &c.loop_step
+    {
+        if is_accu(lhs, accu) {
+            return Some((name, vec![(**rhs).clone()]));
+        }
+    }
+    None
+}
+
+/// transformList: 3-arg step `@result + [t]`; 4-arg step `f ? @result + [t] : @result`.
+fn recover_transform_list(c: &Comprehension, accu: &str) -> Option<(&'static str, Vec<Expr>)> {
+    match &c.loop_step {
+        Expr::Binary {
+            op: BinaryOp::Add,
+            lhs,
+            rhs,
+        } if is_accu(lhs, accu) => single_list_item(rhs).map(|t| ("transformList", vec![t])),
+        Expr::Ternary { cond, then, .. } => {
+            if let Expr::Binary {
+                op: BinaryOp::Add,
+                lhs,
+                rhs,
+            } = then.as_ref()
+            {
+                if is_accu(lhs, accu) {
+                    return single_list_item(rhs)
+                        .map(|t| ("transformList", vec![(**cond).clone(), t]));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// transformMap: 3-arg step `@mapInsert(@result, k, t)`; 4-arg step
+/// `f ? @mapInsert(@result, k, t) : @result`.
+fn recover_transform_map(c: &Comprehension, accu: &str) -> Option<(&'static str, Vec<Expr>)> {
+    match &c.loop_step {
+        Expr::Call { .. } => {
+            map_insert_transform(&c.loop_step, accu).map(|t| ("transformMap", vec![t]))
+        }
+        Expr::Ternary { cond, then, .. } => {
+            map_insert_transform(then, accu).map(|t| ("transformMap", vec![(**cond).clone(), t]))
+        }
+        _ => None,
+    }
+}
+
+/// Extract the transform value from a `@mapInsert(@result, key, transform)` step.
+fn map_insert_transform(step: &Expr, accu: &str) -> Option<Expr> {
+    if let Expr::Call {
+        target: None,
+        function,
+        args,
+    } = step
+    {
+        if function == "@mapInsert" && args.len() == 3 && is_accu(&args[0], accu) {
+            return Some(args[2].clone());
+        }
+    }
+    None
+}
+
+/// The single element of a one-element list literal, if `expr` is `[t]`.
+fn single_list_item(expr: &Expr) -> Option<Expr> {
+    if let Expr::List(items) = expr {
+        if items.len() == 1 {
+            return Some(items[0].clone());
+        }
+    }
+    None
 }
 
 /// Recover `(macro_name, trailing_args)` from a lowered comprehension, inverting

@@ -52,6 +52,10 @@ pub fn dispatch(
         // dyn(x): identity. Forces a dynamically-typed operand at the type level;
         // at runtime the value is unchanged.
         (None, "dyn", [x]) => Ok(x.clone()),
+        // @mapInsert(map, key, value): engine-internal accumulator step for the
+        // `transformMap` macro. The `@` prefix is unspellable in surface CEL, so
+        // this is reachable only from a generated comprehension step.
+        (None, "@mapInsert", [map, key, value]) => map_insert(map, key, value),
         // type(x): the runtime type as a `type` value.
         (None, "type", [x]) => Ok(CelValue::Type(type_name(x.cel_type()).to_string())),
 
@@ -86,6 +90,25 @@ pub fn dispatch(
         // Everything else (including the deferred *_ext functions) has no overload.
         _ => Err(EvalError::new("no such overload")),
     }
+}
+
+/// Insert `(key, value)` into a copy of `map`, returning the extended map.
+///
+/// Backs the `transformMap` macro's accumulator step. The receiver must be a map
+/// and `key` must be a legal map-key type; a duplicate key is an error, matching
+/// the map-literal evaluator. In practice `transformMap` feeds unique keys (list
+/// indices or distinct source-map keys), so the duplicate path is unreachable
+/// in-corpus but kept for spec correctness.
+fn map_insert(map: &CelValue, key: &CelValue, value: &CelValue) -> Result<CelValue, EvalError> {
+    let CelValue::Map(m) = map else {
+        return Err(EvalError::new("no such overload"));
+    };
+    let k = ops::to_key(key).ok_or_else(|| EvalError::new("no such overload"))?;
+    let mut out = m.clone();
+    if out.insert(k, value.clone()).is_some() {
+        return Err(EvalError::new("Failed with repeated key"));
+    }
+    Ok(CelValue::Map(out))
 }
 
 /// Whether `name` is one of the timestamp field accessors.
@@ -163,6 +186,57 @@ mod tests {
         assert_eq!(
             dispatch(None, "type", &[CelValue::String(String::new())]).unwrap(),
             CelValue::Type("string".into())
+        );
+    }
+
+    #[test]
+    fn map_insert_extends_map() {
+        let map = CelValue::Map(std::collections::BTreeMap::new());
+        let out = dispatch(
+            None,
+            "@mapInsert",
+            &[map, CelValue::String("k".into()), CelValue::Int(1)],
+        )
+        .unwrap();
+        match out {
+            CelValue::Map(m) => {
+                assert_eq!(
+                    m.get(&crate::value::CelKey::String("k".into())),
+                    Some(&CelValue::Int(1))
+                );
+            }
+            other => panic!("expected map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_insert_rejects_non_map_and_bad_key() {
+        // Non-map receiver.
+        assert_eq!(
+            dispatch(
+                None,
+                "@mapInsert",
+                &[
+                    CelValue::Int(0),
+                    CelValue::String("k".into()),
+                    CelValue::Int(1)
+                ]
+            )
+            .unwrap_err()
+            .message(),
+            "no such overload"
+        );
+        // Illegal key type (a list cannot key a map).
+        let map = CelValue::Map(std::collections::BTreeMap::new());
+        assert_eq!(
+            dispatch(
+                None,
+                "@mapInsert",
+                &[map, CelValue::List(Vec::new()), CelValue::Int(1)]
+            )
+            .unwrap_err()
+            .message(),
+            "no such overload"
         );
     }
 

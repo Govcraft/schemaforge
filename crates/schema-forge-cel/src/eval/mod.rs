@@ -74,6 +74,27 @@ impl<'a> Scope<'a> {
         }
     }
 
+    /// A child scope that binds three names (a two-variable comprehension's two
+    /// iteration vars plus the accumulator) in one allocation.
+    fn with3(
+        &self,
+        n1: &str,
+        v1: CelValue,
+        n2: &str,
+        v2: CelValue,
+        n3: &str,
+        v3: CelValue,
+    ) -> Self {
+        let mut locals = self.locals.clone();
+        locals.insert(n1.to_string(), v1);
+        locals.insert(n2.to_string(), v2);
+        locals.insert(n3.to_string(), v3);
+        Self {
+            base: self.base,
+            locals,
+        }
+    }
+
     fn lookup(&self, name: &str) -> Option<&CelValue> {
         self.locals.get(name).or_else(|| self.base.get(name))
     }
@@ -345,15 +366,15 @@ fn eval_comprehension(
     depth: usize,
 ) -> Result<CelValue, EvalError> {
     let range = eval_depth(&c.iter_range, scope, depth)?;
-    let elements = range_elements(range)?;
+    let elements = range_elements(range, c.iter_var2.is_some())?;
 
     let mut accu = eval_depth(&c.accu_init, scope, depth)?;
     let mut deferred: Option<EvalError> = None;
-    let mut last_elem: Option<CelValue> = None;
+    let mut last_elem: Option<(CelValue, Option<CelValue>)> = None;
 
-    for el in elements {
-        let child = scope.with2(&c.iter_var, el.clone(), &c.accu_var, accu.clone());
-        last_elem = Some(el);
+    for (v1, v2) in elements {
+        let child = bind_iteration(c, scope, &v1, v2.as_ref(), accu.clone());
+        last_elem = Some((v1, v2));
 
         match eval_depth(&c.loop_condition, &child, depth) {
             Ok(CelValue::Bool(false)) => break, // determinate: stop iterating
@@ -371,7 +392,7 @@ fn eval_comprehension(
         // The deferred error is discarded only if the final accumulator is
         // already determinate (the loop_condition would have stopped on it).
         let probe = match &last_elem {
-            Some(el) => scope.with2(&c.iter_var, el.clone(), &c.accu_var, accu.clone()),
+            Some((v1, v2)) => bind_iteration(c, scope, v1, v2.as_ref(), accu.clone()),
             None => scope.with(&c.accu_var, accu.clone()),
         };
         match eval_depth(&c.loop_condition, &probe, depth) {
@@ -384,12 +405,55 @@ fn eval_comprehension(
     eval_depth(&c.result, &result_scope, depth)
 }
 
-/// Materialize the elements a comprehension iterates: list elements directly, or
-/// a map's keys (per cel-spec, ranging a map ranges over its keys).
-fn range_elements(range: CelValue) -> Result<Vec<CelValue>, EvalError> {
-    match range {
-        CelValue::List(items) => Ok(items),
-        CelValue::Map(m) => Ok(m.into_keys().map(key_to_value).collect()),
+/// Build the per-element scope binding the iteration variable(s) and accumulator.
+///
+/// For a single-variable comprehension (`v2 == None`) only `iter_var` + `accu_var`
+/// are bound (the historical behavior). For a two-variable comprehension both
+/// `iter_var` (index/key) and `iter_var2` (element/value) are bound alongside the
+/// accumulator.
+fn bind_iteration<'a>(
+    c: &Comprehension,
+    scope: &Scope<'a>,
+    v1: &CelValue,
+    v2: Option<&CelValue>,
+    accu: CelValue,
+) -> Scope<'a> {
+    match (&c.iter_var2, v2) {
+        (Some(name2), Some(val2)) => scope.with3(
+            &c.iter_var,
+            v1.clone(),
+            name2,
+            val2.clone(),
+            &c.accu_var,
+            accu,
+        ),
+        _ => scope.with2(&c.iter_var, v1.clone(), &c.accu_var, accu),
+    }
+}
+
+/// Materialize the iteration pairs a comprehension ranges over.
+///
+/// Single-variable (`two_var == false`): a list yields each element (no second
+/// value); a map yields each key (per cel-spec, ranging a map ranges its keys).
+///
+/// Two-variable (`two_var == true`): a list yields `(int index, element)`; a map
+/// yields `(key, value)`.
+fn range_elements(
+    range: CelValue,
+    two_var: bool,
+) -> Result<Vec<(CelValue, Option<CelValue>)>, EvalError> {
+    match (range, two_var) {
+        (CelValue::List(items), false) => Ok(items.into_iter().map(|e| (e, None)).collect()),
+        (CelValue::List(items), true) => Ok(items
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| (CelValue::Int(i as i64), Some(e)))
+            .collect()),
+        (CelValue::Map(m), false) => Ok(m.into_keys().map(|k| (key_to_value(k), None)).collect()),
+        (CelValue::Map(m), true) => Ok(m
+            .into_iter()
+            .map(|(k, v)| (key_to_value(k), Some(v)))
+            .collect()),
         _ => Err(EvalError::new("no such overload")),
     }
 }
@@ -557,6 +621,145 @@ mod tests {
         assert_eq!(
             run(r#"{"key1": 1, "key2": 2}.exists(k, k == "key2")"#).unwrap(),
             CelValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn two_var_all_exists_over_list_binds_index_and_value() {
+        // i is the 0-based index, v the element.
+        assert_eq!(
+            run("[1, 2, 3].all(i, v, v > i)").unwrap(),
+            CelValue::Bool(true)
+        );
+        assert_eq!(
+            run("[1, 2, 3].exists(i, v, i == 1 && v == 2)").unwrap(),
+            CelValue::Bool(true)
+        );
+        assert_eq!(
+            run("[1, 2, 3].all(i, v, i == 0)").unwrap(),
+            CelValue::Bool(false)
+        );
+    }
+
+    #[test]
+    fn two_var_macros_over_map_bind_key_and_value() {
+        assert_eq!(
+            run("{'key1':1, 'key2':2}.exists(k, v, k == 'key2' && v == 2)").unwrap(),
+            CelValue::Bool(true)
+        );
+        assert_eq!(
+            run("{'key1':1, 'key2':2}.all(k, v, k == 'key2' && v == 2)").unwrap(),
+            CelValue::Bool(false)
+        );
+    }
+
+    #[test]
+    fn two_var_exists_one_over_list_and_map() {
+        // Exactly one element with v % 5 == i (5%5==0==i at i=0).
+        assert_eq!(
+            run("[5, 7, 8].existsOne(i, v, v % 5 == i)").unwrap(),
+            CelValue::Bool(true)
+        );
+        assert_eq!(
+            run("[0, 1, 2, 3, 4].existsOne(i, v, v % 2 == i)").unwrap(),
+            CelValue::Bool(false)
+        );
+        assert_eq!(
+            run("{6: 'six', 7: 'seven', 8: 'eight'}.existsOne(k, v, k % 5 == 2 && v == 'seven')")
+                .unwrap(),
+            CelValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn two_var_all_error_shortcircuit_vs_exhaustive() {
+        // v=2 at i=1 makes 6/(2-2) error, but i!=6/(2-1)=6 at i=0 yields false → all false.
+        assert_eq!(
+            run("[1, 2, 3].all(i, v, 6 / (2 - v) == i)").unwrap(),
+            CelValue::Bool(false)
+        );
+        // No element makes the predicate determinately false → the error surfaces.
+        assert_eq!(
+            run("[1, 2, 3].all(i, v, v / i != 17)")
+                .unwrap_err()
+                .message(),
+            "divide by zero"
+        );
+    }
+
+    #[test]
+    fn two_var_exists_error_surfaces() {
+        assert_eq!(
+            run("[1, 2, 3].exists(i, v, v / i == 17)")
+                .unwrap_err()
+                .message(),
+            "divide by zero"
+        );
+    }
+
+    #[test]
+    fn transform_list_builds_list() {
+        assert_eq!(
+            run("[2, 4, 6].transformList(i, v, v / 2 + i)").unwrap(),
+            CelValue::List(vec![CelValue::Int(1), CelValue::Int(3), CelValue::Int(5)])
+        );
+        // 4-arg filter drops i==1 and v==4.
+        assert_eq!(
+            run("[2, 4, 6].transformList(i, v, i != 1 && v != 4, v / 2 + i)").unwrap(),
+            CelValue::List(vec![CelValue::Int(1), CelValue::Int(5)])
+        );
+        assert_eq!(
+            run("[].transformList(i, v, i / v)").unwrap(),
+            CelValue::List(Vec::new())
+        );
+    }
+
+    #[test]
+    fn transform_list_error_surfaces() {
+        assert_eq!(
+            run("[2, 1, 0].transformList(i, v, v / i)")
+                .unwrap_err()
+                .message(),
+            "divide by zero"
+        );
+    }
+
+    #[test]
+    fn transform_map_keeps_keys_transforms_values() {
+        let result = run("{'foo': 'bar'}.transformMap(k, v, k + v)").unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            CelKey::String("foo".into()),
+            CelValue::String("foobar".into()),
+        );
+        assert_eq!(result, CelValue::Map(expected));
+    }
+
+    #[test]
+    fn transform_map_filter_drops_entries() {
+        let result =
+            run("{'foo': 'bar', 'baz': 'bux'}.transformMap(k, v, k != 'baz' && v != 'bux', k + v)")
+                .unwrap();
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            CelKey::String("foo".into()),
+            CelValue::String("foobar".into()),
+        );
+        assert_eq!(result, CelValue::Map(expected));
+        // Empty map → empty map.
+        assert_eq!(
+            run("{}.transformMap(k, v, k + v)").unwrap(),
+            CelValue::Map(BTreeMap::new())
+        );
+    }
+
+    #[test]
+    fn transform_map_error_surfaces() {
+        assert_eq!(
+            run("{'foo': 2, 'bar': 1, 'baz': 0}.transformMap(k, v, 4 / v)")
+                .unwrap_err()
+                .message(),
+            "divide by zero"
         );
     }
 
