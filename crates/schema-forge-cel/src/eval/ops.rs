@@ -749,6 +749,102 @@ mod tests {
         );
     }
 
+    // -- Timestamp / duration arithmetic range enforcement (#101) --
+    //
+    // These lock in the guarantee that temporal *arithmetic* (not just the
+    // `timestamp()`/`duration()` conversion functions) range-checks every result
+    // and returns a `"range error"` on overflow rather than wrapping or panicking.
+
+    use chrono::{DateTime, TimeDelta};
+
+    fn ts(s: &str) -> CelValue {
+        CelValue::Timestamp(
+            DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        )
+    }
+    fn dur(secs: i64) -> CelValue {
+        CelValue::Duration(TimeDelta::seconds(secs))
+    }
+
+    #[test]
+    fn timestamp_add_duration_overflow_is_range_error() {
+        // 9999-12-31T23:59:59Z + 1s exceeds the max timestamp.
+        assert_eq!(
+            arithmetic(BinaryOp::Add, &ts("9999-12-31T23:59:59Z"), &dur(1))
+                .unwrap_err()
+                .message(),
+            "range error"
+        );
+        // 0001-01-01T00:00:00Z - 1s underflows the min timestamp.
+        assert_eq!(
+            arithmetic(BinaryOp::Sub, &ts("0001-01-01T00:00:00Z"), &dur(1))
+                .unwrap_err()
+                .message(),
+            "range error"
+        );
+        // A nanosecond past the max also overflows.
+        assert_eq!(
+            arithmetic(
+                BinaryOp::Add,
+                &ts("9999-12-31T23:59:59.999999999Z"),
+                &CelValue::Duration(TimeDelta::nanoseconds(1)),
+            )
+            .unwrap_err()
+            .message(),
+            "range error"
+        );
+    }
+
+    #[test]
+    fn timestamp_minus_timestamp_overflow_is_range_error() {
+        // The full 1..=9999 span overflows int64 nanoseconds.
+        assert_eq!(
+            arithmetic(
+                BinaryOp::Sub,
+                &ts("9999-12-31T23:59:59Z"),
+                &ts("0001-01-01T00:00:00Z"),
+            )
+            .unwrap_err()
+            .message(),
+            "range error"
+        );
+        // An in-range difference succeeds.
+        assert_eq!(
+            arithmetic(
+                BinaryOp::Sub,
+                &ts("2009-02-13T23:31:00Z"),
+                &ts("2009-02-13T23:29:00Z"),
+            )
+            .unwrap(),
+            dur(120)
+        );
+    }
+
+    #[test]
+    fn duration_add_duration_overflow_is_range_error() {
+        // 200_000_000_000s + 200_000_000_000s exceeds the duration range.
+        assert_eq!(
+            arithmetic(BinaryOp::Add, &dur(200_000_000_000), &dur(200_000_000_000))
+                .unwrap_err()
+                .message(),
+            "range error"
+        );
+        // The negative direction overflows too.
+        assert_eq!(
+            arithmetic(BinaryOp::Sub, &dur(-200_000_000_000), &dur(200_000_000_000))
+                .unwrap_err()
+                .message(),
+            "range error"
+        );
+        // An in-range sum succeeds.
+        assert_eq!(
+            arithmetic(BinaryOp::Add, &dur(600), &dur(50)).unwrap(),
+            dur(650)
+        );
+    }
+
     #[test]
     fn size_of_works() {
         assert_eq!(size_of(&CelValue::String("abc".into())).unwrap(), int(3));
