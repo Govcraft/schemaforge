@@ -143,6 +143,18 @@ pub enum DslError {
     /// uniquely indexed (e.g. `richtext`, `json`, `boolean`, array, composite,
     /// relation, or file).
     UniqueOnUnsupportedType { field_type: String, span: Span },
+
+    /// A CEL expression supplied to `@require(...)`, `@compute(...)`, or
+    /// `@default(...)` failed to parse. `line`/`column` are absolute positions
+    /// in the schema source (1-based), computed by mapping the CEL parser's
+    /// intra-expression position onto the position where the expression's
+    /// string content begins. `message` is the underlying CEL parse-error text.
+    InvalidCelExpression {
+        message: String,
+        line: usize,
+        column: usize,
+        span: Span,
+    },
 }
 
 impl fmt::Display for DslError {
@@ -303,6 +315,14 @@ impl fmt::Display for DslError {
                     "the 'unique' modifier at {span} cannot be applied to a {field_type} field; \
                      allowed on text, integer, float, datetime, and enum fields"
                 )
+            }
+            Self::InvalidCelExpression {
+                message,
+                line,
+                column,
+                ..
+            } => {
+                write!(f, "{line}:{column}: invalid expression: {message}")
             }
         }
     }

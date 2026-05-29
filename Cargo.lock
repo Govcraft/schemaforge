@@ -7352,7 +7352,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-core"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "chrono",
  "mti",
@@ -7364,10 +7364,11 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-dsl"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "logos 0.15.1",
  "proptest",
+ "schema-forge-cel",
  "schema-forge-core",
  "tracing",
 ]

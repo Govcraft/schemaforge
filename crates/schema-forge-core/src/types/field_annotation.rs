@@ -522,6 +522,23 @@ pub enum FieldAnnotation {
     /// the routing-layer strip, this makes the field invisible to every
     /// authenticated principal short of the storage layer itself.
     Hidden,
+    /// `@require("<expr>", "<message>")` -- a CEL validation rule. `expr` is the
+    /// raw CEL source that must evaluate to `true` for a write to be accepted;
+    /// `message` is the human-readable text returned (e.g. as a 422 rejection)
+    /// when it does not. Core stores only the raw expression string and does not
+    /// parse or evaluate it; syntactic validation happens in the DSL layer and
+    /// evaluation happens at write time (see #92).
+    Require { expr: String, message: String },
+    /// `@compute("<expr>")` -- a CEL expression whose result is stored as the
+    /// field's value, derived from sibling fields. Core stores only the raw
+    /// expression string; computation happens at write time (see #93).
+    Compute { expr: String },
+    /// `@default("<expr>")` -- a CEL expression evaluated to seed the field's
+    /// value when none is supplied. This is the *expression-valued* default and
+    /// is distinct from the literal [`FieldModifier::Default`] field modifier
+    /// (e.g. `default(5)`), which stores a fixed literal. Core stores only the
+    /// raw expression string; evaluation happens at write time (see #94).
+    Default { expr: String },
 }
 
 impl FieldAnnotation {
@@ -536,6 +553,9 @@ impl FieldAnnotation {
             Self::EnumColors { .. } => "enum_colors",
             Self::List { .. } => "list",
             Self::Hidden => "hidden",
+            Self::Require { .. } => "require",
+            Self::Compute { .. } => "compute",
+            Self::Default { .. } => "default",
         }
     }
 }
@@ -564,8 +584,43 @@ impl fmt::Display for FieldAnnotation {
             }
             Self::List { hint } => write!(f, "@list({hint})"),
             Self::Hidden => write!(f, "@hidden"),
+            Self::Require { expr, message } => {
+                write!(
+                    f,
+                    "@require(\"{}\", \"{}\")",
+                    escape_dsl_string(expr),
+                    escape_dsl_string(message),
+                )
+            }
+            Self::Compute { expr } => {
+                write!(f, "@compute(\"{}\")", escape_dsl_string(expr))
+            }
+            Self::Default { expr } => {
+                write!(f, "@default(\"{}\")", escape_dsl_string(expr))
+            }
         }
     }
+}
+
+/// Escapes a raw string for emission inside a double-quoted SchemaDSL string
+/// literal, mirroring the escape sequences the DSL lexer recognizes on input
+/// (`\\`, `\"`, `\n`, `\t`, `\r`). This guarantees `parse(print(x)) == x` for
+/// CEL expressions whose source contains backslashes, double quotes, or control
+/// whitespace. CEL string literals embedded in the expression use single quotes
+/// (e.g. `first + ' ' + last`) and therefore pass through unescaped.
+fn escape_dsl_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// A single repair performed by [`sanitize_schema_metadata_json`].
@@ -1101,5 +1156,104 @@ mod tests {
         let json = serde_json::to_string(&a).unwrap();
         let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);
+    }
+
+    // -- CEL rule annotations (Require / Compute / Default) --
+
+    #[test]
+    fn display_require() {
+        let a = FieldAnnotation::Require {
+            expr: "age >= 18".to_string(),
+            message: "must be 18 or older".to_string(),
+        };
+        assert_eq!(a.to_string(), "@require(\"age >= 18\", \"must be 18 or older\")");
+    }
+
+    #[test]
+    fn display_compute_with_single_quoted_cel_literal() {
+        let a = FieldAnnotation::Compute {
+            expr: "first + ' ' + last".to_string(),
+        };
+        // CEL single-quoted literals require no DSL escaping.
+        assert_eq!(a.to_string(), "@compute(\"first + ' ' + last\")");
+    }
+
+    #[test]
+    fn display_default_expr() {
+        let a = FieldAnnotation::Default {
+            expr: "now()".to_string(),
+        };
+        assert_eq!(a.to_string(), "@default(\"now()\")");
+    }
+
+    #[test]
+    fn display_escapes_embedded_double_quote_and_backslash() {
+        let a = FieldAnnotation::Compute {
+            expr: "x == \"a\\b\"".to_string(),
+        };
+        // `"` -> `\"`, `\` -> `\\` so the DSL lexer reads it back verbatim.
+        assert_eq!(a.to_string(), "@compute(\"x == \\\"a\\\\b\\\"\")");
+    }
+
+    #[test]
+    fn kind_require_compute_default() {
+        assert_eq!(
+            FieldAnnotation::Require {
+                expr: "true".into(),
+                message: "m".into()
+            }
+            .kind(),
+            "require"
+        );
+        assert_eq!(
+            FieldAnnotation::Compute { expr: "1".into() }.kind(),
+            "compute"
+        );
+        assert_eq!(
+            FieldAnnotation::Default { expr: "1".into() }.kind(),
+            "default"
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_require() {
+        let a = FieldAnnotation::Require {
+            expr: "age >= 18".into(),
+            message: "must be 18 or older".into(),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_compute() {
+        let a = FieldAnnotation::Compute {
+            expr: "first + ' ' + last".into(),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_default_expr() {
+        let a = FieldAnnotation::Default {
+            expr: "now()".into(),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn serde_default_expr_json_shape() {
+        // The expression-valued default serializes under the `Default` tag with
+        // an `expr` field, distinct from the literal `FieldModifier::Default`.
+        let a = FieldAnnotation::Default {
+            expr: "now()".into(),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(json, r#"{"annotation":"Default","expr":"now()"}"#);
     }
 }

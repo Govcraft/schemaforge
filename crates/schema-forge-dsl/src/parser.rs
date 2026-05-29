@@ -29,11 +29,18 @@ struct MixedParams {
 struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    /// The full DSL source, retained so that CEL expression diagnostics can be
+    /// mapped to an absolute `line:column` in the schema file.
+    source: String,
 }
 
 impl Parser {
-    fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0 }
+    fn new(tokens: Vec<SpannedToken>, source: &str) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            source: source.to_string(),
+        }
     }
 
     // -- Cursor helpers --
@@ -544,11 +551,69 @@ impl Parser {
                 self.expect(&Token::RParen)?;
                 Ok(FieldAnnotation::Format { format_type })
             }
+            "require" => {
+                self.expect(&Token::LParen)?;
+                let expr = self.read_cel_string_arg()?;
+                self.expect(&Token::Comma)?;
+                let message_tok = self.expect_string_literal()?;
+                let message = unquote_string(&message_tok.text);
+                self.expect(&Token::RParen)?;
+                Ok(FieldAnnotation::Require {
+                    expr: expr.value,
+                    message,
+                })
+            }
+            "compute" => {
+                self.expect(&Token::LParen)?;
+                let expr = self.read_cel_string_arg()?;
+                self.expect(&Token::RParen)?;
+                Ok(FieldAnnotation::Compute { expr: expr.value })
+            }
+            "default" => {
+                self.expect(&Token::LParen)?;
+                let expr = self.read_cel_string_arg()?;
+                self.expect(&Token::RParen)?;
+                Ok(FieldAnnotation::Default { expr: expr.value })
+            }
             other => Err(DslError::UnknownAnnotation {
                 name: other.to_string(),
                 span: name_tok.span,
             }),
         }
+    }
+
+    /// Read one positional double-quoted string argument holding raw CEL source,
+    /// then validate it syntactically with the owned CEL parser. On a CEL parse
+    /// error, the error's intra-expression [`schema_forge_cel::Position`] is
+    /// mapped to an absolute `line:column` in the DSL source so the diagnostic
+    /// points *into* the offending expression.
+    ///
+    /// Returns the unquoted (raw) CEL source on success.
+    fn read_cel_string_arg(&mut self) -> Result<CelArg, DslError> {
+        let str_tok = self.expect_string_literal()?;
+        let raw = unquote_string(&str_tok.text);
+        if let Err(parse_err) = schema_forge_cel::parse(&raw) {
+            // The string token's content begins one byte after the opening
+            // quote. Map the CEL parser's byte offset (into the unescaped
+            // content) back onto the raw token text, then resolve absolute
+            // line/column from the full source.
+            let cel_offset = parse_err.position().map(|p| p.offset).unwrap_or(0);
+            let content_start = str_tok.span.start + 1;
+            let abs_offset = map_content_offset_to_source(
+                &self.source,
+                content_start,
+                str_tok.span.end.saturating_sub(1),
+                cel_offset,
+            );
+            let (line, column) = line_col_at(&self.source, abs_offset);
+            return Err(DslError::InvalidCelExpression {
+                message: parse_err.message().to_string(),
+                line,
+                column,
+                span: str_tok.span,
+            });
+        }
+        Ok(CelArg { value: raw })
     }
 
     /// Parse `@enum_colors(variant: "color", ...)`. The opening `(` has not
@@ -1313,6 +1378,70 @@ fn parse_size_literal(raw: &str) -> Option<u64> {
     n.checked_mul(mult)
 }
 
+/// A validated CEL string argument: the raw (unescaped) expression source.
+struct CelArg {
+    value: String,
+}
+
+/// Map a byte offset into a string literal's *unescaped content* back to a byte
+/// offset in the full source text.
+///
+/// `content_start`..`content_end` is the byte range of the literal's content in
+/// `source` (i.e. between the surrounding quotes). `content_offset` is a byte
+/// offset into the unescaped content (as produced by `unquote_string`). Because
+/// a `\"` or `\\` escape occupies two source bytes but one content byte, we walk
+/// the raw content and advance the content counter by one per logical char,
+/// while advancing the source position by the actual byte width of each escape.
+///
+/// If `content_offset` lands at or beyond the end of the content (e.g. an EOF
+/// error from the CEL parser), the offset clamps to `content_end`.
+fn map_content_offset_to_source(
+    source: &str,
+    content_start: usize,
+    content_end: usize,
+    content_offset: usize,
+) -> usize {
+    if content_start >= source.len() || content_start > content_end {
+        return content_start.min(source.len());
+    }
+    let raw_content = &source[content_start..content_end.min(source.len())];
+    let mut content_pos = 0usize;
+    let mut chars = raw_content.char_indices().peekable();
+    while let Some((byte_idx, c)) = chars.next() {
+        if content_pos >= content_offset {
+            return content_start + byte_idx;
+        }
+        if c == '\\' {
+            // Consume the escaped character too; both raw bytes collapse to one
+            // content char.
+            chars.next();
+        }
+        content_pos += 1;
+    }
+    content_end.min(source.len())
+}
+
+/// Resolve a 0-based byte `offset` into `source` to a 1-based `(line, column)`,
+/// where the column is counted in Unicode scalar values (chars), matching the
+/// CEL engine's column convention.
+fn line_col_at(source: &str, offset: usize) -> (usize, usize) {
+    let clamped = offset.min(source.len());
+    let mut line = 1usize;
+    let mut column = 1usize;
+    for (idx, c) in source.char_indices() {
+        if idx >= clamped {
+            break;
+        }
+        if c == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
+}
+
 fn parse_i64(text: &str, span: &Span) -> Result<i64, DslError> {
     text.parse::<i64>()
         .map_err(|_| DslError::InvalidIntegerLiteral {
@@ -1364,7 +1493,7 @@ fn extract_i64_param(
 #[instrument(skip(source), fields(source_len = source.len()))]
 pub fn parse(source: &str) -> Result<Vec<SchemaDefinition>, Vec<DslError>> {
     let tokens = crate::lexer::tokenize(source)?;
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new(tokens, source);
     parser.parse_file()
 }
 
@@ -2829,4 +2958,166 @@ schema B { title: text @list(primary) }"#,
                 .any(|m| matches!(m, FieldModifier::Required))
         );
     }
+
+    // -- CEL rule annotations: @require / @compute / @default --
+
+    fn first_field_annotations(source: &str) -> Vec<FieldAnnotation> {
+        parse_one(source).fields[0].annotations.clone()
+    }
+
+    #[test]
+    fn parse_require_two_args() {
+        let anns = first_field_annotations(
+            r#"schema S { age: integer @require("age >= 18", "must be 18 or older") }"#,
+        );
+        assert_eq!(
+            anns,
+            vec![FieldAnnotation::Require {
+                expr: "age >= 18".to_string(),
+                message: "must be 18 or older".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_compute_one_arg_with_single_quoted_cel_literal() {
+        let anns = first_field_annotations(
+            r#"schema S { full_name: text @compute("first + ' ' + last") }"#,
+        );
+        assert_eq!(
+            anns,
+            vec![FieldAnnotation::Compute {
+                expr: "first + ' ' + last".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_default_expr_annotation() {
+        let anns =
+            first_field_annotations(r#"schema S { created_at: datetime @default("now()") }"#);
+        assert_eq!(
+            anns,
+            vec![FieldAnnotation::Default {
+                expr: "now()".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_require_missing_message_is_error() {
+        // `@require` requires a second positional message argument.
+        let err = parse(r#"schema S { age: integer @require("age >= 18") }"#).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("UnexpectedToken") || msg.contains("UnexpectedEndOfInput"),
+            "expected arity error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_require_non_string_message_is_error() {
+        let err = parse(r#"schema S { age: integer @require("age >= 18", 42) }"#).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("UnexpectedToken"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_compute_extra_arg_is_error() {
+        // `@compute` takes exactly one argument; a trailing comma/arg must fail.
+        let err = parse(r#"schema S { x: text @compute("a", "b") }"#).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("UnexpectedToken"), "got: {msg}");
+    }
+
+    #[test]
+    fn literal_default_and_default_annotation_coexist() {
+        // The bare-keyword literal `default(5)` modifier and the `@default("...")`
+        // expression annotation must parse independently on different fields.
+        let schema = parse_one(
+            "schema S {\n  count: integer default(5)\n  created_at: datetime @default(\"now()\")\n}",
+        );
+        // count: literal default modifier, no annotations.
+        assert!(schema.fields[0]
+            .modifiers
+            .iter()
+            .any(|m| matches!(m, FieldModifier::Default { value: DefaultValue::Integer(5) })));
+        assert!(schema.fields[0].annotations.is_empty());
+        // created_at: expression default annotation, no default modifier.
+        assert_eq!(
+            schema.fields[1].annotations,
+            vec![FieldAnnotation::Default {
+                expr: "now()".to_string()
+            }]
+        );
+        assert!(schema.fields[1].modifiers.is_empty());
+    }
+
+    #[test]
+    fn malformed_cel_diagnostic_points_into_expression() {
+        // `age >>> 18` is invalid CEL; the CEL parser flags the spurious third
+        // `>`. The diagnostic must carry an absolute line:column that lands on
+        // that character inside the expression.
+        let source = "schema S {\n    age: integer @require(\"age >>> 18\", \"bad\")\n}";
+        let err = parse(source).unwrap_err();
+        assert_eq!(err.len(), 1);
+        match &err[0] {
+            DslError::InvalidCelExpression {
+                line,
+                column,
+                message,
+                ..
+            } => {
+                assert_eq!(*line, 2, "error should be on the field's line");
+                // Independently locate the offending `>>>` run; the CEL parser
+                // reports the position of the third `>` (offset 5 within
+                // `age >>> 18`). Compute the expected 1-based column.
+                let line2 = source.lines().nth(1).unwrap();
+                let cel_content_col = line2.find("age >>>").unwrap();
+                // offset 5 into "age >>> 18" -> the 6th char (3rd '>').
+                let expected_col = cel_content_col + 5 + 1;
+                assert_eq!(*column, expected_col, "column should point at the bad `>`");
+                // Sanity-check the character under the reported column really is
+                // the third `>`.
+                let byte_at = line2.chars().nth(column - 1).unwrap();
+                assert_eq!(byte_at, '>');
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected InvalidCelExpression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_cel_diagnostic_display_format() {
+        let source = "schema S {\n    x: text @compute(\"1 +\")\n}";
+        let err = parse(source).unwrap_err();
+        let rendered = err[0].to_string();
+        // Format: `<line>:<col>: invalid expression: <cel message>`.
+        assert!(
+            rendered.starts_with("2:"),
+            "diagnostic should start with line 2, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("invalid expression:"),
+            "got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn require_with_escaped_message_roundtrips_quote() {
+        // A message containing a double-quote must be escaped in source and
+        // unescaped back to the raw text on parse.
+        let anns = first_field_annotations(
+            r#"schema S { age: integer @require("age >= 18", "say \"yes\"") }"#,
+        );
+        assert_eq!(
+            anns,
+            vec![FieldAnnotation::Require {
+                expr: "age >= 18".to_string(),
+                message: "say \"yes\"".to_string(),
+            }]
+        );
+    }
 }
+
+

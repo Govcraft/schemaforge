@@ -370,6 +370,14 @@ fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
             output.push(')');
         }
         FieldAnnotation::Hidden => output.push_str("@hidden"),
+        FieldAnnotation::Require { .. }
+        | FieldAnnotation::Compute { .. }
+        | FieldAnnotation::Default { .. } => {
+            // The core `Display` impl already emits the exact DSL form,
+            // including the same string escaping the lexer accepts on input,
+            // so delegating guarantees print/parse round-trip fidelity.
+            output.push_str(&annotation.to_string());
+        }
         _ => {
             output.push_str("@unknown_field_annotation");
         }
@@ -1062,5 +1070,97 @@ schema S {
         let printed = print(&parsed[0]);
         let reparsed = crate::parser::parse(&printed).unwrap();
         assert_eq!(parsed[0].annotations, reparsed[0].annotations);
+    }
+
+    // -- CEL rule annotation printing + round-trip --
+
+    #[test]
+    fn print_require_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("age").unwrap(),
+                FieldType::Integer(IntegerConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Require {
+                    expr: "age >= 18".into(),
+                    message: "must be 18 or older".into(),
+                }],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains(r#"age: integer @require("age >= 18", "must be 18 or older")"#));
+    }
+
+    #[test]
+    fn print_compute_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("full_name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Compute {
+                    expr: "first + ' ' + last".into(),
+                }],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains(r#"full_name: text @compute("first + ' ' + last")"#));
+    }
+
+    #[test]
+    fn print_default_expr_annotation() {
+        let schema = make_schema(
+            "S",
+            vec![FieldDefinition::with_annotations(
+                FieldName::new("created_at").unwrap(),
+                FieldType::DateTime,
+                vec![],
+                vec![FieldAnnotation::Default {
+                    expr: "now()".into(),
+                }],
+            )],
+            vec![],
+        );
+        let output = print(&schema);
+        assert!(output.contains(r#"created_at: datetime @default("now()")"#));
+    }
+
+    #[test]
+    fn roundtrip_require_compute_default() {
+        let source = r#"schema S {
+    age: integer @require("age >= 18", "must be 18 or older")
+    full_name: text @compute("first + ' ' + last")
+    created_at: datetime @default("now()")
+}
+"#;
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        for i in 0..3 {
+            assert_eq!(
+                parsed[0].fields[i].annotations,
+                reparsed[0].fields[i].annotations,
+                "annotation mismatch on field {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_require_with_embedded_quote() {
+        let source = r#"schema S {
+    age: integer @require("age >= 18", "say \"hi\"")
+}
+"#;
+        let parsed = crate::parser::parse(source).unwrap();
+        let printed = print(&parsed[0]);
+        let reparsed = crate::parser::parse(&printed).unwrap();
+        assert_eq!(
+            parsed[0].fields[0].annotations,
+            reparsed[0].fields[0].annotations
+        );
     }
 }
