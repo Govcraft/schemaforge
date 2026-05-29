@@ -35,7 +35,7 @@ use crate::messages::{
     CreateEntity, DeleteEntity, GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema,
     GetSchemasBatch, GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
 };
-use crate::rules::{check_requires, RuleError};
+use crate::rules::{apply_computed, check_requires, RuleError};
 use schema_forge_core::types::HookEvent;
 use std::sync::Arc;
 
@@ -1704,6 +1704,9 @@ pub async fn create_entity(
         .await?;
     }
 
+    // CEL @compute derived fields (#93) — evaluated before @require, stored.
+    apply_computed(&schema_def, &mut fields, claims.as_ref()).map_err(rule_error_to_forge)?;
+
     // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
     check_requires(&schema_def, &fields, claims.as_ref()).map_err(rule_error_to_forge)?;
 
@@ -2392,6 +2395,9 @@ pub async fn update_entity(
         .await?;
     }
 
+    // CEL @compute derived fields (#93) — evaluated before @require, stored.
+    apply_computed(&schema_def, &mut fields, claims.as_ref()).map_err(rule_error_to_forge)?;
+
     // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
     check_requires(&schema_def, &fields, claims.as_ref()).map_err(rule_error_to_forge)?;
 
@@ -2637,6 +2643,11 @@ pub async fn patch_entity(
         )
         .await?;
     }
+
+    // CEL @compute derived fields (#93) — evaluated before @require, stored.
+    // Runs on the merged (full post-patch) view so the delta picks up computed
+    // changes and @require predicates see them.
+    apply_computed(&schema_def, &mut merged, claims.as_ref()).map_err(rule_error_to_forge)?;
 
     // CEL @require validation rules (#92) — fail-closed, in-transaction, pre-persistence.
     // Evaluated against the full post-patch entity view so predicates that

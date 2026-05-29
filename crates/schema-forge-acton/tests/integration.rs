@@ -461,6 +461,99 @@ async fn require_annotation_rejects_invalid_entity_with_422() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compute_annotation_derives_and_overwrites_field() {
+    use schema_forge_core::types::{
+        Annotation, FieldAnnotation, FieldDefinition, FieldName, FieldType, SchemaDefinition,
+        SchemaId, SchemaName, TextConstraints,
+    };
+
+    let backend = SurrealBackend::connect_memory("test", "test")
+        .await
+        .expect("failed to connect to in-memory SurrealDB");
+
+    // Schema with a Text `full_name` field computed from `first` + `last`.
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Person").unwrap(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("first").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::new(
+                FieldName::new("last").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::with_annotations(
+                FieldName::new("full_name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![FieldAnnotation::Compute {
+                    expr: "first + ' ' + last".to_string(),
+                }],
+            ),
+        ],
+        vec![Annotation::Access {
+            read: vec![],
+            write: vec![],
+            delete: vec![],
+            cross_tenant_read: vec![],
+        }],
+    )
+    .unwrap();
+
+    let mut registry = HashMap::new();
+    registry.insert("Person".to_string(), schema.clone());
+
+    let backend = Arc::new(backend);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .expect("failed to apply migration");
+    backend
+        .store_schema_metadata(&schema)
+        .await
+        .expect("failed to store metadata");
+
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry,
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    let app = test_app_with_claims_state(state, make_test_claims(&["platform_admin"]));
+
+    // Supply only the inputs; the computed field should be derived.
+    let body = serde_json::json!({
+        "fields": { "first": "Ada", "last": "Lovelace" }
+    });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Person/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+    assert_eq!(json["fields"]["full_name"], "Ada Lovelace");
+
+    // Supplying a bogus value for the computed field must be overwritten.
+    let body = serde_json::json!({
+        "fields": { "first": "Grace", "last": "Hopper", "full_name": "HACKED" }
+    });
+    let (status, json) =
+        json_request(&app, Method::POST, "/schemas/Person/entities", Some(body)).await;
+    assert_eq!(
+        (status, &json),
+        (StatusCode::CREATED, &json),
+        "expected 201, got {status} with body: {json}"
+    );
+    assert_eq!(json["fields"]["full_name"], "Grace Hopper");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_entity_for_missing_schema_returns_404() {
     let app = test_app().await;
 

@@ -19,8 +19,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use acton_service::middleware::Claims;
-use schema_forge_cel::{dynamic_to_cel, CelKey, CelValue};
-use schema_forge_core::types::{DynamicValue, FieldAnnotation, SchemaDefinition};
+use schema_forge_cel::{cel_to_dynamic, dynamic_to_cel, CelKey, CelValue};
+use schema_forge_core::types::{DynamicValue, FieldAnnotation, FieldType, SchemaDefinition};
 
 /// The outcome of a failed rule evaluation.
 #[derive(Debug, Clone, PartialEq)]
@@ -174,11 +174,115 @@ pub fn check_requires(
     }
 }
 
+/// Evaluate every `@compute` annotation on the schema's fields and store the
+/// derived value into `fields`.
+///
+/// ## Decision: computed values are STORED and OVERWRITE client input
+///
+/// `@compute` fields are *server-derived*: the value is computed at write time
+/// and persisted (not virtual/recomputed on read), and any client-supplied
+/// value for a compute field is **overwritten** by the computed result. This
+/// keeps the stored record self-consistent and means a malicious or mistaken
+/// client cannot smuggle a value into a derived field.
+///
+/// Fields are visited in schema declaration order, and the bindings are rebuilt
+/// from the *current* `fields` before each compute, so a later computed field
+/// can read an earlier computed field's freshly-stored value (deterministic,
+/// chainable).
+///
+/// Fail-closed: an evaluation error or a value that cannot be converted /
+/// coerced to the field's declared type returns [`RuleError::Eval`] (500) and
+/// stores nothing for that field — a half-evaluated value is never persisted.
+/// This runs *before* [`check_requires`] so `@require` predicates validate the
+/// computed values.
+pub fn apply_computed(
+    schema: &SchemaDefinition,
+    fields: &mut BTreeMap<String, DynamicValue>,
+    claims: Option<&Claims>,
+) -> Result<(), RuleError> {
+    for field in &schema.fields {
+        for annotation in &field.annotations {
+            let FieldAnnotation::Compute { expr } = annotation else {
+                continue;
+            };
+
+            // Rebuild bindings from the current fields so this compute sees the
+            // results of any earlier computed fields (chaining).
+            let bindings = build_bindings(fields, claims);
+            let field_name = field.name.as_str();
+
+            let cel_value = schema_forge_cel::evaluate(expr, &bindings).map_err(|e| {
+                RuleError::Eval {
+                    field: field_name.to_string(),
+                    detail: e.to_string(),
+                }
+            })?;
+
+            let natural = cel_to_dynamic(&cel_value).map_err(|e| RuleError::Eval {
+                field: field_name.to_string(),
+                detail: e.to_string(),
+            })?;
+
+            let coerced = coerce_to_field_type(natural, &field.field_type, field_name)?;
+            fields.insert(field_name.to_string(), coerced);
+        }
+    }
+
+    Ok(())
+}
+
+/// Coerce a naturally-converted [`DynamicValue`] toward a field's declared
+/// [`FieldType`] for the safe, lossless cases used by `@compute`/`@default`.
+///
+/// Only a small, well-defined set of coercions is performed:
+/// - `Float` field + `Integer(i)` → `Float(i as f64)` (lossless widening).
+/// - `Enum` field + `Text(s)` → `Enum(s)` when `s` is a declared variant,
+///   otherwise [`RuleError::Eval`].
+/// - `DateTime` field + `Text(s)` → parse `s` as RFC 3339, otherwise
+///   [`RuleError::Eval`].
+///
+/// Every other combination passes the natural value through unchanged. Full
+/// strict type-checking of compute results against the declared field type at
+/// schema-apply time is tracked separately (#104) and is intentionally not done
+/// here.
+fn coerce_to_field_type(
+    value: DynamicValue,
+    field_type: &FieldType,
+    field: &str,
+) -> Result<DynamicValue, RuleError> {
+    match (field_type, value) {
+        (FieldType::Float(_), DynamicValue::Integer(i)) => Ok(DynamicValue::Float(i as f64)),
+        (FieldType::Enum(variants), DynamicValue::Text(s)) => {
+            if variants.iter().any(|v| v == &s) {
+                Ok(DynamicValue::Enum(s))
+            } else {
+                Err(RuleError::Eval {
+                    field: field.to_string(),
+                    detail: format!(
+                        "computed value '{s}' is not a variant of enum field '{field}'"
+                    ),
+                })
+            }
+        }
+        (FieldType::DateTime, DynamicValue::Text(s)) => {
+            chrono::DateTime::parse_from_rfc3339(&s)
+                .map(|dt| DynamicValue::DateTime(dt.with_timezone(&chrono::Utc)))
+                .map_err(|e| RuleError::Eval {
+                    field: field.to_string(),
+                    detail: format!("computed value '{s}' is not a valid RFC 3339 datetime: {e}"),
+                })
+        }
+        // No coercion applies; store the natural value as-is.
+        (_, value) => Ok(value),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use schema_forge_core::types::{
-        FieldDefinition, FieldName, FieldType, SchemaId, SchemaName, TextConstraints,
+        EnumVariants, FieldDefinition, FieldName, FieldType, FloatConstraints, SchemaId,
+        SchemaName, TextConstraints,
     };
 
     fn text_field(name: &str, annotations: Vec<FieldAnnotation>) -> FieldDefinition {
@@ -402,5 +506,219 @@ mod tests {
             check_requires(&schema, &f, None),
             Err(RuleError::Eval { .. })
         ));
+    }
+
+    // -- @compute (#93) --
+
+    fn typed_field(
+        name: &str,
+        field_type: FieldType,
+        annotations: Vec<FieldAnnotation>,
+    ) -> FieldDefinition {
+        FieldDefinition::with_annotations(
+            FieldName::new(name).unwrap(),
+            field_type,
+            vec![],
+            annotations,
+        )
+    }
+
+    fn compute(expr: &str) -> FieldAnnotation {
+        FieldAnnotation::Compute {
+            expr: expr.to_string(),
+        }
+    }
+
+    #[test]
+    fn numeric_compute_stores_float_with_int_coercion() {
+        // quantity * unit_price → Int product, coerced to the Float field.
+        let schema = schema_with(vec![
+            typed_field(
+                "quantity",
+                FieldType::Integer(
+                    schema_forge_core::types::IntegerConstraints::unconstrained(),
+                ),
+                vec![],
+            ),
+            typed_field(
+                "unit_price",
+                FieldType::Integer(
+                    schema_forge_core::types::IntegerConstraints::unconstrained(),
+                ),
+                vec![],
+            ),
+            typed_field(
+                "total",
+                FieldType::Float(FloatConstraints::unconstrained()),
+                vec![compute("quantity * unit_price")],
+            ),
+        ]);
+        let mut f = fields(&[
+            ("quantity", DynamicValue::Integer(3)),
+            ("unit_price", DynamicValue::Integer(7)),
+        ]);
+        assert_eq!(apply_computed(&schema, &mut f, None), Ok(()));
+        assert_eq!(f.get("total"), Some(&DynamicValue::Float(21.0)));
+    }
+
+    #[test]
+    fn string_concat_compute() {
+        let schema = schema_with(vec![
+            text_field("first", vec![]),
+            text_field("last", vec![]),
+            text_field("full_name", vec![compute("first + ' ' + last")]),
+        ]);
+        let mut f = fields(&[
+            ("first", DynamicValue::Text("Ada".to_string())),
+            ("last", DynamicValue::Text("Lovelace".to_string())),
+        ]);
+        assert_eq!(apply_computed(&schema, &mut f, None), Ok(()));
+        assert_eq!(
+            f.get("full_name"),
+            Some(&DynamicValue::Text("Ada Lovelace".to_string()))
+        );
+    }
+
+    #[test]
+    fn compute_overwrites_client_supplied_value() {
+        let schema = schema_with(vec![
+            text_field("first", vec![]),
+            text_field("last", vec![]),
+            text_field("full_name", vec![compute("first + ' ' + last")]),
+        ]);
+        let mut f = fields(&[
+            ("first", DynamicValue::Text("Ada".to_string())),
+            ("last", DynamicValue::Text("Lovelace".to_string())),
+            // Client tries to smuggle a value into the derived field.
+            ("full_name", DynamicValue::Text("HACKED".to_string())),
+        ]);
+        assert_eq!(apply_computed(&schema, &mut f, None), Ok(()));
+        assert_eq!(
+            f.get("full_name"),
+            Some(&DynamicValue::Text("Ada Lovelace".to_string()))
+        );
+    }
+
+    #[test]
+    fn chained_compute_sees_earlier_computed_value() {
+        // `b` is computed from `a`, which is itself computed (and declared first).
+        let schema = schema_with(vec![
+            typed_field(
+                "base",
+                FieldType::Integer(
+                    schema_forge_core::types::IntegerConstraints::unconstrained(),
+                ),
+                vec![],
+            ),
+            typed_field(
+                "a",
+                FieldType::Integer(
+                    schema_forge_core::types::IntegerConstraints::unconstrained(),
+                ),
+                vec![compute("base + 1")],
+            ),
+            typed_field(
+                "b",
+                FieldType::Integer(
+                    schema_forge_core::types::IntegerConstraints::unconstrained(),
+                ),
+                vec![compute("a * 10")],
+            ),
+        ]);
+        let mut f = fields(&[("base", DynamicValue::Integer(4))]);
+        assert_eq!(apply_computed(&schema, &mut f, None), Ok(()));
+        assert_eq!(f.get("a"), Some(&DynamicValue::Integer(5)));
+        // b must see a's freshly-computed value (5), not an undeclared ref.
+        assert_eq!(f.get("b"), Some(&DynamicValue::Integer(50)));
+    }
+
+    #[test]
+    fn principal_referencing_compute() {
+        let schema = schema_with(vec![text_field(
+            "created_by",
+            vec![compute("principal.sub")],
+        )]);
+        let mut f = fields(&[]);
+        assert_eq!(
+            apply_computed(&schema, &mut f, Some(&claims(&[]))),
+            Ok(())
+        );
+        assert_eq!(
+            f.get("created_by"),
+            Some(&DynamicValue::Text("user:alice".to_string()))
+        );
+    }
+
+    #[test]
+    fn eval_error_compute_is_eval() {
+        let schema = schema_with(vec![text_field(
+            "x",
+            vec![compute("missing_field + 1")],
+        )]);
+        let mut f = fields(&[]);
+        match apply_computed(&schema, &mut f, None) {
+            Err(RuleError::Eval { field, detail }) => {
+                assert_eq!(field, "x");
+                assert!(!detail.is_empty());
+            }
+            other => panic!("expected Eval error, got {other:?}"),
+        }
+        // Nothing was stored for the failed field.
+        assert!(!f.contains_key("x"));
+    }
+
+    #[test]
+    fn enum_coercion_success() {
+        let variants =
+            EnumVariants::new(vec!["low".to_string(), "high".to_string()]).unwrap();
+        let schema = schema_with(vec![
+            text_field("level", vec![]),
+            typed_field(
+                "tier",
+                FieldType::Enum(variants),
+                vec![compute("level")],
+            ),
+        ]);
+        let mut f = fields(&[("level", DynamicValue::Text("high".to_string()))]);
+        assert_eq!(apply_computed(&schema, &mut f, None), Ok(()));
+        assert_eq!(f.get("tier"), Some(&DynamicValue::Enum("high".to_string())));
+    }
+
+    #[test]
+    fn enum_coercion_invalid_variant_is_eval() {
+        let variants =
+            EnumVariants::new(vec!["low".to_string(), "high".to_string()]).unwrap();
+        let schema = schema_with(vec![
+            text_field("level", vec![]),
+            typed_field(
+                "tier",
+                FieldType::Enum(variants),
+                vec![compute("level")],
+            ),
+        ]);
+        let mut f = fields(&[("level", DynamicValue::Text("medium".to_string()))]);
+        match apply_computed(&schema, &mut f, None) {
+            Err(RuleError::Eval { field, detail }) => {
+                assert_eq!(field, "tier");
+                assert!(detail.contains("medium"), "detail was: {detail}");
+                assert!(detail.contains("not a variant"), "detail was: {detail}");
+            }
+            other => panic!("expected Eval error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn datetime_coercion_parses_rfc3339() {
+        let schema = schema_with(vec![typed_field(
+            "at",
+            FieldType::DateTime,
+            vec![compute("'2024-01-02T03:04:05Z'")],
+        )]);
+        let mut f = fields(&[]);
+        assert_eq!(apply_computed(&schema, &mut f, None), Ok(()));
+        match f.get("at") {
+            Some(DynamicValue::DateTime(_)) => {}
+            other => panic!("expected DateTime, got {other:?}"),
+        }
     }
 }
