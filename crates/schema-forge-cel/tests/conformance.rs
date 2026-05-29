@@ -68,7 +68,12 @@ const EXCLUDED: &[&str] = &[
 /// Total passing tests the engine must currently meet. Ratcheted up per stage:
 /// Stage 1 (harness only) = 0; #107 turns on `parse`/`plumbing`; #108 the core
 /// sections; #109 the stdlib sections.
-const MIN_PASS_BASELINE: usize = 0;
+///
+/// #108 (evaluator core) raised this to 815: the `lists` section is fully green;
+/// `basic`/`logic`/`macros`/`comparisons` are green except for constructs that
+/// need the #109 standard library (`duration`/`timestamp`/`startsWith`/proto
+/// wrappers) or are #107 parser-literal edge cases (`i64::MIN`).
+const MIN_PASS_BASELINE: usize = 815;
 
 #[derive(Default)]
 struct Tally {

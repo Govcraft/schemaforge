@@ -5,8 +5,12 @@
 //! and additionally carries CEL-internal types the DSL does not yet expose —
 //! `uint`, `bytes`, `duration` (tracked by field-type issues #98/#97/#96).
 //!
-//! Note: equality is currently `derive`d. The evaluator core (#108) replaces it
-//! with CEL cross-type numeric equality (`1 == 1u == 1.0`, `NaN != NaN`).
+//! Note: equality here is the `derive`d, TYPE-EXACT `PartialEq`, and it stays that
+//! way on purpose. The conformance oracle compares `actual == expected` to grade
+//! results, so it must reject a type-wrong answer (`Int(1)` where `Uint(1)` is
+//! expected). CEL's `==`/`!=` *operator* semantics — cross-type numeric equality
+//! (`1 == 1u == 1.0`), `NaN != NaN`, and recursive list/map comparison — live
+//! separately in [`crate::eval::ops::cel_equals`], not in this `PartialEq`.
 
 use std::collections::BTreeMap;
 

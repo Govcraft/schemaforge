@@ -13,18 +13,22 @@
 //! ## Status
 //! The parser (#107) has landed: [`parse`] turns CEL source into a typed
 //! [`ast::Expr`], and [`unparse`] renders an AST back to re-parseable source. The
-//! evaluator core (#108) and standard library (#109) are not yet implemented;
-//! [`evaluate`] currently returns [`EvalError::unimplemented`] so the oracle
-//! reports honest red baselines.
+//! evaluator core (#108) has landed too: [`eval`] walks the AST against a
+//! [`eval::Scope`] to produce a [`value::CelValue`], and [`evaluate`] wires
+//! `parse` + `eval` end-to-end. The broad standard library (#109) — string,
+//! numeric, and temporal built-ins — is still pending; calls to those functions
+//! return a `"no such overload"` evaluation error until #109 fills them in.
 
 pub mod ast;
 pub mod error;
+pub mod eval;
 pub mod lexer;
 pub mod parser;
 pub mod value;
 
 pub use ast::{unparse, BinaryOp, Comprehension, Expr, Literal, UnaryOp};
 pub use error::{CelError, ConversionError, EvalError, ParseError, Position};
+pub use eval::{eval, Scope};
 pub use parser::parse;
 pub use value::{CelKey, CelType, CelValue};
 
@@ -38,7 +42,7 @@ pub type Bindings = BTreeMap<String, CelValue>;
 /// Returns the resulting [`CelValue`], or a [`CelError`] on parse or evaluation
 /// failure.
 pub fn evaluate(source: &str, bindings: &Bindings) -> Result<CelValue, CelError> {
-    // Engine not yet built (#107–#109); reported as a red baseline by the oracle.
-    let _ = (source, bindings);
-    Err(EvalError::unimplemented().into())
+    let expr = parse(source)?;
+    let scope = Scope::root(bindings);
+    Ok(eval(&expr, &scope)?)
 }

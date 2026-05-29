@@ -560,6 +560,15 @@ mod macros {
     }
 
     // all(x, p): init true; while @result; step @result && p; result @result.
+    //
+    // The loop_condition stays a bare `@result` (resp. `!@result` for `exists`),
+    // NOT cel-spec's `@not_strictly_false(@result)` wrapper. The corresponding
+    // error-absorption ("a predicate error on one element must not abort when a
+    // later element already determines the result") is implemented in the
+    // evaluator's comprehension loop (`eval::eval_comprehension`), which defers a
+    // predicate error and discards it if the loop reaches a determinate
+    // accumulator. Keeping the lowering minimal means the evaluator owns the one
+    // source of truth for absorption.
     fn lower_all(range: Expr, args: &[Expr]) -> Result<Expr, ParseError> {
         let var = iter_var(args)?;
         let pred = args[1].clone();

@@ -131,11 +131,6 @@ impl EvalError {
         }
     }
 
-    /// Placeholder used while the engine is unimplemented (#107–#109).
-    pub fn unimplemented() -> Self {
-        Self::new("unimplemented: CEL engine not yet built")
-    }
-
     /// The error message.
     pub fn message(&self) -> &str {
         &self.message
