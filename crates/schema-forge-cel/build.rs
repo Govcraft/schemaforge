@@ -77,7 +77,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fs::write(binpb_dir.join(format!("{stem}.binpb")), &output.stdout)?;
     }
 
-    println!("cargo:rustc-env=CEL_CONFORMANCE_BINPB={}", binpb_dir.display());
+    println!(
+        "cargo:rustc-env=CEL_CONFORMANCE_BINPB={}",
+        binpb_dir.display()
+    );
     println!("cargo:rerun-if-changed=proto");
     println!("cargo:rerun-if-changed=testdata/simple");
     println!("cargo:rerun-if-changed=build.rs");

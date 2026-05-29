@@ -11,14 +11,21 @@
 //! `tests/conformance.rs` oracle (#90).
 //!
 //! ## Status
-//! The parser (#107), evaluator core (#108), and standard library (#109) are not
-//! yet implemented; [`evaluate`] currently returns [`EvalError::unimplemented`]
-//! so the oracle reports honest red baselines.
+//! The parser (#107) has landed: [`parse`] turns CEL source into a typed
+//! [`ast::Expr`], and [`unparse`] renders an AST back to re-parseable source. The
+//! evaluator core (#108) and standard library (#109) are not yet implemented;
+//! [`evaluate`] currently returns [`EvalError::unimplemented`] so the oracle
+//! reports honest red baselines.
 
+pub mod ast;
 pub mod error;
+pub mod lexer;
+pub mod parser;
 pub mod value;
 
-pub use error::{CelError, ConversionError, EvalError, ParseError};
+pub use ast::{unparse, BinaryOp, Comprehension, Expr, Literal, UnaryOp};
+pub use error::{CelError, ConversionError, EvalError, ParseError, Position};
+pub use parser::parse;
 pub use value::{CelKey, CelType, CelValue};
 
 use std::collections::BTreeMap;

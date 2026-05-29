@@ -7274,7 +7274,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "prost 0.14.3",

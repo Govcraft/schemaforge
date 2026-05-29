@@ -48,30 +48,68 @@ impl From<ConversionError> for CelError {
     }
 }
 
-/// A parse-time failure. Carries a human-readable message; position information
-/// is added when the parser lands (#107).
+/// A source position: a 0-based byte offset plus 1-based line and column.
+///
+/// The column is counted in Unicode scalar values (chars), not bytes, so it
+/// lines up with what a human sees in an editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Position {
+    /// Byte offset into the source string.
+    pub offset: usize,
+    /// 1-based line number.
+    pub line: usize,
+    /// 1-based column number, counted in chars.
+    pub column: usize,
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {}, column {}", self.line, self.column)
+    }
+}
+
+/// A parse-time failure. Carries a human-readable message and, when produced by
+/// the lexer/parser (#107), the source [`Position`] at which the failure occurred.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseError {
     message: String,
+    position: Option<Position>,
 }
 
 impl ParseError {
-    /// Construct a parse error with the given message.
+    /// Construct a parse error with the given message and no position.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            position: None,
         }
     }
 
-    /// The error message.
+    /// Construct a parse error pointing at a specific source [`Position`].
+    pub fn with_position(message: impl Into<String>, position: Position) -> Self {
+        Self {
+            message: message.into(),
+            position: Some(position),
+        }
+    }
+
+    /// The error message (without any positional suffix).
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// The source position of the failure, if known.
+    pub fn position(&self) -> Option<Position> {
+        self.position
     }
 }
 
 impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
+        match self.position {
+            Some(pos) => write!(f, "{} at {pos}", self.message),
+            None => f.write_str(&self.message),
+        }
     }
 }
 

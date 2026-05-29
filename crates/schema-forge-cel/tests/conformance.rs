@@ -251,7 +251,14 @@ fn report(by_feature: &BTreeMap<String, Tally>) {
         ts += t.skipped;
     }
     eprintln!("  {:-<54}", "");
-    eprintln!("  {:<14} pass {tp:>4}  fail {tf:>4}  skip {ts:>4}  / {}", "TOTAL", tp + tf + ts);
-    eprintln!("  excluded (proto-message, out of scope): {}", EXCLUDED.join(", "));
+    eprintln!(
+        "  {:<14} pass {tp:>4}  fail {tf:>4}  skip {ts:>4}  / {}",
+        "TOTAL",
+        tp + tf + ts
+    );
+    eprintln!(
+        "  excluded (proto-message, out of scope): {}",
+        EXCLUDED.join(", ")
+    );
     eprintln!("  baseline: {MIN_PASS_BASELINE} passing required\n");
 }
