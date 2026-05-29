@@ -12,7 +12,8 @@ site_e2e/
 │   ├── package.json       # pins @playwright/test
 │   ├── playwright.config.ts
 │   └── tests/
-│       └── smoke.spec.ts  # login → admin create/delete round-trip
+│       ├── smoke.spec.ts  # login → /app create → detail round-trip
+│       └── a11y.spec.ts   # axe WCAG 2.1 AA scan of login + /app routes
 └── run.sh                 # orchestrator: generate site, boot backend, run spec
 ```
 
@@ -50,8 +51,11 @@ Playwright artifacts (screenshots, traces) are uploaded on failure for post-mort
 
 Current specs are intentionally narrow — grow them as the site surface grows:
 
+The runtime-dynamic admin console (the old `/admin/*` shell, schema catalog,
+generic CRUD, and user management) moved to the `schemaforge-console` repo, so
+these specs cover only the generated `/app` per-entity surface.
+
 - `smoke.spec.ts`:
   1. Visit `/login`, submit `admin` / `admin`, assert redirect away from `/login`.
-  2. Visit `/admin/Company`, click **New Company**, fill required fields (including a composite sub-field), submit, assert detail view renders the saved values.
-  3. Visit `/admin/Company`, click **Delete** on the row created above, confirm the native dialog via `page.on("dialog")`, assert the row is gone.
-  4. Visit `/admin/users`, assert the bootstrapped admin appears in the table.
+  2. Visit `/app/company`, click **New Company**, fill the required `name` field, submit, assert redirect to the detail view and the headline renders the saved name.
+- `a11y.spec.ts`: axe WCAG 2.1 A/AA + Section 508 scan of `/login`, the `/app/company` list, the `/app/company/new` create form, and a `/app/company/:id` detail page — each must report zero violations.

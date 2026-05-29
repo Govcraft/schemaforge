@@ -7,9 +7,10 @@ import AxeBuilder from "@axe-core/playwright"
 // zero axe violations at the WCAG 2.1 A / AA / Section 508 tag levels.
 //
 // Keep the scan list narrow: cover the routes a federal-trusted-tester walks
-// (login, the admin dashboard, an entity list/edit, the users list) so any
-// future regression in template-level a11y trips CI on the next site
-// generate.
+// (login, an entity list, an entity create form, and an entity detail) so any
+// future regression in template-level a11y trips CI on the next site generate.
+// The old `/admin/*` shell moved to the schemaforge-console repo and is scanned
+// there.
 
 const USERNAME = process.env.FORGE_ADMIN_USER ?? "admin"
 const PASSWORD = process.env.FORGE_ADMIN_PASSWORD ?? "admin"
@@ -35,64 +36,35 @@ test("login page has zero axe violations", async ({ page }) => {
   expect(violations, JSON.stringify(violations, null, 2)).toEqual([])
 })
 
-test("admin schemas index has zero axe violations", async ({ page }) => {
+test("Company list has zero axe violations", async ({ page }) => {
   await login(page)
-  await page.goto("/admin")
-  await expect(page.getByRole("heading", { name: /schema catalog/i })).toBeVisible()
-  const violations = await scan(page)
-  expect(violations, JSON.stringify(violations, null, 2)).toEqual([])
-})
-
-test("admin Company list has zero axe violations", async ({ page }) => {
-  await login(page)
-  await page.goto("/admin/Company")
+  await page.goto("/app/company")
   await expect(page.getByRole("heading", { name: "Company" })).toBeVisible()
   const violations = await scan(page)
   expect(violations, JSON.stringify(violations, null, 2)).toEqual([])
 })
 
-test("admin Company create form has zero axe violations", async ({ page }) => {
+test("Company create form has zero axe violations", async ({ page }) => {
   await login(page)
-  await page.goto("/admin/Company/new")
+  await page.goto("/app/company/new")
   await expect(page.getByRole("heading", { name: /new company/i })).toBeVisible()
   const violations = await scan(page)
   expect(violations, JSON.stringify(violations, null, 2)).toEqual([])
 })
 
-test("admin users list has zero axe violations", async ({ page }) => {
-  await login(page)
-  await page.goto("/admin/users")
-  await expect(page.getByRole("heading", { name: /users/i })).toBeVisible()
-  const violations = await scan(page)
-  expect(violations, JSON.stringify(violations, null, 2)).toEqual([])
-})
-
-test("admin users new form has zero axe violations", async ({ page }) => {
-  await login(page)
-  await page.goto("/admin/users/new")
-  await expect(page.getByRole("heading", { name: /new user/i })).toBeVisible()
-  const violations = await scan(page)
-  expect(violations, JSON.stringify(violations, null, 2)).toEqual([])
-})
-
-test("delete confirmation dialog has zero axe violations", async ({ page }) => {
+test("Company detail has zero axe violations", async ({ page }) => {
   await login(page)
 
-  // Seed a record so there is a row to delete.
-  await page.goto("/admin/Company/new")
-  await page.getByRole("textbox", { name: "name" }).fill("Axe Subject Co")
-  await page.getByRole("textbox", { name: "city" }).fill("Boston")
+  // Seed a record so there is a detail page to scan. A successful create
+  // redirects to /app/company/:id.
+  await page.goto("/app/company/new")
+  await page.getByLabel(/^name/i).fill("Axe Subject Co")
   await page.getByRole("button", { name: /^create$/i }).click()
-  await expect(page).toHaveURL(/\/admin\/Company\/[^/]+$/)
+  await expect(page).toHaveURL(/\/app\/company\/[^/]+$/)
+  await expect(
+    page.getByRole("heading", { name: "Axe Subject Co" }),
+  ).toBeVisible()
 
-  // Open the AlertDialog from the detail page and scan it in place.
-  await page.getByRole("button", { name: /^delete$/i }).click()
-  const dialog = page.getByRole("alertdialog")
-  await expect(dialog).toBeVisible()
   const violations = await scan(page)
   expect(violations, JSON.stringify(violations, null, 2)).toEqual([])
-
-  // Tidy up so the record does not leak into subsequent runs.
-  await dialog.getByRole("button", { name: /^delete$/i }).click()
-  await expect(page).toHaveURL(/\/admin\/Company$/)
 })

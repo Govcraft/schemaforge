@@ -180,8 +180,8 @@ function storeAndSchedule(body: LoginResponse): LoginResponse {
 
 /**
  * Current user's roles, sourced from the last login/refresh response.
- * Returns an empty array when no user is logged in. Used by the admin
- * field renderer to gate `@field_access(read, write)` fields.
+ * Returns an empty array when no user is logged in. Used to gate
+ * role-scoped chrome (e.g. the platform_admin tenant badge).
  */
 export function getCurrentRoles(): string[] {
   return tokenStore.getRoles()

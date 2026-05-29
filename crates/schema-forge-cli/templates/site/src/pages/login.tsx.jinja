@@ -21,7 +21,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
 import { login } from "@/lib/auth"
 import { useDocumentTitle } from "@/lib/use-document-title"
-import { getMeta, type MetaResponse } from "@/admin/api-client"
+import { getMeta, type MetaResponse } from "@/generated/api-client"
 
 const loginSchema = z.object({
   username: z.string().min(1, "Username is required"),
@@ -114,7 +114,7 @@ export function LoginPage() {
               marginBottom: 12,
             }}
           >
-            Govcraft · Admin Console
+            Govcraft · SchemaForge
           </div>
           <p className="login-hero" aria-hidden="true">SchemaForge</p>
           <p className="login-tagline" style={ { marginTop: 18 }}>
