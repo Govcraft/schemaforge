@@ -12,11 +12,12 @@
 //! CSV and NDJSON exports whose resolved row count is within the schema's
 //! `@export(max_rows)` cap are serialized inline in the response (the
 //! **synchronous, streamable** path). Anything else — a non-streamable format
-//! (XLSX; ZIP once it lands), `async: true`, or a result that would exceed the
-//! cap — takes the supervised **async-job** path: a job is registered with the
+//! (XLSX or ZIP), `async: true`, or a result that would exceed the cap — takes
+//! the supervised **async-job** path: a job is registered with the
 //! [`ExportJobActor`](crate::export_job::ExportJobActor) and its id is returned
 //! immediately. XLSX is async-only because `rust_xlsxwriter` buffers the whole
-//! workbook and cannot truly stream.
+//! workbook; ZIP is async-only because the multi-member archive (and any bundled
+//! file blobs) is staged and buffered before upload.
 //!
 //! Tenant injection ([`inject_tenant_scope`]) and per-field read stripping
 //! ([`filter_entity_fields`]) run identically to the normal query path, so the
@@ -79,11 +80,12 @@ pub struct ExportRequestBody {
     pub fields: Option<Vec<String>>,
     /// Deliverable format, as the DSL keyword (`csv`, `ndjson`, `xlsx`, `zip`).
     /// Parsed to an [`ExportFormat`] via [`ExportRequestBody::parse_format`].
-    /// Only `csv` and `ndjson` stream inline in this slice.
+    /// Only `csv` and `ndjson` stream inline; `xlsx` and `zip` take the async-job
+    /// path.
     pub format: String,
-    /// When `true`, the caller explicitly asks for the async-job path. This
-    /// slice has no job runner yet, so it is rejected with a pointer to the
-    /// (forthcoming) async endpoint rather than silently streaming.
+    /// When `true`, the caller explicitly asks for the async-job path, so even a
+    /// streamable format is materialized to storage and returned as a job id
+    /// rather than streamed inline.
     #[serde(default, rename = "async")]
     pub is_async: bool,
 }
@@ -114,13 +116,14 @@ pub fn is_streamable(format: ExportFormat) -> bool {
 
 /// Whether the supervised async-job pipeline can currently materialize `format`.
 ///
-/// CSV, NDJSON, and XLSX are supported: the first two also stream synchronously,
-/// while XLSX is async-only because `rust_xlsxwriter` buffers the whole workbook
-/// (ADR-0003). ZIP bundling lands in a later item and is still deferred.
+/// All declared formats are supported on the async path: CSV and NDJSON (which
+/// also stream synchronously), XLSX (async-only because `rust_xlsxwriter` buffers
+/// the whole workbook), and ZIP (the multi-member bundle, also buffered). XLSX
+/// and ZIP never stream inline (ADR-0003).
 pub fn async_job_supports(format: ExportFormat) -> bool {
     matches!(
         format,
-        ExportFormat::Csv | ExportFormat::Ndjson | ExportFormat::Xlsx
+        ExportFormat::Csv | ExportFormat::Ndjson | ExportFormat::Xlsx | ExportFormat::Zip
     )
 }
 
@@ -384,6 +387,94 @@ pub async fn materialize_export(
     requested_fields: Option<&[String]>,
     max_rows: u64,
 ) -> Result<ExportArtifact, ForgeError> {
+    let prepared = prepare_export(ctx, schema_def, filter_json, requested_fields, max_rows).await?;
+    let PreparedExport {
+        entities,
+        columns,
+        display_map,
+    } = &prepared;
+
+    let row_count = entities.len();
+    let (bytes, content_type) = match format {
+        ExportFormat::Csv => {
+            let csv = entities_to_csv(entities, columns, display_map).map_err(|e| {
+                ForgeError::Internal {
+                    message: format!("CSV serialization failed: {e}"),
+                }
+            })?;
+            (csv.into_bytes(), "text/csv; charset=utf-8")
+        }
+        ExportFormat::Ndjson => {
+            let ndjson = entities_to_ndjson(entities, columns, display_map);
+            (ndjson.into_bytes(), "application/x-ndjson")
+        }
+        ExportFormat::Xlsx => {
+            let xlsx = entities_to_xlsx(entities, columns, display_map).map_err(|e| {
+                ForgeError::Internal {
+                    message: format!("XLSX serialization failed: {e}"),
+                }
+            })?;
+            (
+                xlsx,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        }
+        other => {
+            return Err(ForgeError::Internal {
+                message: format!("unsupported format reached the export pipeline: {other}"),
+            });
+        }
+    };
+
+    Ok(ExportArtifact {
+        bytes,
+        content_type,
+        row_count,
+        column_names: prepared.column_names(),
+    })
+}
+
+/// The result of running the shared query / tenant / record-filter /
+/// display-resolve / field-strip half of the export pipeline, before any
+/// format-specific serialization.
+///
+/// Both the flat formats ([`materialize_export`]) and the ZIP bundle
+/// ([`materialize_zip_bundle`]) start from the same `PreparedExport`, so a bundle
+/// can never contain a row or field a flat export could not — the two paths share
+/// the identical fail-closed preparation rather than reimplementing it.
+pub struct PreparedExport {
+    /// Rows that survived record-level access filtering, each already stripped of
+    /// read-restricted fields.
+    pub entities: Vec<Entity>,
+    /// Resolved `@exportable` ∩ requested column set (name + flatten hint).
+    pub columns: Vec<(String, Option<schema_forge_core::types::ExportFlatten>)>,
+    /// Per-field resolved relation displays (`field -> id -> display`).
+    pub display_map: HashMap<String, HashMap<String, String>>,
+}
+
+impl PreparedExport {
+    /// The resolved exportable column names, for the audit trail.
+    pub fn column_names(&self) -> Vec<String> {
+        self.columns.iter().map(|(n, _)| n.clone()).collect()
+    }
+}
+
+/// Run the shared, format-independent half of the export pipeline: build the
+/// query (no page limit, `max_rows`-capped), inject the tenant scope, execute,
+/// enforce the row cap, apply record-level access filtering, resolve relation
+/// displays, and strip read-restricted fields per row.
+///
+/// Factored out of [`materialize_export`] so the flat serializers and the ZIP
+/// bundle path share the **same** tenant injection and field stripping the query
+/// path enforces. `max_rows` is enforced by probing `max_rows + 1` and returning
+/// [`ForgeError::ExportTooLarge`] on overflow.
+pub async fn prepare_export(
+    ctx: &ExportContext<'_>,
+    schema_def: &SchemaDefinition,
+    filter_json: Option<&serde_json::Value>,
+    requested_fields: Option<&[String]>,
+    max_rows: u64,
+) -> Result<PreparedExport, ForgeError> {
     let ExportContext {
         forge,
         claims,
@@ -465,43 +556,81 @@ pub async fn materialize_export(
         );
     }
 
-    let row_count = visible.len();
-    let (bytes, content_type) = match format {
-        ExportFormat::Csv => {
-            let csv = entities_to_csv(&visible, &columns, &display_map).map_err(|e| {
-                ForgeError::Internal {
-                    message: format!("CSV serialization failed: {e}"),
-                }
-            })?;
-            (csv.into_bytes(), "text/csv; charset=utf-8")
-        }
-        ExportFormat::Ndjson => {
-            let ndjson = entities_to_ndjson(&visible, &columns, &display_map);
-            (ndjson.into_bytes(), "application/x-ndjson")
-        }
-        ExportFormat::Xlsx => {
-            let xlsx = entities_to_xlsx(&visible, &columns, &display_map).map_err(|e| {
-                ForgeError::Internal {
-                    message: format!("XLSX serialization failed: {e}"),
-                }
-            })?;
-            (
-                xlsx,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-        }
-        other => {
-            return Err(ForgeError::Internal {
-                message: format!("unsupported format reached the export pipeline: {other}"),
-            });
-        }
+    Ok(PreparedExport {
+        entities: visible,
+        columns,
+        display_map,
+    })
+}
+
+/// The data-file format carried inside a ZIP bundle. CSV is the bundle's
+/// rectangular projection (the same one the flat CSV export produces), so the
+/// archive's data member is `<schema>.csv`.
+const ZIP_DATA_FORMAT: ExportFormat = ExportFormat::Csv;
+
+/// Materialize a ZIP-bundle export and return its bytes.
+///
+/// The archive always carries the rectangular data file (`<schema>.csv`,
+/// generated from the same `@exportable` ∩ readable projection the flat CSV
+/// export uses). When the entity's `@export(bundle_files: true)` opt-in is set,
+/// the raw blobs of its `@exportable` `file` fields are pulled from `store` and
+/// embedded under `files/<field>/<id>/<filename>`. Bundling file blobs is a
+/// strictly larger exfiltration surface, so it is reachable only behind that
+/// opt-in (the caller passes the schema-declared flag) and the same Export authz
+/// the rest of the path enforces; only `Available` (scanned-clean) blobs are
+/// embedded.
+///
+/// `store` is the [`ExportArtifactStore`] seam, so the blob fetch is mockable in
+/// tests without a live object store. A blob that cannot be read from storage
+/// fails the whole job rather than silently shipping an incomplete bundle.
+pub async fn materialize_zip_bundle(
+    ctx: &ExportContext<'_>,
+    schema_def: &SchemaDefinition,
+    filter_json: Option<&serde_json::Value>,
+    requested_fields: Option<&[String]>,
+    max_rows: u64,
+    bundle_files: bool,
+    store: &std::sync::Arc<dyn crate::storage::ExportArtifactStore>,
+) -> Result<ExportArtifact, ForgeError> {
+    use crate::export_bundle::{
+        build_zip_bundle, collect_file_blob_refs, data_member_name, BundleEntry,
     };
+
+    let prepared = prepare_export(ctx, schema_def, filter_json, requested_fields, max_rows).await?;
+    let row_count = prepared.entities.len();
+
+    // The rectangular data member, identical to the flat CSV projection.
+    let csv = entities_to_csv(&prepared.entities, &prepared.columns, &prepared.display_map)
+        .map_err(|e| ForgeError::Internal {
+            message: format!("CSV serialization failed: {e}"),
+        })?;
+    let mut entries = vec![BundleEntry::new(
+        data_member_name(schema_def.name.as_str(), ZIP_DATA_FORMAT.as_str()),
+        csv.into_bytes(),
+    )];
+
+    // File-field blobs: only when the entity opted in via `bundle_files: true`.
+    // The refs are derived purely from the already-stripped rows, so a blob whose
+    // field was not @exportable or not readable by the caller is never referenced.
+    if bundle_files {
+        let blob_refs = collect_file_blob_refs(&prepared.entities, schema_def, &prepared.columns);
+        for blob in blob_refs {
+            let bytes = store.get(&blob.key).await.map_err(|e| ForgeError::Internal {
+                message: format!("failed to read file blob '{}' for bundle: {e}", blob.key),
+            })?;
+            entries.push(BundleEntry::new(blob.member_name, bytes));
+        }
+    }
+
+    let bytes = build_zip_bundle(&entries).map_err(|e| ForgeError::Internal {
+        message: format!("ZIP bundle assembly failed: {e}"),
+    })?;
 
     Ok(ExportArtifact {
         bytes,
-        content_type,
+        content_type: "application/zip",
         row_count,
-        column_names: columns.into_iter().map(|(n, _)| n).collect(),
+        column_names: prepared.column_names(),
     })
 }
 
@@ -566,7 +695,7 @@ pub async fn export_entities(
 
     // Level-1 fail-closed gate: the entity must declare `@export`, and the
     // requested format must be in its declared formats vocabulary.
-    let Some((formats, _bundle_files, max_rows)) = schema_def.export_config() else {
+    let Some((formats, bundle_files, max_rows)) = schema_def.export_config() else {
         audit_export(
             &state,
             "forge.export.denied",
@@ -666,8 +795,12 @@ pub async fn export_entities(
             policy_store,
             record_access_policy,
         };
-        return spawn_export_job(&state, &schema_def, format, max_rows, &body, claims.as_ref(), authz)
-            .await;
+        let cfg = ExportJobConfig {
+            format,
+            max_rows,
+            bundle_files,
+        };
+        return spawn_export_job(&state, &schema_def, cfg, &body, claims.as_ref(), authz).await;
     }
 
     // Synchronous streamable path: materialize inline and stream the bytes.
@@ -757,31 +890,48 @@ struct ResolvedExportAuthz {
         Option<std::sync::Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
 }
 
+/// The schema's resolved `@export` parameters carried into the async job.
+///
+/// Groups the three values [`spawn_export_job`] needs from `@export(...)` so the
+/// handler passes one config bag rather than a long argument list: the requested
+/// `format`, the server-enforced `max_rows` cap, and the `bundle_files` opt-in
+/// the ZIP path consults before embedding file-field blobs.
+struct ExportJobConfig {
+    format: ExportFormat,
+    max_rows: u64,
+    bundle_files: bool,
+}
+
 /// Register an async export job with the [`ExportJobActor`] and return a 202
 /// Accepted body carrying the job id, leaving generation + upload to the
 /// supervised actor.
 ///
-/// This is reached for non-streamable formats (XLSX now; ZIP once its serializer
-/// lands), an explicit `async: true`, or whenever a caller would otherwise block
-/// on a large materialization. A 503 is returned if no storage backend is
-/// configured, since the artifact would have nowhere to land.
+/// This is reached for non-streamable formats (XLSX, ZIP), an explicit
+/// `async: true`, or whenever a caller would otherwise block on a large
+/// materialization. A 503 is returned if no storage backend is configured, since
+/// the artifact would have nowhere to land. `cfg` carries the schema's resolved
+/// `@export` parameters (format, row cap, and the `bundle_files` opt-in the ZIP
+/// path consults to decide whether to embed file-field blobs).
 async fn spawn_export_job(
     state: &AppState<SchemaForgeConfig>,
     schema_def: &SchemaDefinition,
-    format: ExportFormat,
-    max_rows: u64,
+    cfg: ExportJobConfig,
     body: &ExportRequestBody,
     claims: Option<&Claims>,
     authz: ResolvedExportAuthz,
 ) -> Result<Response, ForgeError> {
-    // The async path generates CSV, NDJSON, and XLSX. The ZIP bundle serializer
-    // lands in a later item; until then a declared-but-unsupported format is
-    // refused rather than silently failing the job after accepting it.
+    let ExportJobConfig {
+        format,
+        max_rows,
+        bundle_files,
+    } = cfg;
+    // The async path generates every declared format (csv, ndjson, xlsx, zip). A
+    // format outside that set is refused rather than silently failing the job
+    // after accepting it.
     if !async_job_supports(format) {
         return Err(ForgeError::ExportDeferred {
             message: format!(
-                "format '{}' is not yet supported by the async export pipeline \
-                 (csv, ndjson, and xlsx only); see ADR-0003",
+                "format '{}' is not supported by the async export pipeline; see ADR-0003",
                 format.as_str()
             ),
         });
@@ -841,6 +991,7 @@ async fn spawn_export_job(
         filter: body.filter.clone(),
         fields: body.fields.clone(),
         max_rows,
+        bundle_files,
         claims: claims.cloned(),
         tenant_config: authz.tenant_config,
         policy_store: authz.policy_store,
@@ -1154,13 +1305,13 @@ mod tests {
     }
 
     #[test]
-    fn async_job_supports_csv_ndjson_xlsx_not_zip() {
-        // XLSX is async-only (buffered), so it is NOT streamable but IS a
-        // supported async-job format; ZIP is still deferred.
+    fn async_job_supports_all_declared_formats() {
+        // CSV/NDJSON also stream; XLSX and ZIP are async-only (buffered). All four
+        // declared formats are materializable on the async-job path.
         assert!(async_job_supports(ExportFormat::Csv));
         assert!(async_job_supports(ExportFormat::Ndjson));
         assert!(async_job_supports(ExportFormat::Xlsx));
-        assert!(!async_job_supports(ExportFormat::Zip));
+        assert!(async_job_supports(ExportFormat::Zip));
     }
 
     /// Read the first worksheet of an in-memory `.xlsx` back into a grid of

@@ -7,6 +7,7 @@ pub mod conversions;
 pub mod crypto;
 pub mod email;
 pub mod error;
+pub mod export_bundle;
 pub mod export_job;
 pub mod extension;
 pub mod invite;

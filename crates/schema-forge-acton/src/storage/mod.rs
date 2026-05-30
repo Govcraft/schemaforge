@@ -40,6 +40,17 @@ pub trait ExportArtifactStore: Send + Sync + std::fmt::Debug {
     /// default TTL.
     async fn presign_get(&self, key: &str, ttl_secs: Option<u64>)
         -> Result<String, StorageError>;
+
+    /// Read the full object at `key` into memory.
+    ///
+    /// Used by the ZIP-bundle export path (ADR-0003): when an entity's
+    /// `@export(bundle_files: true)` is set, the raw blobs of its `file` fields
+    /// are pulled from storage and embedded in the archive alongside the data
+    /// file. This is a strictly larger exfiltration surface than the metadata-only
+    /// CSV/NDJSON paths, so it is reachable only behind that opt-in and the same
+    /// Export authz + audit gates. Buffering the whole object is acceptable here
+    /// because the bundle itself is materialized (not streamed) on the async path.
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError>;
 }
 
 #[async_trait]
@@ -59,6 +70,16 @@ impl ExportArtifactStore for S3Client {
         ttl_secs: Option<u64>,
     ) -> Result<String, StorageError> {
         S3Client::presign_get(self, key, ttl_secs).await
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        let stream = S3Client::get_object_stream(self, key).await?;
+        let aggregated = stream
+            .body
+            .collect()
+            .await
+            .map_err(|e| StorageError::Request(format!("read object '{key}' failed: {e}")))?;
+        Ok(aggregated.to_vec())
     }
 }
 

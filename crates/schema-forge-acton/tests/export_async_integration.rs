@@ -81,6 +81,26 @@ impl ExportArtifactStore for MockStore {
             Err(StorageError::Request("object not found".into()))
         }
     }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        self.objects
+            .lock()
+            .unwrap()
+            .get(key)
+            .map(|(bytes, _)| bytes.clone())
+            .ok_or_else(|| StorageError::Request(format!("object '{key}' not found")))
+    }
+}
+
+impl MockStore {
+    /// Seed a raw object (e.g. a `file`-field blob) so the ZIP bundle path can
+    /// pull it back out via [`ExportArtifactStore::get`].
+    fn seed_object(&self, key: &str, bytes: Vec<u8>, content_type: &str) {
+        self.objects
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), (bytes, content_type.to_string()));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +386,7 @@ async fn async_job_generates_csv_and_uploads_to_store() {
         filter: None,
         fields: None,
         max_rows: 100,
+        bundle_files: false,
         claims: Some(make_claims(&["platform_admin"])),
         tenant_config,
         policy_store,
@@ -437,6 +458,7 @@ async fn async_job_generates_xlsx_and_uploads_well_formed_workbook() {
         filter: None,
         fields: None,
         max_rows: 100,
+        bundle_files: false,
         claims: Some(make_claims(&["platform_admin"])),
         tenant_config,
         policy_store,
@@ -532,6 +554,7 @@ async fn async_job_over_cap_fails_without_uploading() {
         filter: None,
         fields: None,
         max_rows: 1,
+        bundle_files: false,
         claims: Some(make_claims(&["platform_admin"])),
         tenant_config,
         policy_store,
@@ -685,6 +708,7 @@ async fn status_endpoint_returns_completed_job_with_download_url() {
         filter: None,
         fields: None,
         max_rows: 100,
+        bundle_files: false,
         claims: Some(make_claims(&["platform_admin"])),
         tenant_config,
         policy_store,
@@ -739,6 +763,7 @@ async fn status_endpoint_denies_cross_subject_access() {
         filter: None,
         fields: None,
         max_rows: 100,
+        bundle_files: false,
         claims: Some(make_claims(&["platform_admin"])),
         tenant_config,
         policy_store,
@@ -771,4 +796,321 @@ async fn status_endpoint_denies_cross_subject_access() {
         json.get("download_url").is_none(),
         "cross-subject read must not leak a download url"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tests — ZIP bundle (item 8)
+// ---------------------------------------------------------------------------
+
+use schema_forge_backend::entity::Entity;
+use schema_forge_backend::traits::EntityStore;
+use schema_forge_core::types::{
+    DynamicValue, EntityId, FileAccess, FileConstraints, FileStatus,
+};
+use std::collections::BTreeMap;
+
+/// Read an in-memory ZIP archive into `(member_name, bytes)` pairs.
+fn read_zip_members(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    use std::io::Read;
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).expect("valid zip archive");
+    let mut out = Vec::new();
+    for i in 0..archive.len() {
+        let mut member = archive.by_index(i).expect("member");
+        let name = member.name().to_string();
+        let mut buf = Vec::new();
+        member.read_to_end(&mut buf).expect("read member");
+        out.push((name, buf));
+    }
+    out
+}
+
+fn file_field(name: &str) -> FieldDefinition {
+    FieldDefinition::with_annotations(
+        FieldName::new(name).unwrap(),
+        FieldType::File(FileConstraints {
+            bucket: "documents".to_string(),
+            max_size_bytes: 1_000_000,
+            mime_allowlist: vec![],
+            access: FileAccess::default(),
+        }),
+        vec![],
+        vec![FieldAnnotation::Exportable { flatten: None }],
+    )
+}
+
+/// `Doc`: `title` (exportable text) + `attachment` (exportable file field), with
+/// `@export(formats: [zip], bundle_files: <flag>)`.
+fn zip_schema(bundle_files: bool) -> SchemaDefinition {
+    SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Doc").unwrap(),
+        vec![exportable_field("title"), file_field("attachment")],
+        vec![
+            Annotation::Access {
+                read: vec!["analyst".to_string()],
+                write: vec!["analyst".to_string()],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            },
+            Annotation::Export {
+                formats: vec![ExportFormat::Zip],
+                bundle_files,
+                max_rows: 100,
+            },
+        ],
+    )
+    .unwrap()
+}
+
+/// Build state over a `Doc` table seeded by inserting entities directly through
+/// the backend (so a `file` field can carry a ready `FileAttachment` without
+/// going through the upload/confirm flow), returning the state and the backend.
+async fn seeded_doc_state(
+    schema: SchemaDefinition,
+    entities: Vec<Entity>,
+) -> AppState<SchemaForgeConfig> {
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("test", "test")
+            .await
+            .expect("mem surreal"),
+    );
+    provision(&backend, &schema).await;
+    for entity in &entities {
+        backend.create(entity).await.expect("seed entity");
+    }
+
+    let mut registry = HashMap::new();
+    registry.insert(schema.name.as_str().to_string(), schema.clone());
+    build_state(backend, registry).await
+}
+
+/// Build an entity with a single `attachment` file field carrying an `Available`
+/// attachment that points at `blob_key`.
+fn doc_with_attachment(id: &str, title: &str, blob_key: &str) -> Entity {
+    let mut fields: BTreeMap<String, DynamicValue> = BTreeMap::new();
+    fields.insert("title".into(), DynamicValue::Text(title.into()));
+    fields.insert(
+        "attachment".into(),
+        DynamicValue::Json(serde_json::json!({
+            "key": blob_key,
+            "size": 5,
+            "mime": "text/plain",
+            "status": FileStatus::Available.as_str(),
+            "created_at": "2024-01-01T00:00:00Z",
+        })),
+    );
+    Entity::with_id(EntityId::new(id), SchemaName::new("Doc").unwrap(), fields)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn zip_bundle_without_file_blobs_holds_only_data_member() {
+    // bundle_files = false: the archive carries just the rectangular data file,
+    // never any file-field blob, even though the schema has a file field.
+    let schema = zip_schema(false);
+    let entities = vec![doc_with_attachment("d1", "First", "blobs/d1.txt")];
+    let state = seeded_doc_state(schema, entities).await;
+    let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
+        job_inputs(&state, "Doc").await;
+    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+
+    let store = Arc::new(MockStore::default());
+    // The blob exists in storage, but with bundle_files=false it must NOT be pulled.
+    store.seed_object("blobs/d1.txt", b"BLOB!".to_vec(), "text/plain");
+
+    let job_id = schema_forge_acton::export_job::new_job_id();
+    let object_key = format!("exports/Doc/{job_id}.zip");
+    let spec = ExportJobSpec {
+        job_id: job_id.clone(),
+        schema_name: "Doc".into(),
+        schema_def,
+        format: ExportFormat::Zip,
+        filter: None,
+        fields: None,
+        max_rows: 100,
+        bundle_files: false,
+        claims: Some(make_claims(&["platform_admin"])),
+        tenant_config,
+        policy_store,
+        record_access_policy,
+        forge,
+        store: store.clone(),
+        object_key: object_key.clone(),
+        audit_logger: None,
+        subject: Some("user:test-user".into()),
+    };
+    job_actor.send(StartExportJob::new(spec)).await;
+    let record = poll_until_terminal(&job_actor, &job_id).await;
+    assert_eq!(record.status, ExportJobStatus::Complete, "error: {:?}", record.error);
+    assert_eq!(record.row_count, Some(1));
+
+    let bytes = {
+        let objects = store.objects.lock().unwrap();
+        let (bytes, ctype) = objects.get(&object_key).expect("artifact uploaded");
+        assert_eq!(ctype, "application/zip");
+        assert_eq!(&bytes[..2], b"PK", "not a zip container");
+        bytes.clone()
+    };
+    let members = read_zip_members(&bytes);
+    // Only the data member; no files/ blob. The data file still lists the
+    // exportable `attachment` file column (its metadata, not the raw bytes).
+    assert_eq!(members.len(), 1, "members: {:?}", members.iter().map(|(n, _)| n).collect::<Vec<_>>());
+    assert_eq!(members[0].0, "Doc.csv");
+    let csv = String::from_utf8(members[0].1.clone()).unwrap();
+    assert_eq!(csv.lines().next().unwrap(), "title,attachment");
+    assert!(csv.contains("First"));
+    // With bundle_files=false the raw blob bytes must not appear in the archive.
+    assert!(!members.iter().any(|(_, b)| b.windows(5).any(|w| w == b"BLOB!")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn zip_bundle_with_file_blobs_embeds_available_blob() {
+    // bundle_files = true: the archive carries the data file plus the raw blob of
+    // each @exportable, Available file field, pulled from storage.
+    let schema = zip_schema(true);
+    let entities = vec![
+        doc_with_attachment("d1", "First", "blobs/d1.txt"),
+        doc_with_attachment("d2", "Second", "blobs/d2.txt"),
+    ];
+    let state = seeded_doc_state(schema, entities).await;
+    let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
+        job_inputs(&state, "Doc").await;
+    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+
+    let store = Arc::new(MockStore::default());
+    store.seed_object("blobs/d1.txt", b"hello".to_vec(), "text/plain");
+    store.seed_object("blobs/d2.txt", b"world".to_vec(), "text/plain");
+
+    let job_id = schema_forge_acton::export_job::new_job_id();
+    let object_key = format!("exports/Doc/{job_id}.zip");
+    let spec = ExportJobSpec {
+        job_id: job_id.clone(),
+        schema_name: "Doc".into(),
+        schema_def,
+        format: ExportFormat::Zip,
+        filter: None,
+        fields: None,
+        max_rows: 100,
+        bundle_files: true,
+        claims: Some(make_claims(&["platform_admin"])),
+        tenant_config,
+        policy_store,
+        record_access_policy,
+        forge,
+        store: store.clone(),
+        object_key: object_key.clone(),
+        audit_logger: None,
+        subject: Some("user:test-user".into()),
+    };
+    job_actor.send(StartExportJob::new(spec)).await;
+    let record = poll_until_terminal(&job_actor, &job_id).await;
+    assert_eq!(record.status, ExportJobStatus::Complete, "error: {:?}", record.error);
+    assert_eq!(record.row_count, Some(2));
+
+    let bytes = {
+        let objects = store.objects.lock().unwrap();
+        let (bytes, ctype) = objects.get(&object_key).expect("artifact uploaded");
+        assert_eq!(ctype, "application/zip");
+        bytes.clone()
+    };
+    let members = read_zip_members(&bytes);
+    let names: Vec<&str> = members.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(names.contains(&"Doc.csv"), "names: {names:?}");
+    // Each row's blob lands under files/<field>/<entity_id>/<filename>. The entity
+    // id is backend-generated (random TypeID), so assert on the structural prefix
+    // and the deterministic filename segment rather than a literal id.
+    let d1 = members
+        .iter()
+        .find(|(n, _)| n.starts_with("files/attachment/") && n.ends_with("/d1.txt"))
+        .expect("d1 blob member");
+    assert_eq!(d1.1, b"hello");
+    let d2 = members
+        .iter()
+        .find(|(n, _)| n.starts_with("files/attachment/") && n.ends_with("/d2.txt"))
+        .expect("d2 blob member");
+    assert_eq!(d2.1, b"world");
+    // Data file + two blobs.
+    assert_eq!(members.len(), 3, "names: {names:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn zip_bundle_skips_non_available_blob() {
+    // A quarantined (not Available) attachment is never embedded in the archive,
+    // even with bundle_files = true.
+    let schema = zip_schema(true);
+    let mut fields: BTreeMap<String, DynamicValue> = BTreeMap::new();
+    fields.insert("title".into(), DynamicValue::Text("Risky".into()));
+    fields.insert(
+        "attachment".into(),
+        DynamicValue::Json(serde_json::json!({
+            "key": "blobs/quarantined.txt",
+            "size": 3,
+            "mime": "text/plain",
+            "status": FileStatus::Quarantined.as_str(),
+            "created_at": "2024-01-01T00:00:00Z",
+        })),
+    );
+    let entity = Entity::with_id(EntityId::new("q1"), SchemaName::new("Doc").unwrap(), fields);
+    let state = seeded_doc_state(schema, vec![entity]).await;
+    let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
+        job_inputs(&state, "Doc").await;
+    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+
+    let store = Arc::new(MockStore::default());
+    // Even though the bytes exist, a quarantined attachment must not be bundled.
+    store.seed_object("blobs/quarantined.txt", b"BAD".to_vec(), "text/plain");
+
+    let job_id = schema_forge_acton::export_job::new_job_id();
+    let object_key = format!("exports/Doc/{job_id}.zip");
+    let spec = ExportJobSpec {
+        job_id: job_id.clone(),
+        schema_name: "Doc".into(),
+        schema_def,
+        format: ExportFormat::Zip,
+        filter: None,
+        fields: None,
+        max_rows: 100,
+        bundle_files: true,
+        claims: Some(make_claims(&["platform_admin"])),
+        tenant_config,
+        policy_store,
+        record_access_policy,
+        forge,
+        store: store.clone(),
+        object_key: object_key.clone(),
+        audit_logger: None,
+        subject: Some("user:test-user".into()),
+    };
+    job_actor.send(StartExportJob::new(spec)).await;
+    let record = poll_until_terminal(&job_actor, &job_id).await;
+    assert_eq!(record.status, ExportJobStatus::Complete, "error: {:?}", record.error);
+
+    let bytes = {
+        let objects = store.objects.lock().unwrap();
+        objects.get(&object_key).expect("artifact uploaded").0.clone()
+    };
+    let members = read_zip_members(&bytes);
+    // Only the data file; the quarantined blob is excluded.
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].0, "Doc.csv");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zip_request_takes_async_path_not_deferred() {
+    // A schema declaring `zip` must route to the async pipeline. With no storage
+    // configured the route fails on missing storage (503) — NOT a 422 "deferred"
+    // (zip is now supported) and NOT a 403 format-not-allowed.
+    let schema = zip_schema(true);
+    let state = seeded_doc_state(schema, vec![]).await;
+    let app = app_with_claims(state, make_claims(&["platform_admin"]));
+
+    let (status, json) = raw_request(
+        &app,
+        Method::POST,
+        "/schemas/Doc/entities/export",
+        Some(serde_json::json!({ "format": "zip" })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {json}");
 }

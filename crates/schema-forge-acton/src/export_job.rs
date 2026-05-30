@@ -32,7 +32,7 @@ use tracing::{error, warn};
 
 use crate::authz::PolicyStore;
 use crate::messages::ReplyChannel;
-use crate::routes::export::{materialize_export, ExportContext};
+use crate::routes::export::{materialize_export, materialize_zip_bundle, ExportContext};
 use crate::storage::{ExportArtifactStore, StorageRegistry};
 
 /// Lifecycle state of an async export job.
@@ -131,6 +131,9 @@ pub struct ExportJobSpec {
     pub filter: Option<serde_json::Value>,
     pub fields: Option<Vec<String>>,
     pub max_rows: u64,
+    /// The schema's `@export(bundle_files: ...)` opt-in. Only consulted on the
+    /// ZIP path: when `true`, file-field blobs are pulled into the archive.
+    pub bundle_files: bool,
     pub claims: Option<Claims>,
     pub tenant_config: Option<TenantConfig>,
     pub policy_store: Arc<PolicyStore>,
@@ -396,16 +399,34 @@ async fn run_job(spec: &ExportJobSpec) -> std::result::Result<usize, String> {
         policy_store: &spec.policy_store,
         record_access_policy: &spec.record_access_policy,
     };
-    let artifact = materialize_export(
-        &ctx,
-        &spec.schema_def,
-        spec.format,
-        spec.filter.as_ref(),
-        spec.fields.as_deref(),
-        spec.max_rows,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    // ZIP rides a distinct serializer (multi-member archive + optional file
+    // blobs); every other format goes through the flat serialization core. The
+    // ZIP path needs the store handle to pull file blobs, so it is passed
+    // explicitly rather than threaded through `materialize_export`.
+    let artifact = if spec.format == ExportFormat::Zip {
+        materialize_zip_bundle(
+            &ctx,
+            &spec.schema_def,
+            spec.filter.as_ref(),
+            spec.fields.as_deref(),
+            spec.max_rows,
+            spec.bundle_files,
+            &spec.store,
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        materialize_export(
+            &ctx,
+            &spec.schema_def,
+            spec.format,
+            spec.filter.as_ref(),
+            spec.fields.as_deref(),
+            spec.max_rows,
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    };
 
     spec.store
         .put(&spec.object_key, artifact.bytes, artifact.content_type)
