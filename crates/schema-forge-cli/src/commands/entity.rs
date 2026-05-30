@@ -11,12 +11,12 @@ use console::Term;
 use serde_json::{json, Map, Value};
 
 use crate::cli::{
-    EntityCommands, EntityConnectionArgs, EntityCreateArgs, EntityDeleteArgs, EntityGetArgs,
-    EntityInputArgs, EntityListArgs, EntityQueryArgs, EntityWriteArgs, GlobalOpts,
+    EntityCommands, EntityConnectionArgs, EntityCreateArgs, EntityDeleteArgs, EntityExportArgs,
+    EntityGetArgs, EntityInputArgs, EntityListArgs, EntityQueryArgs, EntityWriteArgs, GlobalOpts,
 };
 use crate::config::{load_svc_config, resolve_client_config, ResolvedClient};
 use crate::error::CliError;
-use crate::http::{forge_base, EntityDto, ForgeClient, ListDto};
+use crate::http::{forge_base, EntityDto, ExportResponse, ForgeClient, ListDto};
 use crate::output::{OutputContext, OutputMode};
 use crate::progress;
 
@@ -34,6 +34,7 @@ pub async fn run(
         EntityCommands::Patch(args) => write(*args, global, output, false).await,
         EntityCommands::Delete(args) => delete(*args, global, output).await,
         EntityCommands::Query(args) => query(*args, global, output).await,
+        EntityCommands::Export(args) => export(*args, global, output).await,
     }
 }
 
@@ -176,6 +177,148 @@ async fn query(
     let value =
         call_with_spinner(output, "Querying entities…", client.query(&args.schema, &body)).await?;
     render_list(output, &value, args.fields.as_deref())
+}
+
+async fn export(
+    args: EntityExportArgs,
+    global: &GlobalOpts,
+    output: &OutputContext,
+) -> Result<(), CliError> {
+    let filter_str = match &args.filter {
+        Some(arg) => Some(read_data_arg(arg)?),
+        None => None,
+    };
+    let body = build_export_body(
+        filter_str.as_deref(),
+        args.fields.as_deref(),
+        &args.format,
+        args.is_async,
+    )?;
+
+    let (_, client) = build_client(&args.conn, global, output, true)?;
+    let response = call_with_spinner(
+        output,
+        "Requesting export…",
+        client.export(&args.schema, &body),
+    )
+    .await?;
+
+    match response {
+        ExportResponse::File {
+            bytes,
+            filename,
+            ..
+        } => write_export_artifact(output, &args, &bytes, filename.as_deref()),
+        ExportResponse::Job(record) => {
+            poll_and_download(&client, &args, output, record).await
+        }
+    }
+}
+
+/// Poll an accepted async export job to completion, then download the artifact.
+///
+/// Returns early — printing the job id and status — when `--async` was *not*
+/// requested but the server deferred anyway, or when polling times out, so the
+/// caller can re-poll later with the same job id.
+async fn poll_and_download(
+    client: &ForgeClient,
+    args: &EntityExportArgs,
+    output: &OutputContext,
+    initial: Value,
+) -> Result<(), CliError> {
+    let job_id = job_id(&initial).ok_or_else(|| CliError::Server {
+        message: "export job response missing job_id".to_string(),
+    })?;
+
+    output.status(&format!(
+        "export running as job {job_id} (status: {})",
+        job_status(&initial).unwrap_or("queued")
+    ));
+
+    let deadline = (args.poll_timeout > 0)
+        .then(|| std::time::Instant::now() + std::time::Duration::from_secs(args.poll_timeout));
+    let interval = std::time::Duration::from_secs(args.poll_interval.max(1));
+
+    let mut record = initial;
+    loop {
+        match job_status(&record) {
+            Some("complete") => break,
+            Some("failed") => {
+                return Err(CliError::Server {
+                    message: format!(
+                        "export job {job_id} failed: {}",
+                        job_error(&record).unwrap_or("no detail provided")
+                    ),
+                });
+            }
+            _ => {}
+        }
+
+        if let Some(deadline) = deadline {
+            if std::time::Instant::now() >= deadline {
+                output.warn(&format!(
+                    "stopped polling after {}s; job {job_id} is still running. \
+                     Re-check with: schemaforge entity export … (status persists server-side)",
+                    args.poll_timeout
+                ));
+                output.print_json(&record);
+                return Ok(());
+            }
+        }
+
+        tokio::time::sleep(interval).await;
+        record = client.get_export_job(&args.schema, &job_id).await?;
+    }
+
+    let url = job_download_url(&record).ok_or_else(|| CliError::Server {
+        message: format!("completed export job {job_id} has no download_url"),
+    })?;
+    let bytes = call_with_spinner(output, "Downloading artifact…", client.download(url)).await?;
+
+    let server_name = format!("{}.{}", args.schema, args.format);
+    write_export_artifact(output, args, &bytes, Some(&server_name))
+}
+
+/// Write the downloaded/streamed export bytes to `--out` (or stdout).
+///
+/// `-` or an absent `--out` writes raw bytes to stdout. A path ending in a
+/// separator (or an existing directory) is treated as a directory and the
+/// server-suggested `filename` is joined onto it.
+fn write_export_artifact(
+    output: &OutputContext,
+    args: &EntityExportArgs,
+    bytes: &[u8],
+    filename: Option<&str>,
+) -> Result<(), CliError> {
+    let dest = resolve_out_path(args.out.as_deref(), filename);
+    match dest {
+        Some(path) => {
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| CliError::Io {
+                        path: parent.to_path_buf(),
+                        source: e,
+                    })?;
+                }
+            }
+            std::fs::write(&path, bytes).map_err(|e| CliError::Io {
+                path: path.clone(),
+                source: e,
+            })?;
+            output.success(&format!("exported {} bytes to {}", bytes.len(), path.display()));
+            Ok(())
+        }
+        None => {
+            use std::io::Write;
+            std::io::stdout()
+                .write_all(bytes)
+                .map_err(|e| CliError::Io {
+                    path: std::path::PathBuf::from("<stdout>"),
+                    source: e,
+                })?;
+            Ok(())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +606,89 @@ fn build_query_body(
         obj.insert("resolve".to_string(), Value::Bool(false));
     }
     Ok(Value::Object(obj))
+}
+
+/// Build the POST `export` body `{ filter?, fields?, format, async? }`.
+///
+/// `filter` is raw JSON (already read from literal/@file/stdin); `fields` is a
+/// comma-separated projection turned into a JSON array. The server intersects
+/// `fields` with `@exportable` ∩ readable, so this only ever narrows. `format`
+/// is passed through verbatim — clap already constrains it to the valid set.
+fn build_export_body(
+    filter: Option<&str>,
+    fields: Option<&str>,
+    format: &str,
+    is_async: bool,
+) -> Result<Value, CliError> {
+    let mut obj = Map::new();
+
+    if let Some(f) = filter {
+        let parsed: Value = serde_json::from_str(f).map_err(|e| CliError::Config {
+            message: format!("--filter is not valid JSON: {e}"),
+        })?;
+        obj.insert("filter".to_string(), parsed);
+    }
+    if let Some(f) = fields {
+        let names: Vec<Value> = f
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| Value::String(s.to_string()))
+            .collect();
+        obj.insert("fields".to_string(), Value::Array(names));
+    }
+    obj.insert("format".to_string(), Value::String(format.to_string()));
+    if is_async {
+        obj.insert("async".to_string(), Value::Bool(true));
+    }
+    Ok(Value::Object(obj))
+}
+
+/// Resolve the on-disk destination for an export artifact.
+///
+/// `None` (no `--out`) or `Some("-")` returns `None`, meaning "write to stdout".
+/// A path ending in a separator is a directory: the server-suggested `filename`
+/// is joined onto it. Otherwise the path is used verbatim. Pure and total so the
+/// path policy is unit-testable without touching the filesystem.
+fn resolve_out_path(
+    out: Option<&std::path::Path>,
+    filename: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let out = out?;
+    if out.as_os_str() == "-" {
+        return None;
+    }
+    let is_dir_like = out
+        .as_os_str()
+        .to_str()
+        .is_some_and(|s| s.ends_with('/') || s.ends_with('\\'))
+        || out.is_dir();
+    if is_dir_like {
+        let name = filename.unwrap_or("export");
+        Some(out.join(name))
+    } else {
+        Some(out.to_path_buf())
+    }
+}
+
+/// The `job_id` from a job-status JSON, if present.
+fn job_id(record: &Value) -> Option<String> {
+    record.get("job_id").and_then(Value::as_str).map(str::to_string)
+}
+
+/// The `status` string from a job-status JSON, if present.
+fn job_status(record: &Value) -> Option<&str> {
+    record.get("status").and_then(Value::as_str)
+}
+
+/// The `download_url` from a completed job-status JSON, if present.
+fn job_download_url(record: &Value) -> Option<&str> {
+    record.get("download_url").and_then(Value::as_str)
+}
+
+/// The `error` detail from a failed job-status JSON, if present.
+fn job_error(record: &Value) -> Option<&str> {
+    record.get("error").and_then(Value::as_str)
 }
 
 /// Convert a `-age,name` / `age:desc` sort spec into the endpoint's
@@ -811,6 +1037,89 @@ mod tests {
         assert_eq!(render_cell(&json!(true)), "true");
         assert_eq!(render_cell(&Value::Null), "");
         assert_eq!(render_cell(&json!(["a", "b"])), "[\"a\",\"b\"]");
+    }
+
+    #[test]
+    fn build_export_body_assembles_present_keys_only() {
+        let body = build_export_body(
+            Some(r#"{"op":"eq","field":"status","value":"active"}"#),
+            Some("id, name , email"),
+            "ndjson",
+            true,
+        )
+        .unwrap();
+        assert_eq!(body["filter"]["field"], "status");
+        assert_eq!(body["fields"], json!(["id", "name", "email"]));
+        assert_eq!(body["format"], "ndjson");
+        assert_eq!(body["async"], true);
+    }
+
+    #[test]
+    fn build_export_body_omits_async_and_optional_keys() {
+        let body = build_export_body(None, None, "csv", false).unwrap();
+        assert_eq!(body["format"], "csv");
+        assert!(body.get("filter").is_none());
+        assert!(body.get("fields").is_none());
+        assert!(body.get("async").is_none());
+    }
+
+    #[test]
+    fn build_export_body_rejects_bad_filter_json() {
+        assert!(build_export_body(Some("not json"), None, "csv", false).is_err());
+    }
+
+    #[test]
+    fn resolve_out_path_stdout_for_none_or_dash() {
+        assert_eq!(resolve_out_path(None, Some("Contact.csv")), None);
+        assert_eq!(
+            resolve_out_path(Some(std::path::Path::new("-")), Some("Contact.csv")),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_out_path_uses_file_path_verbatim() {
+        assert_eq!(
+            resolve_out_path(
+                Some(std::path::Path::new("/tmp/out.csv")),
+                Some("Contact.csv")
+            ),
+            Some(std::path::PathBuf::from("/tmp/out.csv"))
+        );
+    }
+
+    #[test]
+    fn resolve_out_path_joins_filename_for_directory_like() {
+        assert_eq!(
+            resolve_out_path(Some(std::path::Path::new("/tmp/")), Some("Contact.csv")),
+            Some(std::path::PathBuf::from("/tmp/Contact.csv"))
+        );
+        // No suggested filename falls back to a stable default.
+        assert_eq!(
+            resolve_out_path(Some(std::path::Path::new("exports/")), None),
+            Some(std::path::PathBuf::from("exports/export"))
+        );
+    }
+
+    #[test]
+    fn job_accessors_read_status_fields() {
+        let record = json!({
+            "job_id": "exp_01abc",
+            "status": "complete",
+            "download_url": "https://store.example/exp_01abc?sig=x",
+        });
+        assert_eq!(job_id(&record).as_deref(), Some("exp_01abc"));
+        assert_eq!(job_status(&record), Some("complete"));
+        assert_eq!(
+            job_download_url(&record),
+            Some("https://store.example/exp_01abc?sig=x")
+        );
+        assert_eq!(job_error(&record), None);
+
+        let failed = json!({ "job_id": "x", "status": "failed", "error": "boom" });
+        assert_eq!(job_status(&failed), Some("failed"));
+        assert_eq!(job_error(&failed), Some("boom"));
+        assert_eq!(job_download_url(&failed), None);
     }
 
     #[test]

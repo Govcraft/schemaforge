@@ -317,6 +317,149 @@ impl ForgeClient {
             .await
             .map(|v| v.unwrap_or(Value::Null))
     }
+
+    // --- Export operations -------------------------------------------------
+
+    /// `POST /schemas/{schema}/entities/export` with a `{ filter?, fields?,
+    /// format, async? }` body.
+    ///
+    /// The endpoint answers in one of two shapes (ADR-0003), distinguished by
+    /// the response `Content-Type`:
+    /// - a **streamed file** (`200 OK`, `text/csv` / `application/x-ndjson`),
+    ///   returned as [`ExportResponse::File`]; or
+    /// - an **async job** (`202 Accepted`, `application/json`), returned as
+    ///   [`ExportResponse::Job`] carrying the job-status JSON.
+    ///
+    /// Streaming the bytes (rather than buffering to a JSON value) keeps a large
+    /// CSV/NDJSON export off the heap-as-`Value` path the other verbs use.
+    pub async fn export(&self, schema: &str, body: &Value) -> Result<ExportResponse, CliError> {
+        let url = self.url(&["schemas", schema, "entities", "export"])?;
+        let mut req = self.http.request(Method::POST, url).json(body);
+        if let Some(tok) = &self.token {
+            req = req.bearer_auth(tok);
+        }
+
+        let resp = req.send().await.map_err(|e| CliError::Connection {
+            message: e.to_string(),
+        })?;
+
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let filename = content_disposition_filename(
+            resp.headers()
+                .get(reqwest::header::CONTENT_DISPOSITION)
+                .and_then(|v| v.to_str().ok()),
+        );
+
+        let bytes = resp.bytes().await.map_err(|e| CliError::Connection {
+            message: e.to_string(),
+        })?;
+
+        if !status.is_success() {
+            return Err(classify_http_error(
+                status.as_u16(),
+                &String::from_utf8_lossy(&bytes),
+            ));
+        }
+
+        let is_json = content_type
+            .as_deref()
+            .is_some_and(|ct| ct.starts_with("application/json"));
+        if is_json {
+            let value = serde_json::from_slice(&bytes).map_err(|e| CliError::Server {
+                message: format!("invalid JSON in export job response: {e}"),
+            })?;
+            Ok(ExportResponse::Job(value))
+        } else {
+            Ok(ExportResponse::File {
+                bytes: bytes.to_vec(),
+                filename,
+            })
+        }
+    }
+
+    /// `GET /schemas/{schema}/exports/{job_id}` — poll one async export job's
+    /// status. Returns the status JSON (`status`, optional `download_url`, etc.).
+    pub async fn get_export_job(
+        &self,
+        schema: &str,
+        job_id: &str,
+    ) -> Result<Value, CliError> {
+        let url = self.url(&["schemas", schema, "exports", job_id])?;
+        self.send(Method::GET, url, &[], None)
+            .await
+            .map(|v| v.unwrap_or(Value::Null))
+    }
+
+    /// Download an artifact from a presigned URL.
+    ///
+    /// The URL is absolute and self-authorizing (a TTL-bounded presigned GET),
+    /// so no Bearer token is attached — it points straight at the object store,
+    /// not at this instance's API.
+    pub async fn download(&self, url: &str) -> Result<Vec<u8>, CliError> {
+        let parsed = Url::parse(url).map_err(|e| CliError::Server {
+            message: format!("invalid download URL '{url}': {e}"),
+        })?;
+        let resp = self
+            .http
+            .get(parsed)
+            .send()
+            .await
+            .map_err(|e| CliError::Connection {
+                message: e.to_string(),
+            })?;
+        let status = resp.status();
+        let bytes = resp.bytes().await.map_err(|e| CliError::Connection {
+            message: e.to_string(),
+        })?;
+        if !status.is_success() {
+            return Err(classify_http_error(
+                status.as_u16(),
+                &String::from_utf8_lossy(&bytes),
+            ));
+        }
+        Ok(bytes.to_vec())
+    }
+}
+
+/// The two shapes a `POST .../entities/export` can return (ADR-0003): an inline
+/// streamed file, or an accepted async job whose artifact is fetched later.
+pub enum ExportResponse {
+    /// A streamed CSV/NDJSON file (the synchronous, under-cap path).
+    File {
+        /// The serialized file bytes.
+        bytes: Vec<u8>,
+        /// Filename suggested by the server's `Content-Disposition`, if any.
+        filename: Option<String>,
+    },
+    /// An accepted async job (XLSX, ZIP, over-cap, or `async: true`). Carries the
+    /// job-status JSON (`job_id`, `status`, …).
+    Job(Value),
+}
+
+/// Extract a `filename="..."` value from a `Content-Disposition` header.
+///
+/// Pure: returns the unquoted filename when the header carries one, `None`
+/// otherwise. Only the common `filename="x"` form is handled (the server emits
+/// exactly that); RFC 5987 `filename*` encoding is out of scope.
+fn content_disposition_filename(header: Option<&str>) -> Option<String> {
+    let header = header?;
+    let start = header.find("filename=")? + "filename=".len();
+    let rest = &header[start..];
+    let trimmed = rest.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.split('"').next())
+        .unwrap_or_else(|| trimmed.split(';').next().unwrap_or(trimmed).trim());
+    if unquoted.is_empty() {
+        None
+    } else {
+        Some(unquoted.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -403,5 +546,27 @@ mod tests {
             panic!("expected Http");
         };
         assert!(message.contains("HTTP 503"));
+    }
+
+    #[test]
+    fn content_disposition_extracts_quoted_filename() {
+        assert_eq!(
+            content_disposition_filename(Some("attachment; filename=\"Contact.csv\"")),
+            Some("Contact.csv".to_string())
+        );
+    }
+
+    #[test]
+    fn content_disposition_extracts_unquoted_filename() {
+        assert_eq!(
+            content_disposition_filename(Some("attachment; filename=Contact.ndjson")),
+            Some("Contact.ndjson".to_string())
+        );
+    }
+
+    #[test]
+    fn content_disposition_none_when_absent() {
+        assert_eq!(content_disposition_filename(None), None);
+        assert_eq!(content_disposition_filename(Some("attachment")), None);
     }
 }
