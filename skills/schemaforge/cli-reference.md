@@ -211,6 +211,37 @@ Verb → HTTP: `list`=GET `…/entities`, `query`=POST `…/entities/query`, `ge
 
 **Config**: pin connection defaults in a CLI-only `[schema_forge.client]` section of `config.toml` (`server`, `token_file`, `ca_cert`, `timeout_secs`); precedence is flags > env > config > defaults. The running server ignores this section. Full reference: `docs/entity-cli-reference.md` in the schemaforge repo.
 
+### `schemaforge entity export <SCHEMA>`
+
+Bulk-export entities to a file (`POST .../entities/export`). An export is the `entity query` path with no page limit, materialized to a file — gated separately from read: the schema must declare `@export` and each column must be `@exportable`, so the file is never wider than what the caller could already read.
+
+```bash
+# small CSV streams inline to a file
+schemaforge entity export Contact --eq status=active --fields first_name,last_name -o contacts.csv
+
+# lossless NDJSON to stdout, piped to jq
+schemaforge entity export Contact --format ndjson | jq '.'
+
+# advanced JSON filter (same grammar as `entity query --filter`)
+schemaforge entity export Contact --filter '{"op":"contains","field":"name","value":"Ali"}' -o out.csv
+
+# xlsx / zip (and --async, or an over-cap result) run as a background job;
+# --out a directory to land the artifact under the server-suggested filename
+schemaforge entity export Contact --format xlsx --async -o ./exports/
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--format <csv\|ndjson\|xlsx\|zip>` | `csv` | Deliverable format. `csv`/`ndjson` stream inline when within the schema's `@export(max_rows)` cap; `xlsx`/`zip` always run as a job. Must be in the schema's `@export(formats: [...])`. |
+| `--filter <JSON\|@FILE\|->` | — | JSON filter body — a `{...}` literal, `@file.json`, or `-` for stdin. Same grammar as `entity query`. The `--eq/--ne/--gt/...` convenience flags also apply. |
+| `--fields <a,b,c>` | all exportable | Column subset (comma-separated). Intersected server-side with `@exportable` ∩ readable; only ever narrows. |
+| `-o, --out <PATH\|->` | stdout | Write the artifact here. `-` or omitted writes to stdout; a directory or trailing-`/` path writes under the server-suggested filename (parsed from `Content-Disposition`). |
+| `--async` | off | Force the async-job path even for a small CSV/NDJSON export, then poll the job to completion and download. Implied for `xlsx`/`zip` and whenever the result exceeds the row cap. |
+| `--poll-interval <SECS>` | `2` | Seconds between job-status polls on the `--async` path. |
+| `--poll-timeout <SECS>` | `300` | Give up polling after this many seconds (the job keeps running server-side; re-poll later). `0` waits indefinitely. |
+
+The `--async` path polls `GET .../exports/{job_id}` to `complete`, then downloads the time-limited presigned artifact URL **without** a Bearer token (it is self-authorizing and points at the object store, not the API). Connection flags (`--server`, `--token-*`, …) and exit codes are shared with the other `entity` verbs: `15` on a `403` export-denied, `2` on `422`. See [rest-api-reference.md](rest-api-reference.md) and [export.md](export.md).
+
 ### `schema-forge export openapi [PATHS...]`
 
 Export OpenAPI specification from schema files.

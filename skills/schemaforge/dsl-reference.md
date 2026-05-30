@@ -505,6 +505,22 @@ schema Ticket { ... }
 
 Webhook delivery is non-blocking (background tasks with exponential backoff retry). Payloads include the full entity fields. Runtime subscriptions are managed via the `WebhookSubscription` system schema.
 
+### @export(formats: [...], bundle_files: bool, max_rows: N)
+
+Enables **bulk export** for the schema. An export is the existing query path with no page limit, materialized to a file (CSV, NDJSON, XLSX, or a multi-entity ZIP bundle). It is **fail-closed**: a schema with no `@export` annotation cannot be exported at all, and the request is refused before any rows are read.
+
+```
+@export(formats: [csv, ndjson, xlsx], bundle_files: false, max_rows: 100000)
+@display("full_name")
+schema Contact { ... }
+```
+
+- `formats` — the deliverable shapes the export pipeline may produce for this schema, from the vocabulary `csv | ndjson | xlsx | zip`. A request for any format outside this list is rejected (400). The list may not be empty.
+- `bundle_files` — when `true`, `file`-field blobs are pulled into the ZIP bundle alongside the row data (otherwise files surface as URL/metadata only). Default `false`.
+- `max_rows` — caps a single export. A result that would exceed it is refused with **413** rather than truncated. The server-wide `[schema_forge.export].default_max_rows` ceiling is intersected with this value (the schema can only narrow it, never widen it above the operator's bound).
+
+Export is gated by a **distinct Cedar `Export{Entity}` action**, not `Read` — a policy can `permit` read-one while `forbid`ding export-many on the same principal. See [export.md](export.md) and [ADR-0003](../../docs/adr/0003-export-capability.md).
+
 ## Field-Level Annotations — Complete Details
 
 Field-level annotations appear after modifiers on the field line.
@@ -637,6 +653,36 @@ salary: float(precision: 2) @field_access(read: ["hr", "admin"], write: ["hr", "
 ssn: text(max: 4) @field_access(read: ["hr"], write: ["hr"])
 budget: float(precision: 2) @field_access(read: ["finance", "manager"], write: ["finance"])
 ```
+
+### @exportable / @exportable(flatten: json)
+
+Opts a single field into **bulk export files**. Like `@export` at the schema level, it is **fail-closed**: a field without `@exportable` **never** leaves in a bulk file, even when the caller can read it one record at a time. Export eligibility is a separate consent from read access — independent of it, but never wider than it.
+
+```
+@export(formats: [csv, ndjson], max_rows: 100000)
+schema Contact {
+  first_name: text @exportable
+  last_name:  text @exportable
+  tags:       text[] @exportable(flatten: json)
+  ssn:        text(max: 4) @field_access(read: ["hr"])   // readable, but NOT exportable — never in a file
+}
+```
+
+- The exported column set is always the **intersection**: `@exportable` ∩ field-access-readable-by-caller. `@exportable` can only narrow that intersection, never widen it. A field that is `@exportable` but not readable by the caller is still stripped by the same `filter_entity_fields` the query path runs.
+- `flatten: json` — for the rectangular formats (CSV/XLSX), force JSON-in-cell rendering even for values that would otherwise render plainly. It never affects NDJSON, which is always lossless.
+- `@exportable` on a field of a schema with no `@export` annotation is a parse-time error (`line:col`): a field can't be exportable on an entity that can't be exported.
+
+**Flatten policy** (one documented contract, ADR-0003) — how each value shape maps to a cell vs. the lossless NDJSON value:
+
+| `DynamicValue` shape | CSV / XLSX cell | NDJSON value |
+| --- | --- | --- |
+| scalar (text / int / float / bool / datetime / duration / enum) | value as-is | value as-is |
+| relation (one) | resolved `@display` value | `{ id, display }` object |
+| relation (many) / array / map / composite | JSON-encoded in the cell | native, lossless |
+| bytes | omitted by default; base64 only on opt-in | base64 string |
+| file | URL / metadata only | URL / metadata only |
+
+CSV is the rectangular projection (lossy where it must be); NDJSON is the lossless dump. Raw `file` blobs are materialized **only** inside a ZIP bundle when the schema sets `@export(bundle_files: true)` — never in a CSV/XLSX cell. See [export.md](export.md).
 
 ## Write-Time Rules — `@require` / `@compute` / `@default`
 
