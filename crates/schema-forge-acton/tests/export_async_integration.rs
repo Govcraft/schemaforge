@@ -143,6 +143,7 @@ async fn build_state(
         .with_actor::<ForgeActor>()
         .with_actor::<schema_forge_acton::HookDispatchActor>()
         .with_actor::<ExportJobActor>()
+        .with_actor::<schema_forge_acton::ExportRateLimiter>()
         .build();
 
     let forge_handle = service

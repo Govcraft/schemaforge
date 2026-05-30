@@ -53,18 +53,23 @@ fn make_claims(roles: &[&str]) -> Claims {
     }
 }
 
-async fn build_state(
+async fn build_state_with_config(
     backend: Arc<dyn DynForgeBackend>,
     registry: HashMap<String, SchemaDefinition>,
+    custom: SchemaForgeConfig,
 ) -> AppState<SchemaForgeConfig> {
     use acton_service::service_builder::ServiceBuilder;
 
-    let config = Config::<SchemaForgeConfig>::default();
+    let config = Config::<SchemaForgeConfig> {
+        custom,
+        ..Default::default()
+    };
     let service = ServiceBuilder::new()
         .with_config(config)
         .with_actor::<ForgeActor>()
         .with_actor::<schema_forge_acton::HookDispatchActor>()
         .with_actor::<schema_forge_acton::ExportJobActor>()
+        .with_actor::<schema_forge_acton::ExportRateLimiter>()
         .build();
 
     let forge_handle = service
@@ -236,6 +241,17 @@ async fn seeded_app(
     rows: &[serde_json::Value],
     caller_roles: &[&str],
 ) -> Router {
+    seeded_app_with_config(schema, rows, caller_roles, SchemaForgeConfig::default()).await
+}
+
+/// Like [`seeded_app`] but with operator-tuned `[schema_forge.export]` settings,
+/// so a test can exercise the server-wide row ceiling and the rate limit.
+async fn seeded_app_with_config(
+    schema: SchemaDefinition,
+    rows: &[serde_json::Value],
+    caller_roles: &[&str],
+    custom: SchemaForgeConfig,
+) -> Router {
     let backend = Arc::new(
         SurrealBackend::connect_memory("test", "test")
             .await
@@ -245,7 +261,7 @@ async fn seeded_app(
 
     let mut registry = HashMap::new();
     registry.insert(schema.name.as_str().to_string(), schema.clone());
-    let state = build_state(backend, registry).await;
+    let state = build_state_with_config(backend, registry, custom).await;
 
     // Seed rows as platform_admin (bypasses access checks).
     let admin = app_with_claims(state.clone(), make_claims(&["platform_admin"]));
@@ -499,6 +515,181 @@ async fn format_not_in_vocabulary_is_forbidden() {
 
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {json}");
     assert_eq!(json["error"], "forbidden");
+}
+
+/// Build a `SchemaForgeConfig` with an export row ceiling and rate limit set.
+fn export_config(default_max_rows: u64, max_requests: u32, window_secs: u64) -> SchemaForgeConfig {
+    use schema_forge_acton::export_config::{ExportRateLimitSettings, ExportSettings};
+    let mut custom = SchemaForgeConfig::default();
+    custom.schema_forge.export = ExportSettings {
+        default_max_rows,
+        rate_limit: ExportRateLimitSettings {
+            max_requests,
+            window_secs,
+        },
+    };
+    custom
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_ceiling_clamps_below_generous_schema_cap() {
+    // The schema declares a generous 1000-row cap, but the operator pins a
+    // server-wide ceiling of 1. Two rows then exceed the *resolved* cap and the
+    // export is refused 413 — the schema cannot widen the operator's bound.
+    let rows = [
+        serde_json::json!({ "fields": { "name": "Ada", "notes": "a" } }),
+        serde_json::json!({ "fields": { "name": "Bob", "notes": "b" } }),
+    ];
+    let app = seeded_app_with_config(
+        export_schema(1000),
+        &rows,
+        &["platform_admin"],
+        export_config(1, 100, 60),
+    )
+    .await;
+
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Subject/entities/export",
+        Some(serde_json::json!({ "format": "csv" })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "body: {json}");
+    assert_eq!(json["error"], "export_too_large");
+    // The resolved cap reported is the server ceiling, not the schema's 1000.
+    assert_eq!(json["max_rows"], serde_json::json!(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tighter_schema_cap_wins_under_generous_server_ceiling() {
+    // The inverse: schema caps at 1, server ceiling is generous (1000). Two rows
+    // still exceed the schema's tighter cap — the entity can override downward.
+    let rows = [
+        serde_json::json!({ "fields": { "name": "Ada", "notes": "a" } }),
+        serde_json::json!({ "fields": { "name": "Bob", "notes": "b" } }),
+    ];
+    let app = seeded_app_with_config(
+        export_schema(1),
+        &rows,
+        &["platform_admin"],
+        export_config(1000, 100, 60),
+    )
+    .await;
+
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Subject/entities/export",
+        Some(serde_json::json!({ "format": "csv" })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "body: {json}");
+    assert_eq!(json["max_rows"], serde_json::json!(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rate_limit_rejects_after_allowance_exhausted() {
+    // Allow exactly 2 exports per (long) window. The 3rd is rejected 429.
+    let rows = [serde_json::json!({ "fields": { "name": "Ada", "notes": "n" } })];
+    let app = seeded_app_with_config(
+        export_schema(100),
+        &rows,
+        &["platform_admin"],
+        export_config(100, 2, 3600),
+    )
+    .await;
+
+    for i in 1..=2 {
+        let (status, _json) = json_request(
+            &app,
+            Method::POST,
+            "/schemas/Subject/entities/export",
+            Some(serde_json::json!({ "format": "csv" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "export {i} should be admitted");
+    }
+
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Subject/entities/export",
+        Some(serde_json::json!({ "format": "csv" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "body: {json}");
+    assert_eq!(json["error"], "rate_limited");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rate_limit_zero_requests_is_a_kill_switch() {
+    // A rate limit of 0 admits nobody: every export is refused 429 (fail-closed).
+    let rows = [serde_json::json!({ "fields": { "name": "Ada", "notes": "n" } })];
+    let app = seeded_app_with_config(
+        export_schema(100),
+        &rows,
+        &["platform_admin"],
+        export_config(100, 0, 60),
+    )
+    .await;
+
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Subject/entities/export",
+        Some(serde_json::json!({ "format": "csv" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "body: {json}");
+    assert_eq!(json["error"], "rate_limited");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn requesting_only_non_exportable_fields_is_denied() {
+    // A caller asking exclusively for a readable-but-not-@exportable field is a
+    // denied path (audited as `no_exportable_fields_requested`), not a silent
+    // id-only stream. `secret` is readable but never exportable.
+    let rows = [
+        serde_json::json!({ "fields": { "name": "Ada", "notes": "n", "secret": "SSN-111" } }),
+    ];
+    let app = seeded_app(export_schema(100), &rows, &["platform_admin"]).await;
+
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Subject/entities/export",
+        Some(serde_json::json!({ "format": "csv", "fields": ["secret"] })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {json}");
+    assert_eq!(json["error"], "forbidden");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_non_exportable_request_still_narrows_and_succeeds() {
+    // Asking for one exportable (`name`) and one non-exportable (`secret`) field
+    // is NOT a denial — it narrows to the exportable intersection and streams.
+    let rows = [
+        serde_json::json!({ "fields": { "name": "Ada", "notes": "n", "secret": "SSN-111" } }),
+    ];
+    let app = seeded_app(export_schema(100), &rows, &["platform_admin"]).await;
+
+    let (status, _ct, body) = raw_request(
+        &app,
+        Method::POST,
+        "/schemas/Subject/entities/export",
+        Some(serde_json::json!({ "format": "csv", "fields": ["secret", "name"] })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(body).unwrap();
+    assert_eq!(text.lines().next().unwrap(), "name");
+    assert!(!text.contains("SSN-111"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

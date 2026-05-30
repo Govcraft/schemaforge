@@ -460,6 +460,7 @@ pub async fn run(
         .with_actor::<ForgeActor>()
         .with_actor::<schema_forge_acton::HookDispatchActor>()
         .with_actor::<schema_forge_acton::ExportJobActor>()
+        .with_actor::<schema_forge_acton::ExportRateLimiter>()
         .with_routes(routes)
         .build();
 

@@ -8,7 +8,9 @@ pub mod crypto;
 pub mod email;
 pub mod error;
 pub mod export_bundle;
+pub mod export_config;
 pub mod export_job;
+pub mod export_rate_limit;
 pub mod extension;
 pub mod invite;
 #[cfg(feature = "graphql")]
@@ -31,6 +33,7 @@ pub use actor::ForgeActor;
 pub use config::SchemaForgeConfig;
 pub use error::ForgeError;
 pub use export_job::ExportJobActor;
+pub use export_rate_limit::ExportRateLimiter;
 pub use extension::{InitForgeData, SchemaForgeExtension};
 pub use hooks::HookDispatchActor;
 pub use messages::{InitForge, ReplyChannel};

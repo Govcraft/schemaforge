@@ -52,6 +52,10 @@ pub enum ForgeError {
     /// 413 Payload Too Large; the caller must take the async-job path. See
     /// ADR-0003.
     ExportTooLarge { max_rows: u64, message: String },
+    /// The caller exceeded the per-subject bulk-export rate limit. Maps to 429
+    /// Too Many Requests. See ADR-0003 item 9 (hardening): export is rate-limited
+    /// so the capability cannot be turned into a drip-feed table drain.
+    RateLimited { message: String },
     /// A lifecycle hook explicitly aborted the request. Maps to 422.
     HookAborted { reason: String },
     /// A required lifecycle hook timed out or was unreachable. Maps to 503.
@@ -114,6 +118,9 @@ impl fmt::Display for ForgeError {
             Self::ExportTooLarge { message, .. } => {
                 write!(f, "export too large: {message}")
             }
+            Self::RateLimited { message } => {
+                write!(f, "rate limited: {message}")
+            }
             Self::HookAborted { reason } => {
                 write!(f, "hook aborted request: {reason}")
             }
@@ -146,6 +153,7 @@ impl ForgeError {
             Self::BackendUnavailable { .. } => StatusCode::BAD_GATEWAY,
             Self::ExportDeferred { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::ExportTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::HookAborted { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::HookUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
@@ -169,6 +177,7 @@ impl ForgeError {
             Self::BackendUnavailable { .. } => "backend_unavailable",
             Self::ExportDeferred { .. } => "export_deferred",
             Self::ExportTooLarge { .. } => "export_too_large",
+            Self::RateLimited { .. } => "rate_limited",
             Self::HookAborted { .. } => "hook_aborted",
             Self::HookUnavailable { .. } => "hook_unavailable",
             Self::Internal { .. } => "internal_error",
@@ -618,6 +627,39 @@ mod tests {
         assert_eq!(json["error"], "unique_violation");
         assert_eq!(json["schema"], "Contact");
         assert_eq!(json["field"], "email");
+    }
+
+    #[test]
+    fn display_rate_limited() {
+        let err = ForgeError::RateLimited {
+            message: "too many exports".into(),
+        };
+        assert!(err.to_string().contains("rate limited"));
+        assert!(err.to_string().contains("too many exports"));
+    }
+
+    #[test]
+    fn status_code_rate_limited() {
+        assert_eq!(
+            ForgeError::RateLimited {
+                message: "X".into()
+            }
+            .status_code(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    #[tokio::test]
+    async fn into_response_rate_limited_has_kind_in_body() {
+        let err = ForgeError::RateLimited {
+            message: "slow down".into(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"], "rate_limited");
+        assert!(json["message"].as_str().unwrap().contains("slow down"));
     }
 
     #[test]

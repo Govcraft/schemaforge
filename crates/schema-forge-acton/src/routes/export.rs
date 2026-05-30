@@ -646,6 +646,58 @@ async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
         })
 }
 
+/// Enforce the per-subject bulk-export rate limit via the supervised
+/// [`ExportRateLimiter`](crate::export_rate_limit::ExportRateLimiter) actor.
+///
+/// Returns `Ok(())` when the request is admitted and
+/// [`ForgeError::RateLimited`] when the subject has exhausted its allowance for
+/// the current window. The limiter is keyed by subject (anonymous callers share
+/// one coarse bucket). The actor is registered on the serve path alongside the
+/// `ExportJobActor`; if it is somehow absent the request is refused fail-closed
+/// rather than silently bypassing the limit.
+async fn enforce_export_rate_limit(
+    state: &AppState<SchemaForgeConfig>,
+    settings: &crate::export_config::ExportSettings,
+    claims: Option<&Claims>,
+) -> Result<(), ForgeError> {
+    use crate::export_rate_limit::{rate_limit_key, AdmitExport, ExportRateLimiter};
+
+    let limiter = state
+        .actor::<ExportRateLimiter>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ExportRateLimiter not registered".into(),
+        })?;
+
+    let key = rate_limit_key(claims.map(|c| c.sub.as_str()));
+    let window_ms = settings
+        .rate_limit
+        .window_secs
+        .saturating_mul(1000)
+        .max(1);
+
+    let (tx, rx) = oneshot::channel();
+    limiter
+        .send(AdmitExport {
+            key,
+            max_requests: settings.rate_limit.max_requests,
+            window_ms,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let admitted = ask_forge(rx).await?;
+
+    if admitted {
+        Ok(())
+    } else {
+        Err(ForgeError::RateLimited {
+            message: format!(
+                "bulk export rate limit exceeded: at most {} export(s) per {}s",
+                settings.rate_limit.max_requests, settings.rate_limit.window_secs
+            ),
+        })
+    }
+}
+
 /// Emit one of the `forge.export.*` AU-2 audit events.
 async fn audit_export(
     state: &AppState<SchemaForgeConfig>,
@@ -752,6 +804,61 @@ pub async fn export_entities(
         .await;
         return Err(e);
     }
+
+    // An explicit, non-empty `fields` request that resolves to no `@exportable`
+    // column is a denied path: the caller asked only for fields that may never
+    // leave in a bulk file. Audit and refuse rather than silently streaming an
+    // id-only file (which would mask the attempt). Narrowing a partially-valid
+    // request is still allowed — only a wholly-non-exportable request is denied.
+    if let Some(requested) = body.fields.as_deref() {
+        if !requested.is_empty() && resolve_export_columns(&schema_def, Some(requested)).is_empty() {
+            audit_export(
+                &state,
+                "forge.export.denied",
+                AuditSeverity::Warning,
+                serde_json::json!({
+                    "schema": &schema,
+                    "reason": "no_exportable_fields_requested",
+                    "format": format.as_str(),
+                    "fields": &body.fields,
+                    "user": claims.as_ref().map(|c| &c.sub),
+                }),
+            )
+            .await;
+            return Err(ForgeError::Forbidden {
+                message: format!(
+                    "none of the requested fields are exportable for schema '{}'",
+                    schema_name.as_str()
+                ),
+            });
+        }
+    }
+
+    // Per-subject bulk-export rate limit. Export is an exfiltration surface, so a
+    // caller cannot drain a table by issuing many small exports back to back even
+    // when each stays under the row cap. Enforced after authz so a denied caller
+    // never consumes a rate-limit slot.
+    let export_settings = &state.config().custom.schema_forge.export;
+    if let Err(e) = enforce_export_rate_limit(&state, export_settings, claims.as_ref()).await {
+        audit_export(
+            &state,
+            "forge.export.denied",
+            AuditSeverity::Warning,
+            serde_json::json!({
+                "schema": &schema,
+                "reason": "rate_limited",
+                "format": format.as_str(),
+                "user": claims.as_ref().map(|c| &c.sub),
+            }),
+        )
+        .await;
+        return Err(e);
+    }
+
+    // The effective row cap is the schema's `@export(max_rows)` intersected with
+    // the server-wide ceiling: a schema may declare a tighter cap, never one
+    // above what the operator permits (fail-closed).
+    let max_rows = crate::export_config::resolve_max_rows(max_rows, export_settings.default_max_rows);
 
     // Initiated: the request passed the entity-level and authz gates. Record
     // the requested filter/fields/format for the exfiltration trail.
