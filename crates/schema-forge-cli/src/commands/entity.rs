@@ -664,11 +664,33 @@ fn resolve_out_path(
         .is_some_and(|s| s.ends_with('/') || s.ends_with('\\'))
         || out.is_dir();
     if is_dir_like {
-        let name = filename.unwrap_or("export");
+        // The suggested filename is server-controlled (Content-Disposition or a
+        // synthesized name); sanitize to a single safe basename before joining so
+        // a malicious or compromised server cannot steer the artifact outside the
+        // chosen --out directory via `..`, an absolute path, or a separator.
+        let name = filename.and_then(safe_basename).unwrap_or("export");
         Some(out.join(name))
     } else {
         Some(out.to_path_buf())
     }
+}
+
+/// Reduce a server-suggested filename to a single safe basename, or `None` when
+/// it is not exactly one non-traversing path component.
+///
+/// Rejects absolute paths, anything containing a path separator, and the `.` /
+/// `..` components, so a server can never direct a downloaded export outside the
+/// caller's chosen `--out` directory (path traversal). Pure and total.
+fn safe_basename(name: &str) -> Option<&str> {
+    let p = std::path::Path::new(name);
+    if p.components().count() != 1 {
+        return None;
+    }
+    let s = p.file_name()?.to_str()?;
+    if s.is_empty() || s == "." || s == ".." || s.contains('/') || s.contains('\\') {
+        return None;
+    }
+    Some(s)
 }
 
 /// The `job_id` from a job-status JSON, if present.
@@ -1099,6 +1121,44 @@ mod tests {
             resolve_out_path(Some(std::path::Path::new("exports/")), None),
             Some(std::path::PathBuf::from("exports/export"))
         );
+    }
+
+    #[test]
+    fn resolve_out_path_neutralizes_traversing_server_filename() {
+        // A server-suggested name that tries to escape the --out directory is
+        // rejected and falls back to the safe default; the result never contains
+        // a parent-dir component or lands outside `exports/`.
+        for evil in [
+            "../../etc/passwd",
+            "..",
+            "/etc/passwd",
+            "a/b.csv",
+            "sub\\evil.csv",
+        ] {
+            assert_eq!(
+                resolve_out_path(Some(std::path::Path::new("exports/")), Some(evil)),
+                Some(std::path::PathBuf::from("exports/export")),
+                "traversing filename {evil:?} must fall back to the safe default"
+            );
+        }
+        // A clean basename is still honored.
+        assert_eq!(
+            resolve_out_path(Some(std::path::Path::new("exports/")), Some("Contact.csv")),
+            Some(std::path::PathBuf::from("exports/Contact.csv"))
+        );
+    }
+
+    #[test]
+    fn safe_basename_accepts_plain_names_rejects_traversal() {
+        assert_eq!(safe_basename("Contact.csv"), Some("Contact.csv"));
+        assert_eq!(safe_basename("export.ndjson"), Some("export.ndjson"));
+        assert_eq!(safe_basename(""), None);
+        assert_eq!(safe_basename("."), None);
+        assert_eq!(safe_basename(".."), None);
+        assert_eq!(safe_basename("../x"), None);
+        assert_eq!(safe_basename("a/b"), None);
+        assert_eq!(safe_basename("/abs"), None);
+        assert_eq!(safe_basename("a\\b"), None);
     }
 
     #[test]

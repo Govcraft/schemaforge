@@ -187,6 +187,12 @@ schemaforge entity export Contact --format ndjson | jq '.'
 schemaforge entity export Contact --format xlsx --async -o ./exports/
 ```
 
+When `-o`/`--out` names a directory, the CLI joins a **sanitized basename** of the
+server-suggested filename onto it: a name containing `..`, a path separator, or an
+absolute path is rejected and falls back to a safe default, so a malicious or
+compromised server can never steer the artifact outside your chosen directory
+(path traversal).
+
 See [cli-reference.md](cli-reference.md) for every flag and
 [rest-api-reference.md](rest-api-reference.md) for the wire contract and error
 paths (403 export-denied, 413 over-cap, 422 deferred, 429 rate-limited).
