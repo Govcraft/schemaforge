@@ -961,6 +961,69 @@ pub enum EntityCommands {
     Delete(Box<EntityDeleteArgs>),
     /// Run an advanced JSON-filter query (POST .../entities/query).
     Query(Box<EntityQueryArgs>),
+    /// Upload to or download from a `file` field (S3-backed attachment).
+    File {
+        #[command(subcommand)]
+        command: EntityFileCommands,
+    },
+}
+
+/// `entity file` subcommands.
+///
+/// A `file` field is an S3-backed attachment. The runtime never proxies upload
+/// bytes: `upload` performs the presigned handshake (mint → PUT direct to S3 →
+/// confirm), and `download` follows the runtime's presigned redirect (or
+/// streamed proxy) to the bytes. Clearing or replacing an attachment is not yet
+/// supported — there is no server route for it.
+#[derive(Subcommand)]
+pub enum EntityFileCommands {
+    /// Upload a local file to a `file` field via the presigned handshake.
+    ///
+    /// Boxed for the same reason as the CRUD verbs: the args carry the full
+    /// connection block plus path/mime/filename, so inlining would bloat every
+    /// enum variant (clippy::large_enum_variant).
+    Upload(Box<EntityFileUploadArgs>),
+    /// Download a `file` field's bytes to a path or stdout.
+    Download(Box<EntityFileDownloadArgs>),
+}
+
+/// Arguments for `entity file upload`.
+#[derive(Args)]
+pub struct EntityFileUploadArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Schema name (e.g. Document).
+    pub schema: String,
+    /// Entity ID.
+    pub id: String,
+    /// File field name on the schema.
+    pub field: String,
+    /// Path to the local file to upload.
+    pub path: PathBuf,
+    /// MIME type to assert. Overrides extension-based detection. The server
+    /// validates this against the field's allowlist, so it must be accurate.
+    #[arg(long)]
+    pub mime: Option<String>,
+    /// Filename recorded in the object key. Defaults to the path's file name.
+    #[arg(long)]
+    pub filename: Option<String>,
+}
+
+/// Arguments for `entity file download`.
+#[derive(Args)]
+pub struct EntityFileDownloadArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Schema name.
+    pub schema: String,
+    /// Entity ID.
+    pub id: String,
+    /// File field name on the schema.
+    pub field: String,
+    /// Output path. `-` streams to stdout. Defaults to a sanitized basename
+    /// derived from the server's response, falling back to the field name.
+    #[arg(long)]
+    pub out: Option<String>,
 }
 
 /// Arguments for `entity list`.
