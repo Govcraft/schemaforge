@@ -189,6 +189,18 @@ schemaforge entity query Contact --filter '{"op":"contains","field":"name","valu
 
 Verb → HTTP: `list`=GET `…/entities`, `query`=POST `…/entities/query`, `get`=GET `…/entities/{id}`, `create`=POST `…/entities` (201), `replace`=PUT, `patch`=PATCH, `delete`=DELETE (204). The request URL is `<--server>/api/<--api-version>/forge/...` (default api-version `v1`).
 
+**File fields** — `file` fields are S3-backed attachments; the runtime never proxies upload bytes.
+
+```bash
+# upload — mint presigned URL → PUT bytes direct to S3 → confirm (SHA-256 always sent)
+schemaforge entity file upload Document 01J... contract ./proposal.pdf [--mime TYPE] [--filename NAME]
+
+# download — follows the runtime's presigned redirect / proxy stream to the bytes
+schemaforge entity file download Document 01J... contract [--out PATH|-]
+```
+
+`upload` asserts filename/MIME/size at mint; the server validates MIME against the field's allowlist and size against `max_size`, and a `before_upload` hook may abort (422). `--mime` overrides extension detection; with no detectable type it errors rather than guess `application/octet-stream`. If the schema declares an `on_scan_complete` hook the upload lands in **`scanning`**, not `available`, and the file is **not downloadable until `available`** — `download` of a non-available attachment is refused (`file not yet available (status: scanning)`). `download --out` defaults to a sanitized basename from the response URL (path-traversal-hardened), falling back to the field name; `-` streams to stdout. **No `entity file clear`/replace** — the attachment lifecycle is centralized server-side and no route exists.
+
 **Connection flags** (shared by every `entity` verb and `login`; these are *not* the global `--db-url` family):
 
 | Flag | Env | Default | Purpose |

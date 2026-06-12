@@ -43,7 +43,8 @@ schemaforge entity list Contact --server https://forge.agency.gov --eq status=ac
 8. [Exit Codes](#8-exit-codes)
 9. [TLS](#9-tls)
 10. [Configuration: `[schema_forge.client]`](#10-configuration-schema_forgeclient)
-11. [Examples](#11-examples)
+11. [File Fields: `entity file upload` / `download`](#11-file-fields-entity-file-upload--download)
+12. [Examples](#12-examples)
 
 ---
 
@@ -369,7 +370,71 @@ to override it for one invocation.
 
 ---
 
-## 11. Examples
+## 11. File Fields: `entity file upload` / `download`
+
+A `file` field is an **S3-backed attachment**, not an inline value. The runtime
+never proxies upload bytes — the client PUTs directly to storage through a
+presigned URL the runtime mints. These two verbs wrap that handshake so you do
+not have to script it by hand.
+
+```bash
+# Upload a local file to the `contract` field of one Document.
+schemaforge entity file upload Document 01J... contract ./proposal.pdf
+# ok uploaded contract (available)
+# status: available
+# key:    tenant_a/Document/01J.../contract/01HX.../proposal.pdf
+
+# Download it back (defaults to a sanitized basename from the response).
+schemaforge entity file download Document 01J... contract
+# ok wrote 248213 bytes to proposal.pdf
+
+# Stream to a chosen path, or to stdout with `-`.
+schemaforge entity file download Document 01J... contract --out /tmp/c.pdf
+schemaforge entity file download Document 01J... contract --out - | less
+```
+
+### The handshake `upload` wraps
+
+`upload` performs three round-trips so the bytes never touch the runtime:
+
+1. **Mint** — `POST .../fields/{field}/upload-url` asserts the filename, MIME,
+   and size. The server checks the MIME against the field's allowlist and the
+   size against `max_size`, runs any `before_upload` hook (which may abort), and
+   returns a presigned URL plus the exact headers to replay.
+2. **PUT** — the file's bytes stream **directly to storage** at that URL,
+   carrying the returned headers verbatim and **no** Bearer token (the presigned
+   URL is self-authenticating). A streaming read keeps memory flat regardless of
+   file size.
+3. **Confirm** — `POST .../fields/{field}/confirm-upload` hands back the object
+   key and a SHA-256 checksum (always computed; stored for forensics). The
+   server re-validates size and MIME from storage and records the attachment.
+
+### Flags
+
+| Flag | Verb | Meaning |
+| --- | --- | --- |
+| `--mime TYPE` | `upload` | Assert the MIME type. Overrides extension detection. If neither an override nor a detected type is available, the upload errors and asks for `--mime` — the asserted type must match the field's allowlist, so it is never guessed as `application/octet-stream`. |
+| `--filename NAME` | `upload` | Filename recorded in the object key. Defaults to the path's file name. |
+| `--out PATH` | `download` | Destination path. `-` streams to stdout. Absent, the name is derived from the final response URL (last path segment), sanitized to a single safe basename, falling back to the field name. An explicit `--out` is used as given. |
+
+### Scanning status
+
+If the schema declares an `on_scan_complete` hook, `confirm-upload` lands the
+attachment in **`scanning`**, not `available` — an external scanner must clear
+it first. `upload` prints that status and notes the file is **not downloadable
+until it becomes `available`**. `download` of a non-available attachment is
+refused with a legible error (e.g. `file not yet available (status: scanning)`);
+scripts and agents will hit this routinely while a scan runs, so branch on it.
+
+### Not yet supported
+
+There is no `entity file clear` (or replace) verb: the attachment lifecycle is
+deliberately centralized server-side and no route exists to detach or overwrite
+an attachment. Re-uploading creates a new object under a new key.
+
+---
+
+## 12. Examples
 
 ### Each verb, end to end
 
