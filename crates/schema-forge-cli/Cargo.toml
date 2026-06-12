@@ -33,9 +33,11 @@ minijinja = "2.19.0"
 tracing = "0.1.44"
 schema-forge-signing = { version = "0.1.0", path = "../schema-forge-signing" }
 sigstore-trust-root = { version = "0.7.0", default-features = false, features = ["tuf"] }
-reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls-no-provider"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
 rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"], optional = true }
-mime_guess = { version = "2.0.5", optional = true }
+mime_guess = { version = "2.0.5" }
+sha2 = "0.11.0"
+tokio-util = { version = "0.7.18", features = ["io"] }
 
 [features]
 default = ["surrealdb"]
@@ -49,7 +51,7 @@ fips = ["schema-forge-acton/fips"]
 # `serve` can host it same-origin at `/`. Off by default to keep dev builds fast
 # and Node-free; release CI turns it on after verifying the signed bundle and
 # pointing SCHEMAFORGE_CONSOLE_DIST at it. See build.rs + commands/serve_console.rs.
-embedded-console = ["dep:rust-embed", "dep:mime_guess"]
+embedded-console = ["dep:rust-embed"]
 
 [dev-dependencies]
 assert_cmd = "2"

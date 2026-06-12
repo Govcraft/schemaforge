@@ -11,12 +11,14 @@ use console::Term;
 use serde_json::{json, Map, Value};
 
 use crate::cli::{
-    EntityCommands, EntityConnectionArgs, EntityCreateArgs, EntityDeleteArgs, EntityGetArgs,
+    EntityCommands, EntityConnectionArgs, EntityCreateArgs, EntityDeleteArgs,
+    EntityFileCommands, EntityFileDownloadArgs, EntityFileUploadArgs, EntityGetArgs,
     EntityInputArgs, EntityListArgs, EntityQueryArgs, EntityWriteArgs, GlobalOpts,
 };
 use crate::config::{load_svc_config, resolve_client_config, ResolvedClient};
 use crate::error::CliError;
 use crate::http::{forge_base, EntityDto, ForgeClient, ListDto};
+use std::path::Path;
 use crate::output::{OutputContext, OutputMode};
 use crate::progress;
 
@@ -34,6 +36,19 @@ pub async fn run(
         EntityCommands::Patch(args) => write(*args, global, output, false).await,
         EntityCommands::Delete(args) => delete(*args, global, output).await,
         EntityCommands::Query(args) => query(*args, global, output).await,
+        EntityCommands::File { command } => run_file(command, global, output).await,
+    }
+}
+
+/// Dispatch an `entity file` subcommand.
+async fn run_file(
+    command: EntityFileCommands,
+    global: &GlobalOpts,
+    output: &OutputContext,
+) -> Result<(), CliError> {
+    match command {
+        EntityFileCommands::Upload(args) => upload(*args, global, output).await,
+        EntityFileCommands::Download(args) => download(*args, global, output).await,
     }
 }
 
@@ -176,6 +191,195 @@ async fn query(
     let value =
         call_with_spinner(output, "Querying entities…", client.query(&args.schema, &body)).await?;
     render_list(output, &value, args.fields.as_deref())
+}
+
+// ---------------------------------------------------------------------------
+// File field handlers
+// ---------------------------------------------------------------------------
+
+/// Upload a local file to a `file` field via the presigned handshake:
+/// mint a presigned PUT URL, stream the bytes straight to storage with the
+/// returned headers, then confirm so the runtime records the attachment.
+async fn upload(
+    args: EntityFileUploadArgs,
+    global: &GlobalOpts,
+    output: &OutputContext,
+) -> Result<(), CliError> {
+    let meta = std::fs::metadata(&args.path).map_err(|e| CliError::Io {
+        path: args.path.clone(),
+        source: e,
+    })?;
+    if !meta.is_file() {
+        return Err(CliError::Config {
+            message: format!("not a regular file: {}", args.path.display()),
+        });
+    }
+    let size = meta.len();
+
+    let mime = resolve_upload_mime(&args.path, args.mime.as_deref())?;
+    let filename = resolve_upload_filename(&args.path, args.filename.as_deref())?;
+
+    let (_, client) = build_client(&args.conn, global, output, true)?;
+
+    // Step 1: mint the presigned URL. A before_upload hook abort or a
+    // mime/size rejection surfaces here as a forge error envelope.
+    let minted = call_with_spinner(
+        output,
+        "Requesting upload URL…",
+        client.mint_upload_url(
+            &args.schema,
+            &args.id,
+            &args.field,
+            &filename,
+            &mime,
+            size,
+        ),
+    )
+    .await?;
+
+    // Step 2: PUT the bytes directly to storage, replaying every minted header.
+    call_with_spinner(
+        output,
+        "Uploading file…",
+        client.put_file_bytes(&minted.upload_url, &minted.headers, &args.path, size),
+    )
+    .await?;
+
+    // Step 3: confirm. Always send the SHA-256 — cheap, and the server stores
+    // it for forensics.
+    let checksum = sha256_file_hex(&args.path)?;
+    let confirmed = call_with_spinner(
+        output,
+        "Confirming upload…",
+        client.confirm_upload(
+            &args.schema,
+            &args.id,
+            &args.field,
+            &minted.key,
+            Some(&checksum),
+        ),
+    )
+    .await?;
+
+    if output.mode == OutputMode::Json {
+        output.print_json(&confirmed);
+        return Ok(());
+    }
+
+    let status = confirmed
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    output.success(&format!("uploaded {} ({status})", args.field));
+    if output.mode == OutputMode::Plain {
+        println!("status\t{status}");
+        println!("key\t{}", minted.key);
+    } else {
+        println!("status: {status}");
+        println!("key: {}", minted.key);
+    }
+    if status == "scanning" {
+        output.status(
+            "the file is being scanned and is not downloadable until status is 'available'.",
+        );
+    }
+    Ok(())
+}
+
+/// Download a `file` field's bytes to a path or stdout. Follows the runtime's
+/// presigned redirect (or streamed proxy) and streams the body to the sink.
+async fn download(
+    args: EntityFileDownloadArgs,
+    global: &GlobalOpts,
+    output: &OutputContext,
+) -> Result<(), CliError> {
+    let (_, client) = build_client(&args.conn, global, output, true)?;
+
+    // `--out -` streams to stdout; any other --out is used as the user's own
+    // choice, verbatim. With no --out, the destination is derived from the
+    // final response URL after the network call returns.
+    let to_stdout = args.out.as_deref() == Some("-");
+
+    if to_stdout {
+        let mut sink = tokio::io::stdout();
+        let outcome = call_with_spinner(
+            output,
+            "Downloading file…",
+            client.download_file(&args.schema, &args.id, &args.field, &mut sink),
+        )
+        .await?;
+        output.success(&format!("wrote {} bytes to stdout", outcome.bytes_written));
+        return Ok(());
+    }
+
+    // Buffer to a temp file alongside the destination dir, then derive the
+    // final name from the response URL once we know it. We stream to a
+    // sink that is the chosen destination; when --out is absent we cannot know
+    // the name up front, so download to memory-backed path is undesirable for
+    // large files. Instead: when --out is given, stream straight to it; when
+    // absent, stream to a temp file in the CWD, then rename to the safe name.
+    match &args.out {
+        Some(explicit) => {
+            let dest = Path::new(explicit).to_path_buf();
+            let mut sink = open_dest_file(&dest).await?;
+            let outcome = call_with_spinner(
+                output,
+                "Downloading file…",
+                client.download_file(&args.schema, &args.id, &args.field, &mut sink),
+            )
+            .await?;
+            output.success(&format!(
+                "wrote {} bytes to {}",
+                outcome.bytes_written,
+                dest.display()
+            ));
+            Ok(())
+        }
+        None => {
+            // The temp file must live in the CWD — the rename target's
+            // filesystem — because a cross-device rename (tmpfs /tmp → disk)
+            // fails with EXDEV.
+            let tmp =
+                std::path::PathBuf::from(format!(".schemaforge-dl-{}.part", std::process::id()));
+            let mut sink = open_dest_file(&tmp).await?;
+            let outcome = call_with_spinner(
+                output,
+                "Downloading file…",
+                client.download_file(&args.schema, &args.id, &args.field, &mut sink),
+            )
+            .await;
+            let outcome = match outcome {
+                Ok(o) => o,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e);
+                }
+            };
+            let name = default_download_name(&outcome.final_url, &args.field);
+            let dest = Path::new(&name).to_path_buf();
+            std::fs::rename(&tmp, &dest).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                CliError::Io {
+                    path: dest.clone(),
+                    source: e,
+                }
+            })?;
+            output.success(&format!(
+                "wrote {} bytes to {}",
+                outcome.bytes_written,
+                dest.display()
+            ));
+            Ok(())
+        }
+    }
+}
+
+/// Open a destination file for writing (truncating), mapping IO errors.
+async fn open_dest_file(path: &Path) -> Result<tokio::fs::File, CliError> {
+    tokio::fs::File::create(path).await.map_err(|e| CliError::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -656,6 +860,175 @@ fn print_tsv(headers: &[String], rows: &[Vec<String>]) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// File field helpers (pure where possible)
+// ---------------------------------------------------------------------------
+
+/// Resolve the MIME type for an upload: an explicit `--mime` wins, else
+/// extension-based detection via `mime_guess`. If neither yields a type the
+/// caller must pass `--mime` — we never silently send `application/octet-stream`
+/// because the server validates the asserted type against the field's allowlist.
+fn resolve_upload_mime(path: &Path, override_mime: Option<&str>) -> Result<String, CliError> {
+    if let Some(m) = override_mime {
+        let trimmed = m.trim();
+        if trimmed.is_empty() {
+            return Err(CliError::Config {
+                message: "--mime must not be empty".to_string(),
+            });
+        }
+        return Ok(trimmed.to_string());
+    }
+    match mime_guess::from_path(path).first() {
+        Some(m) => Ok(m.essence_str().to_string()),
+        None => Err(CliError::Config {
+            message: format!(
+                "could not detect a MIME type for {}. Pass --mime TYPE \
+                 (the server validates it against the field's allowlist).",
+                path.display()
+            ),
+        }),
+    }
+}
+
+/// Resolve the filename sent in the mint body: an explicit `--filename` wins,
+/// else the path's own file name. A path with no usable file name (e.g. `..`)
+/// is an error rather than a silent fallback.
+fn resolve_upload_filename(
+    path: &Path,
+    override_name: Option<&str>,
+) -> Result<String, CliError> {
+    if let Some(n) = override_name {
+        let trimmed = n.trim();
+        if trimmed.is_empty() {
+            return Err(CliError::Config {
+                message: "--filename must not be empty".to_string(),
+            });
+        }
+        return Ok(trimmed.to_string());
+    }
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(str::to_string)
+        .ok_or_else(|| CliError::Config {
+            message: format!(
+                "could not derive a filename from {}. Pass --filename NAME.",
+                path.display()
+            ),
+        })
+}
+
+/// Stream a file through SHA-256 and return the lowercase hex digest.
+///
+/// Reads in fixed chunks so the digest works on files far larger than memory.
+fn sha256_file_hex(path: &Path) -> Result<String, CliError> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| CliError::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| CliError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_lower(&hasher.finalize()))
+}
+
+/// Lowercase-hex-encode a byte slice. Pure.
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(char::from_digit((b >> 4) as u32, 16).unwrap_or('0'));
+        out.push(char::from_digit((b & 0x0f) as u32, 16).unwrap_or('0'));
+    }
+    out
+}
+
+/// Derive a default download filename from the final response URL, falling
+/// back to the field name. Pure and total: the result is always a safe
+/// single-component basename (see [`safe_basename`]), never a path that could
+/// escape the working directory.
+fn default_download_name(final_url: &str, field: &str) -> String {
+    // Strip query/fragment first.
+    let no_query = final_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(final_url);
+    // Drop the scheme + authority so the host is never mistaken for a filename:
+    // for `https://host/` (no path) there is no segment, and the field-name
+    // fallback must win rather than yielding `host`.
+    let path_only = match no_query.split_once("://") {
+        Some((_, rest)) => rest.split_once('/').map(|(_, p)| p).unwrap_or(""),
+        None => no_query,
+    };
+    let last = path_only
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or("");
+
+    // URL segments may be percent-encoded; a minimal decode keeps names like
+    // `my%20report.pdf` readable without pulling in a URL crate here.
+    let decoded = percent_decode(last);
+    safe_basename(&decoded)
+        .or_else(|| safe_basename(field))
+        .unwrap_or_else(|| "download".to_string())
+}
+
+/// Minimal percent-decoder for a single path segment. Unknown or truncated
+/// escapes are left verbatim. Pure.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Accept only a single, non-traversing path component as a safe default
+/// filename. Anything containing a separator, a `..`/`.` component, or an
+/// empty/absolute form yields `None` so the caller falls back to its own safe
+/// default. Pure and total — the same control the export verb applies to
+/// server-suggested names (path-traversal hardening).
+fn safe_basename(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        return None;
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains('\0') {
+        return None;
+    }
+    // Reject anything that is not a plain final component per the OS.
+    let p = Path::new(trimmed);
+    let mut comps = p.components();
+    match (comps.next(), comps.next()) {
+        (Some(std::path::Component::Normal(c)), None) => {
+            c.to_str().map(str::to_string)
+        }
+        _ => None,
+    }
+}
+
 /// Print the resolved request without sending it (`--dry-run`).
 fn dry_run_report(
     output: &OutputContext,
@@ -811,6 +1184,112 @@ mod tests {
         assert_eq!(render_cell(&json!(true)), "true");
         assert_eq!(render_cell(&Value::Null), "");
         assert_eq!(render_cell(&json!(["a", "b"])), "[\"a\",\"b\"]");
+    }
+
+    #[test]
+    fn resolve_upload_mime_override_wins() {
+        let p = Path::new("report.pdf");
+        assert_eq!(
+            resolve_upload_mime(p, Some("image/png")).unwrap(),
+            "image/png"
+        );
+        // Whitespace is trimmed.
+        assert_eq!(
+            resolve_upload_mime(p, Some("  text/csv  ")).unwrap(),
+            "text/csv"
+        );
+        // Empty override is rejected.
+        assert!(resolve_upload_mime(p, Some("   ")).is_err());
+    }
+
+    #[test]
+    fn resolve_upload_mime_detects_from_extension() {
+        assert_eq!(
+            resolve_upload_mime(Path::new("a/b/report.pdf"), None).unwrap(),
+            "application/pdf"
+        );
+        assert_eq!(
+            resolve_upload_mime(Path::new("hero.png"), None).unwrap(),
+            "image/png"
+        );
+    }
+
+    #[test]
+    fn resolve_upload_mime_errors_when_undetectable() {
+        // No extension, no override → actionable error pointing at --mime.
+        let err = resolve_upload_mime(Path::new("LICENSE"), None).unwrap_err();
+        match err {
+            CliError::Config { message } => assert!(message.contains("--mime")),
+            other => panic!("expected Config, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_upload_filename_precedence() {
+        assert_eq!(
+            resolve_upload_filename(Path::new("/tmp/report.pdf"), None).unwrap(),
+            "report.pdf"
+        );
+        assert_eq!(
+            resolve_upload_filename(Path::new("/tmp/report.pdf"), Some("renamed.pdf")).unwrap(),
+            "renamed.pdf"
+        );
+        assert!(resolve_upload_filename(Path::new("/tmp/report.pdf"), Some("  ")).is_err());
+    }
+
+    #[test]
+    fn hex_lower_encodes_lowercase() {
+        assert_eq!(hex_lower(&[0x00, 0x0f, 0xff, 0xab]), "000fffab");
+        assert_eq!(hex_lower(&[]), "");
+    }
+
+    #[test]
+    fn percent_decode_handles_escapes_and_literals() {
+        assert_eq!(percent_decode("my%20report.pdf"), "my report.pdf");
+        assert_eq!(percent_decode("plain.pdf"), "plain.pdf");
+        // Truncated/invalid escape left verbatim.
+        assert_eq!(percent_decode("bad%2"), "bad%2");
+        assert_eq!(percent_decode("bad%zz"), "bad%zz");
+    }
+
+    #[test]
+    fn safe_basename_accepts_plain_names_rejects_traversal() {
+        assert_eq!(safe_basename("report.pdf"), Some("report.pdf".to_string()));
+        assert_eq!(
+            safe_basename("  spaced name.txt  "),
+            Some("spaced name.txt".to_string())
+        );
+        assert_eq!(safe_basename(""), None);
+        assert_eq!(safe_basename("."), None);
+        assert_eq!(safe_basename(".."), None);
+        assert_eq!(safe_basename("../../etc/passwd"), None);
+        assert_eq!(safe_basename("a/b"), None);
+        assert_eq!(safe_basename("/abs"), None);
+        assert_eq!(safe_basename("a\\b"), None);
+    }
+
+    #[test]
+    fn default_download_name_derives_from_url_then_falls_back() {
+        // Last segment of the path, query stripped.
+        assert_eq!(
+            default_download_name(
+                "https://bucket.s3.amazonaws.com/k/01HX/contract.pdf?X-Amz-Sig=abc",
+                "attachment"
+            ),
+            "contract.pdf"
+        );
+        // Percent-encoded segment decoded.
+        assert_eq!(
+            default_download_name("https://h/path/my%20file.csv", "attachment"),
+            "my file.csv"
+        );
+        // No usable segment → field-name fallback (itself sanitized).
+        assert_eq!(
+            default_download_name("https://h/", "attachment"),
+            "attachment"
+        );
+        // A field name that itself looks unsafe still degrades to a constant.
+        assert_eq!(default_download_name("https://h/", "../bad"), "download");
     }
 
     #[test]

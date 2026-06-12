@@ -13,9 +13,14 @@
 //! roots come from `rustls-platform-verifier`; a private-PKI root can be
 //! added with `--ca-cert`.
 
-use reqwest::{Client, Method, Url};
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use reqwest::{Body, Client, Method, Url};
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::fs::File;
+use tokio_util::io::ReaderStream;
 
 use crate::config::ResolvedClient;
 use crate::error::CliError;
@@ -44,6 +49,55 @@ pub struct ListDto {
     /// Total matching entities before pagination, when computed.
     #[serde(default)]
     pub total_count: Option<usize>,
+}
+
+/// Client-side view of the server's `MintUploadUrlResponse`.
+///
+/// The `headers` map MUST be replayed verbatim on the subsequent PUT: the
+/// presigned signature binds them, so dropping or altering one yields a 403
+/// `SignatureDoesNotMatch` from S3.
+#[derive(Debug, Deserialize)]
+pub struct UploadUrlDto {
+    /// Fully-qualified URL the client PUTs bytes to.
+    pub upload_url: String,
+    /// Server-generated object key, echoed back on confirm.
+    pub key: String,
+    /// Headers the client MUST include on the PUT request, verbatim.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+/// Result of a successful file download.
+#[derive(Debug)]
+pub struct DownloadOutcome {
+    /// Total bytes written to the sink.
+    pub bytes_written: u64,
+    /// The final response URL after any redirects, used to derive a default
+    /// output filename when the caller did not pass `--out`.
+    pub final_url: String,
+}
+
+/// Trim an opaque (often XML) error body to a single legible line.
+///
+/// Pure: collapses interior whitespace and caps the length so a multi-kilobyte
+/// S3 error page cannot flood the terminal. Empty input yields `"<no body>"`.
+fn snippet(body: &str) -> String {
+    const MAX: usize = 300;
+    let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return "<no body>".to_string();
+    }
+    if collapsed.len() > MAX {
+        // Cap at MAX bytes, snapping back to a char boundary so a multibyte
+        // codepoint straddling the cut never panics on the slice.
+        let mut end = MAX;
+        while end > 0 && !collapsed.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &collapsed[..end])
+    } else {
+        collapsed
+    }
 }
 
 /// Build the versioned API base, e.g.
@@ -309,6 +363,177 @@ impl ForgeClient {
         self.send(Method::DELETE, url, &[], None).await.map(|_| ())
     }
 
+    // --- File field operations --------------------------------------------
+
+    /// `POST /schemas/{schema}/entities/{id}/fields/{field}/upload-url`.
+    ///
+    /// Mints a presigned PUT URL plus the exact headers the client must replay
+    /// on the upload. A `before_upload` hook abort or a mime/size mismatch
+    /// arrives here as a forge error envelope and is mapped by
+    /// [`classify_http_error`].
+    pub async fn mint_upload_url(
+        &self,
+        schema: &str,
+        id: &str,
+        field: &str,
+        filename: &str,
+        mime: &str,
+        size: u64,
+    ) -> Result<UploadUrlDto, CliError> {
+        let url = self.url(&[
+            "schemas", schema, "entities", id, "fields", field, "upload-url",
+        ])?;
+        let body = serde_json::json!({
+            "filename": filename,
+            "mime": mime,
+            "size": size,
+        });
+        let value = self
+            .send(Method::POST, url, &[], Some(&body))
+            .await?
+            .unwrap_or(Value::Null);
+        serde_json::from_value(value).map_err(|e| CliError::Server {
+            message: format!("unexpected upload-url response: {e}"),
+        })
+    }
+
+    /// PUT the file's bytes to the presigned `upload_url`, streamed from disk.
+    ///
+    /// Unauthenticated by design: the presigned URL carries its own auth, so
+    /// no Bearer token is attached. Every header from the mint response is
+    /// replayed verbatim. The response comes from S3, not the forge server, so
+    /// a non-2xx is rendered with the status and a short XML body snippet
+    /// rather than run through the forge-envelope parser.
+    pub async fn put_file_bytes(
+        &self,
+        upload_url: &str,
+        headers: &BTreeMap<String, String>,
+        path: &Path,
+        size: u64,
+    ) -> Result<(), CliError> {
+        let file = File::open(path).await.map_err(|e| CliError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+        let body = Body::wrap_stream(ReaderStream::new(file));
+
+        let mut req = self
+            .http
+            .put(upload_url)
+            .header(reqwest::header::CONTENT_LENGTH, size)
+            .body(body);
+        for (name, value) in headers {
+            req = req.header(name, value);
+        }
+
+        let resp = req.send().await.map_err(|e| CliError::Connection {
+            message: e.to_string(),
+        })?;
+
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        // S3 errors are XML, not the forge JSON envelope. Surface the status
+        // and a trimmed snippet so the signature/permission cause is legible.
+        let snippet = resp
+            .text()
+            .await
+            .map(|t| snippet(&t))
+            .unwrap_or_default();
+        Err(CliError::Connection {
+            message: format!("upload to storage failed (HTTP {status}): {snippet}"),
+        })
+    }
+
+    /// `POST /schemas/{schema}/entities/{id}/fields/{field}/confirm-upload`.
+    ///
+    /// Hands the object key (and optional SHA-256) back to the runtime, which
+    /// HEADs the object, re-validates size/mime, and persists the attachment.
+    /// Returns the `{ status, attachment }` envelope.
+    pub async fn confirm_upload(
+        &self,
+        schema: &str,
+        id: &str,
+        field: &str,
+        key: &str,
+        checksum_sha256: Option<&str>,
+    ) -> Result<Value, CliError> {
+        let url = self.url(&[
+            "schemas", schema, "entities", id, "fields", field, "confirm-upload",
+        ])?;
+        let mut body = serde_json::Map::new();
+        body.insert("key".to_string(), Value::String(key.to_string()));
+        if let Some(sum) = checksum_sha256 {
+            body.insert(
+                "checksum_sha256".to_string(),
+                Value::String(sum.to_string()),
+            );
+        }
+        self.send(Method::POST, url, &[], Some(&Value::Object(body)))
+            .await
+            .map(|v| v.unwrap_or(Value::Null))
+    }
+
+    /// `GET /schemas/{schema}/entities/{id}/fields/{field}` — download.
+    ///
+    /// Sends the Bearer token and follows redirects (reqwest's default policy
+    /// strips `Authorization` on cross-host hops, which is exactly right for
+    /// the presigned-mode 302 to S3). The streamed body is written chunk by
+    /// chunk to `sink`; the final response URL is returned so the caller can
+    /// derive a default filename. A non-available attachment is a forge error
+    /// envelope mapped by [`classify_http_error`].
+    pub async fn download_file<W>(
+        &self,
+        schema: &str,
+        id: &str,
+        field: &str,
+        sink: &mut W,
+    ) -> Result<DownloadOutcome, CliError>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncWriteExt;
+
+        let url = self.url(&["schemas", schema, "entities", id, "fields", field])?;
+        let mut req = self.http.get(url);
+        if let Some(tok) = &self.token {
+            req = req.bearer_auth(tok);
+        }
+        let mut resp = req.send().await.map_err(|e| CliError::Connection {
+            message: e.to_string(),
+        })?;
+
+        let status = resp.status();
+        let final_url = resp.url().to_string();
+        if !status.is_success() {
+            let text = resp.text().await.map_err(|e| CliError::Connection {
+                message: e.to_string(),
+            })?;
+            return Err(classify_http_error(status.as_u16(), &text));
+        }
+
+        let mut written: u64 = 0;
+        while let Some(chunk) = resp.chunk().await.map_err(|e| CliError::Connection {
+            message: e.to_string(),
+        })? {
+            sink.write_all(&chunk).await.map_err(|e| CliError::Io {
+                path: std::path::PathBuf::from("<download>"),
+                source: e,
+            })?;
+            written += chunk.len() as u64;
+        }
+        sink.flush().await.map_err(|e| CliError::Io {
+            path: std::path::PathBuf::from("<download>"),
+            source: e,
+        })?;
+
+        Ok(DownloadOutcome {
+            bytes_written: written,
+            final_url,
+        })
+    }
+
     /// `POST /auth/login` — exchange credentials for a token. Unauthenticated.
     pub async fn login(&self, username: &str, password: &str) -> Result<Value, CliError> {
         let url = self.url(&["auth", "login"])?;
@@ -403,5 +628,30 @@ mod tests {
             panic!("expected Http");
         };
         assert!(message.contains("HTTP 503"));
+    }
+
+    #[test]
+    fn snippet_collapses_whitespace_and_caps_length() {
+        assert_eq!(snippet(""), "<no body>");
+        assert_eq!(snippet("   \n\t  "), "<no body>");
+        assert_eq!(
+            snippet("<Error>\n  <Code>SignatureDoesNotMatch</Code>\n</Error>"),
+            "<Error> <Code>SignatureDoesNotMatch</Code> </Error>"
+        );
+        let long = "x".repeat(500);
+        let out = snippet(&long);
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().filter(|&c| c == 'x').count(), 300);
+    }
+
+    #[test]
+    fn snippet_caps_on_char_boundary_without_panicking() {
+        // A 3-byte codepoint repeated past the cap: truncating at byte 300
+        // would split a codepoint, so the cut must snap to a boundary.
+        let multibyte = "あ".repeat(200); // 600 bytes, 200 chars
+        let out = snippet(&multibyte);
+        assert!(out.ends_with('…'));
+        // 300-byte budget / 3 bytes per char = 100 whole chars before the ellipsis.
+        assert_eq!(out.chars().filter(|&c| c == 'あ').count(), 100);
     }
 }
