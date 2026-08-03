@@ -1,6 +1,6 @@
 ---
 name: schemaforge
-description: Use when writing, creating, editing, or reviewing SchemaForge .schema files. Use when defining data models, entity schemas, field types (incl. `duration`, `bytes`, and `map<text, V>`), relations, access control, or multi-tenant hierarchies in the SchemaForge DSL syntax. Use when declaring write-time validation, computed fields, or computed defaults via the CEL rule annotations `@require` / `@compute` / `@default` (in-process, fail-closed, no gRPC), including single-hop cross-entity reads (`related.<field>.<col>`) inside `@require`. Use when declaring `unique` field constraints (per-tenant for `@tenant(...)` schemas, table-wide otherwise) and handling the 409 `unique_violation` error path. Use when declaring `file` fields backed by S3-compatible storage (MinIO, AWS S3, R2, Wasabi), configuring `[schema_forge.storage]` backends, or wiring upload/download/scan flows. Use when scaffolding or regenerating the React site with `schema-forge site generate`, wiring the `/app/*` per-entity pages or the runtime-dynamic `/admin/*` shell, or iterating with the `--templates-dir` override loader. Use when querying entities via the REST API, filtering, sorting, pagination, or building query parameters. Use when declaring lifecycle hooks via @hook annotations (including `before_upload`, `after_upload`, `on_scan_complete` for file fields), scaffolding hook gRPC services with `schema-forge hooks generate`, configuring [schema_forge.hooks] bindings, or auditing hooks with `hooks list` / `hooks diff`. Use when hitting `/api/v1/forge/auth/login`, `/auth/refresh`, or `/api/v1/forge/users` for the PASETO bootstrap and user management flows. Use when mapping PASETO custom claims onto Cedar `Forge::Principal` attributes via `[schema_forge.authz.principal_claims]` so hand-written custom Cedar policies can read per-bearer values like `principal.client_org_id`, including the IN-side `source = { user_field = "<f>" }` projection that populates those claims from User columns at login/refresh time.
+description: Use when writing, creating, editing, or reviewing SchemaForge .schema files. Use when defining data models, entity schemas, field types (incl. `duration`, `bytes`, and `map<text, V>`), relations, access control, or multi-tenant hierarchies in the SchemaForge DSL syntax. Use when declaring write-time validation, computed fields, or computed defaults via the CEL rule annotations `@require` / `@compute` / `@default` (in-process, fail-closed, no gRPC), including single-hop cross-entity reads (`related.<field>.<col>`) inside `@require`. Use when declaring `unique` field constraints (per-tenant for `@tenant(...)` schemas, table-wide otherwise) and handling the 409 `unique_violation` error path. Use when declaring `file` fields backed by S3-compatible storage (MinIO, AWS S3, R2, Wasabi), configuring `[schema_forge.storage]` backends, or wiring upload/download/scan flows. Use when scaffolding or regenerating the React site with `schema-forge site generate`, wiring the `/app/*` per-entity pages or the runtime-dynamic `/admin/*` shell, or iterating with the `--templates-dir` override loader. Use when querying entities via the REST API, filtering, sorting, pagination, or building query parameters. Use when declaring lifecycle hooks via @hook annotations (including `before_upload`, `after_upload`, `on_scan_complete` for file fields), scaffolding hook gRPC services with `schema-forge hooks generate`, configuring [schema_forge.hooks] bindings, or auditing hooks with `hooks list` / `hooks diff`. Use when hitting `/api/v1/forge/auth/login`, `/auth/refresh`, or `/api/v1/forge/users` for the PASETO bootstrap and user management flows. Use when mapping PASETO custom claims onto Cedar `Forge::Principal` attributes via `[schema_forge.authz.principal_claims]` so hand-written custom Cedar policies can read per-bearer values like `principal.client_org_id`, including the IN-side `source = { user_field = "<f>" }` projection that populates those claims from User columns at login/refresh time. Use whenever a SchemaForge task touches the platform layer underneath the schemas — auth, accounts, sessions, TLS, gRPC transport, rate limiting, resilience, audit, health probes, metrics, caching, or config — because SchemaForge runs on acton-service and most such work is a feature flag plus a config section rather than new code; this skill carries the boundary between what the framework owns and what SchemaForge owns.
 ---
 
 # SchemaForge — Schema Authoring & CLI Guide
@@ -32,8 +32,78 @@ SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `
 | `schema-forge-acton` | 0.34.0 | Axum/acton-service integration: REST API, the write-time rule phases (`@default`→`@compute`→`@require`, incl. tenant-scoped cross-entity reads), Cedar policy store (hot-recompiled atomically on schema apply), auth, hook dispatcher, S3 storage registry (`aws-sdk-s3`), and the 409 `unique_violation` HTTP error envelope |
 | `schema-forge-cli` | 0.35.0 | CLI binary (`schemaforge`) built with clap derive; routes all configuration through `acton_service::Config<SchemaForgeConfig>` (single source of truth); ships `policies validate`, `bootstrap-admin`, `entity file upload`/`download` (presigned S3 handshake for `file` fields), and a site generator that surfaces `unique` as an inline form hint plus a 409-routed `setError` for CI / first-run provisioning |
 
+## Before You Build: acton-service Owns the Platform Layer
+
+SchemaForge is not a standalone server. It is an **application built on acton-service**, a
+production Rust service framework with ~57 feature flags that already ships most of what a
+government-grade backend needs: authentication, account lifecycle, sessions and CSRF, Cedar
+authorization, gRPC, TLS and mutual TLS, rate limiting, resilience, audit logging, health and
+readiness probes, metrics, pagination, and background workers.
+
+This matters because the most common failure when working in this repo is **building something
+acton-service already provides**. The symptom is always the same shape: a task looks like it needs
+a new subsystem, so a subsystem gets written — when the actual fix was enabling a feature flag and
+adding a config section. That mistake is expensive twice over: once to write the code, and again
+forever, because a hand-rolled subsystem does not receive the framework's security fixes.
+
+### The check, before writing any platform code
+
+When a task touches auth, sessions, tokens, accounts, authorization, rate limiting, TLS, gRPC
+transport, health probes, metrics, audit, caching, pagination, background jobs, or config —
+anything that is *infrastructure* rather than *schema semantics* — do this first:
+
+1. **Read the live feature inventory.** Run `cargo info acton-service --verbose`. Treat its output
+   as authoritative for the current version, the full feature list, and each feature's dependency
+   mapping. It queries the registry, so it cannot go stale the way this file can.
+2. **Consult the `acton-service-features` skill** for what those features *mean* and how they
+   combine (mutual exclusions, implied features, config sections).
+3. **Check what this workspace actually enables.** The pin and feature set live in
+   `crates/schema-forge-acton/Cargo.toml` and `crates/schema-forge-cli/Cargo.toml`. A capability
+   can be absent simply because its flag is off, not because the framework lacks it.
+4. **Only then decide.** If acton-service covers it, the change is a feature flag plus a config
+   section — not a module.
+
+### Where the line falls
+
+| acton-service owns | SchemaForge owns |
+|---|---|
+| Config loading and precedence (`Config<SchemaForgeConfig>`), XDG search, `ACTON_*` env layering | The `[schema_forge.*]` extension (`T`) and its validation |
+| PASETO/JWT generation and validation, refresh-token rotation, API keys, key rotation, OAuth/OIDC | Login/refresh route semantics specific to the entity model |
+| Account lifecycle (`accounts`), prebuilt `/accounts/*` routes, login lockout, notification hooks | User records *as schema entities*, `EntityAuthStore`, invite/onboard policy |
+| Sessions, CSRF, flash messages | — |
+| The Cedar *engine integration* (`cedar-authz`): decision caching, middleware, gRPC layer, `[cedar]` config | Cedar **policy generation** from schemas: per-entity schema emission, `role_rank`, tenant scoping, placeholder resources. This part is genuinely SchemaForge's and should stay. |
+| gRPC transport (`grpc`): tonic/prost, health, reflection, token auth + Cedar authz on RPCs | Hook *dispatch* semantics and the `@hook` annotation model |
+| TLS, mutual TLS, client-cert verification, credential rotation | — |
+| Rate limiting, resilience (circuit breaker, bulkhead), security headers, request IDs, CORS | — |
+| Audit (BLAKE3 hash chain, syslog/OTLP export, HTTP audit middleware) | Which domain events are worth auditing |
+| Health/readiness probes, app-defined checks, graceful shutdown, metrics (OTLP push and Prometheus scrape) | Schema-apply and migration readiness semantics |
+| Pagination primitives, repository/handlers patterns, background worker | Query IR, filter translation, per-backend SQL/SurrealQL codegen |
+
+The rule of thumb: **if it would be true of any service, it belongs to acton-service. If it is true
+only because schemas are the source of truth, it belongs to SchemaForge.**
+
+### Signs you are about to reinvent something
+
+- You are about to add a direct dependency that acton-service already re-exports or feature-gates
+  (`tonic`, `prost`, `rustls`, `cedar-policy`, `async-graphql`, `redis`, `tower-sessions`). Check
+  whether a feature flag brings it in already wired, with the framework's middleware attached.
+- You are writing a middleware layer for a cross-cutting concern.
+- You are writing a `TODO: remove once acton-service supports …`. Roland maintains acton-service
+  (`~/code/active/acton-service`). The correct move is usually to file it there, not to work around
+  it here — a workaround in this repo is permanent, and an upstream fix is not.
+- The task description contains "we need our own X" where X is a platform noun.
+
+### Keep the pin in view
+
+This workspace pins a specific acton-service version. Because SchemaForge inherits the framework's
+**security posture**, a stale pin is not merely missing features — it is missing fixes. When the pin
+lags the registry by more than a minor version or two, say so rather than working around the older
+behavior, and check the upstream `CHANGELOG.md` for security entries that apply to the features this
+workspace enables.
+
 ## When to Use
 
+- **Any task touching the platform layer** (auth, accounts, sessions, TLS, gRPC transport, rate limiting, resilience, audit, health probes, metrics, caching, config) — start at "Before You Build" above and check acton-service before writing code
 - Writing new `.schema` files for SchemaForge projects
 - Adding entities, fields, relations, or annotations to existing schemas
 - Reviewing or validating DSL syntax
@@ -789,6 +859,12 @@ From a `.schema` file, SchemaForge produces:
 
 For complete details, load these supporting files:
 
+- For **anything on the platform layer** — auth, accounts, sessions, TLS/mTLS, gRPC transport, rate
+  limiting, resilience, audit, health checks, metrics, caching, pagination, background workers — use
+  the **`acton-service-features` skill**, and run `cargo info acton-service --verbose` for the
+  authoritative current feature list. See "Before You Build" above for why this comes first. The
+  framework source is at `~/code/active/acton-service`; its `CHANGELOG.md` is the reference for
+  which security fixes a given pin does or does not include.
 - For **complete syntax reference** including EBNF grammar, all annotation parameters, and constraint details, see [dsl-reference.md](dsl-reference.md)
 - For **annotated real-world examples** covering CRM, multi-tenant, project management, and HR domains, see [examples.md](examples.md)
 - For **design patterns** including multi-tenancy, access control, dashboards, composites, relations, and widget selection, see [patterns.md](patterns.md)
