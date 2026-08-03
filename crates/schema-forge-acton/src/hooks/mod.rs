@@ -37,8 +37,10 @@
 //!
 //! See `docs/hooks-reference.md` for full semantics.
 
+pub mod credential;
 pub mod dispatch_actor;
 pub mod tonic_dispatcher;
+pub use credential::{HookCredentialSource, PasetoHookCredential};
 pub use dispatch_actor::{DispatchHook, HookDispatchActor};
 pub use tonic_dispatcher::{TonicDispatcherConfig, TonicHookDispatcher};
 
@@ -79,6 +81,34 @@ pub struct HooksConfig {
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_async: usize,
 
+    /// Permit plaintext (`http://`) hook endpoints. Default: `false`.
+    ///
+    /// A hook invocation carries the entity's field snapshot and the
+    /// authenticated user's subject claim, and it carries the bearer
+    /// credential SchemaForge presents to the hook service. Over cleartext
+    /// all three are readable, and the credential is replayable, by anything
+    /// on the path. Endpoints are therefore required to be `https://` unless
+    /// an operator opts out here, which is reasonable only when the transport
+    /// is already confidential — loopback, or a sidecar mesh that terminates
+    /// TLS for the process.
+    ///
+    /// This defaults to refusing rather than warning because a warning is
+    /// indistinguishable from working: dispatch would keep succeeding, and
+    /// nothing would ever force the deployment to be fixed.
+    #[serde(default)]
+    pub allow_plaintext: bool,
+
+    /// Client certificate this service presents to mutual-TLS hook services,
+    /// and the trust anchors it verifies them against.
+    ///
+    /// When absent, `https://` endpoints are verified against the built-in web
+    /// PKI roots and SchemaForge presents no certificate. Set this when hook
+    /// services are issued from a private CA, which is the normal case for an
+    /// internal mesh, and pair it with `[caller_auth]` on the hook service so
+    /// the certificate is authorized and not merely authenticated.
+    #[serde(default)]
+    pub client_identity: Option<acton_service::config::ClientIdentityConfig>,
+
     /// Per-hook bindings. Each entry is a `(schema, event)` pair bound to
     /// an endpoint and policy.
     #[serde(default)]
@@ -104,6 +134,8 @@ impl Default for HooksConfig {
             enabled: false,
             default_timeout_ms: default_timeout_ms(),
             max_concurrent_async: default_max_concurrent(),
+            allow_plaintext: false,
+            client_identity: None,
             bindings: Vec::new(),
         }
     }
@@ -205,6 +237,10 @@ pub enum HookError {
     Timeout { endpoint: String, timeout_ms: u32 },
     /// The endpoint is unreachable or returned a transport error.
     Unavailable { endpoint: String, message: String },
+    /// The endpoint would carry entity data and a bearer credential over a
+    /// transport that does not protect them. Refused before any connection is
+    /// opened, so nothing is ever sent in the clear.
+    InsecureEndpoint { endpoint: String },
     /// The hook response could not be decoded or violated the contract.
     Protocol { message: String },
     /// Internal dispatcher error (configuration mismatch, descriptor drift,
@@ -223,6 +259,13 @@ impl std::fmt::Display for HookError {
             Self::Unavailable { endpoint, message } => {
                 write!(f, "hook at {endpoint} unavailable: {message}")
             }
+            Self::InsecureEndpoint { endpoint } => write!(
+                f,
+                "hook endpoint {endpoint} is not https; refusing to send entity data and a \
+                 bearer credential in the clear. Use an https:// endpoint, or set \
+                 `allow_plaintext = true` under [schema_forge.hooks] if the transport is \
+                 already confidential (loopback or a TLS-terminating sidecar)."
+            ),
             Self::Protocol { message } => write!(f, "hook protocol error: {message}"),
             Self::Internal { message } => write!(f, "hook dispatcher error: {message}"),
         }
@@ -301,6 +344,12 @@ pub async fn run_before_hook(
             }
             Ok(Some(outcome))
         }
+        // A refused endpoint is an operator misconfiguration, not the
+        // transport flakiness `required = false` exists to tolerate. Letting
+        // it through as a warning would leave the hook silently never running
+        // — the failure mode that made this check necessary in the first
+        // place.
+        Err(e @ HookError::InsecureEndpoint { .. }) => Err(e),
         Err(e) if binding.required => Err(e),
         Err(e) => {
             warn!(
