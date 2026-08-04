@@ -184,6 +184,9 @@ async fn before_change_modifies_field() {
     let (addr, svc, shutdown) = spawn_server(Behavior::Modify).await;
     let cfg = HooksConfig {
         enabled: true,
+        // The test server is a plaintext tonic listener on loopback, which is
+        // exactly the case `allow_plaintext` exists for.
+        allow_plaintext: true,
         bindings: vec![binding(addr, HookEvent::BeforeChange)],
         ..HooksConfig::default()
     };
@@ -214,6 +217,9 @@ async fn before_change_abort_propagates() {
     let (addr, _svc, shutdown) = spawn_server(Behavior::Abort("nope".to_string())).await;
     let cfg = HooksConfig {
         enabled: true,
+        // The test server is a plaintext tonic listener on loopback, which is
+        // exactly the case `allow_plaintext` exists for.
+        allow_plaintext: true,
         bindings: vec![binding(addr, HookEvent::BeforeChange)],
         ..HooksConfig::default()
     };
@@ -232,6 +238,9 @@ async fn after_change_round_trips() {
     let (addr, svc, shutdown) = spawn_server(Behavior::PassThrough).await;
     let cfg = HooksConfig {
         enabled: true,
+        // The test server is a plaintext tonic listener on loopback, which is
+        // exactly the case `allow_plaintext` exists for.
+        allow_plaintext: true,
         bindings: vec![binding(addr, HookEvent::AfterChange)],
         ..HooksConfig::default()
     };
@@ -255,6 +264,9 @@ async fn before_change_array_field_dispatches_without_panic() {
     let (addr, svc, shutdown) = spawn_server(Behavior::PassThrough).await;
     let cfg = HooksConfig {
         enabled: true,
+        // The test server is a plaintext tonic listener on loopback, which is
+        // exactly the case `allow_plaintext` exists for.
+        allow_plaintext: true,
         bindings: vec![binding(addr, HookEvent::BeforeChange)],
         ..HooksConfig::default()
     };
@@ -309,6 +321,9 @@ async fn before_change_scalar_promoted_to_singleton_list() {
     let (addr, svc, shutdown) = spawn_server(Behavior::PassThrough).await;
     let cfg = HooksConfig {
         enabled: true,
+        // The test server is a plaintext tonic listener on loopback, which is
+        // exactly the case `allow_plaintext` exists for.
+        allow_plaintext: true,
         bindings: vec![binding(addr, HookEvent::BeforeChange)],
         ..HooksConfig::default()
     };
@@ -349,6 +364,9 @@ async fn unreachable_endpoint_yields_unavailable() {
     // Use a port that nothing is listening on (port 1 on loopback).
     let cfg = HooksConfig {
         enabled: true,
+        // The test server is a plaintext tonic listener on loopback, which is
+        // exactly the case `allow_plaintext` exists for.
+        allow_plaintext: true,
         bindings: vec![HookBinding {
             schema: "Translation".to_string(),
             event: HookEvent::BeforeChange,

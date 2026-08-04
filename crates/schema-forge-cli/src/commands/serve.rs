@@ -8,7 +8,10 @@ use acton_service::middleware::paseto::PasetoAuth;
 use acton_service::prelude::ActorHandleInterface;
 use acton_service::service_builder::ServiceBuilder;
 use acton_service::versioning::{ApiVersion, VersionedApiBuilder};
-use schema_forge_acton::hooks::{HookDispatcher, TonicDispatcherConfig, TonicHookDispatcher};
+use schema_forge_acton::hooks::{
+    HookCredentialSource, HookDispatcher, PasetoHookCredential, TonicDispatcherConfig,
+    TonicHookDispatcher,
+};
 use schema_forge_acton::{
     DynForgeBackend, ForgeActor, InitForge, InitForgeData, ReplyChannel, SchemaForgeExtension,
 };
@@ -395,6 +398,13 @@ pub async fn run(
         entity_store: entity_store.clone(),
         tenant_config: tenant_config_layer.clone(),
     };
+    // Hook calls are authenticated with a credential minted from this same
+    // generator, so a hook service validates them with the `[token]` section
+    // it would use for any other acton-service surface — no second key to
+    // distribute, and no long-lived shared secret in config. Cloned before the
+    // generator is moved into the route builder.
+    let hook_credential: Arc<dyn HookCredentialSource> =
+        Arc::new(PasetoHookCredential::new(paseto_generator.clone()));
     let routes = build_versioned_routes(
         login_auth_store,
         paseto_generator,
@@ -475,7 +485,11 @@ pub async fn run(
     let hooks_cfg = service.config().custom.schema_forge.hooks.clone();
     let hook_dispatcher: Option<Arc<dyn HookDispatcher>> =
         if hooks_cfg.enabled && !hooks_cfg.bindings.is_empty() {
-            match TonicHookDispatcher::new(&hooks_cfg, TonicDispatcherConfig::default()) {
+            let dispatcher_cfg = TonicDispatcherConfig {
+                credential: Some(hook_credential),
+                ..TonicDispatcherConfig::default()
+            };
+            match TonicHookDispatcher::new(&hooks_cfg, dispatcher_cfg) {
                 Ok(d) => {
                     output.status(&format!(
                         "  Hook dispatcher initialized with {} binding(s).",

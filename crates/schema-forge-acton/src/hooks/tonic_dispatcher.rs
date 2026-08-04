@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -38,14 +39,21 @@ use schema_forge_core::types::{DynamicValue, HookEvent};
 use tokio::sync::Mutex;
 use tonic::client::Grpc;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tonic::{Request, Status};
 use tracing::{debug, warn};
 
+use super::credential::HookCredentialSource;
 use super::{
     HookBinding, HookDispatcher, HookError, HookInvocation, HookOutcome, HooksConfig,
     DEFAULT_HOOK_TIMEOUT_MS,
 };
+
+/// gRPC metadata key carrying the bearer credential.
+///
+/// acton-service's `GrpcTokenAuthLayer` reads the HTTP `authorization` header,
+/// which is where tonic puts this metadata entry.
+const AUTHORIZATION_METADATA: &str = "authorization";
 
 /// Configuration knobs that influence dispatcher construction (timeouts
 /// for the channel, descriptor loader, etc.). Distinct from
@@ -55,14 +63,44 @@ pub struct TonicDispatcherConfig {
     /// Connect timeout applied when opening a tonic [`Channel`] to a hook
     /// endpoint. Defaults to 2 seconds.
     pub connect_timeout: Duration,
+
+    /// Supplies the bearer credential presented on every hook call.
+    ///
+    /// `None` sends hook calls unauthenticated, which a hook service built
+    /// from the scaffold will reject. It exists for tests and for embedders
+    /// whose hook services authenticate the forge some other way; the `serve`
+    /// command always supplies one.
+    pub credential: Option<Arc<dyn HookCredentialSource>>,
 }
 
+impl TonicDispatcherConfig {
+    /// Default connect timeout: 2 seconds.
+    const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+}
+
+// Hand-written rather than derived so `connect_timeout` gets its documented
+// default instead of `Duration::ZERO`, which would fail every connection.
 impl Default for TonicDispatcherConfig {
     fn default() -> Self {
         Self {
-            connect_timeout: Duration::from_secs(2),
+            connect_timeout: Self::DEFAULT_CONNECT_TIMEOUT,
+            credential: None,
         }
     }
+}
+
+/// Whether an endpoint may be dialed under the configured plaintext policy.
+///
+/// A hook call carries the entity's field snapshot, the triggering user's
+/// subject, and the bearer credential the forge presents. All three are exposed
+/// on a cleartext hop, and the credential is replayable from it, so plaintext
+/// is refused unless an operator has explicitly accepted that.
+///
+/// Pure, so the policy is testable without opening a socket — and it runs
+/// *before* the connection is opened, so a refusal means nothing left the
+/// process.
+fn endpoint_is_permitted(endpoint: &str, allow_plaintext: bool) -> bool {
+    allow_plaintext || endpoint.starts_with("https://")
 }
 
 /// Resolved per-binding state cached at construction time.
@@ -81,6 +119,13 @@ pub struct TonicHookDispatcher {
     bindings: HashMap<(String, HookEvent), ResolvedBinding>,
     /// endpoint URL -> tonic Channel (lazily connected, then cached).
     channels: Mutex<HashMap<String, Channel>>,
+    /// TLS settings applied to every `https://` endpoint. Resolved once at
+    /// construction so a bad certificate or key fails at startup rather than
+    /// on the first entity write that happens to fire a hook.
+    tls: ClientTlsConfig,
+    /// Whether `http://` endpoints may be dialed. See
+    /// [`HooksConfig::allow_plaintext`].
+    allow_plaintext: bool,
 }
 
 impl TonicHookDispatcher {
@@ -95,6 +140,18 @@ impl TonicHookDispatcher {
         let mut bindings: HashMap<(String, HookEvent), ResolvedBinding> = HashMap::new();
 
         for binding in &hooks.bindings {
+            // Checked here as well as at dispatch. The per-call check is what
+            // guarantees nothing is sent in the clear; this one is what makes
+            // the operator find out at boot instead of on the first hooked
+            // write — and it is not subject to `required = false`, which would
+            // otherwise downgrade a misconfigured endpoint to a warning and
+            // let the hook silently never run.
+            if !endpoint_is_permitted(&binding.endpoint, hooks.allow_plaintext) {
+                return Err(HookError::InsecureEndpoint {
+                    endpoint: binding.endpoint.clone(),
+                });
+            }
+
             let path = binding
                 .descriptor_path
                 .as_deref()
@@ -124,10 +181,38 @@ impl TonicHookDispatcher {
             bindings.insert((binding.schema.clone(), binding.event), resolved);
         }
 
+        // Resolving the client identity here, rather than at first connect,
+        // means an unreadable certificate or a key that does not match its
+        // certificate is a startup failure. Deferred, it would surface as an
+        // intermittent hook outage on whichever write first triggered a hook.
+        let tls = match &hooks.client_identity {
+            Some(identity) if identity.enabled => {
+                acton_service::client_tls::tonic_client_tls_config(identity).map_err(|e| {
+                    HookError::Internal {
+                        message: format!("invalid hook client identity: {e}"),
+                    }
+                })?
+            }
+            // No client certificate: verify the peer against the built-in web
+            // PKI roots and present nothing. Appropriate when the hook service
+            // authenticates the forge by bearer token alone.
+            _ => ClientTlsConfig::new().with_enabled_roots(),
+        };
+
+        if dispatcher.credential.is_none() && !hooks.bindings.is_empty() {
+            warn!(
+                "hook dispatch configured with no credential source: calls will carry no \
+                 `authorization` metadata and any hook service with `[token]` configured will \
+                 reject them"
+            );
+        }
+
         Ok(Self {
             config: dispatcher,
             bindings,
             channels: Mutex::new(HashMap::new()),
+            tls,
+            allow_plaintext: hooks.allow_plaintext,
         })
     }
 
@@ -140,10 +225,28 @@ impl TonicHookDispatcher {
         if let Some(c) = self.channels.lock().await.get(endpoint) {
             return Ok(c.clone());
         }
+        // Checked before the cache is populated and before any socket is
+        // opened, so a refused endpoint never sends a byte.
+        if !endpoint_is_permitted(endpoint, self.allow_plaintext) {
+            return Err(HookError::InsecureEndpoint {
+                endpoint: endpoint.to_string(),
+            });
+        }
         let ep = Endpoint::from_str(endpoint).map_err(|e| HookError::Internal {
             message: format!("invalid endpoint {endpoint}: {e}"),
         })?;
         let ep = ep.connect_timeout(self.config.connect_timeout);
+        // `tls_config` on an `http://` endpoint is an error in tonic, so it is
+        // applied only where it applies. Under `allow_plaintext` the operator
+        // has already accepted that this hop is unprotected.
+        let ep = if endpoint.starts_with("https://") {
+            ep.tls_config(self.tls.clone())
+                .map_err(|e| HookError::Internal {
+                    message: format!("failed to apply TLS config for {endpoint}: {e}"),
+                })?
+        } else {
+            ep
+        };
         let channel = ep.connect().await.map_err(|e| HookError::Unavailable {
             endpoint: endpoint.to_string(),
             message: e.to_string(),
@@ -184,6 +287,16 @@ impl TonicHookDispatcher {
         let mut request = Request::new(request_msg);
         let timeout = Duration::from_millis(config_timeout_ms as u64);
         request.set_timeout(timeout);
+
+        // Minted per call rather than cached, so a short-lived credential is
+        // never presented after it has expired.
+        if let Some(ref source) = self.config.credential {
+            let value = format!("Bearer {}", source.bearer()?);
+            let value = value.parse().map_err(|e| HookError::Internal {
+                message: format!("minted hook credential is not valid metadata: {e}"),
+            })?;
+            request.metadata_mut().insert(AUTHORIZATION_METADATA, value);
+        }
 
         let call = grpc.unary(request, resolved.path.clone(), codec);
         let response = match tokio::time::timeout(timeout, call).await {
@@ -656,7 +769,7 @@ mod tests {
             bindings: vec![HookBinding {
                 schema: "X".into(),
                 event: HookEvent::BeforeChange,
-                endpoint: "http://x".into(),
+                endpoint: "https://x".into(),
                 timeout_ms: None,
                 required: false,
                 descriptor_path: None,
@@ -665,5 +778,71 @@ mod tests {
         };
         let err = TonicHookDispatcher::new(&cfg, TonicDispatcherConfig::default()).unwrap_err();
         assert!(matches!(err, HookError::Internal { .. }));
+    }
+
+    /// A plaintext binding must fail the boot, not the first hooked write.
+    /// Under `required = false` a dispatch-time refusal would be logged and
+    /// swallowed, leaving a hook that silently never runs.
+    #[test]
+    fn plaintext_binding_refused_at_construction() {
+        let cfg = HooksConfig {
+            enabled: true,
+            bindings: vec![HookBinding {
+                schema: "X".into(),
+                event: HookEvent::BeforeChange,
+                endpoint: "http://hook:9090".into(),
+                timeout_ms: None,
+                required: false,
+                descriptor_path: Some("/nonexistent".into()),
+            }],
+            ..HooksConfig::default()
+        };
+        let err = TonicHookDispatcher::new(&cfg, TonicDispatcherConfig::default()).unwrap_err();
+        assert!(
+            matches!(err, HookError::InsecureEndpoint { .. }),
+            "expected InsecureEndpoint, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn plaintext_endpoint_refused_by_default() {
+        assert!(!endpoint_is_permitted("http://hook:9090", false));
+    }
+
+    #[test]
+    fn tls_endpoint_permitted_without_opt_in() {
+        assert!(endpoint_is_permitted("https://hook:9090", false));
+    }
+
+    #[test]
+    fn plaintext_endpoint_permitted_once_opted_in() {
+        assert!(endpoint_is_permitted("http://127.0.0.1:9090", true));
+    }
+
+    /// An `https://` prefix must be matched as a scheme, not found anywhere in
+    /// the string — `http://evil/?next=https://ok` would otherwise pass.
+    #[test]
+    fn tls_scheme_is_matched_at_the_start_only() {
+        assert!(!endpoint_is_permitted(
+            "http://evil.example/?next=https://hook",
+            false
+        ));
+    }
+
+    /// The refusal has to happen before a socket is opened. This endpoint
+    /// resolves to nothing, so a `Unavailable` verdict would prove the
+    /// dispatcher tried to connect before checking.
+    #[tokio::test]
+    async fn dispatch_to_plaintext_endpoint_fails_without_connecting() {
+        let cfg = HooksConfig::default();
+        let d = TonicHookDispatcher::new(&cfg, TonicDispatcherConfig::default()).unwrap();
+        let err = d
+            .channel_for("http://198.51.100.1:9090")
+            .await
+            .expect_err("plaintext endpoint must be refused");
+        assert!(
+            matches!(err, HookError::InsecureEndpoint { .. }),
+            "expected InsecureEndpoint, got {err:?}"
+        );
     }
 }
