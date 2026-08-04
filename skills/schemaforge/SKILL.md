@@ -9,7 +9,7 @@ description: Use when writing, creating, editing, or reviewing SchemaForge .sche
 
 SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `.schema` file produces database tables, REST API endpoints, migrations, Cedar authorization policies, and OpenAPI specs — no recompilation required.
 
-**Version:** 0.35.0
+**Version:** 0.36.0
 
 **Core principle:** Schemas are the single source of truth for the entire entity lifecycle. Authorization is **Cedar-canonical**: every read/write/delete decision flows through the embedded Cedar engine — there are no parallel custom guards.
 
@@ -29,8 +29,8 @@ SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `
 | `schema-forge-backend` | 0.13.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant, `EntityAuthStore` (the user-mgmt impl over the system `User` schema), and the typed `BackendError::UniqueViolation` discriminator |
 | `schema-forge-surrealdb` | 0.9.0 | SurrealDB backend implementation (incl. `DEFINE INDEX ... UNIQUE` codegen, unique-violation reclassification, native `duration`/`bytes` storage, and fail-closed rejection of negative durations) |
 | `schema-forge-postgres` | 0.8.0 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file/map columns, `BIGINT`-nanosecond durations, `BYTEA` bytes with octet-length CHECK, and SQLSTATE 23505 → typed `UniqueViolation` mapping |
-| `schema-forge-acton` | 0.34.0 | Axum/acton-service integration: REST API, the write-time rule phases (`@default`→`@compute`→`@require`, incl. tenant-scoped cross-entity reads), Cedar policy store (hot-recompiled atomically on schema apply), auth, hook dispatcher, S3 storage registry (`aws-sdk-s3`), and the 409 `unique_violation` HTTP error envelope |
-| `schema-forge-cli` | 0.35.0 | CLI binary (`schemaforge`) built with clap derive; routes all configuration through `acton_service::Config<SchemaForgeConfig>` (single source of truth); ships `policies validate`, `bootstrap-admin`, `entity file upload`/`download` (presigned S3 handshake for `file` fields), and a site generator that surfaces `unique` as an inline form hint plus a 409-routed `setError` for CI / first-run provisioning |
+| `schema-forge-acton` | 0.35.0 | Axum/acton-service integration: REST API, the write-time rule phases (`@default`→`@compute`→`@require`, incl. tenant-scoped cross-entity reads), Cedar policy store (hot-recompiled atomically on schema apply), auth, the hook dispatcher (TLS-only endpoints, per-call PASETO bearer minted for `client:schema-forge`), S3 storage registry (`aws-sdk-s3`), and the 409 `unique_violation` HTTP error envelope |
+| `schema-forge-cli` | 0.36.0 | CLI binary (`schemaforge`) built with clap derive; routes all configuration through `acton_service::Config<SchemaForgeConfig>` (single source of truth); ships `policies validate`, `bootstrap-admin`, `entity file upload`/`download` (presigned S3 handshake for `file` fields), a `hooks generate` scaffold that boots through `ServiceBuilder` so `[token]` auth is enforced on every hook RPC, and a site generator that surfaces `unique` as an inline form hint plus a 409-routed `setError` for CI / first-run provisioning |
 
 ## Before You Build: acton-service Owns the Platform Layer
 
