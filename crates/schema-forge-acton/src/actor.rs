@@ -98,6 +98,30 @@ impl ActorExtension for ForgeActor {
         configure_registry_mutations(actor);
         configure_backend_operations(actor);
     }
+
+    /// Do not restart this actor.
+    ///
+    /// `configure` registers handlers but sets no state: the registry,
+    /// backend, tenant config, policy store, storage registry and hook
+    /// dispatcher all arrive in the single [`InitForge`] message `serve`
+    /// sends at boot. A restart rebuilds from `configure`, so the
+    /// replacement would come back with `Default` state — an empty registry
+    /// and no backend — and nothing would ever send it a second `InitForge`.
+    ///
+    /// The result would be a process that stays up and answers `404 schema
+    /// not found` on every entity route. That is fail-closed, but it points
+    /// an operator at a data problem when the actual fault is an actor that
+    /// died. Refusing the restart keeps the failure legible: the handle
+    /// resolves to `None` and routes answer `500` naming the missing actor.
+    ///
+    /// This also preserves the behaviour of acton-service <= 0.34.1, where
+    /// the declared policy was never read and no extension could restart at
+    /// all. Making `ForgeActor` genuinely restartable means giving it a way
+    /// to re-initialise itself from the backend; until then, `Permanent`
+    /// would be a promise the actor cannot keep.
+    fn restart_policy() -> RestartPolicy {
+        RestartPolicy::Temporary
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -543,4 +567,47 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
             reply.send(result).await;
         })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the reasoning behind [`ForgeActor::restart_policy`].
+    ///
+    /// acton-service 0.35.0 made the declared restart policy effective for
+    /// the first time, so this stopped being a dormant declaration and became
+    /// live supervision behaviour. `Temporary` is only the right answer for
+    /// as long as a rebuilt-from-`Default` `ForgeActor` is unusable — the
+    /// assertions below are that condition, not the policy value. If someone
+    /// later teaches the actor to re-initialise itself from the backend, this
+    /// test fails and the policy should be revisited rather than the test
+    /// relaxed.
+    #[test]
+    fn a_restarted_forge_actor_would_be_unusable() {
+        let rebuilt = ForgeActor::default();
+        assert!(
+            rebuilt.backend.is_none(),
+            "a restart rebuilds from Default, so the backend would be lost"
+        );
+        assert!(
+            rebuilt.registry.is_empty(),
+            "a restart rebuilds from Default, so every schema would be lost"
+        );
+        assert!(
+            rebuilt.policy_store.is_none(),
+            "a restart rebuilds from Default, so authz would have no store"
+        );
+        assert_eq!(ForgeActor::restart_policy(), RestartPolicy::Temporary);
+    }
+
+    /// The contrasting case: `HookDispatchActor` carries no state, so the
+    /// default `Permanent` policy is genuinely correct for it.
+    #[test]
+    fn hook_dispatch_actor_is_restartable() {
+        assert_eq!(
+            crate::hooks::HookDispatchActor::restart_policy(),
+            RestartPolicy::Permanent
+        );
+    }
 }
