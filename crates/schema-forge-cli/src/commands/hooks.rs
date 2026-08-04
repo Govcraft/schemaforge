@@ -229,6 +229,7 @@ fn build_plan(project_name: &str, hooked: &[SchemaHooks]) -> Result<Vec<FilePlan
     // the one-off rescaffold escape hatch.
     let mut plan: Vec<FilePlan> = vec![
         preserve("Cargo.toml", render_cargo_toml(project_name)),
+        preserve("config.toml", render_config_toml(project_name)),
         preserve("build.rs", BUILD_RS.to_string()),
         preserve("src/main.rs", render_main_rs(hooked)),
         preserve("src/hooks/mod.rs", render_hooks_mod(hooked)),
@@ -313,6 +314,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 "#;
 
+/// The `acton-service` version the scaffold pins.
+///
+/// Kept in step with the workspace's own pin: a hook service validates the
+/// credentials this forge mints, so the two need the same token
+/// implementation. Bump both together.
+const SCAFFOLD_ACTON_SERVICE_VERSION: &str = "0.34.1";
+
 fn render_cargo_toml(project_name: &str) -> String {
     format!(
         r#"[package]
@@ -321,12 +329,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# The hook service runs on the same platform layer as the forge that calls it.
+# This is what supplies token authentication, mutual-TLS caller authorization,
+# tracing, and the health surface — see `src/main.rs`. Do not replace it with a
+# bare `tonic::transport::Server`: nothing would authenticate the caller.
+acton-service = {{ version = "{SCAFFOLD_ACTON_SERVICE_VERSION}", features = ["grpc", "tls"] }}
 prost = "0.14"
 tokio = {{ version = "1", features = ["full"] }}
 tonic = "0.14"
 tonic-prost = "0.14"
 tracing = "0.1"
-tracing-subscriber = "0.3"
 
 [build-dependencies]
 tonic-build = "0.14"
@@ -387,12 +399,27 @@ fn render_main_rs(hooked: &[SchemaHooks]) -> String {
     s.push_str("//! Scaffolded once by `schema-forge hooks generate` — edit freely.\n");
     s.push_str("//!\n");
     s.push_str("//! Subsequent runs are additive: new `@hook`-annotated schemas get\n");
-    s.push_str("//! spliced into `mod pb { ... }` and the `Server::builder()` chain\n");
+    s.push_str("//! spliced into `mod pb { ... }` and the `GrpcServicesBuilder` chain\n");
     s.push_str("//! between the `SCHEMAFORGE_HOOKS_*` marker comments below. Keep\n");
     s.push_str("//! those markers in place and your custom module imports, env-var\n");
     s.push_str("//! validation, and per-service constructor wiring will survive\n");
     s.push_str("//! every regen. Use `--regenerate` to opt out and rewrite this\n");
-    s.push_str("//! file from scratch.\n\n");
+    s.push_str("//! file from scratch.\n");
+    s.push_str("//!\n");
+    s.push_str("//! # Who is allowed to call this\n");
+    s.push_str("//!\n");
+    s.push_str("//! A hook invocation carries a snapshot of the entity's fields and the\n");
+    s.push_str("//! subject claim of the user whose request triggered it, so this process\n");
+    s.push_str("//! must not answer to anyone who can reach its port. Serving through\n");
+    s.push_str("//! `ServiceBuilder` is what prevents that: when `config.toml` has a\n");
+    s.push_str("//! `[token]` section, acton-service applies token authentication to\n");
+    s.push_str("//! every registered gRPC service automatically, and the forge presents\n");
+    s.push_str("//! a short-lived PASETO minted from the same key. Add `[caller_auth]`\n");
+    s.push_str("//! on top to require a specific mutual-TLS SAN.\n");
+    s.push_str("//!\n");
+    s.push_str("//! Replacing this with a bare `tonic::transport::Server` removes all of\n");
+    s.push_str("//! that silently — the RPCs keep working, they just stop being\n");
+    s.push_str("//! authenticated.\n\n");
     s.push_str("mod hooks;\n\n");
     s.push_str("mod pb {\n");
     s.push_str(PB_BEGIN);
@@ -403,13 +430,24 @@ fn render_main_rs(hooked: &[SchemaHooks]) -> String {
     s.push_str(PB_END);
     s.push('\n');
     s.push_str("}\n\n");
-    s.push_str("use tonic::transport::Server;\n\n");
+    s.push_str("use acton_service::grpc::server::GrpcServicesBuilder;\n");
+    s.push_str("use acton_service::prelude::*;\n\n");
     s.push_str("#[tokio::main]\n");
-    s.push_str("async fn main() -> Result<(), Box<dyn std::error::Error>> {\n");
-    s.push_str("    tracing_subscriber::fmt::init();\n");
-    s.push_str("    let addr = \"0.0.0.0:9090\".parse()?;\n");
-    s.push_str("    tracing::info!(\"hook service listening on {addr}\");\n\n");
-    s.push_str("    Server::builder()\n");
+    s.push_str("async fn main() -> Result<()> {\n");
+    s.push_str("    // Reads ./config.toml, then $XDG_CONFIG_HOME and /etc; `ACTON_*`\n");
+    s.push_str("    // environment variables override the file. The `[grpc]` section must\n");
+    s.push_str("    // set `enabled = true` or the build below is refused rather than\n");
+    s.push_str("    // silently serving no RPCs.\n");
+    s.push_str("    let config = Config::load()?;\n\n");
+    s.push_str("    // The health service probes whatever dependencies the config declares.\n");
+    s.push_str("    let state = AppState::builder().config(config.clone()).build().await?;\n\n");
+    s.push_str("    // Reflection is deliberately not enabled: it would publish every\n");
+    s.push_str("    // hook message definition, and therefore your entity field names, to\n");
+    s.push_str("    // unauthenticated callers — reflection and health are exempt from the\n");
+    s.push_str("    // token layer. Turn it on with `.with_reflection()` plus\n");
+    s.push_str("    // `.add_file_descriptor_set(..)` only where that exposure is fine.\n");
+    s.push_str("    let grpc_services = GrpcServicesBuilder::new()\n");
+    s.push_str("        .with_health()\n");
     s.push_str(SVC_BEGIN);
     s.push('\n');
     for h in hooked {
@@ -417,11 +455,72 @@ fn render_main_rs(hooked: &[SchemaHooks]) -> String {
     }
     s.push_str(SVC_END);
     s.push('\n');
-    s.push_str("        .serve(addr)\n");
+    s.push_str("        .build(Some(state));\n\n");
+    s.push_str("    ServiceBuilder::new()\n");
+    s.push_str("        .with_config(config)\n");
+    s.push_str("        .with_grpc_services(grpc_services)\n");
+    s.push_str("        .try_build()?\n");
+    s.push_str("        .serve()\n");
     s.push_str("        .await?;\n");
     s.push_str("    Ok(())\n");
     s.push_str("}\n");
     s
+}
+
+/// Starter `config.toml` for the scaffolded hook service.
+///
+/// Emitted with `[token]` already present rather than commented out, because a
+/// commented-out auth section is the same as no auth section: the service would
+/// start, serve, and answer every caller, and nothing in its output would say
+/// so. The key path is a placeholder that fails loudly at startup if it has not
+/// been pointed at the forge's key.
+fn render_config_toml(project_name: &str) -> String {
+    format!(
+        r#"# Configuration for the {project_name} hook service.
+#
+# Loaded by `Config::load()` in src/main.rs from this file, then from
+# $XDG_CONFIG_HOME and /etc. `ACTON_*` environment variables override it.
+
+[service]
+name = "{project_name}"
+# 0.0.0.0 is safe here only because the surface below is authenticated.
+# Narrow it to the interface the forge reaches you on if you can.
+bind = "0.0.0.0"
+port = 9090
+
+[grpc]
+enabled = true
+# false multiplexes gRPC onto the HTTP port above, which is what the forge
+# dials. Set true only if you also want a separate gRPC listener.
+use_separate_port = false
+
+# Token authentication. acton-service applies this to every registered gRPC
+# service automatically; removing this section removes that, and the RPCs go
+# on working unauthenticated.
+#
+# `key_path` must be the same PASETO key the forge signs with, since the
+# credential on an inbound hook call is minted by the forge. Copy the path
+# from the forge's own `[token]` section.
+[token]
+format = "paseto"
+key_path = "/etc/{project_name}/paseto.key"
+
+# Mutual-TLS caller authorization. Uncomment to require that the caller
+# present a certificate whose subjectAltName is on the allowlist, in addition
+# to a valid token. A private CA authenticates every workload it has ever
+# issued to; this is what narrows that to the forge.
+#
+# [tls]
+# enabled = true
+# cert_path = "/etc/{project_name}/tls/server.crt"
+# key_path = "/etc/{project_name}/tls/server.key"
+# client_ca_path = "/etc/{project_name}/tls/ca.crt"
+#
+# [caller_auth]
+# mode = "mtls"
+# allowlist = ["schema-forge.internal"]
+"#
+    )
 }
 
 fn render_hooks_mod(hooked: &[SchemaHooks]) -> String {

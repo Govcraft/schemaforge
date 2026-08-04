@@ -35,6 +35,7 @@ example before reading anything else, jump to
    - 3.2 [Project layout](#32-project-layout)
    - 3.3 [Implement the stubs](#33-implement-the-stubs)
    - 3.4 [Wire format contract](#34-wire-format-contract)
+   - 3.5 [Securing the hook transport](#35-securing-the-hook-transport)
 4. [Running SchemaForge with Hooks](#4-running-schemaforge-with-hooks)
    - 4.1 [Configuration](#41-configuration)
    - 4.2 [Observing dispatch](#42-observing-dispatch)
@@ -65,10 +66,14 @@ Three properties keep hooks cheap to adopt and cheap to operate:
   early-exit on a per-event check, so declaring `@hook(before_change)`
   on one schema does not slow down reads of that schema or any other.
 
-A hook service is a normal `acton-service` project. It ships with the
-same observability, resilience, and auth primitives as any other
-`acton-service`, and it runs in your own infrastructure under your own
-supervision — SchemaForge never owns the process.
+A hook service is a normal `acton-service` project: the scaffold emits a
+`main.rs` that serves through `ServiceBuilder`, so the service gets the
+same token authentication, mutual-TLS caller authorization,
+observability, and resilience layers as any other `acton-service`. It
+runs in your own infrastructure under your own supervision — SchemaForge
+never owns the process. What it does *not* get for free is a policy:
+those layers apply what your `config.toml` configures, so see
+[Section 3.5](#35-securing-the-hook-transport) before you deploy one.
 
 ---
 
@@ -246,6 +251,7 @@ prompt files are regenerated.
 ```
 hooks-service/
 ├── Cargo.toml
+├── config.toml                          # [service] [grpc] [token], see 3.5
 ├── build.rs
 ├── proto/
 │   └── translation_hooks.proto         # one per annotated schema
@@ -341,7 +347,10 @@ Two patterns to note:
   entity before persistence. Fields you leave at `None` are left
   untouched; fields you set win over whatever the client submitted.
 
-Compile and run the hook service on its own port:
+Compile and run the hook service on its own port. It reads the
+`config.toml` the scaffold emitted alongside `Cargo.toml`, so run it
+from the project root (or point `ACTON_*` environment variables at the
+settings you want):
 
 ```console
 $ cd hooks-service
@@ -349,8 +358,27 @@ $ cargo run
    Compiling hooks-service v0.1.0
     Finished dev [unoptimized + debuginfo] target(s) in 12.3s
      Running `target/debug/hooks-service`
-hook service listening on 0.0.0.0:9090
+INFO gRPC health service enabled
+INFO Starting hybrid HTTP+gRPC service on 0.0.0.0:9090
 ```
+
+The startup log does not say whether authentication is on — the line
+that reports it is emitted at `DEBUG`. Probe the surface instead, which
+is the only check that reflects what a caller actually gets:
+
+```console
+$ curl -s -i --http2-prior-knowledge -X POST \
+    -H "content-type: application/grpc" --data-binary @/dev/null \
+    http://localhost:9090/schema_forge_hooks.translation.TranslationHooks/BeforeChange
+HTTP/2 200
+grpc-status: 16
+grpc-message: Authentication%20failed:%20Missing%20Authorization%20header
+```
+
+`grpc-status: 16` is `UNAUTHENTICATED` and is what you want to see. Any
+other status means the `[token]` section is missing or malformed and the
+service is answering every caller who can reach the port. `/health` is
+deliberately exempt and still answers `200`.
 
 ### 3.4 Wire format contract
 
@@ -417,6 +445,91 @@ For detached events (`after_change`, `after_delete`), the response
 message is empty — the transport round-trip still happens, but its
 contents are ignored.
 
+### 3.5 Securing the hook transport
+
+Look again at the request message in 3.4. Every hook call carries a
+snapshot of the entity's fields and `user_id`, the subject claim of the
+user whose request triggered it. A hook service is therefore not an
+internal detail you can leave open: it holds the same data your entity
+endpoints do, and it holds it without any of the Cedar policy that
+guards them.
+
+Three controls apply, and they are independent.
+
+**The hook service authenticates the caller.** The scaffold's `main.rs`
+serves through `ServiceBuilder`, and when `config.toml` contains a
+`[token]` section acton-service applies token authentication to every
+registered gRPC service automatically. SchemaForge presents a PASETO it
+mints per call, valid for 60 seconds, with subject
+`client:schema-forge` and role `schema-forge-hook-caller`. Point the
+hook service's `[token] key_path` at the same key the forge signs with
+and there is nothing further to distribute:
+
+```toml
+# hooks-service/config.toml
+[token]
+format = "paseto"
+key_path = "/etc/schema-forge/paseto.key"
+```
+
+The subject is deliberately the forge, not the end user. A hook service
+that authorized on `sub` would otherwise treat every hook call as
+though the triggering user had called it directly. Branch on
+`Claims::is_client()` if you need to tell the two apart.
+
+**SchemaForge refuses to send hook payloads in the clear.** Endpoints
+must be `https://`. A plaintext hop would expose the entity snapshot and
+the user's subject to anything on the path, and would leave the bearer
+credential replayable, so dispatch fails before the connection is
+opened rather than warning and proceeding:
+
+```
+hook endpoint http://translation-hook:9090 is not https; refusing to send
+entity data and a bearer credential in the clear.
+```
+
+Set `allow_plaintext = true` under `[schema_forge.hooks]` only where the
+transport is already confidential — loopback, or a sidecar that
+terminates TLS for the process.
+
+**Optionally, mutual TLS pins which peer may call.** A token proves the
+call came from a forge holding the signing key. If you also want to pin
+the network identity, give SchemaForge a client certificate and put
+`[caller_auth]` on the hook service:
+
+```toml
+# SchemaForge config.toml
+[schema_forge.hooks.client_identity]
+cert_path = "/etc/schema-forge/tls/client.crt"
+key_path  = "/etc/schema-forge/tls/client.key"
+root_ca_path = "/etc/schema-forge/tls/ca.crt"
+```
+
+```toml
+# hooks-service/config.toml
+[tls]
+enabled = true
+cert_path = "/etc/hooks-service/tls/server.crt"
+key_path = "/etc/hooks-service/tls/server.key"
+client_ca_path = "/etc/hooks-service/tls/ca.crt"
+
+[caller_auth]
+mode = "mtls"
+allowlist = ["schema-forge.internal"]
+```
+
+Without the allowlist, a private CA admits every workload it has ever
+issued to, so one compromised peer reaches every hook service in the
+fleet. `allowlist` narrows that to named `subjectAltName` entries;
+matching is byte-exact, with no wildcards.
+
+**gRPC reflection is off by default in the scaffold.** Reflection and
+health are exempt from the token layer, so enabling reflection would
+publish every hook message definition — and therefore your entity field
+names — to unauthenticated callers. Turn it on with `.with_reflection()`
+and `.add_file_descriptor_set(..)` only where that exposure is
+acceptable.
+
 ---
 
 ## 4. Running SchemaForge with Hooks
@@ -439,14 +552,14 @@ max_concurrent_async = 100
 [[schema_forge.hooks.bindings]]
 schema = "Translation"
 event = "BeforeChange"
-endpoint = "http://hooks-service:9090"
+endpoint = "https://hooks-service:9090"
 required = true
 descriptor_path = "/var/lib/schemaforge/hooks_descriptor.bin"
 
 [[schema_forge.hooks.bindings]]
 schema = "Translation"
 event = "AfterChange"
-endpoint = "http://hooks-service:9090"
+endpoint = "https://hooks-service:9090"
 required = false
 descriptor_path = "/var/lib/schemaforge/hooks_descriptor.bin"
 ```
@@ -458,6 +571,8 @@ Top-level fields:
 | `enabled` | `false` | Global kill-switch. When `false`, all hook annotations are ignored at runtime. Set this to `false` in local dev to run without hook services. |
 | `default_timeout_ms` | `30000` | Per-call timeout applied to any binding that does not set its own. Bumped from 5s in v0.13 (issue #11) so handlers that walk related rows or call back into SchemaForge have realistic headroom. |
 | `max_concurrent_async` | `100` | Upper bound on background after-hook dispatches. |
+| `allow_plaintext` | `false` | Permit `http://` endpoints. Off by default because a hook payload carries entity fields, the triggering user's subject, and a replayable bearer credential. See [3.5](#35-securing-the-hook-transport). |
+| `client_identity` | *unset* | Client certificate SchemaForge presents to mutual-TLS hook services, and the anchors it verifies them against: `cert_path`, `key_path`, optional `root_ca_path` and `exclusive_roots`. Resolved at startup, so a bad key fails the boot rather than the first hooked write. |
 | `bindings` | `[]` | List of per-(schema, event) bindings. |
 
 Per-binding fields:
@@ -466,7 +581,7 @@ Per-binding fields:
 |---|---|---|
 | `schema` | yes | Schema name, PascalCase, matching the DSL. |
 | `event` | yes | PascalCase form of the event: `BeforeChange`, `AfterChange`, `BeforeRead`, `AfterRead`, `BeforeDelete`, `AfterDelete`. Note: config uses PascalCase here while the DSL uses `snake_case` (`before_change`). |
-| `endpoint` | yes | gRPC endpoint URL, e.g. `http://translation-hooks:9090`. |
+| `endpoint` | yes | gRPC endpoint URL, e.g. `https://translation-hooks:9090`. Must be `https://` unless `allow_plaintext` is set. |
 | `timeout_ms` | no | Per-binding override for `default_timeout_ms`. |
 | `required` | no (`false`) | If `true`, SchemaForge fails the CRUD request when the hook is unreachable or times out. If `false`, such failures are logged and the operation proceeds. Explicit aborts from the hook always propagate, regardless of `required`. |
 | `descriptor_path` | yes | Path to the compiled `FileDescriptorSet` binary that the hook scaffold's `build.rs` emits. SchemaForge loads this at startup to learn the typed request/response shape. |
@@ -489,9 +604,9 @@ looks like this in the logs (`RUST_LOG=debug`):
 ```
 DEBUG schema_forge_acton::hooks: dispatching before hook
   schema=Translation event=BeforeChange
-  endpoint=http://hooks-service:9090 required=true
+  endpoint=https://hooks-service:9090 required=true
 DEBUG schema_forge_acton::hooks::tonic_dispatcher: tonic dispatch (before)
-  schema=Translation event=BeforeChange endpoint=http://hooks-service:9090
+  schema=Translation event=BeforeChange endpoint=https://hooks-service:9090
 ```
 
 After-hook failures log at `ERROR` and never propagate to the client:
@@ -499,8 +614,8 @@ After-hook failures log at `ERROR` and never propagate to the client:
 ```
 ERROR schema_forge_acton::hooks: after hook dispatch failed
   schema=Translation event=AfterChange
-  endpoint=http://hooks-service:9090
-  error=hook at http://hooks-service:9090 unavailable: connection refused
+  endpoint=https://hooks-service:9090
+  error=hook at https://hooks-service:9090 unavailable: connection refused
 ```
 
 Startup emits a single line confirming the dispatcher is online:
