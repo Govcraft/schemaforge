@@ -41,6 +41,12 @@ use super::{run_after_hook, HookDispatcher, HookInvocation, HooksConfig};
 #[derive(Default, Debug)]
 pub struct HookDispatchActor;
 
+// Restart policy is left at the default (`Permanent`), which acton-service
+// 0.35.0 made effective for the first time. That is the right policy here
+// precisely because this actor is stateless: every input travels with the
+// message, so a rebuilt-from-`Default` replacement is indistinguishable from
+// the original. Contrast `ForgeActor`, whose whole state arrives in one
+// `InitForge` at boot and which therefore opts out.
 impl ActorExtension for HookDispatchActor {
     fn configure(actor: &mut ManagedActor<Idle, Self>) {
         actor.act_on::<DispatchHook>(|_actor, ctx| {
