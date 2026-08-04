@@ -1177,7 +1177,7 @@ async fn execute_entity_query(
     // relation-display machinery treats derived fields identically to
     // stored RefArrays.
     populate_derived_collections(
-        forge,
+        &forge,
         schema_def,
         &mut visible_entities,
         claims,
@@ -1190,7 +1190,7 @@ async fn execute_entity_query(
     // relation field is still scrubbed from the envelope alongside its
     // `__display` sibling below.
     let display_map = if resolve_relations && !visible_entities.is_empty() {
-        resolve_relation_displays(forge, schema_def, &visible_entities, claims, &tenant_config)
+        resolve_relation_displays(&forge, schema_def, &visible_entities, claims, &tenant_config)
             .await?
     } else {
         HashMap::new()
@@ -2019,7 +2019,7 @@ pub async fn create_entity(
     // `related.<F>.<col>` is dereferenced to its tenant-scoped related row and
     // injected as a CEL binding before the pure evaluator runs.
     check_requires_with_related(
-        forge,
+        &forge,
         &schema_def,
         &fields,
         claims.as_ref(),
@@ -2035,7 +2035,7 @@ pub async fn create_entity(
     // (possibly mutated) fields.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
-        fetch_hook_dispatcher(forge).await
+        fetch_hook_dispatcher(&forge).await
     } else {
         None
     };
@@ -2183,7 +2183,7 @@ pub async fn list_entities(
     // before_read hook gate (no entity_id, no fields — list scope).
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     if hooks_config.enabled && schema_def.hook_for(HookEvent::BeforeRead).is_some() {
-        if let Some(dispatcher) = fetch_hook_dispatcher(forge).await {
+        if let Some(dispatcher) = fetch_hook_dispatcher(&forge).await {
             let mut empty = BTreeMap::new();
             apply_read_hook(
                 BeforeHookCtx {
@@ -2328,7 +2328,7 @@ pub async fn query_entities(
     // before_read hook gate (no entity_id, no fields — query scope).
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     if hooks_config.enabled && schema_def.hook_for(HookEvent::BeforeRead).is_some() {
-        if let Some(dispatcher) = fetch_hook_dispatcher(forge).await {
+        if let Some(dispatcher) = fetch_hook_dispatcher(&forge).await {
             let mut empty = BTreeMap::new();
             apply_read_hook(
                 BeforeHookCtx {
@@ -2475,7 +2475,7 @@ pub async fn get_entity(
         && (schema_def.hook_for(HookEvent::BeforeRead).is_some()
             || schema_def.hook_for(HookEvent::AfterRead).is_some())
     {
-        fetch_hook_dispatcher(forge).await
+        fetch_hook_dispatcher(&forge).await
     } else {
         None
     };
@@ -2577,7 +2577,7 @@ pub async fn get_entity(
     // helper handles one or many entities the same way.
     let mut single = [entity];
     populate_derived_collections(
-        forge,
+        &forge,
         &schema_def,
         &mut single,
         claims.as_ref(),
@@ -2596,7 +2596,7 @@ pub async fn get_entity(
     if parse_truthy_flag(&params, "resolve") {
         let entities_slice = std::slice::from_ref(&entity);
         let display_map = resolve_relation_displays(
-            forge,
+            &forge,
             &schema_def,
             entities_slice,
             claims.as_ref(),
@@ -2738,7 +2738,7 @@ pub async fn update_entity(
     // CEL @require validation rules (#92) — fail-closed, in-transaction,
     // pre-persistence. Cross-entity reads (#95) resolved before evaluation.
     check_requires_with_related(
-        forge,
+        &forge,
         &schema_def,
         &fields,
         claims.as_ref(),
@@ -2753,7 +2753,7 @@ pub async fn update_entity(
     // validation, then `before_change` runs on the (possibly mutated) fields.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
-        fetch_hook_dispatcher(forge).await
+        fetch_hook_dispatcher(&forge).await
     } else {
         None
     };
@@ -3015,7 +3015,7 @@ pub async fn patch_entity(
     // predicates that reference unpatched fields still see their current
     // values. Cross-entity reads (#95) resolved before evaluation.
     check_requires_with_related(
-        forge,
+        &forge,
         &schema_def,
         &merged,
         claims.as_ref(),
@@ -3029,7 +3029,7 @@ pub async fn patch_entity(
     // finalized post-patch state.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
-        fetch_hook_dispatcher(forge).await
+        fetch_hook_dispatcher(&forge).await
     } else {
         None
     };
@@ -3251,7 +3251,7 @@ pub async fn delete_entity(
     // hook is configured so the dispatcher sees the fields being deleted.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
     let hook_dispatcher = if hooks_config.enabled && schema_def.has_hooks() {
-        fetch_hook_dispatcher(forge).await
+        fetch_hook_dispatcher(&forge).await
     } else {
         None
     };

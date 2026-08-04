@@ -533,14 +533,14 @@ pub async fn create_schema(
     // 4a. Run the inverse-relation pairing pass across the full registry so
     // any `-> X[]` field paired with an FK from an existing schema is marked
     // as derived before the migration plan is generated.
-    pair_with_registry(forge, &mut definition).await?;
+    pair_with_registry(&forge, &mut definition).await?;
 
     // 4b. Pre-validate the proposed Cedar bundle BEFORE running any DB
     // migration. The actor will recompile and atomically swap on InsertSchema
     // anyway, but doing the dry-run here means a malformed schema is rejected
     // with a 400 instead of leaving the database in a state the running
     // policy bundle can't reason about.
-    precheck_policy_bundle(&state, forge, &definition, false).await?;
+    precheck_policy_bundle(&state, &forge, &definition, false).await?;
 
     // 5. Generate migration plan
     let plan = DiffEngine::create_new(&definition);
@@ -770,11 +770,11 @@ pub async fn update_schema(
     // 4a. Run the inverse-relation pairing pass before diffing, so newly
     // added `-> X[]` fields are classified as derived (and therefore
     // produce no AddRelation step for a physical column).
-    pair_with_registry(forge, &mut new_definition).await?;
+    pair_with_registry(&forge, &mut new_definition).await?;
 
     // 4b. Dry-run the Cedar bundle for the proposed registry state so an
     // invalid schema fails fast — before any DB migration.
-    precheck_policy_bundle(&state, forge, &new_definition, false).await?;
+    precheck_policy_bundle(&state, &forge, &new_definition, false).await?;
 
     // 5. Compute diff and generate migration plan
     let plan = DiffEngine::diff(&old_schema, &new_definition);

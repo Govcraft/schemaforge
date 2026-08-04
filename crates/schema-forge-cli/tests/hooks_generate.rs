@@ -82,6 +82,71 @@ fn generate_emits_expected_layout() {
     assert!(before_md.contains("Done when"));
 }
 
+/// The scaffold must serve through `acton-service`, not a bare tonic server.
+///
+/// This is the regression that shipped: the emitted project had no
+/// `acton-service` dependency at all, so `[token]` in its config authenticated
+/// nothing and every RPC — carrying entity fields and the triggering user's
+/// subject — answered whoever could reach the port. The failure is invisible
+/// from the outside (the RPCs work either way), so it needs a test rather than
+/// a reviewer noticing.
+#[test]
+fn generate_emits_an_authenticated_service() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("translation.schema"), TRANSLATION_SCHEMA).unwrap();
+
+    let out_dir = workdir.path().join("hooks-service");
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+
+    let cargo_toml = fs::read_to_string(out_dir.join("Cargo.toml")).unwrap();
+    assert!(
+        cargo_toml.contains("acton-service"),
+        "scaffold must depend on acton-service:\n{cargo_toml}"
+    );
+
+    let main_rs = fs::read_to_string(out_dir.join("src/main.rs")).unwrap();
+    assert!(
+        main_rs.contains("ServiceBuilder::new()") && main_rs.contains("with_grpc_services"),
+        "scaffold must serve through ServiceBuilder — that is what applies the \
+         token layer:\n{main_rs}"
+    );
+    assert!(
+        !main_rs.contains("Server::builder()"),
+        "a bare tonic Server bypasses every auth layer:\n{main_rs}"
+    );
+    // Reflection is auth-exempt, so enabling it would publish the hook message
+    // definitions — and therefore the entity field names — unauthenticated.
+    // Matched as a builder call, not as a substring — the scaffold's comments
+    // name `.with_reflection()` as the way to opt in.
+    assert!(
+        !main_rs
+            .lines()
+            .any(|l| l.trim_start().starts_with(".with_reflection()")),
+        "reflection must stay opt-in:\n{main_rs}"
+    );
+
+    // A commented-out `[token]` section authenticates exactly as much as no
+    // section at all, so the emitted config must carry a live one.
+    let config_toml = fs::read_to_string(out_dir.join("config.toml"))
+        .expect("scaffold must emit a config.toml");
+    assert!(
+        config_toml.contains("\n[token]\n") && config_toml.contains("format = \"paseto\""),
+        "config.toml must configure token auth, uncommented:\n{config_toml}"
+    );
+    assert!(
+        config_toml.contains("\n[grpc]\n") && config_toml.contains("enabled = true"),
+        "config.toml must enable gRPC or ServiceBuilder refuses the build:\n{config_toml}"
+    );
+}
+
 #[test]
 fn generate_preserves_existing_impl_without_force() {
     let workdir = TempDir::new().unwrap();

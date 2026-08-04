@@ -199,6 +199,13 @@ impl From<crate::hooks::HookError> for ForgeError {
             HookError::Protocol { message } => Self::HookUnavailable {
                 message: format!("protocol error: {message}"),
             },
+            // A misconfigured endpoint is the operator's mistake, not the
+            // client's, and it is not something a retry can clear. Mapping it
+            // to `Internal` keeps the endpoint URL out of the API response
+            // while leaving the full explanation in the logged cause.
+            e @ HookError::InsecureEndpoint { .. } => Self::Internal {
+                message: e.to_string(),
+            },
             HookError::Internal { message } => Self::Internal { message },
         }
     }
