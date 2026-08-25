@@ -38,7 +38,7 @@ echo "  vite:    http://127.0.0.1:$VITE_PORT"
 echo "==========================================================="
 
 # ---------- build the CLI ----------
-cargo build --bin schemaforge --quiet
+cargo build --package schema-forge-cli --bin schemaforge --quiet
 
 # ---------- generate the site ----------
 ./target/debug/schemaforge site generate \
