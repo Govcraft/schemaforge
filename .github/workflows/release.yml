@@ -85,6 +85,9 @@ jobs:
           # GITHUB_TOKEN can read another OSS repo's releases in the same org.
           # If schemaforge-console is private, swap for a scoped PAT/app token.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prevent Git Bash/MSYS from rewriting URL-shaped cosign regex args
+          # into Windows paths before they reach the native executable.
+          MSYS_NO_PATHCONV: "1"
         run: |
           set -euo pipefail
           gh release download "$CONSOLE_VERSION" \

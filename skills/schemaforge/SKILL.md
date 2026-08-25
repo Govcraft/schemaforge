@@ -9,7 +9,7 @@ description: Use when writing, creating, editing, or reviewing SchemaForge .sche
 
 SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `.schema` file produces database tables, REST API endpoints, migrations, Cedar authorization policies, and OpenAPI specs — no recompilation required.
 
-**Version:** 0.37.1
+**Version:** 0.37.2
 
 **Core principle:** Schemas are the single source of truth for the entire entity lifecycle. Authorization is **Cedar-canonical**: every read/write/delete decision flows through the embedded Cedar engine — there are no parallel custom guards.
 
@@ -33,7 +33,7 @@ integrated SSPI/Kerberos authentication.
 | `schema-forge-postgres` | 0.8.0 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file/map columns, `BIGINT`-nanosecond durations, `BYTEA` bytes with octet-length CHECK, and SQLSTATE 23505 → typed `UniqueViolation` mapping |
 | `schema-forge-mssql` | 0.1.0 | Microsoft SQL Server backend via Tiberius and acton-service pools, including integrated SSPI/Kerberos authentication, JSON document storage, CRUD, filtering, sorting, pagination, and aggregates |
 | `schema-forge-acton` | 0.36.0 | Axum/acton-service integration: REST API, unified bearer/mTLS/Windows claims, the write-time rule phases (`@default`→`@compute`→`@require`, incl. tenant-scoped cross-entity reads), Cedar policy store, auth, hook dispatch, S3 storage, and typed HTTP errors |
-| `schema-forge-cli` | 0.37.1 | CLI binary (`schemaforge`) with SurrealDB, PostgreSQL, and SQL Server release flavors; routes configuration through `acton_service::Config<SchemaForgeConfig>` and supports trusted-proxy Windows authentication |
+| `schema-forge-cli` | 0.37.2 | CLI binary (`schemaforge`) with SurrealDB, PostgreSQL, and SQL Server release flavors; routes configuration through `acton_service::Config<SchemaForgeConfig>` and supports trusted-proxy Windows authentication |
 
 ## Before You Build: acton-service Owns the Platform Layer
 
