@@ -29,6 +29,10 @@ jobs:
             suffix: postgres
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+          - backend: mssql
+            suffix: mssql
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
           - backend: surrealdb
             suffix: surrealdb
             runner: ubuntu-24.04-arm
@@ -47,8 +51,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install system build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev
 
       - name: Verify Rust toolchain
         run: rustc --version && cargo --version

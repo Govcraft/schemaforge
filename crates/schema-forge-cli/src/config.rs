@@ -51,12 +51,19 @@ pub struct PostgresParams {
     pub url: String,
 }
 
-/// Resolved backend connection parameters. The variant is selected by URL
-/// scheme; see [`is_postgres_url`].
+/// Microsoft SQL Server parameters from acton-service's canonical database section.
+#[derive(Debug, Clone)]
+pub struct MssqlParams {
+    pub config: acton_service::config::DatabaseConfig,
+}
+
+/// Resolved backend connection parameters. PostgreSQL is selected by URL
+/// scheme and SQL Server by its ADO-style connection string.
 #[derive(Debug, Clone)]
 pub enum DbParams {
     Surrealdb(SurrealDbParams),
     Postgres(PostgresParams),
+    Mssql(MssqlParams),
 }
 
 impl DbParams {
@@ -65,6 +72,7 @@ impl DbParams {
         match self {
             DbParams::Surrealdb(p) => &p.url,
             DbParams::Postgres(p) => &p.url,
+            DbParams::Mssql(p) => &p.config.url,
         }
     }
 }
@@ -86,6 +94,7 @@ impl std::fmt::Display for DbParams {
                 )
             }
             DbParams::Postgres(p) => write!(f, "postgres {}", p.url),
+            DbParams::Mssql(p) => write!(f, "mssql {}", p.config.url),
         }
     }
 }
@@ -137,8 +146,8 @@ fn apply_cli_overrides(
     global: &GlobalOpts,
 ) -> Result<(), CliError> {
     if let Some(cli_url) = global.db_url.as_deref() {
-        if is_postgres_url(cli_url) {
-            apply_cli_postgres_url(svc, cli_url);
+        if is_postgres_url(cli_url) || is_mssql_connection_string(cli_url) {
+            apply_cli_database_url(svc, cli_url);
         } else {
             apply_cli_surrealdb_url(svc, cli_url);
         }
@@ -148,7 +157,7 @@ fn apply_cli_overrides(
     Ok(())
 }
 
-fn apply_cli_postgres_url(svc: &mut Config<SchemaForgeConfig>, url: &str) {
+fn apply_cli_database_url(svc: &mut Config<SchemaForgeConfig>, url: &str) {
     match svc.database.as_mut() {
         Some(db) => db.url = url.to_string(),
         None => {
@@ -230,7 +239,8 @@ fn apply_cli_surrealdb_naming(
 /// Read the resolved backend parameters out of `svc`.
 ///
 /// Selection rule:
-/// - `[database]` present → PostgreSQL.
+/// - `[database]` with a PostgreSQL URL → PostgreSQL.
+/// - `[database]` with an ADO connection string → Microsoft SQL Server.
 /// - `[surrealdb]` present → SurrealDB.
 /// - Both present → error (ambiguous; the operator must remove one).
 /// - Neither present → SurrealDB at [`DEFAULT_DEV_SURREALDB_URL`] for
@@ -248,6 +258,9 @@ pub fn resolve_db_params(svc: &Config<SchemaForgeConfig>) -> Result<DbParams, Cl
     }
 
     if let Some(db) = &svc.database {
+        if is_mssql_connection_string(&db.url) {
+            return Ok(DbParams::Mssql(MssqlParams { config: db.clone() }));
+        }
         return Ok(DbParams::Postgres(PostgresParams {
             url: db.url.clone(),
         }));
@@ -322,15 +335,15 @@ pub fn build_verify_policy(
     let signing_config = resolve_signing_config(svc_config, global)?;
 
     if global.no_verify {
-        let allow_in_enforce =
-            std::env::var("SCHEMAFORGE_ALLOW_NO_VERIFY").map(|v| v == "1").unwrap_or(false);
+        let allow_in_enforce = std::env::var("SCHEMAFORGE_ALLOW_NO_VERIFY")
+            .map(|v| v == "1")
+            .unwrap_or(false);
         if signing_config.mode == SigningMode::Enforce && !allow_in_enforce {
             return Err(CliError::Config {
-                message:
-                    "--no-verify refused: schema_forge.signing.mode is \"enforce\". \
+                message: "--no-verify refused: schema_forge.signing.mode is \"enforce\". \
                      Set SCHEMAFORGE_ALLOW_NO_VERIFY=1 to override (audit the \
                      reason in your change log)."
-                        .into(),
+                    .into(),
             });
         }
         return Ok(VerifyPolicy::off());
@@ -362,6 +375,12 @@ pub fn resolve_signing_config(
 /// Detect PostgreSQL URLs by scheme.
 pub fn is_postgres_url(url: &str) -> bool {
     url.starts_with("postgres://") || url.starts_with("postgresql://")
+}
+
+/// Whether a value uses Tiberius' ADO-style SQL Server connection syntax.
+pub fn is_mssql_connection_string(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("server=") || lower.contains("data source=")
 }
 
 // ---------------------------------------------------------------------------
@@ -550,21 +569,12 @@ mod tests {
                 assert_eq!(p.namespace, DEFAULT_SURREALDB_NAMESPACE);
                 assert_eq!(p.database, DEFAULT_SURREALDB_DATABASE);
             }
-            DbParams::Postgres(_) => panic!("expected SurrealDB default"),
+            DbParams::Postgres(_) | DbParams::Mssql(_) => panic!("expected SurrealDB default"),
         }
     }
 
     fn pg_section(url: &str) -> acton_service::config::DatabaseConfig {
-        acton_service::config::DatabaseConfig {
-            url: url.to_string(),
-            max_connections: 50,
-            min_connections: 5,
-            connection_timeout_secs: 10,
-            max_retries: 3,
-            retry_delay_secs: 2,
-            optional: false,
-            lazy_init: true,
-        }
+        toml::from_str(&format!("url = {}", toml::Value::String(url.to_string()))).unwrap()
     }
 
     #[cfg(feature = "surrealdb")]
@@ -621,6 +631,35 @@ mod tests {
         assert_eq!(p.url, "postgres://u:p@h/db");
     }
 
+    #[test]
+    fn mssql_connection_strings_are_detected_case_insensitively() {
+        assert!(is_mssql_connection_string("Server=sql01;Database=forge"));
+        assert!(is_mssql_connection_string(
+            "DATA SOURCE=sql01;Initial Catalog=forge"
+        ));
+        assert!(!is_mssql_connection_string("postgres://sql01/forge"));
+    }
+
+    #[cfg(feature = "mssql")]
+    #[test]
+    fn mssql_integrated_auth_round_trips_through_resolver() {
+        use acton_service::config::MssqlAuthMode;
+
+        let database = toml::from_str(
+            "url = 'Server=sql01;Database=forge;TrustServerCertificate=true'\n\
+             mssql_auth = 'integrated'",
+        )
+        .unwrap();
+        let svc = Config::<SchemaForgeConfig> {
+            database: Some(database),
+            ..Config::default()
+        };
+        let DbParams::Mssql(params) = resolve_db_params(&svc).unwrap() else {
+            panic!("expected SQL Server");
+        };
+        assert_eq!(params.config.mssql_auth, MssqlAuthMode::Integrated);
+    }
+
     #[cfg(feature = "surrealdb")]
     #[test]
     fn ambiguous_dual_section_is_an_error() {
@@ -639,16 +678,14 @@ mod tests {
     #[test]
     fn cli_db_url_overrides_database_section_issue_47() {
         let mut svc = Config::<SchemaForgeConfig> {
-            database: Some(acton_service::config::DatabaseConfig {
-                url: "postgres://stale@config-host:5433/db".into(),
-                max_connections: 42,
-                min_connections: 7,
-                connection_timeout_secs: 11,
-                max_retries: 9,
-                retry_delay_secs: 3,
-                optional: false,
-                lazy_init: true,
-            }),
+            database: Some(
+                toml::from_str(
+                    "url = 'postgres://stale@config-host:5433/db'\n\
+                 max_connections = 42\nmin_connections = 7\n\
+                 connection_timeout_secs = 11\nmax_retries = 9\nretry_delay_secs = 3",
+                )
+                .unwrap(),
+            ),
             ..Config::default()
         };
 

@@ -150,7 +150,7 @@ fn toml_escape_basic(s: &str) -> String {
 
 fn create_config_file(project_dir: &Path, project_name: &str) -> Result<(), CliError> {
     // Schema-forge uses acton-service's canonical config layout: SurrealDB
-    // settings live under [surrealdb], PostgreSQL settings under [database].
+    // settings live under [surrealdb], SQL database settings under [database].
     // CLI flags (`--db-url`, `--db-ns`, `--db-name`) and `ACTON_*` env vars
     // override these in-place; there is no parallel schema-forge config layer.
     let project_name_block = format!(
@@ -171,6 +171,24 @@ database = "dev"
 # Switch to PostgreSQL by removing [surrealdb] above and uncommenting:
 # [database]
 # url = "postgres://user:pass@localhost:5432/schemaforge"
+
+# Switch to Microsoft SQL Server by removing [surrealdb] above and uncommenting:
+# [database]
+# url = "Server=sql01;Database=schemaforge;TrustServerCertificate=true"
+# mssql_auth = "integrated" # SSPI on Windows; Kerberos/GSSAPI on Unix
+
+# Accept Windows identities from a reverse proxy that terminates Negotiate.
+# The proxy must authenticate to SchemaForge with a client certificate whose
+# SAN is present in both allowlists. Configure [tls].client_ca_path as well.
+# [caller_auth]
+# mode = "mtls-or-bearer"
+# allowlist = ["schemaforge-auth-proxy.internal"]
+#
+# [caller_auth.windows]
+# trusted_proxies = ["schemaforge-auth-proxy.internal"]
+# identity_header = "x-windows-user"
+# groups_header = "x-windows-groups"
+# group_roles = { "CONTOSO\\SchemaForge Admins" = "admin" }
 
 # ---------------------------------------------------------------------------
 # Signed-schema enforcement.
@@ -456,10 +474,8 @@ mod tests {
         // Stub out the placeholder so the example parses as a real
         // base64 string. We're testing TOML structure, not key
         // material.
-        let materialised = signing_block.replace(
-            "PASTE-SPKI-BASE64-FROM-schemaforge-sign-OUTPUT",
-            "AAAA",
-        );
+        let materialised =
+            signing_block.replace("PASTE-SPKI-BASE64-FROM-schemaforge-sign-OUTPUT", "AAAA");
 
         let parsed: toml::Value = toml::from_str(&materialised).unwrap_or_else(|e| {
             panic!("scaffold's signing example failed to parse:\n{materialised}\nerror: {e}")

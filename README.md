@@ -81,11 +81,14 @@ The AI agent takes this further. Describe what you need in plain English, and an
 
 ## Install for a Real Project
 
-This section walks through running SchemaForge against a real SurrealDB or PostgreSQL instance: install the binary, scaffold a project, define a schema, and serve it. If you only want to kick the tires, the [self-contained demo](#try-it-in-2-minutes) above is faster.
+This section walks through running SchemaForge against a real SurrealDB,
+PostgreSQL, or Microsoft SQL Server instance: install the binary, scaffold a
+project, define a schema, and serve it. If you only want to kick the tires, the
+[self-contained demo](#try-it-in-2-minutes) above is faster.
 
 ### Prerequisites
 
-- A running SurrealDB 2.x or PostgreSQL 14+ instance (SurrealDB embedded mode works for development)
+- A running SurrealDB 2.x, PostgreSQL 14+, or Microsoft SQL Server instance (SurrealDB embedded mode works for development)
 - Rust 1.75+ only if you intend to build from source
 
 ### Install the Prebuilt Binary
@@ -106,9 +109,19 @@ TAG=$(curl -fsSL https://api.github.com/repos/Govcraft/schemaforge/releases/late
   | sudo tar -xz -C /usr/local/bin
 ```
 
+```bash
+# Microsoft SQL Server build
+TAG=$(curl -fsSL https://api.github.com/repos/Govcraft/schemaforge/releases/latest | grep '"tag_name"' | cut -d'"' -f4) && \
+  curl -fsSL "https://github.com/Govcraft/schemaforge/releases/download/${TAG}/schemaforge-${TAG}-x86_64-unknown-linux-gnu-mssql.tar.gz" \
+  | sudo tar -xz -C /usr/local/bin
+```
+
 Each command downloads the latest release tarball, extracts the `schemaforge` binary into `/usr/local/bin`, and leaves it immediately runnable. To install somewhere on your `PATH` without `sudo`, swap `/usr/local/bin` for a user-writable directory such as `~/.local/bin`.
 
-The backend is compiled in — there is no runtime flag to switch between PostgreSQL and SurrealDB. If you need both, download both tarballs and rename the binaries (e.g. `schemaforge-pg`, `schemaforge-surreal`).
+The backend is compiled in — there is no runtime flag to switch among PostgreSQL,
+SurrealDB, and Microsoft SQL Server. If you need multiple backends, download the
+corresponding tarballs and rename the binaries (for example `schemaforge-pg` and
+`schemaforge-mssql`).
 
 Verify the install:
 
@@ -159,6 +172,10 @@ cargo install --git https://github.com/Govcraft/schemaforge schema-forge-cli \
 cargo install --git https://github.com/Govcraft/schemaforge schema-forge-cli \
   --no-default-features --features surrealdb
 
+# Microsoft SQL Server build (SQL credentials or integrated authentication)
+cargo install --git https://github.com/Govcraft/schemaforge schema-forge-cli \
+  --no-default-features --features mssql
+
 # FIPS-validated PostgreSQL build (federal deployments)
 cargo install --git https://github.com/Govcraft/schemaforge schema-forge-cli \
   --no-default-features --features postgres,fips
@@ -188,6 +205,41 @@ Note: the `surrealdb` backend pulls `rustls` with `ring` transitively and
 is **not** suitable for FIPS deployments. Pair `fips` with `postgres`.
 
 [`CryptoProvider`]: https://docs.rs/rustls/0.23/rustls/crypto/struct.CryptoProvider.html
+
+#### Microsoft SQL Server and Windows authentication
+
+SQL Server uses acton-service's canonical `[database]` configuration. Use an
+ADO-style connection string; set `mssql_auth = "integrated"` to authenticate as
+the service process through SSPI on Windows or Kerberos/GSSAPI on Unix:
+
+```toml
+[database]
+url = "Server=sql01;Database=schemaforge;TrustServerCertificate=true"
+mssql_auth = "integrated"
+```
+
+SchemaForge can also consume Windows identities from a trusted reverse proxy
+that has completed HTTP Negotiate authentication. The proxy must connect with
+mTLS, its certificate SAN must appear in both allowlists below, and the
+listener's `[tls].client_ca_path` must trust the proxy certificate issuer.
+Forwarded identity headers from any other caller are ignored.
+
+```toml
+[caller_auth]
+mode = "mtls-or-bearer"
+allowlist = ["schemaforge-auth-proxy.internal"]
+
+[caller_auth.windows]
+trusted_proxies = ["schemaforge-auth-proxy.internal"]
+identity_header = "x-windows-user"
+groups_header = "x-windows-groups"
+group_roles = { "CONTOSO\\SchemaForge Admins" = "admin" }
+```
+
+The resulting Windows principal and mapped roles become the same unified
+claims used by SchemaForge's tenant and Cedar authorization layers. Bearer
+authentication remains available because the caller mode is
+`mtls-or-bearer`.
 
 ### Scaffold a Project
 
@@ -348,6 +400,7 @@ SchemaForge is a Cargo workspace of seven composable crates. Each layer depends 
 | `schema-forge-backend` | `SchemaBackend` and `EntityStore` trait definitions. Storage-agnostic interface. |
 | `schema-forge-surrealdb` | SurrealDB implementation: MigrationStep to SurrealQL compilation, entity CRUD, query translation. |
 | `schema-forge-postgres` | PostgreSQL implementation: DDL codegen, entity CRUD, query translation via SQLx. |
+| `schema-forge-mssql` | Microsoft SQL Server implementation: JSON document tables, schema metadata, CRUD, filtering, sorting, pagination, and aggregates via Tiberius. |
 | `schema-forge-acton` | Axum-based JSON API layer: dynamic CRUD routes, auth/login, Cedar policies, OpenAPI spec, schema registry. |
 | `schema-forge-cli` | Command-line interface: `init`, `parse`, `apply`, `migrate`, `generate`, `serve`, `inspect`, `export`, `policies`. |
 

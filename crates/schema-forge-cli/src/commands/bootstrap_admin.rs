@@ -36,8 +36,9 @@ pub async fn run(
 ) -> Result<(), CliError> {
     if args.password.trim().is_empty() {
         return Err(CliError::Config {
-            message: "--password (or SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD) must be a non-empty value"
-                .into(),
+            message:
+                "--password (or SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD) must be a non-empty value"
+                    .into(),
         });
     }
 
@@ -170,6 +171,19 @@ async fn connect(db_params: &DbParams) -> Result<ConnectedHandles, CliError> {
                 entity_store: backend,
             })
         }
+        #[cfg(feature = "mssql")]
+        DbParams::Mssql(p) => {
+            let backend = schema_forge_mssql::MssqlBackend::connect(&p.config)
+                .await
+                .map_err(|e| CliError::Server {
+                    message: format!("SQL Server connection failed: {e}"),
+                })?;
+            let backend = Arc::new(backend);
+            Ok(ConnectedHandles {
+                backend: backend.clone(),
+                entity_store: backend,
+            })
+        }
         #[allow(unreachable_patterns)]
         other => Err(CliError::Config {
             message: format!("backend '{}' is not enabled in this build", other.url()),
@@ -193,8 +207,7 @@ fn build_auth_store(
         .policy_store
         .clone()
         .ok_or_else(|| CliError::Server {
-            message: "policy_store missing from InitForgeData; cannot build EntityAuthStore"
-                .into(),
+            message: "policy_store missing from InitForgeData; cannot build EntityAuthStore".into(),
         })?;
 
     let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =

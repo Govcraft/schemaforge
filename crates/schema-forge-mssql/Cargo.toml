@@ -1,0 +1,19 @@
+[package]
+name = "schema-forge-mssql"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+acton-service = { version = "0.38.0", features = ["mssql", "crypto-aws-lc-rs"] }
+bb8 = "0.9.1"
+bb8-tiberius = "0.16.0"
+schema-forge-backend = { version = "0.13.0", path = "../schema-forge-backend" }
+schema-forge-core = { version = "0.16.0", path = "../schema-forge-core" }
+serde_json = "1.0.151"
+tiberius = "0.12.3"
+
+[dev-dependencies]
+testcontainers = { version = "0.28.0", features = ["blocking"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+toml = "1.1.4"
+
