@@ -72,11 +72,7 @@ pub struct GlobalOpts {
     /// `[schema_forge.signing]` section of the main config. Useful
     /// when one config.toml is shared across environments but the
     /// trust roots differ per deployment.
-    #[arg(
-        long = "trust-policy",
-        global = true,
-        env = "SCHEMAFORGE_TRUST_POLICY"
-    )]
+    #[arg(long = "trust-policy", global = true, env = "SCHEMAFORGE_TRUST_POLICY")]
     pub trust_policy: Option<PathBuf>,
 
     /// Skip schema signature verification for this invocation. Refused
@@ -595,7 +591,11 @@ fn parse_kv_bool(raw: &str) -> Result<(String, bool), String> {
     let b = match v.as_str() {
         "true" => true,
         "false" => false,
-        other => return Err(format!("invalid bool for '{k}': '{other}' (expected true/false)")),
+        other => {
+            return Err(format!(
+                "invalid bool for '{k}': '{other}' (expected true/false)"
+            ))
+        }
     };
     Ok((k, b))
 }
@@ -966,6 +966,15 @@ pub enum EntityCommands {
         #[command(subcommand)]
         command: EntityFileCommands,
     },
+    /// Bulk-export entities to a file (POST .../entities/export).
+    ///
+    /// An export is the query path with no page limit, materialized to a file.
+    /// It is gated separately from read: the schema must declare `@export` and
+    /// each column must be `@exportable`, so the file is never wider than what
+    /// the caller could already read. `csv`/`ndjson` stream inline when small;
+    /// `xlsx`/`zip` (and `--async`, or an over-cap result) run as a background
+    /// job that `--async` polls to completion and downloads.
+    Export(Box<EntityExportArgs>),
 }
 
 /// `entity file` subcommands.
@@ -1185,6 +1194,47 @@ pub struct EntityQueryArgs {
     pub no_resolve: bool,
 }
 
+/// Arguments for `entity export`.
+///
+/// Mirrors `entity query`'s filter/field surface (an export *is* a query with
+/// no page limit) and adds the deliverable `--format`, an `--out` destination,
+/// and `--async` to take and poll the background-job path.
+#[derive(Args)]
+pub struct EntityExportArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Schema name (e.g. Contact).
+    pub schema: String,
+    /// Deliverable format. `csv`/`ndjson` stream inline when within the
+    /// schema's `@export(max_rows)` cap; `xlsx`/`zip` always run as a job.
+    #[arg(long, value_parser = ["csv", "ndjson", "xlsx", "zip"], default_value = "csv")]
+    pub format: String,
+    /// JSON filter body: a `{...}` literal, `@file.json`, or `-` for stdin.
+    /// Same grammar as `entity query --filter`.
+    #[arg(long = "filter", value_name = "JSON|@FILE|-")]
+    pub filter: Option<String>,
+    /// Column subset (comma-separated). Always intersected server-side with the
+    /// `@exportable` ∩ readable set, so it can only narrow what leaves.
+    #[arg(long)]
+    pub fields: Option<String>,
+    /// Write the artifact here. `-` or omitted writes to stdout. A directory or
+    /// a path ending in `/` writes under the server-suggested filename.
+    #[arg(long = "out", short = 'o', value_name = "PATH|-")]
+    pub out: Option<PathBuf>,
+    /// Force the async-job path even for a small CSV/NDJSON export, then poll
+    /// the job to completion and download the artifact. Implied for `xlsx`/`zip`
+    /// and whenever the result exceeds the row cap.
+    #[arg(long = "async")]
+    pub is_async: bool,
+    /// Seconds between job-status polls on the `--async` path.
+    #[arg(long = "poll-interval", default_value = "2", value_name = "SECS")]
+    pub poll_interval: u64,
+    /// Give up polling after this many seconds (the job keeps running
+    /// server-side; re-poll later). 0 waits indefinitely.
+    #[arg(long = "poll-timeout", default_value = "300", value_name = "SECS")]
+    pub poll_timeout: u64,
+}
+
 /// Arguments for `schemaforge login`.
 #[derive(Args)]
 pub struct LoginArgs {
@@ -1402,7 +1452,10 @@ mod tests {
         // password.
         std::env::remove_var("SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD");
         let result = Cli::try_parse_from(["schemaforge", "bootstrap-admin"]);
-        assert!(result.is_err(), "missing --password should be a parse error");
+        assert!(
+            result.is_err(),
+            "missing --password should be a parse error"
+        );
     }
 
     #[test]
@@ -1472,7 +1525,10 @@ mod tests {
         assert_eq!(args.schema, "Contact");
         assert_eq!(args.filters, vec!["age__gt=25".to_string()]);
         assert_eq!(args.eq, vec!["name=Alice".to_string()]);
-        assert_eq!(args.conn.server.as_deref(), Some("https://forge.example.gov"));
+        assert_eq!(
+            args.conn.server.as_deref(),
+            Some("https://forge.example.gov")
+        );
         assert_eq!(args.sort.as_deref(), Some("-age,name"));
         assert_eq!(args.limit, Some(10));
         assert!(args.no_resolve);
@@ -1527,6 +1583,61 @@ mod tests {
     }
 
     #[test]
+    fn parse_entity_export_with_format_and_out() {
+        let cli = Cli::try_parse_from([
+            "schemaforge",
+            "entity",
+            "export",
+            "Contact",
+            "--format",
+            "ndjson",
+            "--fields",
+            "id,name",
+            "--out",
+            "/tmp/contacts.ndjson",
+            "--async",
+        ])
+        .unwrap();
+        let Commands::Entity {
+            command: EntityCommands::Export(args),
+        } = cli.command
+        else {
+            panic!("expected Entity Export command");
+        };
+        assert_eq!(args.schema, "Contact");
+        assert_eq!(args.format, "ndjson");
+        assert_eq!(args.fields.as_deref(), Some("id,name"));
+        assert_eq!(args.out, Some(PathBuf::from("/tmp/contacts.ndjson")));
+        assert!(args.is_async);
+    }
+
+    #[test]
+    fn entity_export_format_defaults_to_csv() {
+        let cli = Cli::try_parse_from(["schemaforge", "entity", "export", "Contact"]).unwrap();
+        let Commands::Entity {
+            command: EntityCommands::Export(args),
+        } = cli.command
+        else {
+            panic!("expected Entity Export command");
+        };
+        assert_eq!(args.format, "csv");
+        assert!(!args.is_async);
+    }
+
+    #[test]
+    fn entity_export_rejects_unknown_format() {
+        let result = Cli::try_parse_from([
+            "schemaforge",
+            "entity",
+            "export",
+            "Contact",
+            "--format",
+            "parquet",
+        ]);
+        assert!(result.is_err(), "unknown export format must be rejected");
+    }
+
+    #[test]
     fn entity_has_no_token_flag() {
         // The Bearer token must never be acceptable as a flag (it would leak
         // via `ps` and shell history). Only --token-file / --token-stdin / env.
@@ -1559,6 +1670,9 @@ mod tests {
         };
         assert_eq!(args.username, "admin");
         assert!(args.print_token);
-        assert_eq!(args.conn.server.as_deref(), Some("https://forge.example.gov"));
+        assert_eq!(
+            args.conn.server.as_deref(),
+            Some("https://forge.example.gov")
+        );
     }
 }

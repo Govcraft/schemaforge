@@ -31,6 +31,46 @@ Entity create/update request body format:
 
 All API routes (except `/health`, `/ready`, and `/api/v1/forge/auth/login`) require a PASETO bearer token in the `Authorization` header.
 
+## Bulk Export
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v1/forge/schemas/:schema/entities/export` | Export entities to a file. Body: `{ filter?, fields?, format, async? }`. |
+| GET | `/api/v1/forge/schemas/:schema/exports/:job_id` | Poll an async export job; returns status and, once complete, a TTL-bounded presigned download URL. |
+
+An export is **the query path with no page limit, materialized to a file**, gated by two fail-closed controls layered on top of the unchanged query path: a **distinct Cedar `Export{Entity}` action** (not `Read` — a policy can permit read-one while forbidding export-many) and a per-field `@exportable` opt-in. Tenant injection and per-field read stripping run **identically** to the query path, so a file can never contain a row or field the caller could not already read one record at a time. CLI: `schemaforge entity export <Schema>` (see [cli-reference.md](cli-reference.md)).
+
+**Request body** (`POST .../entities/export`):
+```json
+{ "filter": { "op": "eq", "field": "status", "value": "active" },
+  "fields": ["first_name", "last_name"],
+  "format": "csv",
+  "async": false }
+```
+- `filter` — same JSON grammar as `POST .../entities/query` (see [query-api-reference.md](query-api-reference.md)); omit for the whole table.
+- `fields` — optional column subset. Always intersected server-side with `@exportable` ∩ readable; it can only narrow, never widen, what leaves. A request whose every requested field is non-exportable is denied.
+- `format` — `csv | ndjson | xlsx | zip`, and must be in the schema's `@export(formats: [...])`.
+- `async` — force the async-job path even for a small CSV/NDJSON export.
+
+**Sync vs. async routing.** A `csv`/`ndjson` export whose resolved row count is within the cap streams the file **inline**: `200 OK`, `Content-Type` for the format, `Content-Disposition: attachment; filename="<schema>.<ext>"`. Everything else — `xlsx`, `zip`, an explicit `async: true`, or a result that would exceed the cap — returns `202 Accepted` with a job envelope `{ job_id, status: "queued", schema, format }`; XLSX is async-only because `rust_xlsxwriter` buffers the whole workbook, and ZIP because the multi-member archive is staged before upload.
+
+**Job status** (`GET .../exports/:job_id`) returns `200 OK` with `{ job_id, schema, format, status }` where `status` is `queued | running | complete | failed`. Once `complete` it adds `row_count` and a fresh TTL-bounded presigned `download_url` (minted on demand; fetch it **without** a Bearer token — it is self-authorizing and points at the object store). On `failed` it carries `error`. Job reads are scoped to the **initiating subject**: another caller's `job_id` returns `404` (existence never leaks), not `403`.
+
+**Audit trail.** Every request emits the AU-2 exfiltration events `forge.export.initiated` / `.completed` / `.denied` (with subject, schema, filter, fields, row count, and format).
+
+**Error paths:**
+
+| Status | `error` kind | When |
+|--------|--------------|------|
+| 400 | `invalid_query` | `format` outside `csv\|ndjson\|xlsx\|zip` |
+| 403 | `forbidden` | schema has no `@export`; Cedar `Export{Entity}` denied (even if `Read` is permitted); every requested field non-exportable |
+| 413 | `export_too_large` | result exceeds the resolved `max_rows` cap; body carries `max_rows` |
+| 422 | `export_deferred` | a non-streamable format / over-cap / `async: true` that the sync path defers to the job endpoint |
+| 422 | `validation_failed` | malformed filter |
+| 429 | `rate_limited` | the per-subject export rate limit (`[schema_forge.export.rate_limit]`) is exceeded |
+
+See [export.md](export.md) for the full feature reference and [config-reference.md](config-reference.md) for the `[schema_forge.export]` bounds.
+
 ## File Field Endpoints
 
 Path prefix: `/api/v1/forge/schemas/:schema/entities/:id/fields/:field/*`

@@ -76,10 +76,16 @@ Each verb maps to one method, one route, and one success status:
 | `replace` | `PUT`    | `/schemas/{schema}/entities/{id}`       | `200`   |
 | `patch`   | `PATCH`  | `/schemas/{schema}/entities/{id}`       | `200`   |
 | `delete`  | `DELETE` | `/schemas/{schema}/entities/{id}`       | `204`   |
+| `export`  | `POST`   | `/schemas/{schema}/entities/export`     | `200`/`202` |
 | `login`   | `POST`   | `/auth/login`                           | `200`   |
 
 `replace` sends a `PUT` (full entity — every required field must be present).
 `patch` sends a `PATCH` (partial merge — only the fields you supply change).
+`export` sends a `POST` to the bulk-export endpoint: a small streamable result
+returns `200` with the file inline; an `xlsx`/`zip`, `--async`, or over-cap
+result returns `202` with a job id that `--async` polls
+(`GET /schemas/{schema}/exports/{job_id}`) to completion. See §11 and the skill's
+`export.md` for the full feature.
 
 ---
 
@@ -465,7 +471,22 @@ schemaforge entity replace Contact 01J... --server https://forge.agency.gov \
 
 # Delete (confirm in scripts with --yes)
 schemaforge entity delete Contact 01J... --server https://forge.agency.gov --yes
+
+# Export (bulk) — small CSV streams inline to a file
+schemaforge entity export Contact --server https://forge.agency.gov \
+  --eq status=active --fields first_name,last_name -o contacts.csv
+
+# Export as a background job (xlsx/zip, --async, or over-cap), poll + download
+schemaforge entity export Contact --server https://forge.agency.gov \
+  --format xlsx --async -o ./exports/
 ```
+
+`export` requires the schema to declare `@export` and each column to be
+`@exportable`; the file is never wider than what the caller could read one record
+at a time, and it is gated by a distinct Cedar `Export{Entity}` action (a policy
+can permit read-one while forbidding export-many). `--fields` only narrows the
+`@exportable` ∩ readable set. A `403` (export-denied) exits `15`; a `422`
+(deferred/validation) exits `2`. See the skill's `export.md` for the full model.
 
 ### Typed-coercion edge cases
 

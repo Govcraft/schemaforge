@@ -481,6 +481,46 @@ impl FromStr for ListHint {
 /// Canonical list-hint token list for error reporting.
 const VALID_LIST_HINTS: &[&str] = &["primary", "column", "hidden"];
 
+/// Optional flatten hint carried by the field-level `@exportable` annotation.
+///
+/// Selects how a structured value is rendered into a rectangular export cell.
+/// Currently the only hint is [`ExportFlatten::Json`] — JSON-encode the value
+/// in the cell (the default policy for relation-many / array / map / composite
+/// values in CSV and XLSX).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ExportFlatten {
+    /// JSON-encode the structured value into a single cell.
+    Json,
+}
+
+impl ExportFlatten {
+    /// The DSL keyword for this hint, suitable for printing.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+        }
+    }
+}
+
+impl FromStr for ExportFlatten {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "json" => Ok(Self::Json),
+            _ => Err(()),
+        }
+    }
+}
+
+impl fmt::Display for ExportFlatten {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Annotations that can be applied to individual fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "annotation")]
@@ -539,6 +579,14 @@ pub enum FieldAnnotation {
     /// (e.g. `default(5)`), which stores a fixed literal. Core stores only the
     /// raw expression string; evaluation happens at write time (see #94).
     Default { expr: String },
+    /// `@exportable` (optionally `@exportable(flatten: json)`) -- opts this field
+    /// into bulk export files. Fail-closed: a field without this annotation never
+    /// leaves in a bulk export, even when the caller can read it. The annotation
+    /// is independent of read access but the exported column set is always the
+    /// intersection of `@exportable` fields and fields the caller may read. The
+    /// optional `flatten` hint selects how a structured value is rendered into a
+    /// rectangular cell.
+    Exportable { flatten: Option<ExportFlatten> },
 }
 
 impl FieldAnnotation {
@@ -556,6 +604,7 @@ impl FieldAnnotation {
             Self::Require { .. } => "require",
             Self::Compute { .. } => "compute",
             Self::Default { .. } => "default",
+            Self::Exportable { .. } => "exportable",
         }
     }
 }
@@ -598,6 +647,10 @@ impl fmt::Display for FieldAnnotation {
             Self::Default { expr } => {
                 write!(f, "@default(\"{}\")", escape_dsl_string(expr))
             }
+            Self::Exportable { flatten } => match flatten {
+                Some(hint) => write!(f, "@exportable(flatten: {hint})"),
+                None => write!(f, "@exportable"),
+            },
         }
     }
 }
@@ -946,6 +999,49 @@ mod tests {
         let json = serde_json::to_string(&a).unwrap();
         let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);
+    }
+
+    // -- Exportable --
+
+    #[test]
+    fn display_exportable_bare() {
+        let a = FieldAnnotation::Exportable { flatten: None };
+        assert_eq!(a.to_string(), "@exportable");
+        assert_eq!(a.kind(), "exportable");
+    }
+
+    #[test]
+    fn display_exportable_flatten_json() {
+        let a = FieldAnnotation::Exportable {
+            flatten: Some(ExportFlatten::Json),
+        };
+        assert_eq!(a.to_string(), "@exportable(flatten: json)");
+        assert_eq!(a.kind(), "exportable");
+    }
+
+    #[test]
+    fn serde_roundtrip_exportable_bare() {
+        let a = FieldAnnotation::Exportable { flatten: None };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn serde_roundtrip_exportable_flatten() {
+        let a = FieldAnnotation::Exportable {
+            flatten: Some(ExportFlatten::Json),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: FieldAnnotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn export_flatten_str_roundtrip() {
+        assert_eq!("json".parse::<ExportFlatten>().unwrap(), ExportFlatten::Json);
+        assert_eq!(ExportFlatten::Json.to_string(), "json");
+        assert!("xml".parse::<ExportFlatten>().is_err());
     }
 
     // -- WidgetType --

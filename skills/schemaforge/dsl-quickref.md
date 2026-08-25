@@ -52,6 +52,7 @@ At-a-glance tables. For full grammar see [dsl-reference.md](dsl-reference.md). F
 | Access | `@access(read: [...], write: [...], delete: [...])` | role-based access control |
 | Dashboard | `@dashboard(widgets: [...], layout: "...", ...)` | dashboard configuration |
 | Hook | `@hook(event) """intent"""` | declare a lifecycle hook (see hooks-reference.md) |
+| Export | `@export(formats: [csv\|ndjson\|xlsx\|zip], bundle_files: bool, max_rows: N)` | enable bulk export (fail-closed; distinct Cedar `Export{Entity}` action, not `Read`). See export.md |
 
 ## Field-Level Annotations (after modifiers on a field line)
 
@@ -62,6 +63,7 @@ At-a-glance tables. For full grammar see [dsl-reference.md](dsl-reference.md). F
 | Kanban Column | `@kanban_column` | kanban grouping column |
 | Format | `@format("type")` | display format (closed 7-token vocabulary) |
 | Field Access | `@field_access(read: [...], write: [...])` | field-level access control |
+| Exportable | `@exportable` / `@exportable(flatten: json)` | opt the field into bulk export files (fail-closed; never wider than read — exported set is `@exportable` ∩ readable). See export.md |
 | List Hint | `@list(primary\|column\|hidden)` | list-view column curation |
 | Enum Colors | `@enum_colors(variant: "color", ...)` | semantic color tokens per enum variant |
 | Require | `@require("cel_expr", "message")` | write-time validation (CEL); rejects with `message` (422) unless `true`. Fail-closed. |
