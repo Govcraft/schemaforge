@@ -32,6 +32,28 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify console signature with Windows Git Bash
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MSYS_NO_PATHCONV: "1"
+        run: |
+          set -euo pipefail
+          gh release download v0.1.0 \
+            --repo Govcraft/schemaforge-console \
+            --pattern 'SHA256SUMS' \
+            --pattern 'SHA256SUMS.sig' \
+            --pattern 'SHA256SUMS.pem'
+          cosign verify-blob \
+            --certificate SHA256SUMS.pem \
+            --signature SHA256SUMS.sig \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp '^https://github\.com/Govcraft/schemaforge-console/\.github/workflows/release\.yml@' \
+            SHA256SUMS
+
       - name: Build native Windows MSSQL binary
         run: >-
           cargo build --package schema-forge-cli --bin schemaforge
