@@ -9,7 +9,7 @@ use schema_forge_core::types::{
 };
 use schema_forge_mssql::MssqlBackend;
 use testcontainers::core::{IntoContainerPort, WaitFor};
-use testcontainers::runners::SyncRunner;
+use testcontainers::runners::AsyncRunner;
 use testcontainers::{GenericImage, ImageExt};
 
 const SA_PASSWORD: &str = "SchemaForge_test_2026!";
@@ -35,9 +35,11 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
         .with_env_var("ACCEPT_EULA", "Y")
         .with_env_var("MSSQL_SA_PASSWORD", SA_PASSWORD)
         .start()
+        .await
         .expect("start SQL Server container");
     let port = container
         .get_host_port_ipv4(1433.tcp())
+        .await
         .expect("mapped SQL Server port");
     let config = toml::from_str(&format!(
         "url = 'Server=127.0.0.1,{port};User Id=sa;Password={SA_PASSWORD};\
