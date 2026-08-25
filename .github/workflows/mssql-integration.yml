@@ -1,0 +1,47 @@
+name: MSSQL Integration
+
+on:
+  pull_request:
+    paths:
+      - "crates/schema-forge-mssql/**"
+      - "crates/schema-forge-cli/Cargo.toml"
+      - "crates/schema-forge-acton/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/mssql-integration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sql-server:
+    name: SQL Server ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 2019
+            test: connects_and_initializes_metadata_on_sql_server_2019
+          - version: 2022
+            test: connects_and_initializes_metadata_on_sql_server_2022
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run SQL Server integration test
+        env:
+          TEST_NAME: ${{ matrix.test }}
+        run: >-
+          cargo test --package schema-forge-mssql --test sql_server
+          "$TEST_NAME" -- --ignored --exact --nocapture
