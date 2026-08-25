@@ -41,7 +41,7 @@ jobs:
           node-version: "20"
 
       - name: Build schemaforge binary
-        run: cargo build --bin schemaforge
+        run: cargo build --package schema-forge-cli --bin schemaforge
 
       - name: Run site e2e smoke
         run: ./crates/schema-forge-cli/tests/site_e2e/run.sh
