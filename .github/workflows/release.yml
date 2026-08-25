@@ -17,6 +17,9 @@ env:
 jobs:
   build:
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
 
     strategy:
       matrix:
@@ -25,22 +28,32 @@ jobs:
             suffix: surrealdb
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            archive: tar.gz
           - backend: postgres
             suffix: postgres
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            archive: tar.gz
           - backend: mssql
             suffix: mssql
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - backend: mssql
+            suffix: mssql
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: zip
           - backend: surrealdb
             suffix: surrealdb
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            archive: tar.gz
           - backend: postgres
             suffix: postgres
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            archive: tar.gz
 
     env:
       TAG_NAME: ${{ github.ref_name }}
@@ -51,8 +64,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install system build dependencies
+      - name: Install Linux system build dependencies
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev
+
+      - name: Install Windows system build dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install protoc --no-progress --yes
 
       - name: Verify Rust toolchain
         run: rustc --version && cargo --version
@@ -61,6 +80,7 @@ jobs:
         uses: sigstore/cosign-installer@v3
 
       - name: Download + verify the signed console bundle
+        shell: bash
         env:
           # GITHUB_TOKEN can read another OSS repo's releases in the same org.
           # If schemaforge-console is private, swap for a scoped PAT/app token.
@@ -94,7 +114,23 @@ jobs:
           SCHEMAFORGE_CONSOLE_DIST: ${{ github.workspace }}/console-dist
         run: cargo build --release --package schema-forge-cli --no-default-features --features ${{ matrix.backend }},embedded-console
 
-      - name: Package
+      - name: Sign and verify Windows binary (Sigstore keyless)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign-blob `
+            --bundle target/release/schemaforge.exe.sigstore.json `
+            target/release/schemaforge.exe
+          cosign verify-blob `
+            --bundle target/release/schemaforge.exe.sigstore.json `
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com `
+            --certificate-identity-regexp '^https://github\.com/Govcraft/schemaforge/\.github/workflows/release\.yml@refs/tags/' `
+            target/release/schemaforge.exe
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
         env:
           TARGET: ${{ matrix.target }}
           SUFFIX: ${{ matrix.suffix }}
@@ -103,11 +139,22 @@ jobs:
           tar czf "../../schemaforge-${TAG_NAME}-${TARGET}-${SUFFIX}.tar.gz" schemaforge
           cd ../..
 
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          Compress-Archive `
+            -Path target/release/schemaforge.exe,target/release/schemaforge.exe.sigstore.json `
+            -DestinationPath "schemaforge-$env:TAG_NAME-$env:TARGET-$env:SUFFIX.zip"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: schemaforge-${{ matrix.target }}-${{ matrix.suffix }}
-          path: schemaforge-${{ github.ref_name }}-${{ matrix.target }}-${{ matrix.suffix }}.tar.gz
+          path: schemaforge-${{ github.ref_name }}-${{ matrix.target }}-${{ matrix.suffix }}.${{ matrix.archive }}
 
   release:
     needs: build
@@ -121,7 +168,7 @@ jobs:
           merge-multiple: true
 
       - name: Generate SHA256SUMS
-        run: sha256sum schemaforge-*.tar.gz > SHA256SUMS
+        run: sha256sum schemaforge-*.tar.gz schemaforge-*.zip > SHA256SUMS
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -141,6 +188,7 @@ jobs:
           generate_release_notes: true
           files: |
             schemaforge-*.tar.gz
+            schemaforge-*.zip
             SHA256SUMS
             SHA256SUMS.sig
             SHA256SUMS.pem

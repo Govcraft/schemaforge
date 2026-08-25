@@ -116,6 +116,11 @@ TAG=$(curl -fsSL https://api.github.com/repos/Govcraft/schemaforge/releases/late
   | sudo tar -xz -C /usr/local/bin
 ```
 
+For Windows with Microsoft SQL Server support, download
+`schemaforge-<version>-x86_64-pc-windows-msvc-mssql.zip`. The archive contains
+`schemaforge.exe` and its keyless Sigstore bundle,
+`schemaforge.exe.sigstore.json`.
+
 Each command downloads the latest release tarball, extracts the `schemaforge` binary into `/usr/local/bin`, and leaves it immediately runnable. To install somewhere on your `PATH` without `sudo`, swap `/usr/local/bin` for a user-writable directory such as `~/.local/bin`.
 
 The backend is compiled in — there is no runtime flag to switch among PostgreSQL,
@@ -158,6 +163,20 @@ cosign verify-blob \
 ```
 
 A successful run prints `Verified OK`. The `cosign` binary is available from [sigstore/cosign](https://github.com/sigstore/cosign/releases) (single static binary, no daemon).
+
+The Windows executable is also signed directly. After extracting its ZIP,
+verify it from PowerShell before execution:
+
+```powershell
+cosign verify-blob `
+  --bundle schemaforge.exe.sigstore.json `
+  --certificate-identity-regexp '^https://github\.com/Govcraft/schemaforge/\.github/workflows/release\.yml@refs/tags/' `
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com `
+  schemaforge.exe
+```
+
+This is a Sigstore signature tied to the tagged GitHub Actions workflow, not an
+Authenticode publisher certificate.
 
 ### Build from Source (alternative)
 
