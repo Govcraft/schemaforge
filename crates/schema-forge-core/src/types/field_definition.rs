@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::field_annotation::{EnumColor, FieldAnnotation, FormatType, ListHint, WidgetType};
+use super::field_annotation::{
+    EnumColor, ExportFlatten, FieldAnnotation, FormatType, ListHint, WidgetType,
+};
 use super::field_modifier::FieldModifier;
 use super::field_name::FieldName;
 use super::field_type::FieldType;
@@ -124,6 +126,25 @@ impl FieldDefinition {
         self.annotations
             .iter()
             .find(|a| matches!(a, FieldAnnotation::FieldAccess { .. }))
+    }
+
+    /// Returns the field's `@exportable` opt-in, if present.
+    ///
+    /// `Some(flatten)` means the field carries `@exportable` (with an optional
+    /// `flatten` hint); `None` means it does not. Fail-closed: a field without
+    /// `@exportable` never leaves in a bulk export file even when the caller can
+    /// read it. This is the field-level opt-in (level 2) of the two-level export
+    /// consent described in ADR-0003.
+    pub fn exportable(&self) -> Option<Option<ExportFlatten>> {
+        self.annotations.iter().find_map(|a| match a {
+            FieldAnnotation::Exportable { flatten } => Some(*flatten),
+            _ => None,
+        })
+    }
+
+    /// Returns `true` when the field carries `@exportable`.
+    pub fn is_exportable(&self) -> bool {
+        self.exportable().is_some()
     }
 
     /// Returns `true` when the field carries the `@hidden` annotation.

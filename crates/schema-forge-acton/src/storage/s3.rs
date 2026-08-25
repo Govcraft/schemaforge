@@ -150,6 +150,28 @@ impl S3Client {
         Ok(presigned.uri().to_string())
     }
 
+    /// Upload `bytes` to `key` with the given `Content-Type`, server-side
+    /// (runtime-held bytes). Unlike the presigned-PUT upload path used for client
+    /// `file` uploads, export artifacts are generated inside the runtime and
+    /// written here directly, so the bytes pass through the service process once.
+    pub async fn put_object(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), StorageError> {
+        self.inner
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .content_type(content_type)
+            .body(ByteStream::from(bytes))
+            .send()
+            .await
+            .map_err(map_sdk_error)?;
+        Ok(())
+    }
+
     /// `HeadObject` to verify the object exists and read its size + content-type
     /// at confirm time. Returns `None` when the object is absent so the caller
     /// can distinguish "not yet uploaded" from a genuine error.

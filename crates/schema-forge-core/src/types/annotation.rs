@@ -13,6 +13,66 @@ pub enum TenantKind {
     Child { parent: SchemaName },
 }
 
+/// A deliverable file shape an entity may be exported as.
+///
+/// Bounds the `formats` list of the entity-level `@export` annotation. The
+/// variants are exactly the formats the export pipeline can produce; a schema
+/// author cannot widen this set. CSV is the rectangular projection, NDJSON the
+/// lossless dump, XLSX the buffered spreadsheet, and ZIP the multi-entity /
+/// file-blob bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ExportFormat {
+    /// Comma-separated values — the rectangular, lossy-where-it-must-be projection.
+    Csv,
+    /// Newline-delimited JSON — the lossless per-row dump.
+    Ndjson,
+    /// An XLSX spreadsheet (buffered; rides the async path).
+    Xlsx,
+    /// A ZIP bundle carrying multi-entity exports and, when enabled, file blobs.
+    Zip,
+}
+
+impl ExportFormat {
+    /// The DSL keyword for this format, suitable for printing.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Ndjson => "ndjson",
+            Self::Xlsx => "xlsx",
+            Self::Zip => "zip",
+        }
+    }
+
+    /// All export formats in declaration order.
+    pub const ALL: &'static [ExportFormat] = &[Self::Csv, Self::Ndjson, Self::Xlsx, Self::Zip];
+}
+
+impl std::str::FromStr for ExportFormat {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "csv" => Ok(Self::Csv),
+            "ndjson" => Ok(Self::Ndjson),
+            "xlsx" => Ok(Self::Xlsx),
+            "zip" => Ok(Self::Zip),
+            _ => Err(()),
+        }
+    }
+}
+
+impl std::fmt::Display for ExportFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The default value of the `bundle_files` parameter of `@export`.
+///
+/// File-field blobs are pulled into a ZIP bundle only when explicitly opted in,
+/// matching the fail-closed posture of the whole export capability.
+pub const EXPORT_BUNDLE_FILES_DEFAULT: bool = false;
+
 /// Annotations that can be applied to a schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "annotation")]
@@ -58,6 +118,21 @@ pub enum Annotation {
         /// requirements documentation and as a generation prompt for the
         /// hook implementation.
         intent: String,
+    },
+    /// `@export(formats: [...], bundle_files: bool, max_rows: N)` -- enables
+    /// bulk export for this entity. Fail-closed: an entity without this
+    /// annotation cannot be exported at all. `formats` bounds the deliverable
+    /// shapes, `bundle_files` controls whether `file`-field blobs are pulled
+    /// into a ZIP bundle, and `max_rows` caps a single export.
+    Export {
+        /// The deliverable file shapes this entity may be exported as. Always a
+        /// subset of [`ExportFormat::ALL`]; never empty.
+        formats: Vec<ExportFormat>,
+        /// Whether `file`-field blobs are bundled into a ZIP. Defaults to
+        /// [`EXPORT_BUNDLE_FILES_DEFAULT`] (`false`) when omitted in the DSL.
+        bundle_files: bool,
+        /// The server-enforced row cap for a single export of this entity.
+        max_rows: u64,
     },
 }
 
@@ -236,6 +311,21 @@ impl std::fmt::Display for Annotation {
             Self::Hook { event, intent } => {
                 write!(f, "@hook({}) \"\"\"{}\"\"\"", event.as_str(), intent)
             }
+            Self::Export {
+                formats,
+                bundle_files,
+                max_rows,
+            } => {
+                let formats = formats
+                    .iter()
+                    .map(|fmt| fmt.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(
+                    f,
+                    "@export(formats: [{formats}], bundle_files: {bundle_files}, max_rows: {max_rows})"
+                )
+            }
         }
     }
 }
@@ -272,6 +362,7 @@ impl Annotation {
                 HookEvent::AfterUpload => "hook:after_upload",
                 HookEvent::OnScanComplete => "hook:on_scan_complete",
             },
+            Self::Export { .. } => "export",
         }
     }
 }
@@ -525,6 +616,55 @@ mod tests {
         let json = serde_json::to_string(&a).unwrap();
         let back: Annotation = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);
+    }
+
+    #[test]
+    fn display_export_full() {
+        let a = Annotation::Export {
+            formats: vec![ExportFormat::Csv, ExportFormat::Ndjson, ExportFormat::Xlsx],
+            bundle_files: false,
+            max_rows: 100_000,
+        };
+        assert_eq!(
+            a.to_string(),
+            "@export(formats: [csv, ndjson, xlsx], bundle_files: false, max_rows: 100000)"
+        );
+        assert_eq!(a.kind(), "export");
+    }
+
+    #[test]
+    fn display_export_bundle_files_true() {
+        let a = Annotation::Export {
+            formats: vec![ExportFormat::Zip],
+            bundle_files: true,
+            max_rows: 50,
+        };
+        assert_eq!(
+            a.to_string(),
+            "@export(formats: [zip], bundle_files: true, max_rows: 50)"
+        );
+    }
+
+    #[test]
+    fn serde_roundtrip_export() {
+        let a = Annotation::Export {
+            formats: vec![ExportFormat::Csv, ExportFormat::Zip],
+            bundle_files: true,
+            max_rows: 12345,
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: Annotation = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
+
+    #[test]
+    fn export_format_str_roundtrip() {
+        for fmt in ExportFormat::ALL {
+            let s = fmt.as_str();
+            assert_eq!(s.parse::<ExportFormat>().unwrap(), *fmt);
+            assert_eq!(fmt.to_string(), s);
+        }
+        assert!("yaml".parse::<ExportFormat>().is_err());
     }
 
     #[test]

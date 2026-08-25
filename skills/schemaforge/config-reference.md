@@ -49,6 +49,18 @@ secret_access_key = "${S3_SECRET_KEY}"
 force_path_style = true                   # required for MinIO
 presign_ttl_secs = 300
 
+# Bulk-export hardening bounds (ADR-0003). Both are fail-closed and optional;
+# the defaults preserve the ADR's example behaviour. See export.md.
+[schema_forge.export]
+default_max_rows = 100000                 # server-wide row ceiling; a schema's
+                                          # @export(max_rows) is intersected (min)
+                                          # with this — schemas narrow, never widen
+
+[schema_forge.export.rate_limit]
+max_requests = 30                         # export initiations per subject per window;
+                                          # 0 disables export entirely (kill switch)
+window_secs  = 60                         # fixed-window length, in seconds
+
 # Principal claim → Cedar attribute mappings. Each subsection name becomes
 # an optional attribute on `Forge::Principal`; custom Cedar policies must
 # guard reads with `principal has X && ...`. See principal-claims-reference.md.

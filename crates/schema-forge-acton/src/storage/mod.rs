@@ -18,6 +18,71 @@ use std::sync::Arc;
 pub use config::{BackendConfig, StorageConfig};
 pub use s3::{PresignedUpload, S3Client, StorageError};
 
+use async_trait::async_trait;
+
+/// Storage sink for generated export artifacts.
+///
+/// The async export-job path (ADR-0003) generates a CSV/NDJSON file inside the
+/// runtime and lands it in object storage, then hands the caller a TTL-bounded
+/// presigned GET URL. This trait is the seam the job actor depends on so the
+/// upload + presign pair can be mocked in tests — the integration suite uses an
+/// in-memory implementation rather than a live MinIO/S3 endpoint.
+#[async_trait]
+pub trait ExportArtifactStore: Send + Sync + std::fmt::Debug {
+    /// Write `bytes` under `key` with the given `content_type`. Overwrites any
+    /// object already at that key (export keys embed a fresh job id, so this is
+    /// effectively write-once).
+    async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str)
+        -> Result<(), StorageError>;
+
+    /// Mint a presigned GET URL for `key`, valid for at most `ttl_secs` seconds
+    /// (the backend clamps to its own ceiling). Pass `None` for the backend
+    /// default TTL.
+    async fn presign_get(&self, key: &str, ttl_secs: Option<u64>)
+        -> Result<String, StorageError>;
+
+    /// Read the full object at `key` into memory.
+    ///
+    /// Used by the ZIP-bundle export path (ADR-0003): when an entity's
+    /// `@export(bundle_files: true)` is set, the raw blobs of its `file` fields
+    /// are pulled from storage and embedded in the archive alongside the data
+    /// file. This is a strictly larger exfiltration surface than the metadata-only
+    /// CSV/NDJSON paths, so it is reachable only behind that opt-in and the same
+    /// Export authz + audit gates. Buffering the whole object is acceptable here
+    /// because the bundle itself is materialized (not streamed) on the async path.
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError>;
+}
+
+#[async_trait]
+impl ExportArtifactStore for S3Client {
+    async fn put(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), StorageError> {
+        S3Client::put_object(self, key, bytes, content_type).await
+    }
+
+    async fn presign_get(
+        &self,
+        key: &str,
+        ttl_secs: Option<u64>,
+    ) -> Result<String, StorageError> {
+        S3Client::presign_get(self, key, ttl_secs).await
+    }
+
+    async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        let stream = S3Client::get_object_stream(self, key).await?;
+        let aggregated = stream
+            .body
+            .collect()
+            .await
+            .map_err(|e| StorageError::Request(format!("read object '{key}' failed: {e}")))?;
+        Ok(aggregated.to_vec())
+    }
+}
+
 /// Registry mapping bucket names to their initialized S3 clients.
 ///
 /// Built at extension setup from [`StorageConfig`]. Cloning shares the underlying
@@ -47,6 +112,20 @@ impl StorageRegistry {
     /// exists in the registry.
     pub fn get(&self, name: &str) -> Option<Arc<S3Client>> {
         self.backends.get(name).cloned()
+    }
+
+    /// Returns the sole registered backend when exactly one is configured.
+    ///
+    /// Used by the async export path to pick a default artifact bucket when the
+    /// deployment has not named a dedicated `"exports"` backend: a single-backend
+    /// deployment is unambiguous, while a multi-backend one must name `"exports"`
+    /// explicitly rather than have a bucket guessed for it.
+    pub fn single_backend(&self) -> Option<Arc<S3Client>> {
+        if self.backends.len() == 1 {
+            self.backends.values().next().cloned()
+        } else {
+            None
+        }
     }
 
     /// Returns `true` when at least one backend is registered.

@@ -49,6 +49,14 @@ pub struct SchemaForgeSettings {
     #[serde(default)]
     pub storage: crate::storage::StorageConfig,
 
+    /// Bulk-export hardening bounds: the server-wide row ceiling and the
+    /// per-subject export rate limit. The schema's `@export(max_rows)` can only
+    /// narrow the ceiling, never widen it; the rate limit bounds how many
+    /// exports a single subject may initiate per window. Defaults preserve the
+    /// ADR-0003 example behaviour; see [`crate::export_config`].
+    #[serde(default)]
+    pub export: crate::export_config::ExportSettings,
+
     /// Outbound email (SMTP) settings, used by operational flows that must
     /// reach a human out-of-band — currently user invitations. Disabled by
     /// default; see [`crate::email::EmailConfig`].
@@ -152,6 +160,7 @@ impl Default for SchemaForgeSettings {
             webhooks: crate::webhook::WebhookConfig::default(),
             hooks: crate::hooks::HooksConfig::default(),
             storage: crate::storage::StorageConfig::default(),
+            export: crate::export_config::ExportSettings::default(),
             email: crate::email::EmailConfig::default(),
             authz: AuthzConfig::default(),
             signing: SigningConfig::default(),
@@ -181,6 +190,7 @@ mod tests {
                 webhooks: crate::webhook::WebhookConfig::default(),
                 hooks: crate::hooks::HooksConfig::default(),
                 storage: crate::storage::StorageConfig::default(),
+                export: crate::export_config::ExportSettings::default(),
                 email: crate::email::EmailConfig::default(),
                 authz: AuthzConfig::default(),
                 signing: SigningConfig::default(),

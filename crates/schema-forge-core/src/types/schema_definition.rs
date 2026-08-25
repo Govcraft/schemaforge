@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SchemaError;
 
-use super::annotation::{Annotation, HookEvent};
+use super::annotation::{Annotation, ExportFormat, HookEvent};
 use super::field_definition::FieldDefinition;
 use super::schema_id::SchemaId;
 use super::schema_name::SchemaName;
@@ -98,6 +98,39 @@ impl SchemaDefinition {
             Annotation::Display { field } => Some(field.as_str()),
             _ => None,
         })
+    }
+
+    /// Returns the `@export` annotation if present.
+    ///
+    /// Fail-closed: a schema with no `@export` annotation cannot be exported at
+    /// all. The presence of this annotation is the entity-level opt-in (level 1)
+    /// of the two-level export consent described in ADR-0003.
+    pub fn export_annotation(&self) -> Option<&Annotation> {
+        self.annotations
+            .iter()
+            .find(|a| matches!(a, Annotation::Export { .. }))
+    }
+
+    /// Returns the `@export` configuration as `(formats, bundle_files, max_rows)`
+    /// when the schema is exportable, or `None` when it carries no `@export`.
+    ///
+    /// `formats` bounds the deliverable shapes a caller may request, `max_rows`
+    /// caps a single export, and `bundle_files` controls whether `file`-field
+    /// blobs are pulled into a ZIP bundle. See ADR-0003.
+    pub fn export_config(&self) -> Option<(&[ExportFormat], bool, u64)> {
+        self.annotations.iter().find_map(|a| match a {
+            Annotation::Export {
+                formats,
+                bundle_files,
+                max_rows,
+            } => Some((formats.as_slice(), *bundle_files, *max_rows)),
+            _ => None,
+        })
+    }
+
+    /// Returns true if this schema declares `@export`.
+    pub fn is_exportable(&self) -> bool {
+        self.export_annotation().is_some()
     }
 
     /// Returns the `@webhook` annotation if present.

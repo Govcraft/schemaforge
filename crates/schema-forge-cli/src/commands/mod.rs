@@ -98,6 +98,13 @@ async fn connect_backend_inner(db_params: &DbParams) -> Result<Arc<dyn DynForgeB
                 .map_err(CliError::Backend)?;
             Ok(Arc::new(b))
         }
+        #[cfg(feature = "mssql")]
+        DbParams::Mssql(p) => {
+            let backend = schema_forge_mssql::MssqlBackend::connect(&p.config)
+                .await
+                .map_err(CliError::Backend)?;
+            Ok(Arc::new(backend))
+        }
         #[allow(unreachable_patterns)]
         other => Err(CliError::Config {
             message: format!(

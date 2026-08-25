@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-acton"
-version = "0.35.0"
+version = "0.36.0"
 edition = "2021"
 
 [dependencies]
@@ -11,7 +11,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["sync"] }
-acton-service = { version = "0.35.0", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth", "crypto-aws-lc-rs", "grpc", "tls"] }
+acton-service = { version = "0.38.0", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth", "crypto-aws-lc-rs", "grpc", "tls", "windows-auth"] }
 schema-forge-dsl = { path = "../schema-forge-dsl" }
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb", optional = true }
 schema-forge-postgres = { path = "../schema-forge-postgres", optional = true }
@@ -45,6 +45,8 @@ rustls = { version = "0.23", default-features = false, features = ["std", "aws_l
 schema-forge-signing = { version = "0.1.0", path = "../schema-forge-signing" }
 lettre = { version = "0.11.22", default-features = false, features = ["tokio1-rustls", "aws-lc-rs", "webpki-roots", "smtp-transport", "builder", "pool", "hostname"] }
 schema-forge-cel = { version = "0.9.0", path = "../schema-forge-cel" }
+rust_xlsxwriter = { version = "0.95.0", features = ["chrono"] }
+zip = "8.6.0"
 
 
 [features]
@@ -64,6 +66,7 @@ http-body-util = "0.1"
 tempfile = "3.25.0"
 tokio-stream = { version = "0.1.18", features = ["net"] }
 toml = "1.1.2"
+calamine = "0.35.0"
 
 [build-dependencies]
 prost-build = "0.14.3"

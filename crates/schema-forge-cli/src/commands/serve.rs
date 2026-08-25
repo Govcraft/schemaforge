@@ -469,6 +469,8 @@ pub async fn run(
         .with_config(svc_config)
         .with_actor::<ForgeActor>()
         .with_actor::<schema_forge_acton::HookDispatchActor>()
+        .with_actor::<schema_forge_acton::ExportJobActor>()
+        .with_actor::<schema_forge_acton::ExportRateLimiter>()
         .with_routes(routes)
         .build();
 
@@ -640,6 +642,19 @@ async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError
                 entity_store: backend,
             })
         }
+        #[cfg(feature = "mssql")]
+        DbParams::Mssql(p) => {
+            let backend = schema_forge_mssql::MssqlBackend::connect(&p.config)
+                .await
+                .map_err(|e| CliError::Server {
+                    message: format!("SQL Server connection failed: {e}"),
+                })?;
+            let backend = Arc::new(backend);
+            Ok(ConnectedBackend {
+                backend: backend.clone(),
+                entity_store: backend,
+            })
+        }
         #[allow(unreachable_patterns)]
         other => Err(CliError::Config {
             message: format!("backend '{}' is not enabled in this build", other.url()),
@@ -662,25 +677,22 @@ fn build_entity_auth_store(
         .get("User")
         .cloned()
         .ok_or_else(|| CliError::Server {
-            message:
-                "User system schema is not registered; cannot build EntityAuthStore. \
+            message: "User system schema is not registered; cannot build EntityAuthStore. \
                  Confirm `seed_system_schemas_into_map` ran during InitForgeData::build."
-                    .into(),
+                .into(),
         })?;
 
     let policy_store = init_data
         .policy_store
         .clone()
         .ok_or_else(|| CliError::Server {
-            message: "policy_store missing from InitForgeData; cannot build EntityAuthStore"
-                .into(),
+            message: "policy_store missing from InitForgeData; cannot build EntityAuthStore".into(),
         })?;
 
     let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =
         Arc::new(move |role: &str| policy_store.current().role_ranks.get(role));
 
-    let mut store =
-        schema_forge_backend::EntityAuthStore::new(entity_store, user_schema, resolver);
+    let mut store = schema_forge_backend::EntityAuthStore::new(entity_store, user_schema, resolver);
     // Attach the TenantMembership schema when the system seed registered
     // it (which is always for non-legacy deployments). Without it,
     // `list_tenant_memberships` returns an empty `Vec` and the login
@@ -866,9 +878,9 @@ fn build_paseto_validator(
 fn mount_console(
     routes: acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig>,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
+    use crate::commands::serve_console::handler;
     use acton_service::service_builder::VersionedRoutes;
     use axum::routing::get;
-    use crate::commands::serve_console::handler;
 
     // Three routes cover the SPA: `/console` (no slash), `/console/` (root with
     // slash), and `/console/{*rest}` (assets + client-side deep links). The
@@ -947,6 +959,8 @@ fn build_meta_info(db_params: &DbParams) -> Arc<schema_forge_acton::MetaInfo> {
         DbParams::Surrealdb(_) => ("surrealdb", "SurrealDB 2.x"),
         #[cfg(feature = "postgres")]
         DbParams::Postgres(_) => ("postgres", "PostgreSQL"),
+        #[cfg(feature = "mssql")]
+        DbParams::Mssql(_) => ("mssql", "Microsoft SQL Server"),
         #[allow(unreachable_patterns)]
         _ => ("unknown", "Unknown backend"),
     };
@@ -1001,7 +1015,10 @@ mod resolve_tests {
         std::env::set_current_dir(tmp.path()).expect("set cwd");
         let got = resolve_custom_policies_dir(None, None);
         std::env::set_current_dir(prev).expect("restore cwd");
-        assert!(got.is_none(), "auto-discovery should return None when policies/custom does not exist");
+        assert!(
+            got.is_none(),
+            "auto-discovery should return None when policies/custom does not exist"
+        );
     }
 
     #[test]
@@ -1099,10 +1116,7 @@ mod tests {
                     vec![FieldModifier::Required],
                     vec![],
                 ),
-                FieldDefinition::new(
-                    FieldName::new("active").unwrap(),
-                    FieldType::Boolean,
-                ),
+                FieldDefinition::new(FieldName::new("active").unwrap(), FieldType::Boolean),
                 FieldDefinition::with_annotations(
                     FieldName::new("password_hash").unwrap(),
                     FieldType::Text(TextConstraints::unconstrained()),
@@ -1116,9 +1130,11 @@ mod tests {
 
         let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =
             Arc::new(|_role: &str| None);
-        let auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = Arc::new(
-            EntityAuthStore::new(entity_store.clone(), user_schema, resolver),
-        );
+        let auth_store: Arc<dyn schema_forge_acton::DynAuthStore> = Arc::new(EntityAuthStore::new(
+            entity_store.clone(),
+            user_schema,
+            resolver,
+        ));
 
         let invite_store = rt
             .block_on(schema_forge_acton::system::provision_invite_store(
@@ -1134,13 +1150,13 @@ mod tests {
             "SurrealDB 2.x",
             3600,
         ));
-        let principal_claims = Arc::new(schema_forge_acton::authz::PrincipalClaimMappings::default());
+        let principal_claims =
+            Arc::new(schema_forge_acton::authz::PrincipalClaimMappings::default());
         let tenant_config = Arc::new(None::<schema_forge_backend::tenant::TenantConfig>);
-        let tenant_scope_state =
-            schema_forge_acton::middleware::tenant_scope::TenantScopeState {
-                entity_store: entity_store.clone(),
-                tenant_config: tenant_config.clone(),
-            };
+        let tenant_scope_state = schema_forge_acton::middleware::tenant_scope::TenantScopeState {
+            entity_store: entity_store.clone(),
+            tenant_config: tenant_config.clone(),
+        };
         let _routes = build_versioned_routes(
             auth_store,
             generator,

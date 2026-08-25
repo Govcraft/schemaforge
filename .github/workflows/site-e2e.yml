@@ -21,8 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install system build dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -41,7 +41,7 @@ jobs:
           node-version: "20"
 
       - name: Build schemaforge binary
-        run: cargo build --bin schemaforge
+        run: cargo build --package schema-forge-cli --bin schemaforge
 
       - name: Run site e2e smoke
         run: ./crates/schema-forge-cli/tests/site_e2e/run.sh
