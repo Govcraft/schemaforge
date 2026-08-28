@@ -21,7 +21,8 @@ use super::query_params::{parse_fields_param, parse_filter_params, parse_sort_pa
 use crate::access::{
     check_schema_access, entity_permissions, filter_entity_fields,
     inject_audit_columns_on_create, inject_audit_columns_on_update, inject_owner_on_create,
-    inject_tenant_on_create, inject_tenant_scope, schema_permissions, strip_owner_on_update,
+    inject_tenant_on_create, inject_tenant_scope, inject_tenant_scope_for, schema_permissions,
+    strip_owner_on_update,
     AccessAction, EntityPermissions,
     FieldFilterDirection, OptionalClaims, SchemaPermissions,
 };
@@ -1322,8 +1323,10 @@ async fn resolve_relation_displays(
             .without_total_count();
         display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
         // Apply tenant scope so we never leak rows the caller couldn't
-        // otherwise see through a direct list call.
-        inject_tenant_scope(&mut display_query, claims, tenant_config);
+        // otherwise see through a direct list call — but by the *target*
+        // schema's tenancy, since a relation may point at an untenanted schema
+        // with no `_tenant` column.
+        inject_tenant_scope_for(target_def, &mut display_query, claims, tenant_config);
 
         let source_fields: Vec<String> = fields_pointing_at_target
             .iter()
@@ -1648,7 +1651,7 @@ async fn load_related_row(
             values: vec![DynamicValue::Text(fk_id.to_string())],
         })
         .without_total_count();
-    inject_tenant_scope(&mut query, claims, tenant_config);
+    inject_tenant_scope_for(target_def, &mut query, claims, tenant_config);
 
     let (tx, rx) = oneshot::channel();
     forge
@@ -1773,7 +1776,7 @@ async fn populate_derived_collections(
             })
             .without_total_count();
         child_query.projection = Some(vec!["id".to_string(), fk_field_name.clone()]);
-        inject_tenant_scope(&mut child_query, claims, tenant_config);
+        inject_tenant_scope_for(target_def, &mut child_query, claims, tenant_config);
 
         jobs.push((parent_field_name, fk_field_name, child_query));
     }

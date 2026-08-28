@@ -303,6 +303,37 @@ pub fn filter_entity_fields(
     fields_to_remove
 }
 
+/// Inject tenant scoping into a query against `schema_def`, skipping schemas
+/// that are not tenanted.
+///
+/// [`inject_tenant_scope`] takes only the query, so it cannot tell whether the
+/// table it is about to filter actually has a `_tenant` column. That is safe
+/// for a request's *primary* query, which always runs against the schema the
+/// route resolved. It is not safe for the internal sub-queries — relation
+/// display resolution, derived inverse collections, single related-row loads —
+/// because those run against a *relation target*, and a relation may point at a
+/// schema with no `@tenant` annotation at all. The built-in `User` schema is
+/// exactly that, so `-> User` is not an exotic case: it is in most real
+/// schemas.
+///
+/// Filtering such a query on `_tenant` produces SQL against a column that does
+/// not exist. The display resolvers swallow the resulting error and silently
+/// return no display value; the export path propagates it and fails the whole
+/// request with a 502. Both are wrong, and both disappear if the scope is
+/// simply not injected: a schema that is not tenanted has no tenant boundary to
+/// enforce, so there is nothing to narrow.
+pub fn inject_tenant_scope_for(
+    schema_def: &SchemaDefinition,
+    query: &mut Query,
+    claims: Option<&Claims>,
+    tenant_config: &Option<TenantConfig>,
+) {
+    if !schema_def.is_tenanted() {
+        return;
+    }
+    inject_tenant_scope(query, claims, tenant_config);
+}
+
 /// Inject tenant scoping filter into a query.
 ///
 /// Adds `_tenant = <tenant_id>` filter based on the deepest tenant in the
@@ -310,6 +341,10 @@ pub fn filter_entity_fields(
 /// - `tenant_config` is `None` or disabled
 /// - `claims` is `None`
 /// - user is `platform_admin` (bypass)
+///
+/// Callers with a [`SchemaDefinition`] in hand should prefer
+/// [`inject_tenant_scope_for`], which additionally skips a schema that carries
+/// no `@tenant` annotation and therefore has no `_tenant` column to filter on.
 pub fn inject_tenant_scope(
     query: &mut Query,
     claims: Option<&Claims>,
@@ -634,6 +669,60 @@ mod tests {
             }
             _ => panic!("expected Eq filter, got: {filter:?}"),
         }
+    }
+
+    /// The bug this guards: `-> User` is a relation to an untenanted schema, so
+    /// the sub-query that resolves its display value used to be filtered on a
+    /// `_tenant` column the `User` table does not have. Postgres answered
+    /// `column "_tenant" does not exist`; the list path swallowed it and
+    /// dropped the display value, and the export path turned it into a 502 on
+    /// every export of a schema with a user relation.
+    #[test]
+    fn inject_tenant_scope_for_skips_untenanted_schema() {
+        let tenant_config = make_enabled_tenant_config();
+        let tenant_id = EntityId::new("tenant");
+        let claims = make_claims_with_tenant(&["member"], tenant_id.as_str());
+        let untenanted = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("User").unwrap(),
+            vec![make_field("email")],
+            vec![],
+        )
+        .unwrap();
+        let mut query = Query::new(untenanted.id.clone());
+
+        inject_tenant_scope_for(&untenanted, &mut query, Some(&claims), &tenant_config);
+
+        assert!(
+            query.filter.is_none(),
+            "an untenanted schema has no _tenant column to filter on"
+        );
+    }
+
+    /// The other half: a tenanted target must still be scoped, or the display
+    /// resolver would leak a name from another tenant.
+    #[test]
+    fn inject_tenant_scope_for_scopes_tenanted_schema() {
+        let tenant_config = make_enabled_tenant_config();
+        let tenant_id = EntityId::new("tenant");
+        let claims = make_claims_with_tenant(&["member"], tenant_id.as_str());
+        let tenanted = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Space").unwrap(),
+            vec![make_field("name")],
+            vec![Annotation::Tenant(TenantKind::Child {
+                parent: SchemaName::new("Organization").unwrap(),
+            })],
+        )
+        .unwrap();
+        let mut query = Query::new(tenanted.id.clone());
+
+        inject_tenant_scope_for(&tenanted, &mut query, Some(&claims), &tenant_config);
+
+        assert!(
+            query.filter.is_some(),
+            "a tenanted target must still be narrowed to the caller's tenant"
+        );
     }
 
     #[test]

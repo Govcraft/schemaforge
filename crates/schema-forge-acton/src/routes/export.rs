@@ -49,7 +49,8 @@ use tokio::sync::oneshot;
 use tracing::instrument;
 
 use crate::access::{
-    check_export_access, filter_entity_fields, inject_tenant_scope, FieldFilterDirection,
+    check_export_access, filter_entity_fields, inject_tenant_scope, inject_tenant_scope_for,
+    FieldFilterDirection,
     OptionalClaims,
 };
 use crate::actor::ForgeActor;
@@ -1289,7 +1290,10 @@ async fn resolve_export_displays(
             })
             .without_total_count();
         display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
-        inject_tenant_scope(&mut display_query, claims, tenant_config);
+        // Scope by the *target* schema's tenancy, not the exported schema's: a
+        // relation may point at an untenanted schema (`-> User` does), which
+        // has no `_tenant` column to filter on.
+        inject_tenant_scope_for(&target_def, &mut display_query, claims, tenant_config);
 
         let (tx, rx) = oneshot::channel();
         forge
