@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SchemaError;
 
-use super::annotation::{Annotation, ExportFormat, HookEvent};
+use super::annotation::{Annotation, ExportFormat, HookEvent, TenantKind};
 use super::field_definition::FieldDefinition;
 use super::schema_id::SchemaId;
 use super::schema_name::SchemaName;
@@ -82,11 +82,34 @@ impl SchemaDefinition {
 
     /// Returns `true` if this schema participates in tenant isolation (i.e.
     /// it carries an `@tenant(root)` or `@tenant(parent: ...)` annotation).
-    /// Per-tenant unique constraints key off this flag.
+    ///
+    /// Backends key the per-table `_tenant` column and its index off this
+    /// flag. It is deliberately *not* the flag that decides whether a
+    /// `unique` field is scoped by tenant — see
+    /// [`Self::unique_scoped_by_tenant`].
     pub fn is_tenanted(&self) -> bool {
         self.annotations
             .iter()
             .any(|a| matches!(a, Annotation::Tenant(_)))
+    }
+
+    /// Returns `true` when a `unique` field on this schema must be unique
+    /// *within a tenant* rather than across the whole table.
+    ///
+    /// True only for `@tenant(parent: ...)`. Those rows live inside a tenant
+    /// and carry its id in `_tenant`, so `(_tenant, field)` is the honest
+    /// key: two tenants may each have their own "Main Office".
+    ///
+    /// False for `@tenant(root)`, which is the tenant boundary itself. Its
+    /// rows *are* the tenants, so there is no outer tenant to scope them by
+    /// and the field has to be unique table-wide. Scoping a root schema by
+    /// `_tenant` does not merely weaken the constraint, it removes it: the
+    /// column is NULL on a platform-level create and PostgreSQL treats NULLs
+    /// as distinct, so the index accepts every duplicate. See #134.
+    pub fn unique_scoped_by_tenant(&self) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| matches!(a, Annotation::Tenant(TenantKind::Child { .. })))
     }
 
     /// Returns the name of the field nominated by `@display("...")`, if any.
@@ -395,5 +418,50 @@ mod tests {
         )
         .unwrap();
         assert!(!sd.is_system());
+    }
+
+    // ---- tenancy predicates (#134) ----
+
+    fn tenanted(annotations: Vec<Annotation>) -> SchemaDefinition {
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Thing").unwrap(),
+            vec![make_field("name")],
+            annotations,
+        )
+        .unwrap()
+    }
+
+    fn child() -> Annotation {
+        Annotation::Tenant(TenantKind::Child {
+            parent: SchemaName::new("Organization").unwrap(),
+        })
+    }
+
+    #[test]
+    fn is_tenanted_covers_both_tenant_kinds() {
+        // Both kinds need the `_tenant` column, which is what this
+        // predicate governs.
+        assert!(tenanted(vec![Annotation::Tenant(TenantKind::Root)]).is_tenanted());
+        assert!(tenanted(vec![child()]).is_tenanted());
+        assert!(!tenanted(vec![]).is_tenanted());
+    }
+
+    #[test]
+    fn unique_is_scoped_by_tenant_only_for_a_child() {
+        // A root's rows *are* the tenants: there is no outer tenant to
+        // scope them by, so `unique` has to hold table-wide.
+        assert!(!tenanted(vec![Annotation::Tenant(TenantKind::Root)]).unique_scoped_by_tenant());
+        assert!(tenanted(vec![child()]).unique_scoped_by_tenant());
+        assert!(!tenanted(vec![]).unique_scoped_by_tenant());
+    }
+
+    #[test]
+    fn the_two_tenancy_predicates_are_independent() {
+        // A root answers yes to one and no to the other. Conflating them
+        // is what made `unique` unenforceable on a tenant root (#134).
+        let root = tenanted(vec![Annotation::Tenant(TenantKind::Root)]);
+        assert!(root.is_tenanted());
+        assert!(!root.unique_scoped_by_tenant());
     }
 }
