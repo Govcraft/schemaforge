@@ -29,14 +29,17 @@ At-a-glance tables. For full grammar see [dsl-reference.md](dsl-reference.md). F
 |----------|--------|--------|
 | Required | `required` | field must have a non-null value |
 | Indexed | `indexed` | indexed for fast lookups |
-| Unique | `unique` | values must be unique (per-tenant for `@tenant(...)` schemas, table-wide otherwise) |
+| Unique | `unique` | values must be unique (per-tenant for `@tenant(parent: ...)` schemas, table-wide otherwise) |
 | Default | `default(value)` | value when field omitted |
 
 **Default value syntax:** `default("text")`, `default(42)`, `default(3.14)`, `default(true)`
 
+**Constraint enforcement:** `enum(...)`, `text(max:)`, `integer(min:/max:)`, and `bytes(max:)` are enforced in-process on every write and reject with **422 `validation_failed`**, naming the field (and, for an enum, the allowed variants). You do not need a parallel `@require` rule to get a clean 4xx. `float(precision:)` is a storage hint and is not enforced.
+
 **`unique` rules:**
 - Allowed on `text`, `integer`, `float`, `datetime`, `enum`. Other types are a parse error (`UniqueOnUnsupportedType`) — `richtext`, `json`, `boolean`, arrays, `composite`, `relation`, `file`.
-- For schemas with `@tenant(root)` or `@tenant(parent: "...")` the underlying constraint is composite on `(_tenant, field)`; two tenants can hold the same value.
+- For a `@tenant(parent: "...")` schema the underlying constraint is composite on `(_tenant, field)`; two tenants can hold the same value.
+- For a `@tenant(root)` schema it is a plain table-wide constraint on `(field)`. A root's rows *are* the tenants, so there is no outer tenant to scope them by. (Earlier releases scoped them to `(_tenant, field)` like a child, which silently accepted every duplicate — `_tenant` is empty on a platform-level create and SQL treats NULLs as distinct. See #134 and the CHANGELOG migration note if you have a database applied before the fix.)
 - Adding `unique` to a column with existing duplicates fails at apply time. The migration step `AddUnique` is classified `RequiresConfirmation`; clean data first or pass `--force`.
 - A write that collides returns **HTTP 409** with body `{ "error": "unique_violation", "schema": "...", "field": "...", "message": "..." }`. Generated edit forms route this onto the offending field via `react-hook-form`'s `setError`.
 

@@ -208,7 +208,8 @@ schema Department {
 **Key pattern:** `@tenant(root)` on Organization, `@tenant(parent: "Organization")` on Department. All department data is automatically scoped to its organization.
 
 **`unique` interaction with `@tenant`:**
-- Any schema carrying `@tenant(root)` or `@tenant(parent: "...")` gets a composite `(_tenant, field)` unique index. For tenant *children* like `Department.code`, this means each organization independently may have a `"ENG"` department — they don't collide. For tenant *roots* like `Organization.slug`, runtime tenant injection determines whether slugs are effectively organization-scoped or table-wide; in practice tenant-root entities are scoped by their own id, so two different organizations cannot share a slug.
+- A `@tenant(parent: "...")` schema gets a composite `(_tenant, field)` unique index. For tenant *children* like `Department.code` this means each organization independently may have an `"ENG"` department — they don't collide.
+- A `@tenant(root)` schema gets a plain table-wide constraint on `(field)`, so no two organizations can share a `slug`. Its rows *are* the tenants; there is no outer tenant to scope them by. (Earlier releases gave roots the composite shape too, which enforced nothing at all — see #134.)
 - Duplicate writes produce `409 { "error": "unique_violation", "schema": "Organization", "field": "slug", "message": "..." }`. The generated edit forms route this 409 onto the offending field via `react-hook-form`'s `setError`, so the user sees the error inline without a toast.
 
 ## HR Schema with Field-Level Access Control
