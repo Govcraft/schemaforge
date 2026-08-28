@@ -11,7 +11,8 @@ use axum::Json;
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::query::{validate_filter, FieldPath, Filter, SortOrder};
 use schema_forge_core::types::{
-    Cardinality, DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName,
+    Cardinality, ConstraintViolation, DynamicValue, EntityId, FieldType, SchemaDefinition,
+    SchemaName,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -633,11 +634,47 @@ pub fn json_to_entity_fields_with_mode(
 /// this to a 422), never truncated or silently accepted.
 fn enforce_bytes_max_size(bytes: &[u8], max_size: Option<usize>) -> Result<(), String> {
     match max_size {
-        Some(max) if bytes.len() > max => Err(format!(
-            "bytes value of {} bytes exceeds the field's max_size of {max} bytes",
-            bytes.len()
-        )),
+        Some(max) if bytes.len() > max => Err(ConstraintViolation::BytesTooLarge {
+            len: bytes.len(),
+            max,
+        }
+        .to_string()),
         _ => Ok(()),
+    }
+}
+
+/// Check every value in a write against the constraints declared on its
+/// field's type, collecting all violations into a single 422.
+///
+/// Runs at the last seam before the backend, which is what makes it
+/// complete: by this point the field map holds client JSON, `@default` and
+/// `@compute` rule output, server-injected columns, and anything a
+/// `before_*` hook substituted. Checking earlier would leave the later
+/// sources unguarded, and an unguarded violation reaches the database, whose
+/// refusal arrives as an untyped driver error and surfaces as a 502 — a
+/// retryable status for a request that can never succeed. See #133.
+///
+/// Values whose names are not in the schema (`_tenant` and friends) carry no
+/// declared constraints and are skipped.
+fn check_field_constraints(
+    schema: &SchemaDefinition,
+    fields: &BTreeMap<String, DynamicValue>,
+) -> Result<(), ForgeError> {
+    let details: Vec<String> = fields
+        .iter()
+        .filter_map(|(name, value)| {
+            let field_def = schema.field(name)?;
+            field_def
+                .field_type
+                .check_value(value)
+                .err()
+                .map(|violation| format!("field '{name}': {violation}"))
+        })
+        .collect();
+    if details.is_empty() {
+        Ok(())
+    } else {
+        Err(ForgeError::ValidationFailed { details })
     }
 }
 
@@ -2086,6 +2123,7 @@ pub async fn create_entity(
         claims.as_ref(),
         FieldFilterDirection::Write,
     );
+    check_field_constraints(&schema_def, &entity.fields)?;
 
     // Create entity via actor (supervised backend call)
     let (tx, rx) = oneshot::channel();
@@ -2804,6 +2842,7 @@ pub async fn update_entity(
         claims.as_ref(),
         FieldFilterDirection::Write,
     );
+    check_field_constraints(&schema_def, &entity.fields)?;
 
     // Update entity via actor
     let (tx, rx) = oneshot::channel();
@@ -3101,6 +3140,7 @@ pub async fn patch_entity(
             claims.as_ref(),
             FieldFilterDirection::Write,
         );
+        check_field_constraints(&schema_def, &entity.fields)?;
         let (tx, rx) = oneshot::channel();
         forge
             .send(UpdateEntity {
@@ -3385,6 +3425,121 @@ mod tests {
             vec![],
         )
         .unwrap()
+    }
+
+    // ---- check_field_constraints (#133) ----
+
+    /// The neutral repro from #133: every constraint the DSL can express,
+    /// on one schema.
+    fn make_constrained_schema() -> SchemaDefinition {
+        use schema_forge_core::types::{EnumVariants, IntegerConstraints};
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Widget").unwrap(),
+            vec![
+                FieldDefinition::new(
+                    FieldName::new("name").unwrap(),
+                    FieldType::Text(TextConstraints::with_max_length(10)),
+                ),
+                FieldDefinition::new(
+                    FieldName::new("size").unwrap(),
+                    FieldType::Integer(IntegerConstraints::with_range(1, 5).unwrap()),
+                ),
+                FieldDefinition::new(
+                    FieldName::new("kind").unwrap(),
+                    FieldType::Enum(
+                        EnumVariants::new(vec!["alpha".into(), "beta".into()]).unwrap(),
+                    ),
+                ),
+            ],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    fn constraint_errors(fields: &[(&str, DynamicValue)]) -> Vec<String> {
+        let map: BTreeMap<String, DynamicValue> = fields
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect();
+        match check_field_constraints(&make_constrained_schema(), &map) {
+            Ok(()) => Vec::new(),
+            Err(ForgeError::ValidationFailed { details }) => details,
+            Err(other) => panic!("expected ValidationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_field_constraints_accepts_a_conforming_write() {
+        assert!(constraint_errors(&[
+            ("name", DynamicValue::Text("ok".into())),
+            ("size", DynamicValue::Integer(3)),
+            ("kind", DynamicValue::Enum("alpha".into())),
+        ])
+        .is_empty());
+    }
+
+    #[test]
+    fn check_field_constraints_rejects_an_unknown_enum_variant() {
+        let errors = constraint_errors(&[("kind", DynamicValue::Enum("gamma".into()))]);
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("field 'kind'")
+                && errors[0].contains("gamma")
+                && errors[0].contains("alpha, beta"),
+            "the 422 must name the field and the allowed variants, got: {}",
+            errors[0]
+        );
+    }
+
+    #[test]
+    fn check_field_constraints_rejects_an_over_length_text() {
+        let errors = constraint_errors(&[(
+            "name",
+            DynamicValue::Text("this is far too long".into()),
+        )]);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("field 'name'"), "got: {}", errors[0]);
+    }
+
+    #[test]
+    fn check_field_constraints_rejects_an_out_of_range_integer() {
+        assert_eq!(constraint_errors(&[("size", DynamicValue::Integer(0))]).len(), 1);
+        assert_eq!(constraint_errors(&[("size", DynamicValue::Integer(9))]).len(), 1);
+    }
+
+    #[test]
+    fn check_field_constraints_reports_every_violation_at_once() {
+        // One round trip should tell the caller everything that is wrong,
+        // the way the existing type and required-field errors already do.
+        let errors = constraint_errors(&[
+            ("name", DynamicValue::Text("this is far too long".into())),
+            ("size", DynamicValue::Integer(0)),
+            ("kind", DynamicValue::Enum("gamma".into())),
+        ]);
+        assert_eq!(errors.len(), 3, "got: {errors:?}");
+    }
+
+    #[test]
+    fn check_field_constraints_skips_fields_not_in_the_schema() {
+        // Server-injected columns like `_tenant` carry no declared
+        // constraints and must pass straight through.
+        assert!(constraint_errors(&[
+            ("_tenant", DynamicValue::Text("org_0123456789".repeat(10))),
+        ])
+        .is_empty());
+    }
+
+    #[test]
+    fn check_field_constraints_ignores_nulls() {
+        // Nullability is the `required` modifier's job, enforced in
+        // `json_to_entity_fields_with_mode`.
+        assert!(constraint_errors(&[
+            ("kind", DynamicValue::Null),
+            ("size", DynamicValue::Null),
+            ("name", DynamicValue::Null),
+        ])
+        .is_empty());
     }
 
     #[test]
