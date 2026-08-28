@@ -94,6 +94,11 @@ Path prefix: `/api/v1/forge/auth/*`
 |--------|------|---------|
 | POST | `/api/v1/forge/auth/login` | Exchange username+password for a PASETO token. Response body: `{ token, expires_at, roles }`. CLI: `schemaforge login --server <url> -u <user>` (caches the token for subsequent `entity` calls). |
 | POST | `/api/v1/forge/auth/refresh` | Exchange a still-valid bearer for a fresh token (same 1-hour expiry). Same response body as login. Returns 401 if no/expired token. |
+| GET | `/api/v1/forge/auth/me` | (v0.33.0) Return the caller's principal: username, roles, `tenant_chain`, and the active tenant. The generated site's tenant switcher reads this. Requires a bearer. |
+| POST | `/api/v1/forge/auth/invites` | (v0.33.0) Create an invitation for a new user in the caller's tenant (Cedar-gated). Returns an invite token to deliver out of band. |
+| POST | `/api/v1/forge/auth/invites/accept` | (v0.33.0) Public. Body carries the invite token plus the new user's username/password; creates the user with the roles and tenant the invite specified. |
+
+With `[caller_auth] mode = "mtls-or-bearer"` and `[caller_auth.windows]` configured (v0.37.0), requests arriving from an allow-listed trusted proxy may carry the Windows identity and AD groups in headers instead of a bearer; groups map to roles via `group_roles`. See config-reference.md.
 
 The React site's `src/lib/auth.ts` stores the token in `sessionStorage`, schedules a silent refresh ~5 minutes before expiry, and retries any 401 once through `/auth/refresh` before bouncing the user back to `/login`.
 

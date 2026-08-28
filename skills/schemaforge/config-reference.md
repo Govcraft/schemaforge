@@ -27,6 +27,26 @@ database = "dev"
 # url = "postgres://user:pass@localhost:5432/schemaforge"
 # max_connections = 50
 # min_connections = 5
+#
+# Microsoft SQL Server backend (mssql feature, v0.37.0) — also uses [database].
+# ADO-style connection string; `mssql_auth = "integrated"` authenticates as the
+# service process via SSPI (Windows) or Kerberos/GSSAPI (Unix, keytab).
+# [database]
+# url = "Server=sql01;Database=schemaforge;TrustServerCertificate=true"
+# mssql_auth = "integrated"          # omit for SQL login: put User Id/Password in the string
+
+# Windows identity forwarding from a trusted reverse proxy (v0.37.0). The proxy
+# completes HTTP Negotiate, connects with mTLS, and its cert SAN must appear in
+# BOTH allowlists; [tls].client_ca_path must trust the proxy's issuer. Forwarded
+# headers from any other caller are ignored. Bearer auth stays available.
+# [caller_auth]
+# mode = "mtls-or-bearer"
+# allowlist = ["schemaforge-auth-proxy.internal"]
+# [caller_auth.windows]
+# trusted_proxies = ["schemaforge-auth-proxy.internal"]
+# identity_header = "x-windows-user"
+# groups_header = "x-windows-groups"
+# group_roles = { "CONTOSO\\SchemaForge Admins" = "admin" }   # AD group -> role
 
 [token]
 format = "paseto"
@@ -158,6 +178,26 @@ Schema-forge CLI-flag aliases (clap `env = "..."` mappings; equivalent to passin
 - **`acton-service` upgraded to 0.26.1** workspace-wide. Pulls `aws-lc-rs` through `rustls`, `tokio-rustls`, `reqwest`, `sqlx`, and `tonic`, replacing the previous ring-backed default. The `crypto-aws-lc-rs` feature is enabled by default in the SchemaForge build.
 - **New `fips` cargo feature** on `schema-forge-cli` and `schema-forge-acton` routes rustls through `aws-lc-rs` compiled against the FIPS-validated AWS-LC C library. Pair with `postgres`; the `surrealdb` backend pulls `rustls/ring` transitively and is **not** FIPS-clean. Build requires CMake, a C/C++ toolchain, and Go 1.18+.
 
+### v0.32.0 – v0.33.0
+
+- Cedar denies and auth events are emitted as structured audit records; `@owner` is injected server-side (v0.32).
+- `tenant_chain` claim + active-tenant middleware, `GET /api/v1/forge/auth/me`, invitation endpoints (`/auth/invites`, `/auth/invites/accept`), tenant switcher and `project_name` branding in the generated site (v0.33). No config changes required.
+
+### v0.34.0 (new subsystems)
+
+- **CEL rules engine**: `@default` / `@compute` / `@require` annotations evaluated on every write (`@default` → `@compute` → `@require` → before hooks → persist → after hooks/webhooks). `now` is bound as a timestamp; `timestamp + duration()` is supported. Rule errors fail closed (422/500).
+- **Embedded ops console** at `/console` behind the cli `embedded-console` feature (on by default); `serve --no-console` disables it.
+
+### v0.35.0 – v0.36.0
+
+- Entity file upload/download CLI verbs (v0.35).
+- **Hook transport is now authenticated and encrypted** (v0.36); regenerate hook services with `hooks generate` and redeploy. `acton-service` upgraded to 0.35.
+
+### v0.37.0 / v0.37.2 (new backend)
+
+- **Microsoft SQL Server backend** (`mssql` cargo feature, Tiberius). Configured through the same `[database]` table as PostgreSQL with an ADO-style `url`; `mssql_auth = "integrated"` selects SSPI/Kerberos. Mutually exclusive with `surrealdb`/`postgres`.
+- **`[caller_auth]` / `[caller_auth.windows]`** accept Windows identities and AD groups forwarded by an mTLS-authenticated trusted proxy (`mode = "mtls-or-bearer"`, `allowlist`, `trusted_proxies`, `identity_header`, `groups_header`, `group_roles`). `acton-service` 0.38.0 with the `windows-auth` feature.
+
 ## policies/role_ranks.toml
 
 The role-name → numeric-rank map that gates user-mgmt and any policy that compares `principal.role_rank` against `resource.role_rank`. Lives in version control alongside the policies it governs. Missing file is treated as "platform_admin only".
@@ -190,6 +230,10 @@ The default backend. Uses WebSocket (ws://) or HTTP connections with namespace/d
 ```
 schema-forge serve --db-url ws://localhost:8000 --db-ns myapp --db-name prod
 ```
+
+### Microsoft SQL Server (mssql feature, v0.37.0+)
+
+Available when built with `--features mssql` (Tiberius driver). Uses `[database] url` with an ADO-style connection string (`Server=…;Database=…;TrustServerCertificate=true`) and either SQL login credentials in the string or `mssql_auth = "integrated"` for Windows integrated auth (SSPI on Windows, Kerberos/GSSAPI with a keytab on Unix). Pair with `[caller_auth.windows]` to forward end-user Windows identities from a Negotiate-capable proxy.
 
 ### PostgreSQL (postgres feature)
 
