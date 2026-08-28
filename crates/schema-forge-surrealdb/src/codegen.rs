@@ -450,9 +450,13 @@ mod tests {
     }
 
     /// Regression for GH #56 end-to-end on SurrealDB: planner output for
-    /// a tenant-root schema with a `unique` field must produce a DDL
+    /// a tenant-child schema with a `unique` field must produce a DDL
     /// stream where `_tenant` exists before the per-tenant unique index
     /// references it.
+    ///
+    /// A child, not a root: only a child yields a per-tenant index (#134),
+    /// so only a child exercises the ordering hazard. The root case is
+    /// covered by `root_schema_unique_is_a_global_index` below.
     #[test]
     fn tenanted_schema_with_unique_emits_tenant_field_before_unique_index() {
         use schema_forge_core::migration::DiffEngine;
@@ -468,7 +472,9 @@ mod tests {
                 FieldType::Text(TextConstraints::unconstrained()),
                 vec![FieldModifier::Unique],
             )],
-            vec![Annotation::Tenant(TenantKind::Root)],
+            vec![Annotation::Tenant(TenantKind::Child {
+                parent: SchemaName::new("Organization").unwrap(),
+            })],
         )
         .expect("schema definition must be valid");
 
@@ -498,6 +504,57 @@ mod tests {
         assert!(
             tenant_field_idx < unique_idx,
             "_tenant field DDL must come before the per-tenant unique index"
+        );
+    }
+
+    /// Regression for GH #134 on SurrealDB: a `unique` field on a
+    /// `@tenant(root)` schema must produce an index keyed on the field
+    /// alone. Keying it on `(_tenant, field)` scopes the tenant boundary
+    /// by itself, which is either inert or wrong depending on who wrote
+    /// the row.
+    #[test]
+    fn root_schema_unique_is_a_global_index() {
+        use schema_forge_core::migration::DiffEngine;
+        use schema_forge_core::types::{
+            Annotation, FieldModifier, SchemaDefinition, SchemaId, TenantKind,
+        };
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Organization").unwrap(),
+            vec![FieldDefinition::with_modifiers(
+                FieldName::new("short_code").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Unique],
+            )],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        )
+        .expect("schema definition must be valid");
+
+        let plan = DiffEngine::create_new(&schema);
+        let all_stmts: Vec<String> = plan
+            .steps
+            .iter()
+            .flat_map(|step| migration_step_to_surql("Organization", step))
+            .collect();
+
+        let unique_stmt = all_stmts
+            .iter()
+            .find(|s| s.contains("uq_Organization_short_code"))
+            .expect("unique index DDL missing");
+        assert_eq!(
+            unique_stmt,
+            "DEFINE INDEX uq_Organization_short_code ON Organization \
+             FIELDS short_code UNIQUE;"
+        );
+
+        // The `_tenant` field is still defined — the two decisions are
+        // independent.
+        assert!(
+            all_stmts
+                .iter()
+                .any(|s| s.contains("DEFINE FIELD _tenant ON TABLE Organization")),
+            "the _tenant field must still be defined for a root schema"
         );
     }
 

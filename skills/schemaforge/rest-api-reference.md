@@ -27,6 +27,8 @@ Entity create/update request body format:
 {"fields": {"name": "value", "active": true}}
 ```
 
+**Declared field constraints.** `enum(...)`, `text(max:)`, `integer(min:/max:)`, and `bytes(max:)` are checked in-process on every create, update, and patch, and a violation returns **422 `validation_failed`** with one `details` entry per offending field — for an enum, listing the allowed variants. The check runs at the last step before the backend, so it covers values a `@default`/`@compute` rule or a `before_*` hook produced as well as client input. (Through 0.37 only `bytes(max:)` was checked here; the others reached the database and its refusal surfaced as a `502` — see #133.)
+
 **Write-time rules.** Entity create/update run the schema's CEL rules before persistence (`@default` → `@compute` → `@require`, ahead of any hook). A failing `@require` returns **422** with the rule's message; `@compute`/`@default` fields are server-derived and overwrite/fill client input. A `@require` asserting over a related row (`related.<field>.<col>`) is tenant-scoped and fail-closed. See [dsl-reference.md](dsl-reference.md).
 
 All API routes (except `/health`, `/ready`, and `/api/v1/forge/auth/login`) require a PASETO bearer token in the `Authorization` header.
