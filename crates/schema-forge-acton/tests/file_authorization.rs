@@ -19,7 +19,7 @@ use schema_forge_acton::{
     storage::StorageRegistry,
     DynSchemaBackend, ForgeActor,
 };
-use schema_forge_backend::entity::Entity;
+use schema_forge_backend::{entity::Entity, tenant::TenantConfig};
 use schema_forge_core::types::{
     Annotation, DynamicValue, EntityId, FieldAnnotation, FieldDefinition, FieldName, FieldType,
     FileAccess, FileConstraints, MimePattern, SchemaDefinition, SchemaId, SchemaName, TenantKind,
@@ -134,6 +134,22 @@ async fn fixture_with_owner(
     DynEntityStore::create(backend.as_ref(), &entity)
         .await
         .unwrap();
+    let organization = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Organization").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("name").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![Annotation::Tenant(TenantKind::Root)],
+    )
+    .unwrap();
+    let tenant_config =
+        TenantConfig::from_schemas(&[organization.clone(), schema.clone()]).unwrap();
+    let tenant_scope_state = schema_forge_acton::middleware::tenant_scope::TenantScopeState {
+        entity_store: backend.clone(),
+        tenant_config: Arc::new(Some(tenant_config.clone())),
+    };
     let service = ServiceBuilder::new()
         .with_config(Config::<SchemaForgeConfig>::default())
         .with_actor::<ForgeActor>()
@@ -144,9 +160,12 @@ async fn fixture_with_owner(
         .actor::<ForgeActor>()
         .unwrap()
         .send(InitForge {
-            registry: HashMap::from([("Document".into(), schema)]),
+            registry: HashMap::from([
+                ("Document".into(), schema),
+                ("Organization".into(), organization),
+            ]),
             backend,
-            tenant_config: None,
+            tenant_config: Some(tenant_config),
             record_access_policy: None,
             hook_dispatcher: None,
             storage_registry: StorageRegistry::default(),
@@ -160,6 +179,10 @@ async fn fixture_with_owner(
         .unwrap()
         .unwrap();
     let app = forge_routes()
+        .layer(axum::middleware::from_fn_with_state(
+            tenant_scope_state,
+            schema_forge_acton::middleware::tenant_scope::middleware,
+        ))
         .layer(axum::middleware::from_fn(
             move |mut req: axum::extract::Request, next: axum::middleware::Next| {
                 let caller = caller.clone();
@@ -179,6 +202,15 @@ async fn fixture_with_owner(
 }
 
 async fn status(app: &Router, path: &str, operation: &str) -> StatusCode {
+    status_with_tenant(app, path, operation, None).await
+}
+
+async fn status_with_tenant(
+    app: &Router,
+    path: &str,
+    operation: &str,
+    tenant: Option<&str>,
+) -> StatusCode {
     let (method, suffix, body) = match operation {
         "download" => ("GET", "?redirect=false", ""),
         "mint" => (
@@ -193,16 +225,16 @@ async fn status(app: &Router, path: &str, operation: &str) -> StatusCode {
         ),
         _ => ("POST", "/scan-complete", r#"{"status":"available"}"#),
     };
+    let mut request = Request::builder()
+        .method(method)
+        .uri(format!("{path}{suffix}"))
+        .header("content-type", "application/json");
+    if let Some(tenant) = tenant {
+        request = request.header("x-active-tenant", tenant);
+    }
     let response = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(format!("{path}{suffix}"))
-                .header("content-type", "application/json")
-                .body(Body::from(body))
-                .unwrap(),
-        )
+        .oneshot(request.body(Body::from(body)).unwrap())
         .await
         .unwrap();
     let status = response.status();
@@ -352,4 +384,60 @@ async fn same_tenant_cannot_modify_another_owners_file() {
         status(&app, &path, "mint").await,
         StatusCode::INTERNAL_SERVER_ERROR
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selected_tenant_scopes_files_for_multi_membership_callers() {
+    let mut caller = claims(None, &["editor"]);
+    caller.custom.insert(
+        "tenant_chain".into(),
+        serde_json::json!([
+            {"schema":"Organization","entity_id":"organization_alpha"},
+            {"schema":"Organization","entity_id":"organization_beta"}
+        ]),
+    );
+    let (app, path) = fixture(Some(caller), false).await;
+    for (tenant, expected_entity) in [
+        (Some("Organization:organization_alpha"), StatusCode::OK),
+        (
+            Some("Organization:organization_beta"),
+            StatusCode::FORBIDDEN,
+        ),
+        (None, StatusCode::BAD_REQUEST),
+        (
+            Some("Organization:organization_gamma"),
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        let mut request = Request::builder().uri(path.trim_end_matches("/fields/attachment"));
+        if let Some(tenant) = tenant {
+            request = request.header("x-active-tenant", tenant);
+        }
+        let entity_response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            entity_response.status(),
+            expected_entity,
+            "entity {tenant:?}"
+        );
+        for operation in ["download", "mint", "confirm"] {
+            let expected = if expected_entity == StatusCode::OK {
+                if operation == "confirm" {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
+            } else {
+                expected_entity
+            };
+            assert_eq!(
+                status_with_tenant(&app, &path, operation, tenant).await,
+                expected,
+                "{operation} {tenant:?}"
+            );
+        }
+    }
 }
