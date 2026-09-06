@@ -24,7 +24,7 @@ All paths below are relative to the existing SchemaForge API mount. Use the same
 
 3. `GET /schemas/{schema}/create-intents/{id}` returns HTTP 200 and the same receipt structure. States are `pending` with a null entity ID, `committed` with the original currently readable entity ID, or `committed_unavailable` with a null entity ID when the committed record has been deleted. The latter is an outcome, not a successful usable entity. Fetch a committed entity normally to obtain current data and its revision.
 
-The `fields` fingerprint ignores object-key order recursively. Array order, omitted fields versus explicit null, and JSON number representations remain significant. Server defaults, computed fields, owner injection, and tenant injection are not part of the submitted fingerprint. Unknown or hidden input fields are rejected. Changed submitted content requires a separate explicit create decision; it cannot reuse an intent.
+The `fields` fingerprint ignores object-key order recursively. Array order, omitted fields versus explicit null, and parsed integer versus floating-point values remain significant. Server defaults, computed fields, owner injection, and tenant injection are not part of the submitted fingerprint. Unknown or hidden input fields are rejected. Changed submitted content requires a separate explicit create decision; it cannot reuse an intent.
 
 ## Deadlines and uncertain responses
 
@@ -44,9 +44,10 @@ Protocol conflicts use the existing HTTP 409 envelope with `error: "conflict"` a
 | `create_intent_unavailable` | Unknown, expired, pruned, or differently scoped intent. No replacement create is attempted. |
 | `create_intent_content_conflict` | Submitted fields differ from the reserved input. |
 | `create_intent_schema_changed` | An uncommitted reservation's schema definition is no longer current. |
+| `unique_violation` | A business uniqueness constraint rejected the insertion; constraint and hidden field names are not disclosed. |
 | `create_result_unavailable` | Commitment exists, but POST reconciliation cannot return the deleted result. It was not recreated. |
 
-Normal validation errors, authentication errors, authorization denials, and business `unique_violation` errors retain their existing envelopes and statuses. HTTP 400 malformed intent errors use `error: "invalid_query"`. HTTP 503 uses the existing backend-unavailable envelope. Do not classify an outcome from human-readable messages.
+Normal validation errors, authentication errors, and authorization denials retain their existing envelopes and statuses. Intent commitment returns the redacted conflict envelope above for business uniqueness errors; ordinary creation without an intent retains its existing `error: "unique_violation"` envelope. HTTP 400 malformed intent errors use `error: "invalid_query"`. HTTP 503 uses the existing backend-unavailable envelope. Do not classify an outcome from human-readable messages.
 
 Reservation, commitment, and receipt lookup require current create permission. Returning a committed result additionally uses ordinary current record and field read authorization. Denied reads return their authorization error, never `committed` or `committed_unavailable` success. A former owner or tenant member cannot replay historical authorization. Receipt storage contains a content fingerprint and schema snapshot, not an entity response or credentials. Live-name collision rules remain schema/business constraints independent of receipt identity.
 

@@ -42,9 +42,13 @@ pub(super) fn error(error: CreateIntentError) -> ForgeError {
         CreateIntentError::ContentConflict => "create_intent_content_conflict",
         CreateIntentError::SchemaChanged => "create_intent_schema_changed",
         CreateIntentError::Backend(schema_forge_backend::BackendError::UniqueViolation {
-            schema,
-            field,
-        }) => return ForgeError::UniqueViolation { schema, field },
+            ..
+        }) => {
+            return ForgeError::Conflict {
+                reason: "unique_violation",
+                message: "A record with these unique values already exists.".into(),
+            };
+        }
         CreateIntentError::Backend(_) => return ForgeError::BackendUnavailable {
             message:
                 "Create outcome could not be determined. Reconcile the same intent before retrying."
@@ -446,5 +450,22 @@ mod tests {
                 ..
             })
         ));
+    }
+    #[test]
+    fn uniqueness_conflicts_do_not_disclose_hidden_constraints() {
+        let mapped = error(CreateIntentError::Backend(
+            schema_forge_backend::BackendError::UniqueViolation {
+                schema: "Note".into(),
+                field: "hidden_name_key".into(),
+            },
+        ));
+        assert!(matches!(
+            mapped,
+            ForgeError::Conflict {
+                reason: "unique_violation",
+                ..
+            }
+        ));
+        assert!(!mapped.to_string().contains("hidden_name_key"));
     }
 }
