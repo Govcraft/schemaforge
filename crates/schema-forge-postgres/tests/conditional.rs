@@ -44,6 +44,20 @@ fn patch(entity: &Entity, name: &str) -> Entity {
 #[tokio::test]
 #[ignore = "requires SCHEMAFORGE_TEST_POSTGRES_URL with CREATE SCHEMA privilege"]
 async fn atomic_record_mutations_and_readiness() {
+    with_database(exercise).await;
+}
+
+#[tokio::test]
+#[ignore = "requires SCHEMAFORGE_TEST_POSTGRES_URL with CREATE SCHEMA privilege"]
+async fn readiness_fast_path_avoids_metadata_wait_and_rechecks_snapshot() {
+    with_database(exercise_readiness_fast_path).await;
+}
+
+async fn with_database<Test, Pending>(test: Test)
+where
+    Test: FnOnce(Arc<PgBackend>) -> Pending,
+    Pending: std::future::Future<Output = ()> + Send + 'static,
+{
     let url = std::env::var("SCHEMAFORGE_TEST_POSTGRES_URL").expect("test PostgreSQL URL required");
     let admin = PgPoolOptions::new()
         .max_connections(1)
@@ -73,7 +87,7 @@ async fn atomic_record_mutations_and_readiness() {
         .unwrap();
     let backend = Arc::new(PgBackend::from_pool(pool.clone()).await.unwrap());
     // Catch assertion panics in the child so cleanup still happens.
-    let result = tokio::spawn(async move { exercise(backend).await }).await;
+    let result = tokio::spawn(test(backend)).await;
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA \"{namespace}\" CASCADE"))
         .execute(&admin)
@@ -244,5 +258,105 @@ async fn exercise(backend: Arc<PgBackend>) {
     assert!(
         matches!(a, Err(ConditionalMutationError::Conflict))
             || matches!(b, Err(ConditionalMutationError::Conflict))
+    );
+}
+
+async fn exercise_readiness_fast_path(backend: Arc<PgBackend>) {
+    let schema = definition();
+    backend
+        .apply_migration(&schema.name, &DiffEngine::create_new(&schema).steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    let entity = backend
+        .create(&Entity::new(
+            schema.name.clone(),
+            BTreeMap::from([
+                ("name".into(), DynamicValue::Text("readiness".into())),
+                ("detail".into(), DynamicValue::Text("unchanged".into())),
+            ]),
+        ))
+        .await
+        .unwrap();
+
+    let mut metadata_lock = backend.pool().begin().await.unwrap();
+    sqlx::query("LOCK TABLE \"_schema_metadata\" IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *metadata_lock)
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        backend.get_versioned(&schema.name, &entity.id),
+    )
+    .await;
+    metadata_lock.rollback().await.unwrap();
+    assert!(
+        matches!(result, Ok(Err(ConditionalMutationError::Unsupported))),
+        "unprepared discovery must not wait for schema metadata"
+    );
+
+    backend
+        .prepare_record_revisions(&schema.name)
+        .await
+        .unwrap();
+    let initial = backend
+        .get_versioned(&schema.name, &entity.id)
+        .await
+        .unwrap();
+    let mut metadata_lock = backend.pool().begin().await.unwrap();
+    sqlx::query("LOCK TABLE \"_schema_metadata\" IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *metadata_lock)
+        .await
+        .unwrap();
+    let locker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *metadata_lock)
+        .await
+        .unwrap();
+    let reading_backend = backend.clone();
+    let reading_schema = schema.name.clone();
+    let reading_id = entity.id.clone();
+    let reading = tokio::spawn(async move {
+        reading_backend
+            .get_versioned(&reading_schema, &reading_id)
+            .await
+    });
+    // Observe the actual database wait, rather than guessing a delay. Once the
+    // reader waits on metadata, its initial readiness check has completed.
+    let reached_metadata = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity a WHERE $1 = ANY(pg_blocking_pids(a.pid)))")
+                .bind(locker).fetch_one(backend.pool()).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await;
+    if reached_metadata.is_ok() {
+        // A schema drop clears this readiness entry. Keep the marker present
+        // to prove a stale fast-path result alone cannot expose a revision.
+        sqlx::query("DELETE FROM \"_schema_revision_ready\" WHERE schema_name = $1")
+            .bind(schema.name.as_str())
+            .execute(backend.pool())
+            .await
+            .unwrap();
+    }
+    metadata_lock.rollback().await.unwrap();
+    let result = reading.await.unwrap();
+    reached_metadata.expect("reader must reach the observed metadata wait");
+    assert!(matches!(result, Err(ConditionalMutationError::Unsupported)));
+    assert_eq!(backend.get(&schema.name, &entity.id).await.unwrap(), entity);
+
+    // A separately applied preparation is visible without an actor restart or
+    // invalidating a process-local negative readiness cache.
+    backend
+        .prepare_record_revisions(&schema.name)
+        .await
+        .unwrap();
+    assert_eq!(
+        backend
+            .get_versioned(&schema.name, &entity.id)
+            .await
+            .unwrap()
+            .revision,
+        initial.revision
     );
 }

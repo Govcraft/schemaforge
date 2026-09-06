@@ -124,6 +124,16 @@ impl PgBackend {
         Ok(())
     }
 
+    /// Avoid loading metadata or opening a transaction for unprepared schemas.
+    /// Do not cache: preparation can be performed by a separate CLI process.
+    pub(crate) async fn check_revision_readiness(
+        &self,
+        schema: &SchemaName,
+    ) -> Result<(), ConditionalMutationError> {
+        let mut connection = self.pool().acquire().await.map_err(database_error)?;
+        Self::require_revision_ready(&mut connection, schema).await
+    }
+
     async fn require_revision_ready(
         connection: &mut PgConnection,
         schema: &SchemaName,
@@ -148,13 +158,15 @@ impl PgBackend {
         id: &EntityId,
     ) -> Result<EntityRevision, ConditionalMutationError> {
         let marker: Option<String> = sqlx::query_scalar(&format!(
-            "SELECT revision FROM \"{REVISIONS}\" WHERE schema_name = $1 AND entity_id = $2"
+            "SELECT r.revision FROM \"{REVISIONS}\" r JOIN \"{READY}\" ready ON ready.schema_name = r.schema_name WHERE r.schema_name = $1 AND r.entity_id = $2"
         ))
         .bind(schema.as_str())
         .bind(id.as_str())
         .fetch_optional(connection)
         .await
         .map_err(database_error)?;
+        // Readiness must still hold in this snapshot. A schema can be dropped
+        // and recreated between the cheap initial check and the entity read.
         // Missing markers are never silently initialized on reads or conditional writes.
         marker
             .ok_or(ConditionalMutationError::Unsupported)?
@@ -177,7 +189,6 @@ impl PgBackend {
             .execute(&mut *tx)
             .await
             .map_err(database_error)?;
-        Self::require_revision_ready(&mut tx, schema).await?;
         let row = sqlx::query(&format!(
             "SELECT * FROM \"{}\" WHERE id = $1",
             schema.as_str()

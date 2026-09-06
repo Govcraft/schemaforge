@@ -674,6 +674,7 @@ impl EntityStore for PgBackend {
         schema: &SchemaName,
         id: &EntityId,
     ) -> Result<VersionedEntity, ConditionalMutationError> {
+        self.check_revision_readiness(schema).await?;
         let definition = self.load_schema_metadata(schema).await?;
         self.read_versioned(schema, id, definition.as_ref()).await
     }
