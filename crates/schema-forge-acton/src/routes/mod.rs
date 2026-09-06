@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod create_intents;
 pub mod entities;
 pub mod export;
 pub mod files;
@@ -44,6 +45,14 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
             get(schemas::get_schema)
                 .put(schemas::update_schema)
                 .delete(schemas::delete_schema),
+        )
+        .route(
+            "/schemas/{schema}/create-intents",
+            post(create_intents::reserve),
+        )
+        .route(
+            "/schemas/{schema}/create-intents/{id}",
+            get(create_intents::read),
         )
         // Entity CRUD (nested under schema)
         .route(

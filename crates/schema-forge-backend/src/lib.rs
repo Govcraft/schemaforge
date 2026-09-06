@@ -22,3 +22,6 @@ pub use user_store::{AuthStore, ForgeUser};
 
 /// Optional atomic record mutation types.
 pub mod conditional;
+
+/// Optional durable create reconciliation types.
+pub mod create_intent;

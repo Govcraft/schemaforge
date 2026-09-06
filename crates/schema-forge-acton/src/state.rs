@@ -133,6 +133,25 @@ impl<T: SchemaBackend + 'static> DynSchemaBackend for T {
 ///
 /// Same pattern as `DynSchemaBackend`: boxed futures for dynamic dispatch.
 pub trait DynEntityStore: Send + Sync {
+    /// Durable optional create reconciliation.
+    fn create_intent<'a>(
+        &'a self,
+        _request: &'a schema_forge_backend::create_intent::CreateIntentRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        schema_forge_backend::create_intent::CreateIntentReceipt,
+                        schema_forge_backend::create_intent::CreateIntentError,
+                    >,
+                > + Send
+                + Sync
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(schema_forge_backend::create_intent::CreateIntentError::Unsupported) })
+    }
+
     /// Read a record and its storage revision, if supported.
     fn get_versioned<'a>(
         &'a self,
@@ -234,6 +253,24 @@ pub trait DynEntityStore: Send + Sync {
 /// `Send + Sync` `FutureBox` bound, so backend calls can be awaited
 /// directly inside `act_on` handlers without an inner `tokio::spawn`.
 impl<T: EntityStore + 'static> DynEntityStore for T {
+    fn create_intent<'a>(
+        &'a self,
+        request: &'a schema_forge_backend::create_intent::CreateIntentRequest,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        schema_forge_backend::create_intent::CreateIntentReceipt,
+                        schema_forge_backend::create_intent::CreateIntentError,
+                    >,
+                > + Send
+                + Sync
+                + 'a,
+        >,
+    > {
+        Box::pin(SyncFuture::new(EntityStore::create_intent(self, request)))
+    }
+
     fn get_versioned<'a>(
         &'a self,
         schema: &'a SchemaName,

@@ -231,7 +231,7 @@ async fn load_mutation_baseline(
     Ok((ask_forge(rx).await?.map_err(ForgeError::from)?, None))
 }
 
-fn authorize_conditional_fields(
+pub(super) fn authorize_conditional_fields(
     store: &Arc<crate::authz::PolicyStore>,
     schema: &SchemaDefinition,
     baseline: &Entity,
@@ -1113,7 +1113,7 @@ fn entity_to_response(entity: &Entity, schema: &SchemaDefinition) -> EntityRespo
 /// and must never accept input from a user-facing endpoint. This guard
 /// lives at the request-deserialization boundary so `create`, `update`,
 /// and `patch` all share the same enforcement.
-fn reject_hidden_fields_in_body(
+pub(super) fn reject_hidden_fields_in_body(
     schema: &SchemaDefinition,
     body_fields: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), ForgeError> {
@@ -2125,8 +2125,9 @@ pub async fn create_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
     Json(body): Json<EntityRequest>,
-) -> Result<impl IntoResponse, ForgeError> {
+) -> Result<axum::response::Response, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
     let forge = state
         .actor::<ForgeActor>()
@@ -2167,6 +2168,15 @@ pub async fn create_entity(
                 .await;
         }
         return Err(e);
+    }
+
+    let intent =
+        super::create_intents::preflight(&state, &schema_def, claims.as_ref(), &headers, &body)
+            .await?;
+    if let Some(intent) = &intent {
+        if intent.receipt.entity_id.is_some() {
+            return super::create_intents::result(state, schema, claims, &intent.receipt).await;
+        }
     }
 
     // Reject any client-supplied @hidden fields up front.
@@ -2269,6 +2279,16 @@ pub async fn create_entity(
         FieldFilterDirection::Write,
     );
 
+    if let Some(intent) = intent {
+        let receipt = super::create_intents::commit(&state, intent, entity).await?;
+        if receipt.created {
+            if let Some(logger) = state.audit_logger() {
+                logger.log_custom("forge.entity.created", acton_service::audit::AuditSeverity::Informational, Some(serde_json::json!({"schema":schema,"intent_id":receipt.id.as_str(),"entity_id":receipt.entity_id.as_ref().map(|id|id.as_str())}))).await;
+            }
+        }
+        return super::create_intents::result(state, schema, claims, &receipt).await;
+    }
+
     // Create entity via actor (supervised backend call)
     let (tx, rx) = oneshot::channel();
     forge
@@ -2332,7 +2352,8 @@ pub async fn create_entity(
     Ok((
         StatusCode::CREATED,
         Json(entity_to_response(&created, &schema_def)),
-    ))
+    )
+        .into_response())
 }
 
 /// GET /schemas/{schema}/entities -- List/query entities.

@@ -323,3 +323,15 @@ pub struct DeleteEntityIf {
     pub reply:
         ReplyChannel<Result<(), schema_forge_backend::conditional::ConditionalMutationError>>,
 }
+
+/// Execute one optional create-reconciliation operation under supervision.
+#[derive(Clone, Debug)]
+pub struct ProcessCreateIntent {
+    pub request: schema_forge_backend::create_intent::CreateIntentRequest,
+    pub reply: ReplyChannel<
+        Result<
+            schema_forge_backend::create_intent::CreateIntentReceipt,
+            schema_forge_backend::create_intent::CreateIntentError,
+        >,
+    >,
+}

@@ -83,6 +83,14 @@ pub async fn get_meta(meta: Option<Extension<Arc<MetaInfo>>>) -> Response {
         Some(Extension(info)) => {
             let mut body = serde_json::json!(info.as_ref());
             body["capabilities"] = serde_json::json!({
+                "create_reconciliation": {
+                    "protocol": "create-intent-v1",
+                    "backend_supported": info.backend == "postgres",
+                    "request_header": "Create-Intent",
+                    "schema_support": "hook-free",
+                    "admission_seconds": 900,
+                    "recovery_seconds": 86400
+                },
                 "conditional_entity_mutations": {
                     "protocol": "record-revision-v1",
                     "backend_supported": info.backend == "postgres",

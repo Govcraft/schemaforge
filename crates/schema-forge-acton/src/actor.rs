@@ -405,6 +405,18 @@ fn no_backend_error() -> BackendError {
 }
 
 fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
+    actor.act_on::<crate::messages::ProcessCreateIntent>(|actor, ctx| {
+        let backend = actor.model.backend.clone();
+        let request = ctx.message().clone();
+        Reply::pending(async move {
+            let result = match backend {
+                Some(backend) => backend.create_intent(&request.request).await,
+                None => Err(schema_forge_backend::create_intent::CreateIntentError::Unsupported),
+            };
+            request.reply.send(result).await;
+        })
+    });
+
     actor.act_on::<CreateEntity>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let entity = ctx.message().entity.clone();
