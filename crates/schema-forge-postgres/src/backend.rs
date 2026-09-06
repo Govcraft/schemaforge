@@ -550,7 +550,7 @@ impl EntityStore for PgBackend {
         let schema_def = self.load_schema_metadata(&entity.schema).await?;
         let (sql, args) = Self::build_insert(entity, schema_def.as_ref())?;
 
-        let row: PgRow = sqlx::query_with(&sql, args)
+        let row: PgRow = sqlx::query_with(&sql, args).persistent(false)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| map_write_error(e, entity.schema.as_str(), "failed to create entity"))?;
@@ -564,6 +564,7 @@ impl EntityStore for PgBackend {
         let sql = format!("SELECT * FROM \"{table}\" WHERE \"id\" = $1;");
 
         let row: Option<PgRow> = sqlx::query(&sql)
+            .persistent(false)
             .bind(id.as_str())
             .fetch_optional(&self.pool)
             .await
@@ -584,7 +585,7 @@ impl EntityStore for PgBackend {
         let schema_def = self.load_schema_metadata(&entity.schema).await?;
         let (sql, args) = Self::build_update(entity, schema_def.as_ref())?;
 
-        let row: Option<PgRow> = sqlx::query_with(&sql, args)
+        let row: Option<PgRow> = sqlx::query_with(&sql, args).persistent(false)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| map_write_error(e, entity.schema.as_str(), "failed to update entity"))?;
@@ -641,7 +642,7 @@ impl EntityStore for PgBackend {
         // Each sqlx round-trip costs ~2 * network RTT (Parse/Execute), so
         // running them concurrently halves wall-clock DB time for list
         // endpoints that need a `total_count`.
-        let main_fut = sqlx::query_with(&compiled.sql, args).fetch_all(&self.pool);
+        let main_fut = sqlx::query_with(&compiled.sql, args).persistent(false).fetch_all(&self.pool);
 
         let rows: Vec<PgRow> = if query.include_total {
             let count_compiled = count_to_sql(query, table);
@@ -687,7 +688,7 @@ impl EntityStore for PgBackend {
         let compiled = count_to_sql(query, table);
         let args = Self::bind_params(&compiled.params)?;
 
-        let row: PgRow = sqlx::query_with(&compiled.sql, args)
+        let row: PgRow = sqlx::query_with(&compiled.sql, args).persistent(false)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| BackendError::QueryError {
@@ -710,7 +711,7 @@ impl EntityStore for PgBackend {
         let compiled = aggregate_to_sql(query, table);
         let args = Self::bind_params(&compiled.params)?;
 
-        let row: Option<PgRow> = sqlx::query_with(&compiled.sql, args)
+        let row: Option<PgRow> = sqlx::query_with(&compiled.sql, args).persistent(false)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| BackendError::QueryError {
