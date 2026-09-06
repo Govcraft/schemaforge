@@ -331,17 +331,12 @@ async fn walk_to_root(
     let mut current_schema = leaf.schema.clone();
     let mut current_id = leaf.entity_id.clone();
 
-    loop {
-        // Look up the current level in TenantConfig. If the active leaf's
-        // schema isn't a registered tenant level, there's nothing to walk
-        // — return what we have.
-        let Some(level) = tenant_config
-            .hierarchy
-            .iter()
-            .find(|l| l.schema.as_str() == current_schema.as_str())
-        else {
-            break;
-        };
+    // Stop when the current schema is not a registered tenant level.
+    while let Some(level) = tenant_config
+        .hierarchy
+        .iter()
+        .find(|l| l.schema.as_str() == current_schema.as_str())
+    {
 
         // Reached the root: no parent to walk to.
         let (Some(parent_schema), Some(parent_field)) = (&level.parent, &level.parent_field) else {
