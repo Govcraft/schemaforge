@@ -16,6 +16,24 @@ use crate::error::BackendError;
 /// Uses RPITIT (return position impl Trait in trait) for async methods,
 /// avoiding the `async-trait` crate.
 pub trait SchemaBackend: Send + Sync {
+    /// Whether explicit preparation of record revisions is available.
+    fn supports_record_revisions(&self) -> bool {
+        false
+    }
+
+    /// Explicitly backfill and enable record revisions for an applied schema.
+    fn prepare_record_revisions(
+        &self,
+        _schema: &SchemaName,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async {
+            Err(BackendError::MigrationFailed {
+                step: "prepare record revisions".into(),
+                reason: "backend does not support record revisions".into(),
+            })
+        }
+    }
+
     /// Apply a sequence of migration steps to a schema table.
     ///
     /// Each step is translated to the backend's native DDL and executed.
@@ -56,6 +74,45 @@ pub trait SchemaBackend: Send + Sync {
 /// - Creating, reading, updating, and deleting entities
 /// - Executing queries with filters, sorting, and pagination
 pub trait EntityStore: Send + Sync {
+    /// Read an entity and opaque revision from a single consistent snapshot.
+    /// Unsupported backends must not synthesize revisions from ordinary reads.
+    fn get_versioned(
+        &self,
+        _schema: &SchemaName,
+        _id: &EntityId,
+    ) -> impl Future<
+        Output = Result<
+            crate::conditional::VersionedEntity,
+            crate::conditional::ConditionalMutationError,
+        >,
+    > + Send {
+        async { Err(crate::conditional::ConditionalMutationError::Unsupported) }
+    }
+
+    /// Atomically update only the authorized expected record revision.
+    fn update_if(
+        &self,
+        _entity: &Entity,
+        _expected: &crate::conditional::EntityRevision,
+    ) -> impl Future<
+        Output = Result<
+            crate::conditional::VersionedEntity,
+            crate::conditional::ConditionalMutationError,
+        >,
+    > + Send {
+        async { Err(crate::conditional::ConditionalMutationError::Unsupported) }
+    }
+
+    /// Atomically delete only the authorized expected record revision.
+    fn delete_if(
+        &self,
+        _schema: &SchemaName,
+        _id: &EntityId,
+        _expected: &crate::conditional::EntityRevision,
+    ) -> impl Future<Output = Result<(), crate::conditional::ConditionalMutationError>> + Send {
+        async { Err(crate::conditional::ConditionalMutationError::Unsupported) }
+    }
+
     /// Create a new entity in the backend.
     ///
     /// The entity's `id` and `schema` determine where it is stored.

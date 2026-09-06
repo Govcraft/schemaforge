@@ -6,6 +6,9 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use schema_forge_backend::conditional::{
+    ConditionalMutationError, EntityRevision, VersionedEntity,
+};
 use schema_forge_backend::entity::{Entity, QueryResult};
 use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
@@ -183,6 +186,7 @@ impl PgBackend {
             step: "create _schema_metadata table".to_string(),
             reason: e.to_string(),
         })?;
+        self.ensure_revision_tables().await?;
         Ok(())
     }
 
@@ -378,15 +382,19 @@ impl PgBackend {
         })?;
 
         for row in rows {
-            let col: String = row.try_get("column_name").map_err(|e| BackendError::Internal {
-                message: format!("failed to read column_name: {e}"),
-            })?;
+            let col: String = row
+                .try_get("column_name")
+                .map_err(|e| BackendError::Internal {
+                    message: format!("failed to read column_name: {e}"),
+                })?;
             if !float_columns.contains(&col.as_str()) {
                 continue;
             }
-            let data_type: String = row.try_get("data_type").map_err(|e| BackendError::Internal {
-                message: format!("failed to read data_type: {e}"),
-            })?;
+            let data_type: String =
+                row.try_get("data_type")
+                    .map_err(|e| BackendError::Internal {
+                        message: format!("failed to read data_type: {e}"),
+                    })?;
             if data_type != "numeric" {
                 continue;
             }
@@ -398,12 +406,21 @@ impl PgBackend {
             let alter = format!(
                 "ALTER TABLE \"{table}\" ALTER COLUMN \"{col}\" TYPE DOUBLE PRECISION USING \"{col}\"::double precision;"
             );
-            sqlx::query(&alter).execute(&self.pool).await.map_err(|e| {
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| map_write_error(e, table, "begin float repair"))?;
+            sqlx::query(&alter).execute(&mut *tx).await.map_err(|e| {
                 BackendError::MigrationFailed {
                     step: format!("repair_float_column({table}.{col})"),
                     reason: e.to_string(),
                 }
             })?;
+            Self::invalidate_schema_revisions(&mut tx, &definition.name).await?;
+            tx.commit()
+                .await
+                .map_err(|e| map_write_error(e, table, "commit float repair"))?;
         }
 
         Ok(())
@@ -419,6 +436,13 @@ impl PgBackend {
 }
 
 impl SchemaBackend for PgBackend {
+    fn supports_record_revisions(&self) -> bool {
+        true
+    }
+    async fn prepare_record_revisions(&self, schema: &SchemaName) -> Result<(), BackendError> {
+        self.prepare_revisions(schema).await
+    }
+
     async fn apply_migration(
         &self,
         schema_name: &SchemaName,
@@ -445,6 +469,10 @@ impl SchemaBackend for PgBackend {
                     }
                 })?;
             }
+        }
+
+        if !steps.is_empty() {
+            Self::invalidate_schema_revisions(&mut tx, schema_name).await?;
         }
 
         tx.commit()
@@ -549,13 +577,22 @@ impl EntityStore for PgBackend {
     async fn create(&self, entity: &Entity) -> Result<Entity, BackendError> {
         let schema_def = self.load_schema_metadata(&entity.schema).await?;
         let (sql, args) = Self::build_insert(entity, schema_def.as_ref())?;
-
-        let row: PgRow = sqlx::query_with(&sql, args).persistent(false)
-            .fetch_one(&self.pool)
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| map_write_error(e, entity.schema.as_str(), "begin create"))?;
+        let row: PgRow = sqlx::query_with(&sql, args)
+            .persistent(false)
+            .fetch_one(&mut *tx)
             .await
             .map_err(|e| map_write_error(e, entity.schema.as_str(), "failed to create entity"))?;
-
-        row_to_entity(&row, &entity.schema, schema_def.as_ref())
+        let created = row_to_entity(&row, &entity.schema, schema_def.as_ref())?;
+        Self::advance_revision(&mut tx, &created).await?;
+        tx.commit()
+            .await
+            .map_err(|e| map_write_error(e, entity.schema.as_str(), "commit create"))?;
+        Ok(created)
     }
 
     async fn get(&self, schema: &SchemaName, id: &EntityId) -> Result<Entity, BackendError> {
@@ -584,50 +621,127 @@ impl EntityStore for PgBackend {
     async fn update(&self, entity: &Entity) -> Result<Entity, BackendError> {
         let schema_def = self.load_schema_metadata(&entity.schema).await?;
         let (sql, args) = Self::build_update(entity, schema_def.as_ref())?;
-
-        let row: Option<PgRow> = sqlx::query_with(&sql, args).persistent(false)
-            .fetch_optional(&self.pool)
+        let mut tx = self
+            .pool
+            .begin()
             .await
-            .map_err(|e| map_write_error(e, entity.schema.as_str(), "failed to update entity"))?;
-
-        match row {
-            None => Err(BackendError::EntityNotFound {
-                schema: entity.schema.as_str().to_string(),
-                entity_id: entity.id.as_str().to_string(),
-            }),
-            Some(row) => row_to_entity(&row, &entity.schema, schema_def.as_ref()),
-        }
+            .map_err(|e| map_write_error(e, entity.schema.as_str(), "begin update"))?;
+        let row = sqlx::query_with(&sql, args)
+            .persistent(false)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| map_write_error(e, entity.schema.as_str(), "failed to update entity"))?
+            .ok_or_else(|| BackendError::EntityNotFound {
+                schema: entity.schema.to_string(),
+                entity_id: entity.id.to_string(),
+            })?;
+        let updated = row_to_entity(&row, &entity.schema, schema_def.as_ref())?;
+        Self::advance_revision(&mut tx, &updated).await?;
+        tx.commit()
+            .await
+            .map_err(|e| map_write_error(e, entity.schema.as_str(), "commit update"))?;
+        Ok(updated)
     }
 
     async fn delete(&self, schema: &SchemaName, id: &EntityId) -> Result<(), BackendError> {
-        let table = schema.as_str();
-
-        // Check existence first
-        let exists: bool = sqlx::query_scalar(&format!(
-            "SELECT EXISTS(SELECT 1 FROM \"{table}\" WHERE \"id\" = $1);"
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| map_write_error(e, schema.as_str(), "begin delete"))?;
+        let deleted = sqlx::query(&format!(
+            "DELETE FROM \"{}\" WHERE id = $1",
+            schema.as_str()
         ))
         .bind(id.as_str())
-        .fetch_one(&self.pool)
+        .execute(&mut *tx)
         .await
-        .map_err(|e| BackendError::QueryError {
-            message: format!("failed to check entity existence: {e}"),
-        })?;
-
-        if !exists {
+        .map_err(|e| map_write_error(e, schema.as_str(), "failed to delete entity"))?;
+        if deleted.rows_affected() == 0 {
             return Err(BackendError::EntityNotFound {
-                schema: table.to_string(),
-                entity_id: id.as_str().to_string(),
+                schema: schema.to_string(),
+                entity_id: id.to_string(),
             });
         }
-
-        sqlx::query(&format!("DELETE FROM \"{table}\" WHERE \"id\" = $1;"))
-            .bind(id.as_str())
-            .execute(&self.pool)
+        Self::remove_revision(&mut tx, schema, id).await?;
+        tx.commit()
             .await
-            .map_err(|e| BackendError::QueryError {
-                message: format!("failed to delete entity: {e}"),
-            })?;
+            .map_err(|e| map_write_error(e, schema.as_str(), "commit delete"))
+    }
 
+    async fn get_versioned(
+        &self,
+        schema: &SchemaName,
+        id: &EntityId,
+    ) -> Result<VersionedEntity, ConditionalMutationError> {
+        let definition = self.load_schema_metadata(schema).await?;
+        self.read_versioned(schema, id, definition.as_ref()).await
+    }
+
+    async fn update_if(
+        &self,
+        entity: &Entity,
+        expected: &EntityRevision,
+    ) -> Result<VersionedEntity, ConditionalMutationError> {
+        let definition = self.load_schema_metadata(&entity.schema).await?;
+        let mut tx =
+            self.pool.begin().await.map_err(|e| {
+                map_write_error(e, entity.schema.as_str(), "begin conditional update")
+            })?;
+        Self::lock_expected(&mut tx, &entity.schema, &entity.id, expected).await?;
+        // Equal-value patches must still reach the guarded database transaction.
+        let row = if entity.fields.is_empty() {
+            sqlx::query(&format!(
+                "SELECT * FROM \"{}\" WHERE id = $1",
+                entity.schema.as_str()
+            ))
+            .persistent(false)
+            .bind(entity.id.as_str())
+            .fetch_one(&mut *tx)
+            .await
+        } else {
+            let (sql, args) = Self::build_update(entity, definition.as_ref())?;
+            sqlx::query_with(&sql, args)
+                .persistent(false)
+                .fetch_one(&mut *tx)
+                .await
+        }
+        .map_err(|e| map_write_error(e, entity.schema.as_str(), "conditional update"))?;
+        let updated = row_to_entity(&row, &entity.schema, definition.as_ref())?;
+        let revision = Self::advance_revision(&mut tx, &updated).await?;
+        tx.commit()
+            .await
+            .map_err(|e| map_write_error(e, entity.schema.as_str(), "commit conditional update"))?;
+        Ok(VersionedEntity {
+            entity: updated,
+            revision,
+        })
+    }
+
+    async fn delete_if(
+        &self,
+        schema: &SchemaName,
+        id: &EntityId,
+        expected: &EntityRevision,
+    ) -> Result<(), ConditionalMutationError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| map_write_error(e, schema.as_str(), "begin conditional delete"))?;
+        Self::lock_expected(&mut tx, schema, id, expected).await?;
+        sqlx::query(&format!(
+            "DELETE FROM \"{}\" WHERE id = $1",
+            schema.as_str()
+        ))
+        .bind(id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| map_write_error(e, schema.as_str(), "conditional delete"))?;
+        Self::remove_revision(&mut tx, schema, id).await?;
+        tx.commit()
+            .await
+            .map_err(|e| map_write_error(e, schema.as_str(), "commit conditional delete"))?;
         Ok(())
     }
 
@@ -642,13 +756,14 @@ impl EntityStore for PgBackend {
         // Each sqlx round-trip costs ~2 * network RTT (Parse/Execute), so
         // running them concurrently halves wall-clock DB time for list
         // endpoints that need a `total_count`.
-        let main_fut = sqlx::query_with(&compiled.sql, args).persistent(false).fetch_all(&self.pool);
+        let main_fut = sqlx::query_with(&compiled.sql, args)
+            .persistent(false)
+            .fetch_all(&self.pool);
 
         let rows: Vec<PgRow> = if query.include_total {
             let count_compiled = count_to_sql(query, table);
             let count_args = Self::bind_params(&count_compiled.params)?;
-            let count_fut = sqlx::query_with(&count_compiled.sql, count_args)
-                .fetch_one(&self.pool);
+            let count_fut = sqlx::query_with(&count_compiled.sql, count_args).fetch_one(&self.pool);
 
             let (rows_res, count_res) = tokio::join!(main_fut, count_fut);
             let rows = rows_res.map_err(|e| BackendError::QueryError {
@@ -688,7 +803,8 @@ impl EntityStore for PgBackend {
         let compiled = count_to_sql(query, table);
         let args = Self::bind_params(&compiled.params)?;
 
-        let row: PgRow = sqlx::query_with(&compiled.sql, args).persistent(false)
+        let row: PgRow = sqlx::query_with(&compiled.sql, args)
+            .persistent(false)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| BackendError::QueryError {
@@ -711,7 +827,8 @@ impl EntityStore for PgBackend {
         let compiled = aggregate_to_sql(query, table);
         let args = Self::bind_params(&compiled.params)?;
 
-        let row: Option<PgRow> = sqlx::query_with(&compiled.sql, args).persistent(false)
+        let row: Option<PgRow> = sqlx::query_with(&compiled.sql, args)
+            .persistent(false)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| BackendError::QueryError {

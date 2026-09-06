@@ -19,3 +19,6 @@ pub use tenant::TenantRef;
 pub use tenant::{TenantConfig, TenantConfigError, TenantLevel};
 pub use traits::{EntityStore, SchemaBackend};
 pub use user_store::{AuthStore, ForgeUser};
+
+/// Optional atomic record mutation types.
+pub mod conditional;
