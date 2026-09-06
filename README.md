@@ -384,6 +384,8 @@ schemaforge entity list Contact --server https://forge.agency.gov \
 
 The full command surface, token-source precedence, output formats, exit codes, and the `[schema_forge.client]` config section are documented in [`docs/entity-cli-reference.md`](docs/entity-cli-reference.md).
 
+PostgreSQL applications can opt into [atomic conditional entity mutations](docs/conditional-entity-mutations.md) to reject stale edits and deletions. Prepare schemas explicitly with `apply --prepare-record-revisions`, then use the detail response revision as the mutation condition.
+
 ## Architecture
 
 SchemaForge is a Cargo workspace of seven composable crates. Each layer depends only on the layers below it.

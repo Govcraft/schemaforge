@@ -136,8 +136,8 @@ pub trait DynEntityStore: Send + Sync {
     /// Read a record and its storage revision, if supported.
     fn get_versioned<'a>(
         &'a self,
-        schema: &'a SchemaName,
-        id: &'a EntityId,
+        _schema: &'a SchemaName,
+        _id: &'a EntityId,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<VersionedEntity, ConditionalMutationError>>
@@ -145,12 +145,14 @@ pub trait DynEntityStore: Send + Sync {
                 + Sync
                 + 'a,
         >,
-    >;
+    > {
+        Box::pin(async { Err(ConditionalMutationError::Unsupported) })
+    }
     /// Atomically update the expected record revision.
     fn update_if<'a>(
         &'a self,
-        entity: &'a Entity,
-        expected: &'a EntityRevision,
+        _entity: &'a Entity,
+        _expected: &'a EntityRevision,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<VersionedEntity, ConditionalMutationError>>
@@ -158,14 +160,19 @@ pub trait DynEntityStore: Send + Sync {
                 + Sync
                 + 'a,
         >,
-    >;
+    > {
+        Box::pin(async { Err(ConditionalMutationError::Unsupported) })
+    }
     /// Atomically delete the expected record revision.
     fn delete_if<'a>(
         &'a self,
-        schema: &'a SchemaName,
-        id: &'a EntityId,
-        expected: &'a EntityRevision,
-    ) -> Pin<Box<dyn Future<Output = Result<(), ConditionalMutationError>> + Send + Sync + 'a>>;
+        _schema: &'a SchemaName,
+        _id: &'a EntityId,
+        _expected: &'a EntityRevision,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ConditionalMutationError>> + Send + Sync + 'a>>
+    {
+        Box::pin(async { Err(ConditionalMutationError::Unsupported) })
+    }
 
     /// Create a new entity in the backend.
     ///

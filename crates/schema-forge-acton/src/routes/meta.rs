@@ -80,7 +80,19 @@ impl MetaInfo {
 /// surfaced as 500 rather than a silent default.
 pub async fn get_meta(meta: Option<Extension<Arc<MetaInfo>>>) -> Response {
     match meta {
-        Some(Extension(info)) => (StatusCode::OK, Json(info.as_ref().clone())).into_response(),
+        Some(Extension(info)) => {
+            let mut body = serde_json::json!(info.as_ref());
+            body["capabilities"] = serde_json::json!({
+                "conditional_entity_mutations": {
+                    "protocol": "record-revision-v1",
+                    "backend_supported": info.backend == "postgres",
+                    "schema_readiness": "entity-revision-response-header",
+                    "request_header": "If-Entity-Revision",
+                    "response_header": "Entity-Revision"
+                }
+            });
+            (StatusCode::OK, Json(body)).into_response()
+        }
         None => {
             let body = serde_json::json!({
                 "error": "meta endpoint not configured",
@@ -114,5 +126,28 @@ mod tests {
         assert_eq!(info.auth.ttl_seconds, 3600);
         // The build version is whatever Cargo stamped on this crate.
         assert!(!info.build.version.is_empty());
+    }
+
+    #[tokio::test]
+    async fn metadata_distinguishes_adapter_support_from_schema_readiness() {
+        for (backend, supported) in [("postgres", true), ("surrealdb", false), ("mssql", false)] {
+            let response = get_meta(Some(Extension(Arc::new(MetaInfo::new(
+                backend, backend, 3600,
+            )))))
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 8192)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let capability = &body["capabilities"]["conditional_entity_mutations"];
+            assert_eq!(capability["backend_supported"], supported);
+            assert_eq!(capability["protocol"], "record-revision-v1");
+            assert_eq!(
+                capability["schema_readiness"],
+                "entity-revision-response-header"
+            );
+            assert_eq!(body["backend"], backend);
+        }
     }
 }

@@ -8254,7 +8254,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-mssql"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "acton-service",
  "bb8",
@@ -8308,7 +8308,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-surrealdb"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "schema-forge-backend",
