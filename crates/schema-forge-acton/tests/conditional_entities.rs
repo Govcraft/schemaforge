@@ -20,8 +20,8 @@ use schema_forge_acton::{
 };
 use schema_forge_backend::{conditional::EntityRevision, entity::Entity, tenant::TenantConfig};
 use schema_forge_core::types::{
-    Annotation, DynamicValue, EntityId, FieldAnnotation, FieldDefinition, FieldName, FieldType,
-    SchemaDefinition, SchemaId, SchemaName, TenantKind, TextConstraints,
+    Annotation, DynamicValue, EntityId, FieldAnnotation, FieldDefinition, FieldModifier, FieldName,
+    FieldType, SchemaDefinition, SchemaId, SchemaName, TenantKind, TextConstraints,
 };
 use schema_forge_surrealdb::SurrealBackend;
 use std::{
@@ -51,9 +51,10 @@ async fn fixture_with_backend(
         SchemaId::new(),
         SchemaName::new("Note").unwrap(),
         vec![
-            FieldDefinition::new(
+            FieldDefinition::with_modifiers(
                 FieldName::new("title").unwrap(),
                 FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Unique],
             ),
             FieldDefinition::with_annotations(
                 FieldName::new("owner").unwrap(),
@@ -347,6 +348,39 @@ async fn postgres_http_revisions_guard_updates_noops_races_and_deletes() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["fields"]["title"], "Original");
     let initial = response_revision(&headers);
+    // A conditional write must preserve ordinary uniqueness semantics, and a
+    // rejected write must roll back both fields and the revision marker.
+    let occupied = Entity::with_id(
+        EntityId::new("note"),
+        SchemaName::new("Note").unwrap(),
+        BTreeMap::from([
+            ("title".into(), DynamicValue::Text("Taken".into())),
+            ("owner".into(), DynamicValue::Text("editor".into())),
+        ]),
+    );
+    DynEntityStore::create(backend.as_ref(), &occupied)
+        .await
+        .unwrap();
+    for method in ["PATCH", "PUT"] {
+        let (status, headers, body) = request(
+            &app,
+            &path,
+            method,
+            Some(initial.as_str()),
+            serde_json::json!({"title": "Taken"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["reason"], "unique_violation");
+        assert!(body.get("field").is_none());
+        assert!(body.get("schema").is_none());
+        assert!(!headers.contains_key("entity-revision"));
+        let (status, headers, body) =
+            request(&app, &path, "GET", None, serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["fields"]["title"], "Original");
+        assert_eq!(response_revision(&headers), initial);
+    }
     let (status, headers, body) = request(
         &app,
         &path,
@@ -532,6 +566,64 @@ async fn postgres_http_revisions_guard_updates_noops_races_and_deletes() {
     let (status, headers, _) = request(&app, &path, "GET", None, serde_json::json!({})).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!headers.contains_key("entity-revision"));
+
+    // Different records with independent valid revisions still compete for
+    // one unique value. The loser is a business conflict, not an outage.
+    let mut contenders = Vec::new();
+    for title in ["Left original", "Right original"] {
+        let entity = Entity::with_id(
+            EntityId::new("note"),
+            SchemaName::new("Note").unwrap(),
+            BTreeMap::from([
+                ("title".into(), DynamicValue::Text(title.into())),
+                ("owner".into(), DynamicValue::Text("editor".into())),
+            ]),
+        );
+        DynEntityStore::create(backend.as_ref(), &entity)
+            .await
+            .unwrap();
+        let path = format!("/schemas/Note/entities/{}", entity.id);
+        let (status, headers, _) = request(&app, &path, "GET", None, serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        contenders.push((path, response_revision(&headers), title));
+    }
+    let (left, right) = tokio::join!(
+        request(
+            &app,
+            &contenders[0].0,
+            "PATCH",
+            Some(contenders[0].1.as_str()),
+            serde_json::json!({"title":"Shared name"})
+        ),
+        request(
+            &app,
+            &contenders[1].0,
+            "PATCH",
+            Some(contenders[1].1.as_str()),
+            serde_json::json!({"title":"Shared name"})
+        ),
+    );
+    assert_eq!(
+        [left.0, right.0]
+            .iter()
+            .filter(|status| **status == StatusCode::OK)
+            .count(),
+        1
+    );
+    for (result, (path, baseline, original)) in [left, right].iter().zip(&contenders) {
+        let (status, headers, body) = request(&app, path, "GET", None, serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        if result.0 == StatusCode::OK {
+            assert_eq!(body["fields"]["title"], "Shared name");
+            assert_ne!(&response_revision(&headers), baseline);
+        } else {
+            assert_eq!(result.0, StatusCode::CONFLICT, "{}", result.2);
+            assert_eq!(result.2["reason"], "unique_violation");
+            assert!(!result.1.contains_key("entity-revision"));
+            assert_eq!(body["fields"]["title"], *original);
+            assert_eq!(&response_revision(&headers), baseline);
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

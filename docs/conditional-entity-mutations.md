@@ -45,6 +45,7 @@ Requests without a condition retain ordinary CRUD behavior. Every actual backend
 | --- | --- |
 | Detail GET with `Entity-Revision` | This authorized record has a usable edit baseline. |
 | Detail GET without the header | Conditional mutation is unavailable for that schema/backend. Do not claim stale-edit protection. |
+| 409, `reason: "unique_violation"` | Another record already uses a unique value. Revise the input; the rejected write leaves the record and revision unchanged. Constraint and hidden field details are omitted. |
 | 409, `reason: "revision_conflict"` | The baseline changed. Keep the user's draft and reload for deliberate reconciliation. |
 | 409, `reason: "conditional_mutation_unsupported"` | The adapter or schema is not ready. Do not retry unconditionally. |
 | 400 | Malformed/duplicate revision header, or unsupported `If-Match`. Correct the request. |
