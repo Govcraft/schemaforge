@@ -67,12 +67,14 @@ mod tests {
         schema: Option<SchemaDefinition>,
         migrations: usize,
         writes: usize,
+        preparations: usize,
     }
 
     #[derive(Default)]
     struct Backend {
         stored: Mutex<Stored>,
         fail_migration: bool,
+        revisions_supported: bool,
     }
 
     impl Backend {
@@ -83,11 +85,26 @@ mod tests {
                     ..Stored::default()
                 }),
                 fail_migration: false,
+                revisions_supported: false,
             }
         }
     }
 
     impl DynSchemaBackend for Backend {
+        fn supports_record_revisions(&self) -> bool {
+            self.revisions_supported
+        }
+        fn prepare_record_revisions<'a>(
+            &'a self,
+            _: &'a SchemaName,
+        ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>> {
+            Box::pin(async move {
+                assert!(self.revisions_supported);
+                self.stored.lock().unwrap().preparations += 1;
+                Ok(())
+            })
+        }
+
         fn apply_migration<'a>(
             &'a self,
             _: &'a SchemaName,
@@ -179,6 +196,7 @@ mod tests {
                             dry_run: !execute,
                             force: false,
                             with_policies: false,
+                            prepare_record_revisions: false,
                         },
                         &[desired],
                         backend,
@@ -341,6 +359,7 @@ mod tests {
                 dry_run: false,
                 force: false,
                 with_policies: false,
+                prepare_record_revisions: false,
             },
             &global,
             &output(),
@@ -363,5 +382,52 @@ mod tests {
                 "must fail parsing before attempting connection: {result:?}"
             );
         }
+    }
+    #[tokio::test]
+    async fn explicit_revision_preparation_handles_unchanged_dry_run_and_unsupported_schemas() {
+        let desired = schema(ORIGINAL);
+        let mut backend = Backend::seeded(desired.clone());
+        let mut args = ApplyArgs {
+            paths: vec![],
+            dry_run: false,
+            force: false,
+            with_policies: false,
+            prepare_record_revisions: true,
+        };
+        assert!(super::super::apply::apply_to_backend(
+            &args,
+            std::slice::from_ref(&desired),
+            &backend,
+            &output()
+        )
+        .await
+        .is_err());
+        assert_eq!(backend.stored.lock().unwrap().writes, 0);
+        backend.revisions_supported = true;
+        args.dry_run = true;
+        super::super::apply::apply_to_backend(
+            &args,
+            std::slice::from_ref(&desired),
+            &backend,
+            &output(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(backend.stored.lock().unwrap().preparations, 0);
+        args.dry_run = false;
+        for _ in 0..2 {
+            super::super::apply::apply_to_backend(
+                &args,
+                std::slice::from_ref(&desired),
+                &backend,
+                &output(),
+            )
+            .await
+            .unwrap();
+        }
+        let stored = backend.stored.lock().unwrap();
+        assert_eq!(stored.preparations, 2);
+        assert_eq!(stored.writes, 0);
+        assert_eq!(stored.migrations, 0);
     }
 }

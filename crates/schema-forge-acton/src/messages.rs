@@ -287,3 +287,39 @@ impl std::fmt::Debug for InitForge {
 pub struct GetStorageRegistry {
     pub reply: ReplyChannel<crate::storage::StorageRegistry>,
 }
+
+/// Read an entity and opaque revision from the same snapshot.
+#[derive(Clone, Debug)]
+pub struct GetVersionedEntity {
+    pub schema: SchemaName,
+    pub id: EntityId,
+    pub reply: ReplyChannel<
+        Result<
+            schema_forge_backend::conditional::VersionedEntity,
+            schema_forge_backend::conditional::ConditionalMutationError,
+        >,
+    >,
+}
+
+/// Atomically update an authorized expected record revision.
+#[derive(Clone, Debug)]
+pub struct UpdateEntityIf {
+    pub entity: Entity,
+    pub expected: schema_forge_backend::conditional::EntityRevision,
+    pub reply: ReplyChannel<
+        Result<
+            schema_forge_backend::conditional::VersionedEntity,
+            schema_forge_backend::conditional::ConditionalMutationError,
+        >,
+    >,
+}
+
+/// Atomically delete an authorized expected record revision.
+#[derive(Clone, Debug)]
+pub struct DeleteEntityIf {
+    pub schema: SchemaName,
+    pub id: EntityId,
+    pub expected: schema_forge_backend::conditional::EntityRevision,
+    pub reply:
+        ReplyChannel<Result<(), schema_forge_backend::conditional::ConditionalMutationError>>,
+}
