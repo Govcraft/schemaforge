@@ -53,7 +53,7 @@ pub struct GlobalOpts {
     pub quiet: bool,
 
     /// Disable colored output [env: NO_COLOR]
-    #[arg(long = "no-color", global = true, env = "NO_COLOR")]
+    #[arg(long = "no-color", global = true)]
     pub no_color: bool,
 
     /// Database connection URL (auto-detects backend from scheme) [env: SCHEMA_FORGE_DB_URL]

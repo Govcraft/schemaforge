@@ -33,6 +33,7 @@ impl OutputContext {
         };
 
         let use_color = !global.no_color
+            && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
             && std::env::var("TERM").map_or(true, |t| t != "dumb")
             && Term::stderr().is_term();
 
