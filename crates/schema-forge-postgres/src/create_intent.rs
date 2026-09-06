@@ -81,7 +81,7 @@ impl PgBackend {
             }
             CreateIntentRequest::Read { scope, id }
             | CreateIntentRequest::Commit { scope, id, .. } => {
-                let row = sqlx::query("SELECT *, expires_at <= clock_timestamp() AS expired FROM _schema_create_intents WHERE id=$1 AND principal=$2 AND tenant=$3 AND schema_name=$4 AND schema_id=$5 AND recover_until > clock_timestamp() FOR UPDATE")
+                let row = sqlx::query("SELECT * FROM _schema_create_intents WHERE id=$1 AND principal=$2 AND tenant=$3 AND schema_name=$4 AND schema_id=$5 AND recover_until > clock_timestamp() FOR UPDATE")
                     .bind(id.as_str()).bind(&scope.principal).bind(&scope.tenant).bind(scope.schema.name.as_str()).bind(scope.schema.id.as_str()).fetch_optional(&mut *tx).await.map_err(storage)?.ok_or(Error::Unavailable)?;
                 let mut outcome = receipt(&row, false)?;
                 let now: chrono::DateTime<chrono::Utc> =

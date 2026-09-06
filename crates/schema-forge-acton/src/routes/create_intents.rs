@@ -404,4 +404,47 @@ mod tests {
             assert_ne!(digest(a), digest(b));
         }
     }
+    #[tokio::test]
+    async fn configured_side_effects_refuse_pending_protocol() {
+        use acton_service::{config::Config, service_builder::ServiceBuilder};
+        use schema_forge_core::types::{
+            Annotation, FieldDefinition, FieldName, FieldType, HookEvent, SchemaId, TextConstraints,
+        };
+        let mut schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Note").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("title").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![],
+        )
+        .unwrap();
+        let service = ServiceBuilder::new()
+            .with_config(Config::<SchemaForgeConfig>::default())
+            .build();
+        assert!(supported(service.state(), &schema).is_ok());
+        schema.annotations.push(Annotation::Hook {
+            event: HookEvent::AfterChange,
+            intent: "notify".into(),
+        });
+        assert!(matches!(
+            supported(service.state(), &schema),
+            Err(ForgeError::Conflict {
+                reason: "create_intent_unsupported",
+                ..
+            })
+        ));
+        schema.annotations.clear();
+        let mut config = Config::<SchemaForgeConfig>::default();
+        config.custom.schema_forge.webhooks.enabled = true;
+        let service = ServiceBuilder::new().with_config(config).build();
+        assert!(matches!(
+            supported(service.state(), &schema),
+            Err(ForgeError::Conflict {
+                reason: "create_intent_unsupported",
+                ..
+            })
+        ));
+    }
 }
