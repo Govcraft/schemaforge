@@ -1,5 +1,8 @@
 use console::Term;
-use schema_forge_core::migration::{DiffEngine, MigrationSafety};
+use schema_forge_acton::DynSchemaBackend;
+use schema_forge_core::{migration::MigrationSafety, types::SchemaDefinition};
+
+use super::schema_update::SchemaUpdate;
 
 use crate::cli::{ApplyArgs, GlobalOpts};
 use crate::commands::parse::parse_all_schemas_with_global;
@@ -22,19 +25,25 @@ pub async fn run(
 
     let backend = super::connect_backend(&db_params, output).await?;
 
+    apply_to_backend(&args, &schemas, backend.as_ref(), output).await
+}
+
+pub(super) async fn apply_to_backend(
+    args: &ApplyArgs,
+    schemas: &[SchemaDefinition],
+    backend: &dyn DynSchemaBackend,
+    output: &OutputContext,
+) -> Result<(), CliError> {
     let mut total_steps = 0usize;
     let mut applied_schemas = 0usize;
+    let mut metadata_only_updates = 0usize;
 
-    for schema in &schemas {
+    for schema in schemas {
         let existing = backend.load_schema_metadata(&schema.name).await?;
 
-        let plan = if let Some(old) = existing {
-            DiffEngine::diff(&old, schema)
-        } else {
-            DiffEngine::create_new(schema)
-        };
-
-        if plan.is_empty() {
+        let update = SchemaUpdate::plan(existing.as_ref(), schema);
+        let plan = &update.migration;
+        if update.is_empty() {
             output.status(&format!("  {} .... no changes", schema.name.as_str()));
             continue;
         }
@@ -75,7 +84,12 @@ pub async fn run(
         let safety_label = plan.overall_safety();
         match output.mode {
             OutputMode::Human => {
-                if plan.steps.len() == 1
+                if plan.is_empty() {
+                    output.status(&format!(
+                        "  {:<16} METADATA UPDATE (0 migration steps)",
+                        schema.name.as_str()
+                    ));
+                } else if plan.steps.len() == 1
                     && matches!(
                         &plan.steps[0],
                         schema_forge_core::migration::MigrationStep::CreateSchema { .. }
@@ -102,17 +116,19 @@ pub async fn run(
         }
 
         if !args.dry_run {
-            backend.apply_migration(&schema.name, &plan.steps).await?;
-            backend.store_schema_metadata(schema).await?;
+            update.persist(backend).await?;
         }
 
+        if plan.is_empty() {
+            metadata_only_updates += 1;
+        }
         total_steps += plan.steps.len();
         applied_schemas += 1;
     }
 
     // Generate policies if requested
     if args.with_policies && !args.dry_run {
-        for schema in &schemas {
+        for schema in schemas {
             let policies = schema_forge_acton::cedar::generate_cedar_policies(schema);
             output.status(&format!(
                 "  Generated {} Cedar policies for {}",
@@ -140,6 +156,7 @@ pub async fn run(
                 "dry_run": args.dry_run,
                 "schemas_applied": applied_schemas,
                 "total_steps": total_steps,
+                "metadata_only_updates": metadata_only_updates,
             });
             output.print_json(&json);
         }
