@@ -63,6 +63,17 @@ async fn fixture_with_backend(
                 vec![FieldAnnotation::Owner],
             ),
             FieldDefinition::with_annotations(
+                FieldName::new("name_key").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![],
+                vec![
+                    FieldAnnotation::Hidden,
+                    FieldAnnotation::Compute {
+                        expr: "string(size(owner)) + ':' + owner + title".into(),
+                    },
+                ],
+            ),
+            FieldDefinition::with_annotations(
                 FieldName::new("restricted").unwrap(),
                 FieldType::Text(TextConstraints::unconstrained()),
                 vec![],
@@ -104,6 +115,15 @@ async fn fixture_with_backend(
     DynEntityStore::create(backend.as_ref(), &entity)
         .await
         .unwrap();
+    let app = app_with_backend(backend, schema, roles).await;
+    (app, format!("/schemas/Note/entities/{}", entity.id))
+}
+
+async fn app_with_backend(
+    backend: Arc<dyn DynForgeBackend>,
+    schema: SchemaDefinition,
+    roles: &[&str],
+) -> Router {
     let service = ServiceBuilder::new()
         .with_config(Config::<SchemaForgeConfig>::default())
         .with_actor::<ForgeActor>()
@@ -142,7 +162,7 @@ async fn fixture_with_backend(
         username: None,
         custom: HashMap::new(),
     };
-    let app = forge_routes()
+    forge_routes()
         .layer(axum::middleware::from_fn(
             move |mut req: axum::extract::Request, next: axum::middleware::Next| {
                 let caller = caller.clone();
@@ -152,8 +172,7 @@ async fn fixture_with_backend(
                 }
             },
         ))
-        .with_state(service.state().clone());
-    (app, format!("/schemas/Note/entities/{}", entity.id))
+        .with_state(service.state().clone())
 }
 
 async fn request(
@@ -329,6 +348,7 @@ fn assert_revision_conflict(result: &(StatusCode, axum::http::HeaderMap, serde_j
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a scoped disposable PostgreSQL URL and SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE=1"]
 async fn postgres_http_revisions_guard_updates_noops_races_and_deletes() {
+    use schema_forge_acton::state::DynSchemaBackend;
     assert_eq!(
         std::env::var("SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE").as_deref(),
         Ok("1"),
@@ -622,6 +642,65 @@ async fn postgres_http_revisions_guard_updates_noops_races_and_deletes() {
             assert!(!result.1.contains_key("entity-revision"));
             assert_eq!(body["fields"]["title"], *original);
             assert_eq!(&response_revision(&headers), baseline);
+        }
+    }
+    let schema = DynSchemaBackend::load_schema_metadata(backend.as_ref(), &other.schema)
+        .await
+        .unwrap()
+        .unwrap();
+    let admin_app = app_with_backend(backend.clone(), schema, &["platform_admin"]).await;
+    for (index, conditional) in [false, true].into_iter().enumerate() {
+        for supplied_owner in [None, Some("attempted-transfer")] {
+            let (_, headers, _) =
+                request(&admin_app, &other_path, "GET", None, serde_json::json!({})).await;
+            let baseline = response_revision(&headers);
+            let title = format!("Admin {index} {}", supplied_owner.unwrap_or("omitted"));
+            let mut body = serde_json::json!({"title": title});
+            if let Some(owner) = supplied_owner {
+                body["owner"] = serde_json::json!(owner);
+            }
+            let (status, headers, response) = request(
+                &admin_app,
+                &other_path,
+                "PUT",
+                conditional.then_some(baseline.as_str()),
+                body,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{response}");
+            assert_eq!(response["fields"]["owner"], "other");
+            assert!(response["fields"].get("name_key").is_none());
+            if conditional {
+                assert_ne!(response_revision(&headers), baseline);
+            }
+            let stored = DynEntityStore::get(backend.as_ref(), &other.schema, &other.id)
+                .await
+                .unwrap();
+            assert_eq!(stored.fields["owner"], DynamicValue::Text("other".into()));
+            assert_eq!(
+                stored.fields["name_key"],
+                DynamicValue::Text(format!("5:other{title}"))
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_put_computation_preserves_immutable_owner() {
+    for (owner, roles) in [
+        ("editor", vec!["editor"]),
+        ("other", vec!["platform_admin"]),
+    ] {
+        let (app, path) = fixture(owner, &roles).await;
+        for supplied_owner in [None, Some("attempted-transfer")] {
+            let mut body = serde_json::json!({"title": "Replacement"});
+            if let Some(value) = supplied_owner {
+                body["owner"] = serde_json::json!(value);
+            }
+            let (status, _, response) = request(&app, &path, "PUT", None, body).await;
+            assert_eq!(status, StatusCode::OK, "{response}");
+            assert_eq!(response["fields"]["owner"], owner);
+            assert!(response["fields"].get("name_key").is_none());
         }
     }
 }

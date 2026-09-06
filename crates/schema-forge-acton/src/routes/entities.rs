@@ -2923,6 +2923,13 @@ pub async fn update_entity(
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
     strip_owner_on_update(&mut fields, &schema_def);
+    // PUT replaces supplied fields, but immutable ownership remains part of
+    // the post-update rule context, even when an administrator is the caller.
+    if let Some(owner_field) = schema_def.fields.iter().find(|field| field.has_owner()) {
+        if let Some(owner) = existing.fields.get(owner_field.name.as_str()) {
+            fields.insert(owner_field.name.as_str().to_string(), owner.clone());
+        }
+    }
     // Single request-time instant reused for audit columns and the `now` CEL binding.
     let rules_now = chrono::Utc::now();
     inject_audit_columns_on_update(&mut fields, &schema_def, claims.as_ref(), rules_now);
