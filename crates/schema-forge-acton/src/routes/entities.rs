@@ -135,6 +135,10 @@ fn conditional_error(error: ConditionalMutationError) -> ForgeError {
         },
         ConditionalMutationError::Backend(error) => match error {
             schema_forge_backend::BackendError::EntityNotFound { .. } => ForgeError::from(error),
+            schema_forge_backend::BackendError::UniqueViolation { .. } => ForgeError::Conflict {
+                reason: "unique_violation",
+                message: "The change conflicts with an existing record.".into(),
+            },
             _ => ForgeError::BackendUnavailable {
                 message: "The entity operation could not be completed.".into(),
             },
@@ -3637,6 +3641,26 @@ mod tests {
         ));
         assert!(matches!(error, ForgeError::BackendUnavailable { .. }));
         assert!(!error.to_string().contains("private database"));
+    }
+
+    #[test]
+    fn revision_unique_conflicts_preserve_status_without_constraint_details() {
+        let error = conditional_error(ConditionalMutationError::Backend(
+            schema_forge_backend::BackendError::UniqueViolation {
+                schema: "PrivateSchema".into(),
+                field: "hidden_computed_key".into(),
+            },
+        ));
+        assert!(matches!(
+            error,
+            ForgeError::Conflict {
+                reason: "unique_violation",
+                ..
+            }
+        ));
+        assert!(!error.to_string().contains("PrivateSchema"));
+        assert!(!error.to_string().contains("hidden_computed_key"));
+        assert_eq!(error.into_response().status(), StatusCode::CONFLICT);
     }
 
     #[test]
