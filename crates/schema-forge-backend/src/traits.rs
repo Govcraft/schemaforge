@@ -74,6 +74,19 @@ pub trait SchemaBackend: Send + Sync {
 /// - Creating, reading, updating, and deleting entities
 /// - Executing queries with filters, sorting, and pagination
 pub trait EntityStore: Send + Sync {
+    /// Optional durable create reconciliation; unsupported adapters must refuse.
+    fn create_intent(
+        &self,
+        _request: &crate::create_intent::CreateIntentRequest,
+    ) -> impl Future<
+        Output = Result<
+            crate::create_intent::CreateIntentReceipt,
+            crate::create_intent::CreateIntentError,
+        >,
+    > + Send {
+        async { Err(crate::create_intent::CreateIntentError::Unsupported) }
+    }
+
     /// Read an entity and opaque revision from a single consistent snapshot.
     /// Unsupported backends must not synthesize revisions from ordinary reads.
     fn get_versioned(

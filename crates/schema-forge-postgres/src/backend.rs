@@ -36,7 +36,7 @@ const PG_UNIQUE_VIOLATION: &str = "23505";
 /// recovered from the constraint name (`uq_{table}_{field}`) when present,
 /// and otherwise falls back to the literal constraint identifier so the
 /// client still has *something* actionable to display.
-fn map_write_error(err: sqlx::Error, schema: &str, context: &str) -> BackendError {
+pub(crate) fn map_write_error(err: sqlx::Error, schema: &str, context: &str) -> BackendError {
     if let sqlx::Error::Database(ref db_err) = err {
         if db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION) {
             let constraint = db_err.constraint().unwrap_or("");
@@ -187,7 +187,24 @@ impl PgBackend {
             reason: e.to_string(),
         })?;
         self.ensure_revision_tables().await?;
+        self.ensure_create_intents().await?;
         Ok(())
+    }
+
+    pub(crate) async fn insert_with_revision(
+        connection: &mut sqlx::PgConnection,
+        entity: &Entity,
+        schema: Option<&SchemaDefinition>,
+    ) -> Result<schema_forge_backend::conditional::VersionedEntity, BackendError> {
+        let (sql, args) = Self::build_insert(entity, schema)?;
+        let row = sqlx::query_with(&sql, args)
+            .persistent(false)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(|e| map_write_error(e, entity.schema.as_str(), "create entity"))?;
+        let entity = row_to_entity(&row, &entity.schema, schema)?;
+        let revision = Self::advance_revision(connection, &entity).await?;
+        Ok(schema_forge_backend::conditional::VersionedEntity { entity, revision })
     }
 
     /// Build a parameterized INSERT statement and arguments for an entity.
@@ -574,21 +591,26 @@ impl SchemaBackend for PgBackend {
 }
 
 impl EntityStore for PgBackend {
+    async fn create_intent(
+        &self,
+        request: &schema_forge_backend::create_intent::CreateIntentRequest,
+    ) -> Result<
+        schema_forge_backend::create_intent::CreateIntentReceipt,
+        schema_forge_backend::create_intent::CreateIntentError,
+    > {
+        self.process_create_intent(request).await
+    }
+
     async fn create(&self, entity: &Entity) -> Result<Entity, BackendError> {
         let schema_def = self.load_schema_metadata(&entity.schema).await?;
-        let (sql, args) = Self::build_insert(entity, schema_def.as_ref())?;
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|e| map_write_error(e, entity.schema.as_str(), "begin create"))?;
-        let row: PgRow = sqlx::query_with(&sql, args)
-            .persistent(false)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| map_write_error(e, entity.schema.as_str(), "failed to create entity"))?;
-        let created = row_to_entity(&row, &entity.schema, schema_def.as_ref())?;
-        Self::advance_revision(&mut tx, &created).await?;
+        let created = Self::insert_with_revision(&mut tx, entity, schema_def.as_ref())
+            .await?
+            .entity;
         tx.commit()
             .await
             .map_err(|e| map_write_error(e, entity.schema.as_str(), "commit create"))?;
