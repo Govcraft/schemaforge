@@ -3,6 +3,7 @@ pub mod base64;
 mod bytes_constraints;
 mod cardinality;
 pub mod cedar_reserved;
+mod constraint_violation;
 mod default_value;
 pub mod duration;
 mod dynamic_value;
@@ -32,6 +33,7 @@ pub use base64::{
 };
 pub use bytes_constraints::BytesConstraints;
 pub use cardinality::Cardinality;
+pub use constraint_violation::ConstraintViolation;
 pub use default_value::DefaultValue;
 pub use duration::{format_go_duration, parse_go_duration, DurationParseError};
 pub use dynamic_value::DynamicValue;
