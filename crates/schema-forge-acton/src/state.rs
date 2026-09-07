@@ -1,3 +1,6 @@
+use schema_forge_backend::conditional::{
+    ConditionalMutationError, EntityRevision, VersionedEntity,
+};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -24,6 +27,23 @@ use tokio::sync::RwLock;
 /// RPITIT traits cannot be used as `dyn Trait`. This wrapper uses boxed futures
 /// to enable dynamic dispatch for HTTP handler state.
 pub trait DynSchemaBackend: Send + Sync {
+    /// Whether this adapter can explicitly prepare record revisions.
+    fn supports_record_revisions(&self) -> bool {
+        false
+    }
+    /// Backfill record revisions as an explicit schema administration operation.
+    fn prepare_record_revisions<'a>(
+        &'a self,
+        _schema: &'a SchemaName,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>> {
+        Box::pin(async {
+            Err(BackendError::MigrationFailed {
+                step: "prepare record revisions".into(),
+                reason: "backend does not support record revisions".into(),
+            })
+        })
+    }
+
     /// Apply a sequence of migration steps to a schema table.
     fn apply_migration<'a>(
         &'a self,
@@ -53,6 +73,18 @@ pub trait DynSchemaBackend: Send + Sync {
 
 /// Blanket impl: any concrete `SchemaBackend` automatically implements `DynSchemaBackend`.
 impl<T: SchemaBackend + 'static> DynSchemaBackend for T {
+    fn supports_record_revisions(&self) -> bool {
+        SchemaBackend::supports_record_revisions(self)
+    }
+    fn prepare_record_revisions<'a>(
+        &'a self,
+        schema: &'a SchemaName,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(SchemaBackend::prepare_record_revisions(
+            self, schema,
+        )))
+    }
+
     fn apply_migration<'a>(
         &'a self,
         schema_name: &'a SchemaName,
@@ -101,6 +133,47 @@ impl<T: SchemaBackend + 'static> DynSchemaBackend for T {
 ///
 /// Same pattern as `DynSchemaBackend`: boxed futures for dynamic dispatch.
 pub trait DynEntityStore: Send + Sync {
+    /// Read a record and its storage revision, if supported.
+    fn get_versioned<'a>(
+        &'a self,
+        _schema: &'a SchemaName,
+        _id: &'a EntityId,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<VersionedEntity, ConditionalMutationError>>
+                + Send
+                + Sync
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(ConditionalMutationError::Unsupported) })
+    }
+    /// Atomically update the expected record revision.
+    fn update_if<'a>(
+        &'a self,
+        _entity: &'a Entity,
+        _expected: &'a EntityRevision,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<VersionedEntity, ConditionalMutationError>>
+                + Send
+                + Sync
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(ConditionalMutationError::Unsupported) })
+    }
+    /// Atomically delete the expected record revision.
+    fn delete_if<'a>(
+        &'a self,
+        _schema: &'a SchemaName,
+        _id: &'a EntityId,
+        _expected: &'a EntityRevision,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ConditionalMutationError>> + Send + Sync + 'a>>
+    {
+        Box::pin(async { Err(ConditionalMutationError::Unsupported) })
+    }
+
     /// Create a new entity in the backend.
     ///
     /// The returned future is `Send + Sync` so it can be awaited inside an
@@ -161,6 +234,50 @@ pub trait DynEntityStore: Send + Sync {
 /// `Send + Sync` `FutureBox` bound, so backend calls can be awaited
 /// directly inside `act_on` handlers without an inner `tokio::spawn`.
 impl<T: EntityStore + 'static> DynEntityStore for T {
+    fn get_versioned<'a>(
+        &'a self,
+        schema: &'a SchemaName,
+        id: &'a EntityId,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<VersionedEntity, ConditionalMutationError>>
+                + Send
+                + Sync
+                + 'a,
+        >,
+    > {
+        Box::pin(SyncFuture::new(EntityStore::get_versioned(
+            self, schema, id,
+        )))
+    }
+    fn update_if<'a>(
+        &'a self,
+        entity: &'a Entity,
+        expected: &'a EntityRevision,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<VersionedEntity, ConditionalMutationError>>
+                + Send
+                + Sync
+                + 'a,
+        >,
+    > {
+        Box::pin(SyncFuture::new(EntityStore::update_if(
+            self, entity, expected,
+        )))
+    }
+    fn delete_if<'a>(
+        &'a self,
+        schema: &'a SchemaName,
+        id: &'a EntityId,
+        expected: &'a EntityRevision,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ConditionalMutationError>> + Send + Sync + 'a>>
+    {
+        Box::pin(SyncFuture::new(EntityStore::delete_if(
+            self, schema, id, expected,
+        )))
+    }
+
     fn create<'a>(
         &'a self,
         entity: &'a Entity,

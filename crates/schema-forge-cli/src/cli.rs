@@ -53,7 +53,7 @@ pub struct GlobalOpts {
     pub quiet: bool,
 
     /// Disable colored output [env: NO_COLOR]
-    #[arg(long = "no-color", global = true, env = "NO_COLOR")]
+    #[arg(long = "no-color", global = true)]
     pub no_color: bool,
 
     /// Database connection URL (auto-detects backend from scheme) [env: SCHEMA_FORGE_DB_URL]
@@ -667,6 +667,10 @@ pub struct ApplyArgs {
     /// Auto-generate Cedar policies for new schemas
     #[arg(long = "with-policies")]
     pub with_policies: bool,
+
+    /// Backfill and enable atomic record revisions (PostgreSQL only; locks each table)
+    #[arg(long)]
+    pub prepare_record_revisions: bool,
 }
 
 /// Arguments for `schema-forge migrate`.

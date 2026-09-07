@@ -34,6 +34,10 @@ pub(super) async fn apply_to_backend(
     backend: &dyn DynSchemaBackend,
     output: &OutputContext,
 ) -> Result<(), CliError> {
+    if args.prepare_record_revisions && !backend.supports_record_revisions() {
+        return Err(CliError::Config { message: "--prepare-record-revisions requires a PostgreSQL backend with record revision support".into() });
+    }
+    let mut prepared_schemas = 0usize;
     let mut total_steps = 0usize;
     let mut applied_schemas = 0usize;
     let mut metadata_only_updates = 0usize;
@@ -45,6 +49,10 @@ pub(super) async fn apply_to_backend(
         let plan = &update.migration;
         if update.is_empty() {
             output.status(&format!("  {} .... no changes", schema.name.as_str()));
+            if args.prepare_record_revisions {
+                prepare_revisions(args, backend, &schema.name, output).await?;
+                prepared_schemas += 1;
+            }
             continue;
         }
 
@@ -119,6 +127,11 @@ pub(super) async fn apply_to_backend(
             update.persist(backend).await?;
         }
 
+        if args.prepare_record_revisions {
+            prepare_revisions(args, backend, &schema.name, output).await?;
+            prepared_schemas += 1;
+        }
+
         if plan.is_empty() {
             metadata_only_updates += 1;
         }
@@ -157,6 +170,7 @@ pub(super) async fn apply_to_backend(
                 "schemas_applied": applied_schemas,
                 "total_steps": total_steps,
                 "metadata_only_updates": metadata_only_updates,
+                "record_revision_schemas": prepared_schemas,
             });
             output.print_json(&json);
         }
@@ -175,4 +189,24 @@ fn format_safety_tag(safety: MigrationSafety) -> String {
         MigrationSafety::Destructive => "  [destructive]".to_string(),
         _ => String::new(),
     }
+}
+
+async fn prepare_revisions(
+    args: &ApplyArgs,
+    backend: &dyn DynSchemaBackend,
+    schema: &schema_forge_core::types::SchemaName,
+    output: &OutputContext,
+) -> Result<(), CliError> {
+    if args.dry_run {
+        output.status(&format!(
+            "  {schema}: would prepare record revisions (table write lock)"
+        ));
+    } else {
+        output.status(&format!(
+            "  {schema}: preparing record revisions (table write lock)..."
+        ));
+        backend.prepare_record_revisions(schema).await?;
+        output.status(&format!("  {schema}: record revisions ready"));
+    }
+    Ok(())
 }

@@ -5,9 +5,10 @@ use acton_service::middleware::Claims;
 use acton_service::prelude::ActorHandleInterface;
 use acton_service::state::AppState;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
+use schema_forge_backend::conditional::{ConditionalMutationError, EntityRevision};
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::query::{validate_filter, FieldPath, Filter, SortOrder};
 use schema_forge_core::types::{
@@ -20,11 +21,10 @@ use tracing::instrument;
 
 use super::query_params::{parse_fields_param, parse_filter_params, parse_sort_param};
 use crate::access::{
-    check_schema_access, entity_permissions, filter_entity_fields,
-    inject_audit_columns_on_create, inject_audit_columns_on_update, inject_owner_on_create,
-    inject_tenant_on_create, inject_tenant_scope, schema_permissions, strip_owner_on_update,
-    AccessAction, EntityPermissions,
-    FieldFilterDirection, OptionalClaims, SchemaPermissions,
+    check_schema_access, entity_permissions, filter_entity_fields, inject_audit_columns_on_create,
+    inject_audit_columns_on_update, inject_owner_on_create, inject_tenant_on_create,
+    inject_tenant_scope, schema_permissions, strip_owner_on_update, AccessAction,
+    EntityPermissions, FieldFilterDirection, OptionalClaims, SchemaPermissions,
 };
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
@@ -33,8 +33,9 @@ use crate::hooks::{
     run_before_hook, DispatchHook, HookDispatchActor, HookDispatcher, HookInvocation, HooksConfig,
 };
 use crate::messages::{
-    CreateEntity, DeleteEntity, GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema,
-    GetSchemasBatch, GetTenantConfig, QueryEntities, ReplyChannel, UpdateEntity,
+    CreateEntity, DeleteEntity, DeleteEntityIf, GetEntity, GetHookDispatcher,
+    GetRecordAccessPolicy, GetSchema, GetSchemasBatch, GetTenantConfig, GetVersionedEntity,
+    QueryEntities, ReplyChannel, UpdateEntity, UpdateEntityIf,
 };
 use crate::rules::{
     apply_computed, apply_defaults, build_bindings, check_requires_with_bindings, RuleError,
@@ -109,6 +110,189 @@ async fn fetch_policy_store(
     ask_forge(rx).await?.ok_or_else(|| ForgeError::Internal {
         message: "Cedar policy store not initialized — InitForge has not run".into(),
     })
+}
+
+// A row revision is deliberately not an HTTP representation ETag: response
+// shaping, field visibility and read hooks can change without a row write.
+const REVISION_HEADER: &str = "entity-revision";
+const CONDITION_HEADER: &str = "if-entity-revision";
+
+fn conditional_requested(headers: &HeaderMap) -> bool {
+    headers.contains_key(CONDITION_HEADER) || headers.contains_key("if-match")
+}
+
+fn conditional_error(error: ConditionalMutationError) -> ForgeError {
+    match error {
+        ConditionalMutationError::Unsupported => ForgeError::Conflict {
+            reason: "conditional_mutation_unsupported",
+            message: "Conditional mutations are unavailable for this schema.".into(),
+        },
+        ConditionalMutationError::InvalidCondition => ForgeError::InvalidQuery {
+            message: "Invalid entity revision condition.".into(),
+        },
+        ConditionalMutationError::Conflict => ForgeError::Conflict {
+            reason: "revision_conflict",
+            message: "The record changed. Reload it before trying again.".into(),
+        },
+        ConditionalMutationError::Backend(error) => match error {
+            schema_forge_backend::BackendError::EntityNotFound { .. } => ForgeError::from(error),
+            schema_forge_backend::BackendError::UniqueViolation { .. } => ForgeError::Conflict {
+                reason: "unique_violation",
+                message: "The change conflicts with an existing record.".into(),
+            },
+            _ => ForgeError::BackendUnavailable {
+                message: "The entity operation could not be completed.".into(),
+            },
+        },
+    }
+}
+
+/// Parse only after schema, record and supplied-field authorization. Never
+/// include the supplied token or the current revision in an error response.
+fn expected_revision(
+    headers: &HeaderMap,
+    baseline: Option<&EntityRevision>,
+) -> Result<Option<EntityRevision>, ForgeError> {
+    if headers.contains_key("if-match") {
+        return Err(ForgeError::InvalidQuery {
+            message: "Use If-Entity-Revision for entity mutations; If-Match is unsupported.".into(),
+        });
+    }
+    let mut values = headers.get_all(CONDITION_HEADER).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(conditional_error(
+            ConditionalMutationError::InvalidCondition,
+        ));
+    }
+    let value = value
+        .to_str()
+        .map_err(|_| conditional_error(ConditionalMutationError::InvalidCondition))?;
+    if value.len() > 128 {
+        return Err(conditional_error(
+            ConditionalMutationError::InvalidCondition,
+        ));
+    }
+    let expected: EntityRevision = value
+        .parse()
+        .map_err(|_| conditional_error(ConditionalMutationError::InvalidCondition))?;
+    let baseline =
+        baseline.ok_or_else(|| conditional_error(ConditionalMutationError::Unsupported))?;
+    if &expected != baseline {
+        return Err(conditional_error(ConditionalMutationError::Conflict));
+    }
+    // Bind persistence to the exact row snapshot that passed authorization.
+    Ok(Some(baseline.clone()))
+}
+
+fn revision_headers(revision: Option<&EntityRevision>) -> Result<HeaderMap, ForgeError> {
+    let mut headers = HeaderMap::new();
+    if let Some(revision) = revision {
+        let value = HeaderValue::from_str(revision.as_str()).map_err(|_| ForgeError::Internal {
+            message: "Invalid backend entity revision.".into(),
+        })?;
+        headers.insert(REVISION_HEADER, value);
+        headers.insert(
+            "access-control-expose-headers",
+            HeaderValue::from_static("Entity-Revision"),
+        );
+    }
+    Ok(headers)
+}
+
+/// Unsupported versioned reads may fall back only to establish the ordinary
+/// authorization baseline. expected_revision then rejects conditional writes.
+async fn load_mutation_baseline(
+    forge: &acton_service::prelude::ActorHandle,
+    schema: &SchemaName,
+    id: &EntityId,
+    versioned: bool,
+) -> Result<(Entity, Option<EntityRevision>), ForgeError> {
+    if versioned {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetVersionedEntity {
+                schema: schema.clone(),
+                id: id.clone(),
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        match ask_forge(rx).await? {
+            Ok(result) => return Ok((result.entity, Some(result.revision))),
+            Err(ConditionalMutationError::Unsupported) => {}
+            Err(error) => return Err(conditional_error(error)),
+        }
+    }
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetEntity {
+            schema: schema.clone(),
+            id: id.clone(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    Ok((ask_forge(rx).await?.map_err(ForgeError::from)?, None))
+}
+
+fn authorize_conditional_fields(
+    store: &Arc<crate::authz::PolicyStore>,
+    schema: &SchemaDefinition,
+    baseline: &Entity,
+    claims: Option<&Claims>,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), ForgeError> {
+    for name in fields.keys() {
+        if schema
+            .field(name)
+            .is_some_and(|field| field.field_access().is_some())
+        {
+            let allowed = crate::authz::authorize_field(
+                store,
+                claims,
+                schema,
+                baseline,
+                name,
+                crate::authz::FieldDirection::Write,
+            )
+            .is_ok_and(|decision| decision.is_allow());
+            if !allowed {
+                return Err(ForgeError::Forbidden {
+                    message: "Not authorized to modify a supplied field.".into(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn persist_entity_update(
+    forge: &acton_service::prelude::ActorHandle,
+    entity: Entity,
+    expected: Option<EntityRevision>,
+) -> Result<(Entity, Option<EntityRevision>), ForgeError> {
+    if let Some(expected) = expected {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(UpdateEntityIf {
+                entity,
+                expected,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let result = ask_forge(rx).await?.map_err(conditional_error)?;
+        Ok((result.entity, Some(result.revision)))
+    } else {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(UpdateEntity {
+                entity,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        Ok((ask_forge(rx).await?.map_err(ForgeError::from)?, None))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -976,12 +1160,7 @@ fn reject_hidden_fields_in_body(
 ) -> Result<(), ForgeError> {
     let offenders: Vec<String> = body_fields
         .keys()
-        .filter(|name| {
-            schema
-                .field(name)
-                .map(|f| f.is_hidden())
-                .unwrap_or(false)
-        })
+        .filter(|name| schema.field(name).map(|f| f.is_hidden()).unwrap_or(false))
         .cloned()
         .collect();
     if offenders.is_empty() {
@@ -1236,8 +1415,14 @@ async fn execute_entity_query(
     // relation field is still scrubbed from the envelope alongside its
     // `__display` sibling below.
     let display_map = if resolve_relations && !visible_entities.is_empty() {
-        resolve_relation_displays(&forge, schema_def, &visible_entities, claims, &tenant_config)
-            .await?
+        resolve_relation_displays(
+            &forge,
+            schema_def,
+            &visible_entities,
+            claims,
+            &tenant_config,
+        )
+        .await?
     } else {
         HashMap::new()
     };
@@ -1317,8 +1502,8 @@ async fn resolve_relation_displays(
     // Build per-target query jobs, skipping targets with no display field,
     // no registered schema, or no referenced IDs.
     let mut jobs: Vec<(
-        Vec<String>,    // source field names sharing this target
-        String,         // display_field
+        Vec<String>, // source field names sharing this target
+        String,      // display_field
         schema_forge_core::query::Query,
     )> = Vec::with_capacity(targets.len());
 
@@ -1347,10 +1532,8 @@ async fn resolve_relation_displays(
 
         // Batched IN query for just the display field. No total_count —
         // internal lookup, never paginated.
-        let id_values: Vec<DynamicValue> = distinct_ids
-            .into_iter()
-            .map(DynamicValue::Text)
-            .collect();
+        let id_values: Vec<DynamicValue> =
+            distinct_ids.into_iter().map(DynamicValue::Text).collect();
         let mut display_query = schema_forge_core::query::Query::new(target_def.id.clone())
             .with_filter(Filter::In {
                 path: FieldPath::single("id"),
@@ -1614,8 +1797,7 @@ async fn resolve_related_bindings(
         // Load the related row through the supervised actor with tenant scope
         // applied — exactly like the read path — so a rule can never read a
         // related row across a tenant boundary the caller couldn't see.
-        let Some(row) =
-            load_related_row(forge, target_def, &fk_id, claims, tenant_config).await?
+        let Some(row) = load_related_row(forge, target_def, &fk_id, claims, tenant_config).await?
         else {
             // Missing or tenant-hidden → no bind → fail-closed at eval.
             continue;
@@ -1705,7 +1887,9 @@ fn project_entity_to_cel(entity: &Entity) -> Result<schema_forge_cel::CelValue, 
     let mut map = std::collections::BTreeMap::new();
     for (name, value) in &entity.fields {
         let cel = schema_forge_cel::dynamic_to_cel(value).map_err(|e| ForgeError::Internal {
-            message: format!("failed to project related field '{name}' for a cross-entity read: {e}"),
+            message: format!(
+                "failed to project related field '{name}' for a cross-entity read: {e}"
+            ),
         })?;
         map.insert(schema_forge_cel::CelKey::String(name.clone()), cel);
     }
@@ -2055,10 +2239,12 @@ pub async fn create_entity(
     // network round-trip and before persistence.
 
     // CEL @default expression defaults (#94) — insert-only; fills absent/null fields before @compute.
-    apply_defaults(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+    apply_defaults(&schema_def, &mut fields, claims.as_ref(), rules_now)
+        .map_err(rule_error_to_forge)?;
 
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
-    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now)
+        .map_err(rule_error_to_forge)?;
 
     // CEL @require validation rules (#92) — fail-closed, in-transaction,
     // pre-persistence. Cross-entity reads (#95) are resolved here: any
@@ -2185,7 +2371,10 @@ pub async fn create_entity(
     );
     dispatch_webhook(&state, &schema_def, webhook_event, "created").await;
 
-    Ok((StatusCode::CREATED, Json(entity_to_response(&created, &schema_def))))
+    Ok((
+        StatusCode::CREATED,
+        Json(entity_to_response(&created, &schema_def)),
+    ))
 }
 
 /// GET /schemas/{schema}/entities -- List/query entities.
@@ -2476,6 +2665,9 @@ pub async fn query_entities(
 }
 
 /// GET /schemas/{schema}/entities/{id} -- Get entity by ID.
+///
+/// Ready backends attach Entity-Revision from the same stored row snapshot.
+/// This marker does not describe caller-dependent response bytes.
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn get_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
@@ -2545,16 +2737,8 @@ pub async fn get_entity(
         .await?;
     }
 
-    // Get entity via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(GetEntity {
-            schema: schema_name,
-            id: entity_id.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    let mut entity = ask_forge(rx).await?.map_err(ForgeError::from)?;
+    let (mut entity, revision) =
+        load_mutation_baseline(&forge, &schema_name, &entity_id, true).await?;
 
     // Record-level visibility check
     let (tx, rx) = oneshot::channel();
@@ -2653,15 +2837,19 @@ pub async fn get_entity(
         apply_relation_displays(&mut response, &schema_def, &entity, &display_map);
     }
 
-    Ok(Json(response))
+    Ok((revision_headers(revision.as_ref())?, Json(response)))
 }
 
 /// PUT /schemas/{schema}/entities/{id} -- Update entity.
+///
+/// If-Entity-Revision opts into an atomic comparison against the authorized
+/// row baseline. Unsupported storage never falls back to an ordinary write.
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn update_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
     Json(body): Json<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -2692,7 +2880,11 @@ pub async fn update_entity(
         &policy_store,
         &schema_def,
         claims.as_ref(),
-        AccessAction::Write,
+        if conditional_requested(&headers) {
+            AccessAction::Update
+        } else {
+            AccessAction::Write
+        },
     ) {
         if let Some(logger) = state.audit_logger() {
             logger
@@ -2710,6 +2902,14 @@ pub async fn update_entity(
         return Err(e);
     }
 
+    let (existing, baseline_revision) = load_mutation_baseline(
+        &forge,
+        &schema_name,
+        &entity_id,
+        conditional_requested(&headers),
+    )
+    .await?;
+
     // Record-level ownership check: fetch existing entity and verify ownership
     let (tx, rx) = oneshot::channel();
     forge
@@ -2720,15 +2920,6 @@ pub async fn update_entity(
     let record_access_policy = ask_forge(rx).await?;
 
     if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(GetEntity {
-                schema: schema_name.clone(),
-                id: entity_id.clone(),
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        let existing = ask_forge(rx).await?.map_err(ForgeError::from)?;
         if !policy.can_modify(&schema_def, c, &existing).await {
             if let Some(logger) = state.audit_logger() {
                 logger
@@ -2751,6 +2942,17 @@ pub async fn update_entity(
         }
     }
 
+    if conditional_requested(&headers) {
+        authorize_conditional_fields(
+            &policy_store,
+            &schema_def,
+            &existing,
+            claims.as_ref(),
+            &body.fields,
+        )?;
+    }
+    let expected = expected_revision(&headers, baseline_revision.as_ref())?;
+
     // Reject any client-supplied @hidden fields up front.
     reject_hidden_fields_in_body(&schema_def, &body.fields)?;
 
@@ -2759,18 +2961,26 @@ pub async fn update_entity(
         .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
     strip_owner_on_update(&mut fields, &schema_def);
+    // PUT replaces supplied fields, but immutable ownership remains part of
+    // the post-update rule context, even when an administrator is the caller.
+    if let Some(owner_field) = schema_def.fields.iter().find(|field| field.has_owner()) {
+        if let Some(owner) = existing.fields.get(owner_field.name.as_str()) {
+            fields.insert(owner_field.name.as_str().to_string(), owner.clone());
+        }
+    }
     // Single request-time instant reused for audit columns and the `now` CEL binding.
     let rules_now = chrono::Utc::now();
     inject_audit_columns_on_update(&mut fields, &schema_def, claims.as_ref(), rules_now);
 
     // Canonical write-path ordering (see the `crate::rules` module docs): the
-    // rule phases run *first* — in-transaction, before persistence, and ahead
+    // rule phases run *first* — before persistence, and ahead
     // of the `before_*` gRPC hooks. (`@default` is insert-only, so PUT runs
     // only @compute then @require.) A `@require` rejection (422) short-circuits
     // before any hook round-trip and before persistence.
 
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
-    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+    apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now)
+        .map_err(rule_error_to_forge)?;
 
     // Tenant config for cross-entity-read tenant scoping (#95). Fetched here so
     // a `related.<F>` prefetch honors the caller's tenant boundary.
@@ -2782,7 +2992,7 @@ pub async fn update_entity(
         .await;
     let tenant_config = ask_forge(rx).await?;
 
-    // CEL @require validation rules (#92) — fail-closed, in-transaction,
+    // CEL @require validation rules (#92) — fail-closed,
     // pre-persistence. Cross-entity reads (#95) resolved before evaluation.
     check_requires_with_related(
         &forge,
@@ -2844,15 +3054,7 @@ pub async fn update_entity(
     );
     check_field_constraints(&schema_def, &entity.fields)?;
 
-    // Update entity via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(UpdateEntity {
-            entity,
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    let mut updated = ask_forge(rx).await?.map_err(ForgeError::from)?;
+    let (mut updated, revision) = persist_entity_update(&forge, entity, expected).await?;
 
     // after_change hook — handed off to HookDispatchActor for
     // detached dispatch under acton supervision.
@@ -2904,7 +3106,10 @@ pub async fn update_entity(
     );
     dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
 
-    Ok(Json(entity_to_response(&updated, &schema_def)))
+    Ok((
+        revision_headers(revision.as_ref())?,
+        Json(entity_to_response(&updated, &schema_def)),
+    ))
 }
 
 /// PATCH /schemas/{schema}/entities/{id} -- Partially update entity.
@@ -2913,13 +3118,16 @@ pub async fn update_entity(
 /// required field in the payload, PATCH merges the supplied fields onto
 /// the existing entity. Fields omitted from the request body are
 /// preserved unchanged. The merged entity is then dispatched through the
-/// same `UpdateEntity` actor message used by PUT, so `before_change` /
+/// same persistence path used by PUT, so `before_change` /
 /// `after_change` hooks, webhooks, and audit logging fire identically.
+/// Conditional no-op patches still compare and advance the stored revision.
+/// A failed comparison dispatches no successful after hook or mutation event.
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn patch_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
     Json(body): Json<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -2950,7 +3158,11 @@ pub async fn patch_entity(
         &policy_store,
         &schema_def,
         claims.as_ref(),
-        AccessAction::Write,
+        if conditional_requested(&headers) {
+            AccessAction::Update
+        } else {
+            AccessAction::Write
+        },
     ) {
         if let Some(logger) = state.audit_logger() {
             logger
@@ -2968,17 +3180,13 @@ pub async fn patch_entity(
         return Err(e);
     }
 
-    // Always fetch the existing entity — PATCH needs it both for the
-    // record-level ownership check and for the field merge step below.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(GetEntity {
-            schema: schema_name.clone(),
-            id: entity_id.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    let existing = ask_forge(rx).await?.map_err(ForgeError::from)?;
+    let (existing, baseline_revision) = load_mutation_baseline(
+        &forge,
+        &schema_name,
+        &entity_id,
+        conditional_requested(&headers),
+    )
+    .await?;
 
     // Record-level ownership check
     let (tx, rx) = oneshot::channel();
@@ -3012,6 +3220,17 @@ pub async fn patch_entity(
         }
     }
 
+    if conditional_requested(&headers) {
+        authorize_conditional_fields(
+            &policy_store,
+            &schema_def,
+            &existing,
+            claims.as_ref(),
+            &body.fields,
+        )?;
+    }
+    let expected = expected_revision(&headers, baseline_revision.as_ref())?;
+
     // Reject any client-supplied @hidden fields up front.
     reject_hidden_fields_in_body(&schema_def, &body.fields)?;
 
@@ -3039,7 +3258,7 @@ pub async fn patch_entity(
 
     // Canonical write-path ordering (see the `crate::rules` module docs): the
     // rule phases run *first* on the merged (full post-patch) view —
-    // in-transaction, before persistence, and ahead of the `before_*` gRPC
+    // before persistence, and ahead of the `before_*` gRPC
     // hooks. (`@default` is insert-only, so PATCH runs only @compute then
     // @require.) A `@require` rejection (422) short-circuits before any hook
     // round-trip and before persistence.
@@ -3047,7 +3266,8 @@ pub async fn patch_entity(
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
     // Runs on the merged (full post-patch) view so the delta picks up computed
     // changes and @require predicates see them.
-    apply_computed(&schema_def, &mut merged, claims.as_ref(), rules_now).map_err(rule_error_to_forge)?;
+    apply_computed(&schema_def, &mut merged, claims.as_ref(), rules_now)
+        .map_err(rule_error_to_forge)?;
 
     // Tenant config for cross-entity-read tenant scoping (#95).
     let (tx, rx) = oneshot::channel();
@@ -3058,7 +3278,7 @@ pub async fn patch_entity(
         .await;
     let tenant_config = ask_forge(rx).await?;
 
-    // CEL @require validation rules (#92) — fail-closed, in-transaction,
+    // CEL @require validation rules (#92) — fail-closed,
     // pre-persistence. Evaluated against the full post-patch entity view so
     // predicates that reference unpatched fields still see their current
     // values. Cross-entity reads (#95) resolved before evaluation.
@@ -3125,12 +3345,10 @@ pub async fn patch_entity(
         }
     }
 
-    // Empty delta: nothing to write (the patch body was a no-op after
-    // merge, e.g. every patched field already held the requested value,
-    // or a before_change hook reverted the changes). Skip the backend
-    // round-trip and return the existing entity as-is.
-    let mut updated = if delta.is_empty() {
-        existing
+    // A conditional no-op still reaches storage to compare the authorized
+    // baseline atomically, and advances the revision on acceptance.
+    let (mut updated, revision) = if delta.is_empty() && expected.is_none() {
+        (existing, None)
     } else {
         let mut entity = Entity::with_id(entity_id, schema_name, delta);
         filter_entity_fields(
@@ -3141,14 +3359,7 @@ pub async fn patch_entity(
             FieldFilterDirection::Write,
         );
         check_field_constraints(&schema_def, &entity.fields)?;
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(UpdateEntity {
-                entity,
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        ask_forge(rx).await?.map_err(ForgeError::from)?
+        persist_entity_update(&forge, entity, expected).await?
     };
 
     // after_change hook — dispatched via HookDispatchActor
@@ -3200,15 +3411,22 @@ pub async fn patch_entity(
     );
     dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
 
-    Ok(Json(entity_to_response(&updated, &schema_def)))
+    Ok((
+        revision_headers(revision.as_ref())?,
+        Json(entity_to_response(&updated, &schema_def)),
+    ))
 }
 
 /// DELETE /schemas/{schema}/entities/{id} -- Delete entity.
+///
+/// Conditional deletion compares the exact baseline used for authorization
+/// and before-delete hooks. A conflict does not disclose a current revision.
 #[instrument(skip_all, fields(schema = %schema))]
 pub async fn delete_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
     let forge = state
@@ -3255,6 +3473,14 @@ pub async fn delete_entity(
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
+    let (existing, baseline_revision) = load_mutation_baseline(
+        &forge,
+        &schema_name,
+        &entity_id,
+        conditional_requested(&headers),
+    )
+    .await?;
+
     // Record-level ownership check: fetch entity first and verify ownership
     let (tx, rx) = oneshot::channel();
     forge
@@ -3265,16 +3491,7 @@ pub async fn delete_entity(
     let record_access_policy = ask_forge(rx).await?;
 
     if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(GetEntity {
-                schema: schema_name.clone(),
-                id: entity_id.clone(),
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        let entity = ask_forge(rx).await?.map_err(ForgeError::from)?;
-        if !policy.can_delete(&schema_def, c, &entity).await {
+        if !policy.can_delete(&schema_def, c, &existing).await {
             if let Some(logger) = state.audit_logger() {
                 logger
                     .log_custom(
@@ -3282,7 +3499,7 @@ pub async fn delete_entity(
                         acton_service::audit::AuditSeverity::Warning,
                         Some(serde_json::json!({
                             "schema": &schema,
-                            "entity_id": entity.id.as_str(),
+                            "entity_id": existing.id.as_str(),
                             "action": "delete",
                             "user": &c.sub,
                             "reason": "record_can_delete",
@@ -3296,6 +3513,8 @@ pub async fn delete_entity(
         }
     }
 
+    let expected = expected_revision(&headers, baseline_revision.as_ref())?;
+
     // before_delete / after_delete hook setup. Fetch entity snapshot when a
     // hook is configured so the dispatcher sees the fields being deleted.
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
@@ -3304,27 +3523,8 @@ pub async fn delete_entity(
     } else {
         None
     };
-    let mut pre_delete_snapshot: Option<Entity> = None;
-    if hook_dispatcher.is_some()
-        && (hooks_config
-            .binding_for(schema_def.name.as_str(), HookEvent::BeforeDelete)
-            .is_some()
-            || hooks_config
-                .binding_for(schema_def.name.as_str(), HookEvent::AfterDelete)
-                .is_some())
-    {
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(GetEntity {
-                schema: schema_name.clone(),
-                id: entity_id.clone(),
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        if let Ok(Ok(e)) = ask_forge(rx).await {
-            pre_delete_snapshot = Some(e);
-        }
-    }
+    // Hooks see the same snapshot that passed record authorization.
+    let pre_delete_snapshot = Some(existing);
     if let (Some(ref dispatcher), Some(snapshot)) = (&hook_dispatcher, &pre_delete_snapshot) {
         let mut fields = snapshot.fields.clone();
         apply_before_hook(
@@ -3342,16 +3542,28 @@ pub async fn delete_entity(
         .await?;
     }
 
-    // Delete entity via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(DeleteEntity {
-            schema: schema_name,
-            id: entity_id,
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(ForgeError::from)?;
+    if let Some(expected) = expected {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(DeleteEntityIf {
+                schema: schema_name,
+                id: entity_id,
+                expected,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        ask_forge(rx).await?.map_err(conditional_error)?;
+    } else {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(DeleteEntity {
+                schema: schema_name,
+                id: entity_id,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        ask_forge(rx).await?.map_err(ForgeError::from)?;
+    }
 
     // after_delete hook — handed off to HookDispatchActor for
     // detached dispatch under acton supervision.
@@ -3403,6 +3615,110 @@ mod tests {
     use schema_forge_core::types::{
         Cardinality, FieldDefinition, FieldModifier, FieldName, SchemaId, TextConstraints,
     };
+
+    #[test]
+    fn revision_condition_requires_exact_single_token_and_matching_baseline() {
+        let revision = EntityRevision::fresh();
+        let mut headers = HeaderMap::new();
+        assert_eq!(expected_revision(&headers, Some(&revision)).unwrap(), None);
+        headers.insert(
+            CONDITION_HEADER,
+            HeaderValue::from_str(revision.as_str()).unwrap(),
+        );
+        assert_eq!(
+            expected_revision(&headers, Some(&revision)).unwrap(),
+            Some(revision.clone())
+        );
+        assert!(matches!(
+            expected_revision(&headers, None),
+            Err(ForgeError::Conflict {
+                reason: "conditional_mutation_unsupported",
+                ..
+            })
+        ));
+        assert!(matches!(
+            expected_revision(&headers, Some(&EntityRevision::fresh())),
+            Err(ForgeError::Conflict {
+                reason: "revision_conflict",
+                ..
+            })
+        ));
+        headers.append(
+            CONDITION_HEADER,
+            HeaderValue::from_str(revision.as_str()).unwrap(),
+        );
+        assert!(matches!(
+            expected_revision(&headers, Some(&revision)),
+            Err(ForgeError::InvalidQuery { .. })
+        ));
+    }
+
+    #[test]
+    fn revision_condition_rejects_http_etag_and_malformed_values() {
+        let revision = EntityRevision::fresh();
+        for value in [
+            "".to_string(),
+            "*".to_string(),
+            format!("\"{}\"", revision.as_str()),
+            format!("{},{}", revision.as_str(), revision.as_str()),
+            "x".repeat(129),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(CONDITION_HEADER, HeaderValue::from_str(&value).unwrap());
+            assert!(matches!(
+                expected_revision(&headers, Some(&revision)),
+                Err(ForgeError::InvalidQuery { .. })
+            ));
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert("if-match", HeaderValue::from_static("*"));
+        assert!(conditional_requested(&headers));
+        assert!(matches!(
+            expected_revision(&headers, Some(&revision)),
+            Err(ForgeError::InvalidQuery { .. })
+        ));
+    }
+
+    #[test]
+    fn revision_errors_do_not_disclose_backend_details() {
+        let error = conditional_error(ConditionalMutationError::Backend(
+            schema_forge_backend::BackendError::ConnectionError {
+                message: "private database connection detail".into(),
+            },
+        ));
+        assert!(matches!(error, ForgeError::BackendUnavailable { .. }));
+        assert!(!error.to_string().contains("private database"));
+    }
+
+    #[test]
+    fn revision_unique_conflicts_preserve_status_without_constraint_details() {
+        let error = conditional_error(ConditionalMutationError::Backend(
+            schema_forge_backend::BackendError::UniqueViolation {
+                schema: "PrivateSchema".into(),
+                field: "hidden_computed_key".into(),
+            },
+        ));
+        assert!(matches!(
+            error,
+            ForgeError::Conflict {
+                reason: "unique_violation",
+                ..
+            }
+        ));
+        assert!(!error.to_string().contains("PrivateSchema"));
+        assert!(!error.to_string().contains("hidden_computed_key"));
+        assert_eq!(error.into_response().status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn revision_headers_expose_only_the_opaque_row_revision() {
+        assert!(revision_headers(None).unwrap().is_empty());
+        let revision = EntityRevision::fresh();
+        let headers = revision_headers(Some(&revision)).unwrap();
+        assert_eq!(headers[REVISION_HEADER], revision.as_str());
+        assert_eq!(headers["access-control-expose-headers"], "Entity-Revision");
+        assert!(!headers.contains_key("etag"));
+    }
 
     fn make_test_schema() -> SchemaDefinition {
         SchemaDefinition::new(
@@ -3788,10 +4104,7 @@ mod tests {
                     FieldName::new("age").unwrap(),
                     FieldType::Integer(IntegerConstraints::default()),
                 ),
-                FieldDefinition::new(
-                    FieldName::new("active").unwrap(),
-                    FieldType::Boolean,
-                ),
+                FieldDefinition::new(FieldName::new("active").unwrap(), FieldType::Boolean),
             ],
             Vec::new(),
         )
@@ -3857,8 +4170,7 @@ mod tests {
     fn convert_map_value_type_mismatch_rejected() {
         // A value that does not match the declared value type fails closed.
         let ft = map_string_integer_type();
-        let result =
-            convert_json_with_type_hint(&serde_json::json!({"a": "not-an-int"}), &ft);
+        let result = convert_json_with_type_hint(&serde_json::json!({"a": "not-an-int"}), &ft);
         assert!(result.is_err(), "expected mismatch error, got {result:?}");
     }
 
@@ -3883,8 +4195,7 @@ mod tests {
         let ft = map_string_integer_type();
         let mut map = BTreeMap::new();
         map.insert("a".to_string(), DynamicValue::Text("7".into()));
-        let result =
-            coerce_dynamic_value_with_type_hint(DynamicValue::Map(map), &ft).unwrap();
+        let result = coerce_dynamic_value_with_type_hint(DynamicValue::Map(map), &ft).unwrap();
         let DynamicValue::Map(out) = result else {
             panic!("expected Map");
         };
@@ -4177,11 +4488,8 @@ mod tests {
 
     #[test]
     fn convert_duration_json_string_parses() {
-        let result = convert_json_with_type_hint(
-            &serde_json::json!("2555d"),
-            &FieldType::Duration,
-        )
-        .unwrap();
+        let result =
+            convert_json_with_type_hint(&serde_json::json!("2555d"), &FieldType::Duration).unwrap();
         assert_eq!(
             result,
             DynamicValue::Duration(chrono::TimeDelta::seconds(220_752_000))

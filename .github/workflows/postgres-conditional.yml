@@ -1,0 +1,61 @@
+name: PostgreSQL conditional mutations
+
+on:
+  pull_request:
+    paths:
+      - "crates/schema-forge-backend/**"
+      - "crates/schema-forge-postgres/**"
+      - "crates/schema-forge-acton/**"
+      - "crates/schema-forge-cli/**"
+      - "Cargo.lock"
+      - ".github/workflows/postgres-conditional.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conditional:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: schemaforge
+          POSTGRES_PASSWORD: schemaforge-test
+          POSTGRES_DB: schemaforge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U schemaforge -d schemaforge_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: schemaforge
+      PGPASSWORD: schemaforge-test
+      PGDATABASE: schemaforge_test
+      SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev postgresql-client
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        run: cargo install cargo-nextest --locked
+      - name: Run storage concurrency cases
+        run: cargo nextest run -p schema-forge-backend -p schema-forge-postgres --run-ignored all
+      - name: Prepare disposable HTTP namespace
+        run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA conditional_http'
+      - name: Run HTTP authorization and concurrency cases
+        env:
+          SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE: "1"
+          SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dconditional_http
+        run: cargo nextest run -p schema-forge-acton --features postgres --test conditional_entities --run-ignored all
+      - name: Check CLI preparation behavior
+        run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres -E 'test(explicit_revision_preparation)'
+      - name: Clean disposable HTTP namespace
+        if: always()
+        run: psql -X -v ON_ERROR_STOP=1 -c 'DROP SCHEMA IF EXISTS conditional_http CASCADE'

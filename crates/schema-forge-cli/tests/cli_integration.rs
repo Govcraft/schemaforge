@@ -4,9 +4,8 @@ use std::fs;
 use tempfile::TempDir;
 
 /// Helper to get the schema-forge binary command.
-#[allow(deprecated)]
 fn schema_forge() -> Command {
-    Command::cargo_bin("schemaforge").unwrap()
+    assert_cmd::cargo::cargo_bin_cmd!("schemaforge")
 }
 
 // ---------------------------------------------------------------------------
@@ -535,4 +534,15 @@ region = "us-east-1"
         "stderr must NOT surface the downstream `undeclared storage backends` error — \
          issue #44 is exactly about that misleading message. got:\n{stderr}"
     );
+}
+
+#[test]
+fn no_color_environment_accepts_arbitrary_nonempty_values() {
+    for value in ["1", "false", "disable-colors"] {
+        assert_cmd::cargo::cargo_bin_cmd!("schemaforge")
+            .env("NO_COLOR", value)
+            .args(["completions", "fish"])
+            .assert()
+            .success();
+    }
 }

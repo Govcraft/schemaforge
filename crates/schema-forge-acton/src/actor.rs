@@ -438,6 +438,57 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         })
     });
 
+    actor.act_on::<crate::messages::GetVersionedEntity>(|actor, ctx| {
+        let backend = actor.model.backend.clone();
+        let request = ctx.message().clone();
+        Reply::pending(async move {
+            let result = match backend {
+                Some(b) => b.get_versioned(&request.schema, &request.id).await,
+                None => Err(
+                    schema_forge_backend::conditional::ConditionalMutationError::Backend(
+                        no_backend_error(),
+                    ),
+                ),
+            };
+            request.reply.send(result).await;
+        })
+    });
+
+    actor.act_on::<crate::messages::UpdateEntityIf>(|actor, ctx| {
+        let backend = actor.model.backend.clone();
+        let request = ctx.message().clone();
+        Reply::pending(async move {
+            let result = match backend {
+                Some(b) => b.update_if(&request.entity, &request.expected).await,
+                None => Err(
+                    schema_forge_backend::conditional::ConditionalMutationError::Backend(
+                        no_backend_error(),
+                    ),
+                ),
+            };
+            request.reply.send(result).await;
+        })
+    });
+
+    actor.act_on::<crate::messages::DeleteEntityIf>(|actor, ctx| {
+        let backend = actor.model.backend.clone();
+        let request = ctx.message().clone();
+        Reply::pending(async move {
+            let result = match backend {
+                Some(b) => {
+                    b.delete_if(&request.schema, &request.id, &request.expected)
+                        .await
+                }
+                None => Err(
+                    schema_forge_backend::conditional::ConditionalMutationError::Backend(
+                        no_backend_error(),
+                    ),
+                ),
+            };
+            request.reply.send(result).await;
+        })
+    });
+
     actor.act_on::<UpdateEntity>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let entity = ctx.message().entity.clone();
