@@ -9,7 +9,7 @@ description: Use when writing, creating, editing, or reviewing SchemaForge .sche
 
 SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `.schema` file produces database tables, REST API endpoints, migrations, Cedar authorization policies, and OpenAPI specs — no recompilation required.
 
-**Version:** 0.37.2
+**Version:** 0.39.1
 
 **Core principle:** Schemas are the single source of truth for the entire entity lifecycle. Authorization is **Cedar-canonical**: every read/write/delete decision flows through the embedded Cedar engine — there are no parallel custom guards.
 
@@ -28,12 +28,12 @@ integrated SSPI/Kerberos authentication.
 | `schema-forge-core` | 0.16.0 | Core types: schemas, fields (incl. `FieldType::File`, `Duration`, `Bytes`, `Map`), annotations (incl. `@hidden` and the CEL rule annotations `@require`/`@compute`/`@default`), modifiers (incl. `unique`), migrations (incl. `AddUnique`/`RemoveUnique` with per-tenant scope), queries, hook events |
 | `schema-forge-cel` | 0.9.0 | First-party CEL evaluator over `DynamicValue` (ADR-0002): lexer/parser, tree-walking evaluator, stdlib (incl. `base64.encode`/`decode`), apply-time type-checker, and the `related_paths` cross-entity-read AST walker. No upstream `cel` dependency; verified against the cel-spec conformance corpus. |
 | `schema-forge-dsl` | 0.12.0 | Lexer/parser for `.schema` DSL (logos-based) incl. `file(...)` syntax, size literals, `duration`/`bytes(max)`/`map<text, V>` types, the `@hidden` field annotation, the `unique` modifier with parse-time type-guard, and `@require`/`@compute`/`@default` rule annotations (CEL syntax-validated at parse, type-checked at apply) |
-| `schema-forge-backend` | 0.13.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant, `EntityAuthStore` (the user-mgmt impl over the system `User` schema), and the typed `BackendError::UniqueViolation` discriminator |
-| `schema-forge-surrealdb` | 0.9.0 | SurrealDB backend implementation (incl. `DEFINE INDEX ... UNIQUE` codegen, unique-violation reclassification, native `duration`/`bytes` storage, and fail-closed rejection of negative durations) |
-| `schema-forge-postgres` | 0.8.0 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file/map columns, `BIGINT`-nanosecond durations, `BYTEA` bytes with octet-length CHECK, and SQLSTATE 23505 → typed `UniqueViolation` mapping |
-| `schema-forge-mssql` | 0.1.0 | Microsoft SQL Server backend via Tiberius and acton-service pools, including integrated SSPI/Kerberos authentication, JSON document storage, CRUD, filtering, sorting, pagination, and aggregates |
-| `schema-forge-acton` | 0.36.0 | Axum/acton-service integration: REST API, unified bearer/mTLS/Windows claims, the write-time rule phases (`@default`→`@compute`→`@require`, incl. tenant-scoped cross-entity reads), Cedar policy store, auth, hook dispatch, S3 storage, and typed HTTP errors |
-| `schema-forge-cli` | 0.37.2 | CLI binary (`schemaforge`) with SurrealDB, PostgreSQL, and SQL Server release flavors; routes configuration through `acton_service::Config<SchemaForgeConfig>` and supports trusted-proxy Windows authentication |
+| `schema-forge-backend` | 0.15.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant, `EntityAuthStore` (the user-mgmt impl over the system `User` schema), and the typed `BackendError::UniqueViolation` discriminator |
+| `schema-forge-surrealdb` | 0.10.0 | SurrealDB backend implementation (incl. `DEFINE INDEX ... UNIQUE` codegen, unique-violation reclassification, native `duration`/`bytes` storage, and fail-closed rejection of negative durations) |
+| `schema-forge-postgres` | 0.10.0 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file/map columns, `BIGINT`-nanosecond durations, `BYTEA` bytes with octet-length CHECK, and SQLSTATE 23505 → typed `UniqueViolation` mapping |
+| `schema-forge-mssql` | 0.2.0 | Microsoft SQL Server backend via Tiberius and acton-service pools, including integrated SSPI/Kerberos authentication, JSON document storage, CRUD, filtering, sorting, pagination, and aggregates |
+| `schema-forge-acton` | 0.38.1 | Axum/acton-service integration: REST API, unified bearer/mTLS/Windows claims, the write-time rule phases (`@default`→`@compute`→`@require`, incl. tenant-scoped cross-entity reads), Cedar policy store, auth, hook dispatch, S3 storage, and typed HTTP errors |
+| `schema-forge-cli` | 0.39.1 | CLI binary (`schemaforge`) with SurrealDB, PostgreSQL, and SQL Server release flavors; routes configuration through `acton_service::Config<SchemaForgeConfig>` and supports trusted-proxy Windows authentication |
 
 ## Before You Build: acton-service Owns the Platform Layer
 
