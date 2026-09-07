@@ -111,6 +111,16 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- Upgraded `acton-service` to **0.39.0** in `schema-forge-acton`,
+  `schema-forge-backend`, `schema-forge-cli`, and `schema-forge-mssql`. The
+  release is additive: it introduces a SAML 2.0 service provider behind a new
+  `saml` feature and changes nothing in the features this workspace already
+  enables. SchemaForge does **not** turn `saml` on yet — acton-service ships
+  the SP as a library (`SamlServiceProvider`, config, replay/pending stores),
+  not as mounted routes, so consuming it means wiring
+  `/saml/metadata`, `/saml/login`, and `/saml/acs`, plumbing
+  `[auth.saml]` config, and deciding how an assertion maps onto a `User`
+  entity and a tenant. Tracked separately.
 - Upgraded `acton-service` to **0.26** in `schema-forge-acton`,
   `schema-forge-cli`, and `schema-forge-backend`. 0.26's new
   `crypto-aws-lc-rs` feature (enabled by default in our build) propagates
@@ -122,6 +132,36 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Fixed
 
+- **`enum`, `text(max:)`, and `integer(min:/max:)` are now enforced
+  in-process.** They were declared in the DSL but never checked before the
+  write reached the database, so the only thing refusing them was the
+  generated `CHECK` constraint (or `VARCHAR(n)`) — and a check violation is
+  not mapped to a client error. A caller sending `kind: "gamma"` to an
+  `enum("alpha", "beta")` field got `502 backend_unavailable`, a retryable
+  status for a request that could never succeed, with a raw driver message
+  and no field name. `FieldType::check_value` now checks every declared
+  constraint and the write path answers `422 validation_failed` naming the
+  field and, for an enum, the allowed variants. The check runs at the last
+  seam before the backend, so it also covers values produced by `@default`
+  and `@compute` rules and by `before_*` hooks — not only client JSON.
+  Nothing about which writes succeed changes; only the status code, the
+  message, and where the refusal happens.
+  **Fixes [#133](https://github.com/Govcraft/schemaforge/issues/133).**
+- **`unique` on a `@tenant(root)` schema is enforced again.** The unique
+  index was scoped to `(_tenant, field)` for every schema carrying any
+  `@tenant` annotation, root included. On a root schema that does not weaken
+  the constraint, it removes it: `_tenant` is NULL on a platform-level
+  create and PostgreSQL treats NULLs as distinct, so two organizations could
+  carry the same `short_code` and the migration would still apply cleanly.
+  Root-tenant rows are also the rows most likely to need global uniqueness —
+  they *are* the tenants, so their identifying fields have to be unique
+  table-wide by definition, and there is no outer tenant to scope them to.
+  The scoping decision now runs off the new
+  `SchemaDefinition::unique_scoped_by_tenant`, which is true only for
+  `@tenant(parent: ...)`. `is_tenanted` keeps its old meaning and still
+  drives the `_tenant` column; the two questions were being answered by one
+  predicate. Affects the PostgreSQL and SurrealDB backends alike.
+  **Fixes [#134](https://github.com/Govcraft/schemaforge/issues/134).**
 - `schema-forge-backend` was still pinned to `acton-service 0.23` while
   the rest of the workspace had moved to 0.26.1. The dual-version
   trait mismatch refused to compile (`filter_visible`/`can_modify`/
@@ -156,6 +196,54 @@ is pre-1.0; breaking changes bump the **minor** version per
   default is `false`, matching the new safe-by-construction posture.
 
 ### Migration
+
+#### `unique` on a tenant root (#134)
+
+New databases need nothing. An **existing** database applied before this fix
+still carries the tenant-scoped index, and the schema diff cannot see the
+difference: the stored schema is unchanged, so no `AddUnique` step is
+emitted and the stale index stays. The scope changed in the code, not in the
+schema.
+
+Check for it, then replace it. For each `@tenant(root)` schema with a
+`unique` field, on PostgreSQL:
+
+```sql
+-- Confirm the stale shape: indexdef will name (_tenant, <field>).
+SELECT indexdef FROM pg_indexes WHERE indexname = 'uq_Organization_short_code';
+
+-- Find duplicates the broken index let through, and resolve them first —
+-- the ALTER below will fail while any remain.
+SELECT short_code, count(*) FROM "Organization"
+GROUP BY short_code HAVING count(*) > 1;
+
+DROP INDEX "uq_Organization_short_code";
+ALTER TABLE "Organization"
+  ADD CONSTRAINT "uq_Organization_short_code" UNIQUE ("short_code");
+```
+
+The old index and the new constraint share a name, so drop before adding.
+On SurrealDB the equivalent is `REMOVE INDEX uq_Organization_short_code ON
+Organization;` followed by the `DEFINE INDEX ... FIELDS short_code UNIQUE;`
+that `schemaforge apply` would now emit.
+
+Run the duplicate query before scheduling the change. A deployment that has
+been live on the broken index may already hold rows that global uniqueness
+would reject, and that is a data decision, not a migration step.
+
+#### Constraint violations now return 422 (#133)
+
+No schema or config change. Clients that were treating a `502` from a write
+as "backend down, retry" will now see `422` for a value that violates a
+declared `enum`, `text(max:)`, or `integer(min:/max:)` constraint. That is
+the point — the request was never going to succeed — but any retry logic
+keyed on the old status should be checked.
+
+Projects that worked around this by declaring a `@require` CEL rule
+alongside the column constraint (`integer(min: 1, max: 5) required
+@require("size >= 1 && size <= 5", "...")`) can drop the rule; the column
+declaration now produces a `422` on its own. Keeping it is harmless — it
+simply fires first, with its own message.
 
 #### Demo-user seeding (security fix)
 

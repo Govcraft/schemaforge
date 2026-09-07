@@ -536,7 +536,14 @@ impl DiffEngine {
             .filter(|f| !f.is_derived())
             .cloned()
             .collect();
-        let per_tenant = schema.is_tenanted();
+        // Two different questions, deliberately answered by two different
+        // predicates. `is_tenanted` decides whether the table gets a
+        // `_tenant` column at all; `unique_scoped_by_tenant` decides whether
+        // a unique constraint is keyed by that column. A `@tenant(root)`
+        // schema answers yes to the first and no to the second: its rows are
+        // the tenants, so uniqueness has to hold table-wide (#134).
+        let tenanted = schema.is_tenanted();
+        let per_tenant = schema.unique_scoped_by_tenant();
         let unique_fields: Vec<FieldName> = fields
             .iter()
             .filter(|f| f.is_unique())
@@ -545,7 +552,7 @@ impl DiffEngine {
         let mut steps = vec![MigrationStep::CreateSchema {
             name: schema.name.clone(),
             fields,
-            tenanted: per_tenant,
+            tenanted,
         }];
         for field in unique_fields {
             steps.push(MigrationStep::AddUnique { field, per_tenant });
@@ -632,7 +639,7 @@ impl DiffEngine {
         }
 
         // Detect added fields — skip rename targets
-        let per_tenant = new.is_tenanted();
+        let per_tenant = new.unique_scoped_by_tenant();
         for new_field in &new.fields {
             if rename_new_to_old.contains_key(new_field.name.as_str()) {
                 continue;
@@ -689,7 +696,12 @@ impl DiffEngine {
                 let old_type = &old_field.field_type;
                 let new_type = &new_field.field_type;
                 if old_type == new_type {
-                    Self::diff_field_modifiers(old_field, new_field, new.is_tenanted(), steps);
+                    Self::diff_field_modifiers(
+                        old_field,
+                        new_field,
+                        new.unique_scoped_by_tenant(),
+                        steps,
+                    );
                 }
             }
         }
@@ -1491,11 +1503,133 @@ mod tests {
             other => panic!("expected CreateSchema, got {other:?}"),
         }
 
-        // Sanity: the per-tenant unique step still follows.
+        // Sanity: the unique step still follows. Its scope is *not* what
+        // this test pins — see `create_new_scopes_unique_globally_on_a_root`
+        // for that — but a root schema's uniqueness is table-wide, so the
+        // step that follows is the global one.
         assert!(matches!(
             plan.steps.get(1),
             Some(MigrationStep::AddUnique {
-                per_tenant: true,
+                per_tenant: false,
+                ..
+            })
+        ));
+    }
+
+    /// A `@tenant(root)` schema's rows *are* the tenants, so a `unique`
+    /// field on it must be unique table-wide. Scoping it to `_tenant`
+    /// silently removes the constraint: the column is NULL on a
+    /// platform-level create and PostgreSQL treats NULLs as distinct, so
+    /// every duplicate is accepted. Regression for GH #134.
+    #[test]
+    fn create_new_scopes_unique_globally_on_a_root() {
+        use crate::types::{Annotation, FieldModifier, TenantKind};
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Organization").unwrap(),
+            vec![FieldDefinition::with_modifiers(
+                FieldName::new("short_code").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Unique],
+            )],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        )
+        .unwrap();
+
+        let plan = DiffEngine::create_new(&schema);
+
+        // The `_tenant` column is still emitted — a root row created by a
+        // tenant-scoped caller carries one, and the two decisions are
+        // independent.
+        assert!(matches!(
+            &plan.steps[0],
+            MigrationStep::CreateSchema { tenanted: true, .. }
+        ));
+        assert!(
+            matches!(
+                plan.steps.get(1),
+                Some(MigrationStep::AddUnique {
+                    per_tenant: false,
+                    ..
+                })
+            ),
+            "a @tenant(root) unique must be table-wide, got {:?}",
+            plan.steps.get(1)
+        );
+    }
+
+    /// The mirror of the above: a `@tenant(parent:)` schema's rows live
+    /// inside a tenant and carry its id, so `(_tenant, field)` is the
+    /// honest key — two tenants may each have their own "Main Office".
+    #[test]
+    fn create_new_scopes_unique_per_tenant_on_a_child() {
+        use crate::types::{Annotation, FieldModifier, TenantKind};
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Building").unwrap(),
+            vec![FieldDefinition::with_modifiers(
+                FieldName::new("short_code").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Unique],
+            )],
+            vec![Annotation::Tenant(TenantKind::Child {
+                parent: SchemaName::new("Organization").unwrap(),
+            })],
+        )
+        .unwrap();
+
+        let plan = DiffEngine::create_new(&schema);
+
+        assert!(matches!(
+            &plan.steps[0],
+            MigrationStep::CreateSchema { tenanted: true, .. }
+        ));
+        assert!(
+            matches!(
+                plan.steps.get(1),
+                Some(MigrationStep::AddUnique {
+                    per_tenant: true,
+                    ..
+                })
+            ),
+            "a @tenant(parent:) unique must be tenant-scoped, got {:?}",
+            plan.steps.get(1)
+        );
+    }
+
+    /// A schema with no `@tenant` annotation gets neither the `_tenant`
+    /// column nor a tenant-scoped constraint.
+    #[test]
+    fn create_new_scopes_unique_globally_when_untenanted() {
+        use crate::types::FieldModifier;
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Setting").unwrap(),
+            vec![FieldDefinition::with_modifiers(
+                FieldName::new("key").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Unique],
+            )],
+            vec![],
+        )
+        .unwrap();
+
+        let plan = DiffEngine::create_new(&schema);
+
+        assert!(matches!(
+            &plan.steps[0],
+            MigrationStep::CreateSchema {
+                tenanted: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            plan.steps.get(1),
+            Some(MigrationStep::AddUnique {
+                per_tenant: false,
                 ..
             })
         ));
