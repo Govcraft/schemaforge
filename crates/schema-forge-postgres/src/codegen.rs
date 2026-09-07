@@ -917,9 +917,14 @@ mod tests {
     }
 
     /// Regression for GH #56 end-to-end: running the planner against a
-    /// tenant-root schema with a `unique` field followed by the codegen
+    /// tenant-child schema with a `unique` field followed by the codegen
     /// must produce DDL where `_tenant` is established *before* the
     /// per-tenant unique index references it.
+    ///
+    /// The schema here is `@tenant(parent:)`, not `@tenant(root)`. A child
+    /// is what actually yields a per-tenant index (#134), so it is what
+    /// exercises the ordering hazard this test exists to pin. The root case
+    /// is covered by `root_schema_unique_is_a_global_constraint` below.
     #[test]
     fn tenanted_schema_with_unique_emits_tenant_column_before_unique_index() {
         use schema_forge_core::migration::DiffEngine;
@@ -935,7 +940,9 @@ mod tests {
                 FieldType::Text(TextConstraints::unconstrained()),
                 vec![FieldModifier::Unique],
             )],
-            vec![Annotation::Tenant(TenantKind::Root)],
+            vec![Annotation::Tenant(TenantKind::Child {
+                parent: SchemaName::new("Organization").unwrap(),
+            })],
         )
         .expect("schema definition must be valid");
 
@@ -965,6 +972,65 @@ mod tests {
         assert!(
             tenant_col_idx < unique_idx,
             "_tenant column DDL must come before the per-tenant unique index"
+        );
+    }
+
+    /// Regression for GH #134: a `unique` field on a `@tenant(root)` schema
+    /// must become a table-wide constraint, not an index over
+    /// `(_tenant, field)`.
+    ///
+    /// The tenant-scoped shape does not weaken the constraint on a root, it
+    /// removes it. `_tenant` is NULL on a platform-level create, and
+    /// PostgreSQL treats NULLs as distinct, so a `(NULL, 'ACME')` row never
+    /// collides with another `(NULL, 'ACME')` row. Two organizations could
+    /// carry the same short code and the migration would apply cleanly.
+    #[test]
+    fn root_schema_unique_is_a_global_constraint() {
+        use schema_forge_core::migration::DiffEngine;
+        use schema_forge_core::types::{
+            Annotation, FieldModifier, SchemaDefinition, SchemaId, TenantKind,
+        };
+
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Organization").unwrap(),
+            vec![FieldDefinition::with_modifiers(
+                FieldName::new("short_code").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![FieldModifier::Unique],
+            )],
+            vec![Annotation::Tenant(TenantKind::Root)],
+        )
+        .expect("schema definition must be valid");
+
+        let plan = DiffEngine::create_new(&schema);
+        let all_stmts: Vec<String> = plan
+            .steps
+            .iter()
+            .flat_map(|step| migration_step_to_sql("Organization", step))
+            .collect();
+
+        let unique_stmt = all_stmts
+            .iter()
+            .find(|s| s.contains("\"uq_Organization_short_code\""))
+            .expect("unique DDL missing");
+        assert!(
+            unique_stmt.contains("ADD CONSTRAINT") && unique_stmt.contains("UNIQUE"),
+            "expected a table-wide UNIQUE constraint, got: {unique_stmt}"
+        );
+        assert!(
+            !unique_stmt.contains("_tenant"),
+            "a root schema's unique must not be scoped by _tenant, got: {unique_stmt}"
+        );
+
+        // The `_tenant` column itself is still emitted: a root row created
+        // by a tenant-scoped caller carries one, and the two decisions are
+        // independent.
+        assert!(
+            all_stmts
+                .iter()
+                .any(|s| s.contains("ADD COLUMN IF NOT EXISTS \"_tenant\"")),
+            "the _tenant column must still be created for a root schema"
         );
     }
 

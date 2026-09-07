@@ -198,6 +198,12 @@ Schema-forge CLI-flag aliases (clap `env = "..."` mappings; equivalent to passin
 - **Microsoft SQL Server backend** (`mssql` cargo feature, Tiberius). Configured through the same `[database]` table as PostgreSQL with an ADO-style `url`; `mssql_auth = "integrated"` selects SSPI/Kerberos. Mutually exclusive with `surrealdb`/`postgres`.
 - **`[caller_auth]` / `[caller_auth.windows]`** accept Windows identities and AD groups forwarded by an mTLS-authenticated trusted proxy (`mode = "mtls-or-bearer"`, `allowlist`, `trusted_proxies`, `identity_header`, `groups_header`, `group_roles`). `acton-service` 0.38.0 with the `windows-auth` feature.
 
+### Unreleased
+
+- **`enum` / `text(max:)` / `integer(min:/max:)` are enforced in-process.** A violating write now returns `422 validation_failed` naming the field instead of `502 backend_unavailable` carrying a raw driver message. No config change; retry logic keyed on the old `502` should be reviewed. Fixes [#133](https://github.com/Govcraft/schemaforge/issues/133).
+- **`unique` on a `@tenant(root)` schema is table-wide again.** It was scoped to `(_tenant, field)` like a tenant child, which on a root enforced nothing at all. Databases applied before this fix keep the stale index — the schema diff cannot see the change, so it needs a one-time manual `DROP INDEX` + `ADD CONSTRAINT`. The exact SQL is in the CHANGELOG migration section. Fixes [#134](https://github.com/Govcraft/schemaforge/issues/134).
+- **`acton-service` upgraded to 0.39.0** across `schema-forge-acton`, `schema-forge-backend`, `schema-forge-cli`, and `schema-forge-mssql`. Additive: it adds a SAML 2.0 service provider behind a new `saml` feature and changes nothing in the features this build enables. **SchemaForge does not enable `saml`.** acton-service ships the SP as a library (`SamlServiceProvider`, `SamlConfig`, replay/pending stores) rather than mounted routes, so adopting it means wiring `/saml/metadata`, `/saml/login`, and `/saml/acs`, plumbing an `[auth.saml]` section, and deciding how an assertion maps onto a `User` entity and a tenant — a feature, not a flag. Until then SAML is still unavailable end-to-end; OIDC (acton's `oauth` feature, also not enabled) and trusted-proxy Windows auth (`windows-auth`, enabled) are the two working federation paths.
+
 ## policies/role_ranks.toml
 
 The role-name → numeric-rank map that gates user-mgmt and any policy that compares `principal.role_rank` against `resource.role_rank`. Lives in version control alongside the policies it governs. Missing file is treated as "platform_admin only".
