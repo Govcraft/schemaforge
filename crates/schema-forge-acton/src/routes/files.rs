@@ -47,7 +47,8 @@ use crate::hooks::{
     run_before_hook, DispatchHook, HookDispatchActor, HookDispatcher, HookInvocation, HooksConfig,
 };
 use crate::messages::{
-    GetEntity, GetHookDispatcher, GetSchema, GetStorageRegistry, ReplyChannel, UpdateEntity,
+    GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema, GetStorageRegistry, ReplyChannel,
+    UpdateEntity,
 };
 use crate::storage::{S3Client, StorageRegistry};
 
@@ -63,15 +64,15 @@ struct FileTarget<'a> {
     field: &'a str,
 }
 
-/// Wrap a `check_schema_access` call so any deny lands in the durable
-/// audit chain before the error propagates to the client.
+/// Enforce schema, record and field permissions before storage or hook access.
+/// Every deny lands in the durable audit chain before propagation.
 ///
 /// Without this, schema-level access denials on file routes only ever
 /// reach `tracing` via the Cedar engine — they never reach the
 /// hash-chained audit ledger. The route-layer audit entry carries the
 /// schema/entity/field triple the engine doesn't see, which is what an
 /// incident responder needs to triage "who tried to grab what".
-async fn check_file_schema_access(
+async fn check_file_access(
     state: &AppState<SchemaForgeConfig>,
     policy_store: &Arc<crate::authz::PolicyStore>,
     ctx: &FileContext,
@@ -79,7 +80,64 @@ async fn check_file_schema_access(
     claims: Option<&Claims>,
     access: AccessAction,
 ) -> Result<(), ForgeError> {
-    match check_schema_access(policy_store, &ctx.schema, claims, access) {
+    let result = async {
+        check_schema_access(policy_store, &ctx.schema, claims, access)?;
+        let caller = claims.ok_or_else(|| ForgeError::Unauthorized {
+            message: "authentication required".into(),
+        })?;
+        let forge = state
+            .actor::<ForgeActor>()
+            .ok_or_else(|| ForgeError::Internal {
+                message: "ForgeActor not registered".into(),
+            })?;
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetRecordAccessPolicy {
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let policy = ask_forge(rx).await?.ok_or_else(|| ForgeError::Internal {
+            message: "record access policy not initialized".into(),
+        })?;
+        let allowed = match access {
+            AccessAction::Read => !policy
+                .filter_visible(&ctx.schema, caller, vec![ctx.entity.clone()])
+                .await
+                .is_empty(),
+            _ => policy.can_modify(&ctx.schema, caller, &ctx.entity).await,
+        };
+        if !allowed {
+            return Err(ForgeError::Forbidden {
+                message: "file record access denied".into(),
+            });
+        }
+        let direction = match access {
+            AccessAction::Read => crate::authz::FieldDirection::Read,
+            _ => crate::authz::FieldDirection::Write,
+        };
+        if ctx
+            .schema
+            .field(field)
+            .is_some_and(|definition| definition.field_access().is_some())
+            && !crate::authz::authorize_field(
+                policy_store,
+                claims,
+                &ctx.schema,
+                &ctx.entity,
+                field,
+                direction,
+            )
+            .map(|decision| decision.is_allow())
+            .unwrap_or(false)
+        {
+            return Err(ForgeError::Forbidden {
+                message: "file field access denied".into(),
+            });
+        }
+        Ok(())
+    }
+    .await;
+    match result {
         Ok(()) => Ok(()),
         Err(e) => {
             audit_file(
@@ -94,7 +152,7 @@ async fn check_file_schema_access(
                 },
                 serde_json::json!({
                     "action": format!("{access:?}"),
-                    "reason": "schema_access",
+                    "reason": "file_access",
                 }),
             )
             .await;
@@ -208,15 +266,15 @@ pub async fn mint_upload_url(
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<MintUploadUrlRequest>,
 ) -> Result<Json<MintUploadUrlResponse>, ForgeError> {
-    let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
+    let ctx = load_file_context(&state, &schema, &entity_id, &field).await?;
     let policy_store = fetch_policy_store(&state).await?;
-    check_file_schema_access(
+    check_file_access(
         &state,
         &policy_store,
         &ctx,
         &field,
         claims.as_ref(),
-        AccessAction::Write,
+        AccessAction::Update,
     )
     .await?;
 
@@ -307,15 +365,15 @@ pub async fn confirm_upload(
     OptionalClaims(claims): OptionalClaims,
     Json(body): Json<ConfirmUploadRequest>,
 ) -> Result<Json<AttachmentResponse>, ForgeError> {
-    let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
+    let ctx = load_file_context(&state, &schema, &entity_id, &field).await?;
     let policy_store = fetch_policy_store(&state).await?;
-    check_file_schema_access(
+    check_file_access(
         &state,
         &policy_store,
         &ctx,
         &field,
         claims.as_ref(),
-        AccessAction::Write,
+        AccessAction::Update,
     )
     .await?;
 
@@ -523,7 +581,17 @@ pub async fn scan_complete(
         });
     }
 
-    let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
+    let ctx = load_file_context(&state, &schema, &entity_id, &field).await?;
+    let policy_store = fetch_policy_store(&state).await?;
+    check_file_access(
+        &state,
+        &policy_store,
+        &ctx,
+        &field,
+        claims.as_ref(),
+        AccessAction::Update,
+    )
+    .await?;
     let mut current = current_attachment(&ctx.entity, &field).ok_or_else(|| {
         ForgeError::ValidationFailed {
             details: vec![format!(
@@ -608,9 +676,9 @@ pub async fn download_file(
     Query(query): Query<DownloadQuery>,
     OptionalClaims(claims): OptionalClaims,
 ) -> Result<Response, ForgeError> {
-    let ctx = load_file_context(&state, &schema, &entity_id, &field, claims.as_ref()).await?;
+    let ctx = load_file_context(&state, &schema, &entity_id, &field).await?;
     let policy_store = fetch_policy_store(&state).await?;
-    check_file_schema_access(
+    check_file_access(
         &state,
         &policy_store,
         &ctx,
@@ -763,7 +831,6 @@ async fn load_file_context(
     schema: &str,
     entity_id: &str,
     field: &str,
-    _claims: Option<&Claims>,
 ) -> Result<FileContext, ForgeError> {
     let schema_name = SchemaName::new(schema).map_err(|_| ForgeError::InvalidSchemaName {
         name: schema.to_string(),
