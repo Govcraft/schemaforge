@@ -1,5 +1,8 @@
 use console::Term;
-use schema_forge_core::migration::DiffEngine;
+use schema_forge_acton::DynSchemaBackend;
+use schema_forge_core::types::SchemaDefinition;
+
+use super::schema_update::SchemaUpdate;
 
 use crate::cli::{GlobalOpts, MigrateArgs};
 use crate::commands::parse::parse_all_schemas_with_global;
@@ -20,11 +23,20 @@ pub async fn run(
 
     let backend = super::connect_backend(&db_params, output).await?;
 
+    migrate_on_backend(&args, &schemas, backend.as_ref(), output).await
+}
+
+pub(super) async fn migrate_on_backend(
+    args: &MigrateArgs,
+    schemas: &[SchemaDefinition],
+    backend: &dyn DynSchemaBackend,
+    output: &OutputContext,
+) -> Result<(), CliError> {
     let mut plans = Vec::new();
     let mut total_steps = 0usize;
     let mut schemas_affected = 0usize;
 
-    for schema in &schemas {
+    for schema in schemas {
         // Filter by --schema if specified
         if let Some(ref filter) = args.schema {
             if schema.name.as_str() != filter {
@@ -33,13 +45,10 @@ pub async fn run(
         }
 
         let existing = backend.load_schema_metadata(&schema.name).await?;
-        let plan = if let Some(old) = existing {
-            DiffEngine::diff(&old, schema)
-        } else {
-            DiffEngine::create_new(schema)
-        };
+        let update = SchemaUpdate::plan(existing.as_ref(), schema);
+        let plan = &update.migration;
 
-        if plan.is_empty() {
+        if update.is_empty() {
             if output.mode == OutputMode::Human {
                 output.status(&format!("{} (no changes)", schema.name.as_str()));
             }
@@ -48,7 +57,7 @@ pub async fn run(
             schemas_affected += 1;
         }
 
-        plans.push((schema, plan));
+        plans.push(update);
     }
 
     // Render plan
@@ -56,8 +65,18 @@ pub async fn run(
         OutputMode::Human => {
             println!("Migration plan for {} schemas:", plans.len());
             println!();
-            for (schema, plan) in &plans {
+            for update in &plans {
+                let schema = &update.schema;
+                let plan = &update.migration;
+                if update.is_empty() {
+                    continue;
+                }
                 if plan.is_empty() {
+                    println!(
+                        "{} (metadata update, 0 migration steps)",
+                        schema.name.as_str()
+                    );
+                    println!();
                     continue;
                 }
                 println!(
@@ -79,8 +98,10 @@ pub async fn run(
         OutputMode::Json => {
             let json_plans: Vec<serde_json::Value> = plans
                 .iter()
-                .filter(|(_, p)| !p.is_empty())
-                .map(|(schema, plan)| {
+                .filter(|update| !update.is_empty())
+                .map(|update| {
+                    let schema = &update.schema;
+                    let plan = &update.migration;
                     let steps: Vec<serde_json::Value> = plan
                         .steps
                         .iter()
@@ -93,6 +114,7 @@ pub async fn run(
                         .collect();
                     serde_json::json!({
                         "schema": schema.name.as_str(),
+                        "metadata_changed": update.metadata_changed,
                         "safety": plan.overall_safety().to_string(),
                         "steps": steps,
                     })
@@ -106,9 +128,14 @@ pub async fn run(
             output.print_json(&json);
         }
         OutputMode::Plain => {
-            for (schema, plan) in &plans {
-                if plan.is_empty() {
+            for update in &plans {
+                let schema = &update.schema;
+                let plan = &update.migration;
+                if update.is_empty() {
                     continue;
+                }
+                if plan.is_empty() {
+                    println!("{}\tmetadata update\tsafe", schema.name.as_str());
                 }
                 for step in &plan.steps {
                     println!("{}\t{}\t{}", schema.name.as_str(), step, step.safety());
@@ -119,8 +146,10 @@ pub async fn run(
 
     // Execute if requested
     if args.execute {
-        for (schema, plan) in &plans {
-            if plan.is_empty() {
+        for update in &plans {
+            let schema = &update.schema;
+            let plan = &update.migration;
+            if update.is_empty() {
                 continue;
             }
 
@@ -146,8 +175,7 @@ pub async fn run(
                 }
             }
 
-            backend.apply_migration(&schema.name, &plan.steps).await?;
-            backend.store_schema_metadata(schema).await?;
+            update.persist(backend).await?;
         }
 
         output.success(&format!(
