@@ -559,3 +559,18 @@ curl -X POST 'http://localhost:3000/schemas/Contact/entities/query' \
 ```bash
 curl 'http://localhost:3000/schemas/Contact/entities?sort=-company.name&limit=20'
 ```
+
+
+### Null predicates and deterministic pages
+
+In JSON filters, `eq` with `value: null` matches absent fields and explicit null
+values. `ne` with `value: null` matches populated fields. A non-null `ne` also
+includes null fields, so `eq` and `ne` partition the records for a given value.
+List results and `total_count` use the same predicates on all three backends.
+
+Paged entity queries default to `id ASC`. Explicit sorts receive an `id ASC`
+tie-breaker unless they already specify `id`; an explicit `id DESC` is preserved.
+The JSON sort key accepts both `order` and `direction`, with `asc` or `desc`.
+The implicit `id` field supports filters, including `gt` for id-range paging.
+This makes pages deterministic for an unchanged dataset. Concurrent inserts,
+deletes, or sort-field edits can still move records between offset pages.

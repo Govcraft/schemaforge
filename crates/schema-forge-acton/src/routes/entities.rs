@@ -699,7 +699,7 @@ pub struct SortClause {
     /// Field name (supports dotted paths).
     pub field: String,
     /// Sort direction: "asc" or "desc". Defaults to "asc".
-    #[serde(default)]
+    #[serde(default, alias = "direction")]
     pub order: Option<String>,
 }
 

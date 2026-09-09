@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use acton_service::config::DatabaseConfig;
 use acton_service::mssql::{create_pool, MssqlPool};
 use schema_forge_backend::{BackendError, Entity, EntityStore, QueryResult, SchemaBackend};
-use schema_forge_core::migration::MigrationStep;
+use schema_forge_core::migration::{MigrationStep, ValueTransform};
 use schema_forge_core::query::{
     AggregateOp, AggregateQuery, AggregateResult, FieldPath, Filter, Query, SortOrder,
 };
@@ -73,8 +73,57 @@ impl SchemaBackend for MssqlBackend {
         schema_name: &SchemaName,
         steps: &[MigrationStep],
     ) -> Result<(), BackendError> {
+        if steps.iter().any(|step| {
+            matches!(
+                step,
+                MigrationStep::ChangeType {
+                    transform: ValueTransform::NullRemovedEnumVariants { .. },
+                    ..
+                }
+            )
+        }) {
+            if let Some(schema) = self.load_schema_metadata(schema_name).await? {
+                for step in steps {
+                    if let MigrationStep::ChangeType {
+                        name,
+                        transform: ValueTransform::NullRemovedEnumVariants { .. },
+                        ..
+                    } = step
+                    {
+                        if schema
+                            .field(name.as_str())
+                            .is_some_and(|field| field.is_required())
+                        {
+                            return Err(BackendError::MigrationFailed { step: step.to_string(), reason: "cannot null removed variants of a required enum; migrate affected values or make the field optional first".into() });
+                        }
+                    }
+                }
+            }
+        }
         let mut connection = connection(&self.pool).await?;
         for step in steps {
+            if let MigrationStep::ChangeType {
+                name,
+                transform: ValueTransform::NullRemovedEnumVariants { variants },
+                ..
+            } = step
+            {
+                // JSON payloads store tagged DynamicValue objects. Bind both the
+                // path and variant so enum strings cannot become SQL syntax.
+                let path = format!("$.\"{}\"", name.as_str());
+                let value_path = format!("{path}.value");
+                let sql = format!("UPDATE [dbo].{} SET [data] = JSON_MODIFY([data], @P1, JSON_QUERY(N'{{\"type\":\"Null\"}}')) WHERE JSON_VALUE([data], @P2) COLLATE Latin1_General_100_BIN2 = @P3;", quote(schema_name.as_str()));
+                for variant in variants {
+                    connection
+                        .execute(
+                            &sql,
+                            &[&path.as_str(), &value_path.as_str(), &variant.as_str()],
+                        )
+                        .await
+                        .map_err(query_error)?;
+                }
+                continue;
+            }
             let sql = match step {
                 MigrationStep::CreateSchema { name, .. } => Some(format!(
                     "IF OBJECT_ID(N'[dbo].{}', N'U') IS NULL CREATE TABLE [dbo].{} \
@@ -378,6 +427,9 @@ fn field_value<'a>(entity: &'a Entity, path: &FieldPath) -> Option<&'a DynamicVa
 
 fn value_cmp(left: &DynamicValue, right: &DynamicValue) -> Option<Ordering> {
     match (left, right) {
+        (DynamicValue::Null, DynamicValue::Null) => Some(Ordering::Equal),
+        (DynamicValue::Null, _) => Some(Ordering::Less),
+        (_, DynamicValue::Null) => Some(Ordering::Greater),
         (DynamicValue::Integer(a), DynamicValue::Integer(b)) => a.partial_cmp(b),
         (DynamicValue::Float(a), DynamicValue::Float(b)) => a.partial_cmp(b),
         (DynamicValue::Integer(a), DynamicValue::Float(b)) => (*a as f64).partial_cmp(b),
@@ -391,10 +443,18 @@ fn value_cmp(left: &DynamicValue, right: &DynamicValue) -> Option<Ordering> {
     }
 }
 
+fn filter_value<'a>(entity: &'a Entity, path: &FieldPath) -> std::borrow::Cow<'a, DynamicValue> {
+    if path.is_simple() && path.root() == "id" {
+        std::borrow::Cow::Owned(DynamicValue::Text(entity.id.as_str().into()))
+    } else {
+        std::borrow::Cow::Borrowed(field_value(entity, path).unwrap_or(&DynamicValue::Null))
+    }
+}
+
 fn matches_filter(entity: &Entity, filter: &Filter) -> bool {
     match filter {
-        Filter::Eq { path, value } => field_value(entity, path) == Some(value),
-        Filter::Ne { path, value } => field_value(entity, path) != Some(value),
+        Filter::Eq { path, value } => filter_value(entity, path).as_ref() == value,
+        Filter::Ne { path, value } => filter_value(entity, path).as_ref() != value,
         Filter::Gt { path, value } => {
             comparison_matches(entity, path, value, Ordering::Greater, false)
         }
@@ -408,14 +468,12 @@ fn matches_filter(entity: &Entity, filter: &Filter) -> bool {
             comparison_matches(entity, path, value, Ordering::Less, true)
         }
         Filter::Contains { path, value } => {
-            matches!(field_value(entity, path), Some(DynamicValue::Text(text) | DynamicValue::Enum(text)) if text.contains(value))
+            matches!(filter_value(entity, path).as_ref(), DynamicValue::Text(text) | DynamicValue::Enum(text) if text.contains(value))
         }
         Filter::StartsWith { path, value } => {
-            matches!(field_value(entity, path), Some(DynamicValue::Text(text) | DynamicValue::Enum(text)) if text.starts_with(value))
+            matches!(filter_value(entity, path).as_ref(), DynamicValue::Text(text) | DynamicValue::Enum(text) if text.starts_with(value))
         }
-        Filter::In { path, values } => {
-            field_value(entity, path).is_some_and(|actual| values.contains(actual))
-        }
+        Filter::In { path, values } => values.contains(filter_value(entity, path).as_ref()),
         Filter::And { filters } => filters.iter().all(|filter| matches_filter(entity, filter)),
         Filter::Or { filters } => filters.iter().any(|filter| matches_filter(entity, filter)),
         Filter::Not { filter } => !matches_filter(entity, filter),
@@ -430,19 +488,22 @@ fn comparison_matches(
     ordering: Ordering,
     or_equal: bool,
 ) -> bool {
-    field_value(entity, path)
-        .and_then(|actual| value_cmp(actual, expected))
+    value_cmp(filter_value(entity, path).as_ref(), expected)
         .is_some_and(|result| result == ordering || (or_equal && result == Ordering::Equal))
 }
 
 fn sort_entities(entities: &mut [Entity], sorts: &[(FieldPath, SortOrder)]) {
     entities.sort_by(|left, right| {
         for (path, order) in sorts {
-            let ordering = match (field_value(left, path), field_value(right, path)) {
-                (Some(a), Some(b)) => value_cmp(a, b).unwrap_or(Ordering::Equal),
-                (None, Some(_)) => Ordering::Less,
-                (Some(_), None) => Ordering::Greater,
-                (None, None) => Ordering::Equal,
+            let ordering = if path.is_simple() && path.root() == "id" {
+                left.id.as_str().cmp(right.id.as_str())
+            } else {
+                match (field_value(left, path), field_value(right, path)) {
+                    (Some(a), Some(b)) => value_cmp(a, b).unwrap_or(Ordering::Equal),
+                    (None, Some(_)) => Ordering::Less,
+                    (Some(_), None) => Ordering::Greater,
+                    (None, None) => Ordering::Equal,
+                }
             };
             let ordering = match order {
                 SortOrder::Ascending => ordering,

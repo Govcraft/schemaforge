@@ -116,6 +116,8 @@ pub enum ValueTransform {
     ToString,
     /// Set all existing values to a specific default.
     SetDefault { value: DefaultValue },
+    /// Set only the listed removed enum variants to null.
+    NullRemovedEnumVariants { variants: Vec<String> },
     /// Set all existing values to null.
     SetNull,
 }
@@ -128,6 +130,9 @@ impl fmt::Display for ValueTransform {
             Self::FloatToInteger => write!(f, "float_to_integer"),
             Self::ToString => write!(f, "to_string"),
             Self::SetDefault { value } => write!(f, "set_default({value})"),
+            Self::NullRemovedEnumVariants { variants } => {
+                write!(f, "null_removed_enum_variants({})", variants.join(", "))
+            }
             Self::SetNull => write!(f, "set_null"),
         }
     }
@@ -237,6 +242,10 @@ impl MigrationStep {
     /// Classify the safety level of this migration step.
     pub fn safety(&self) -> MigrationSafety {
         match self {
+            Self::ChangeType {
+                transform: ValueTransform::Identity,
+                ..
+            } => MigrationSafety::Safe,
             Self::CreateSchema { .. }
             | Self::AddField { .. }
             | Self::AddIndex { .. }
@@ -863,6 +872,18 @@ impl DiffEngine {
 
     fn infer_transform(old: &FieldType, new: &FieldType) -> ValueTransform {
         match (old, new) {
+            (FieldType::Enum(old), FieldType::Enum(new)) => {
+                let removed: Vec<String> = old
+                    .iter()
+                    .filter(|variant| !new.as_slice().contains(variant))
+                    .cloned()
+                    .collect();
+                if removed.is_empty() {
+                    ValueTransform::Identity
+                } else {
+                    ValueTransform::NullRemovedEnumVariants { variants: removed }
+                }
+            }
             (FieldType::Integer(_), FieldType::Float(_)) => ValueTransform::IntegerToFloat,
             (FieldType::Float(_), FieldType::Integer(_)) => ValueTransform::FloatToInteger,
             (_, FieldType::Text(_)) => ValueTransform::ToString,
@@ -1016,6 +1037,38 @@ mod tests {
     }
 
     // -- ValueTransform tests --
+
+    #[test]
+    fn enum_changes_preserve_valid_variants() {
+        let variants = |values: &[&str]| {
+            FieldType::Enum(
+                crate::types::EnumVariants::new(values.iter().map(|s| (*s).to_owned()).collect())
+                    .unwrap(),
+            )
+        };
+        let old = variants(&["pending", "live"]);
+        for new in [
+            variants(&["pending", "live", "blocked"]),
+            variants(&["live", "pending"]),
+        ] {
+            assert_eq!(
+                DiffEngine::infer_transform(&old, &new),
+                ValueTransform::Identity
+            );
+        }
+        let transform = DiffEngine::infer_transform(&old, &variants(&["live", "blocked"]));
+        assert_eq!(
+            transform,
+            ValueTransform::NullRemovedEnumVariants {
+                variants: vec!["pending".into()]
+            }
+        );
+        assert_eq!(
+            serde_json::from_str::<ValueTransform>(&serde_json::to_string(&transform).unwrap())
+                .unwrap(),
+            transform
+        );
+    }
 
     #[test]
     fn value_transform_display() {
@@ -1892,18 +1945,11 @@ mod tests {
         // Simulate pair_inverse_relations having marked this as derived.
         parent_field.derived_from = Some(FieldName::new("opportunity").unwrap());
 
-        let schema = make_schema(
-            "Opportunity",
-            vec![make_field("title"), parent_field],
-        );
+        let schema = make_schema("Opportunity", vec![make_field("title"), parent_field]);
         let plan = DiffEngine::create_new(&schema);
         match &plan.steps[..] {
             [MigrationStep::CreateSchema { fields, .. }] => {
-                assert_eq!(
-                    fields.len(),
-                    1,
-                    "only the non-derived field should remain"
-                );
+                assert_eq!(fields.len(), 1, "only the non-derived field should remain");
                 assert_eq!(fields[0].name.as_str(), "title");
             }
             other => panic!("expected CreateSchema step, got {other:?}"),

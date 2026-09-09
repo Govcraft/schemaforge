@@ -2407,9 +2407,13 @@ async fn public_entity_reads_through_production_token_middleware() {
     );
 
     let custom = tempfile::tempdir().unwrap();
-    std::fs::write(custom.path().join("public.cedar"), r#"
+    std::fs::write(
+        custom.path().join("public.cedar"),
+        r#"
         permit(principal, action in [Action::"ListBranding", Action::"ReadBranding"], resource);
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
     policy_store
         .recompile_from_schemas(std::slice::from_ref(&schema), Some(custom.path()))
         .unwrap();
@@ -2478,4 +2482,63 @@ async fn public_entity_reads_through_production_token_middleware() {
         StatusCode::UNAUTHORIZED,
         "removing the live permit immediately protects reads"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_direction_id_ranges_and_default_paging_are_preserved() {
+    let app = test_app().await;
+    let (status, _) = json_request(
+        &app,
+        Method::POST,
+        "/schemas",
+        Some(serde_json::json!({"name":"Paging", "fields":[{"name":"name","field_type":"Text"}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let mut ids = Vec::new();
+    for name in ["alpha", "beta", "gamma"] {
+        let (status, body) = json_request(
+            &app,
+            Method::POST,
+            "/schemas/Paging/entities",
+            Some(serde_json::json!({"fields":{"name":name}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        ids.push(body["id"].as_str().unwrap().to_owned());
+    }
+    ids.sort();
+    for key in ["direction", "order"] {
+        let (status, body) = json_request(
+            &app,
+            Method::POST,
+            "/schemas/Paging/entities/query",
+            Some(serde_json::json!({"sort":[{"field":"id",(key):"desc"}],"limit":2})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["entities"][0]["id"], ids[2]);
+        assert_eq!(body["entities"][1]["id"], ids[1]);
+    }
+    let (status, body) = json_request(&app, Method::POST, "/schemas/Paging/entities/query", Some(serde_json::json!({"sort":[{"field":"name","direction":"desc"}],"filter":{"op":"gt","field":"id","value":ids[0]}}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["entities"].as_array().unwrap().len(), 2);
+    let names = body["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["fields"]["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(names.windows(2).all(|pair| pair[0] > pair[1]));
+    for (offset, id) in ids.iter().enumerate() {
+        let (status, body) = json_request(
+            &app,
+            Method::GET,
+            &format!("/schemas/Paging/entities?limit=1&offset={offset}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["entities"][0]["id"].as_str(), Some(id.as_str()));
+    }
 }

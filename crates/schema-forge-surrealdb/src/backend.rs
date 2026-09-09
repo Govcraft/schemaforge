@@ -277,16 +277,64 @@ impl SchemaBackend for SurrealBackend {
         steps: &[MigrationStep],
     ) -> Result<(), BackendError> {
         let table = schema_name.as_str();
+        let needs_enum_metadata = steps.iter().any(|step| {
+            matches!(
+                step,
+                MigrationStep::ChangeType {
+                    old_type: FieldType::Enum(_),
+                    new_type: FieldType::Enum(_),
+                    ..
+                }
+            )
+        });
+        let metadata = if needs_enum_metadata {
+            self.load_schema_metadata(schema_name).await?
+        } else {
+            None
+        };
+        let mut statements = Vec::new();
         for step in steps {
-            let statements = migration_step_to_surql(table, step);
-            for stmt in &statements {
-                self.execute_raw(stmt)
-                    .await
-                    .map_err(|e| BackendError::MigrationFailed {
-                        step: step.to_string(),
-                        reason: e.to_string(),
-                    })?;
+            let mut compiled = migration_step_to_surql(table, step);
+            if let MigrationStep::ChangeType {
+                name,
+                old_type: FieldType::Enum(_),
+                new_type: new_type @ FieldType::Enum(_),
+                ..
+            } = step
+            {
+                let original_name = steps
+                    .iter()
+                    .find_map(|candidate| match candidate {
+                        MigrationStep::RenameField { old_name, new_name } if new_name == name => {
+                            Some(old_name)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(name);
+                let field = metadata.as_ref().and_then(|schema| schema.field(original_name.as_str())).ok_or_else(|| BackendError::MigrationFailed { step: step.to_string(), reason: "enum migration requires stored field metadata to preserve required/default modifiers".into() })?;
+                let mut field = field.clone();
+                field.name = name.clone();
+                field.field_type = new_type.clone();
+                compiled.pop();
+                compiled.extend(
+                    crate::codegen::define_field_stmts(table, &field)
+                        .into_iter()
+                        .map(|sql| sql.replacen("DEFINE FIELD ", "DEFINE FIELD OVERWRITE ", 1)),
+                );
             }
+            statements.extend(compiled);
+        }
+        if !statements.is_empty() {
+            let sql = format!(
+                "BEGIN TRANSACTION;\n{}\nCOMMIT TRANSACTION;",
+                statements.join("\n")
+            );
+            self.execute_raw(&sql).await?.check().map_err(|error| {
+                BackendError::MigrationFailed {
+                    step: "apply migration transaction".into(),
+                    reason: error.to_string(),
+                }
+            })?;
         }
         Ok(())
     }

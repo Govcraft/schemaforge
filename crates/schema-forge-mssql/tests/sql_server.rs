@@ -1,3 +1,6 @@
+#[path = "../../schema-forge-backend/tests/support/data_correctness.rs"]
+mod data_correctness;
+
 use std::collections::BTreeMap;
 
 use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
@@ -57,6 +60,7 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
         .is_empty());
 
     exercises_backend_contract(&backend).await;
+    data_correctness::exercise(&backend).await;
 }
 
 async fn exercises_backend_contract(backend: &MssqlBackend) {
