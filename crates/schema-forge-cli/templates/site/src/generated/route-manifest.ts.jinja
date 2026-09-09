@@ -37,3 +37,5 @@ export const navEntries: Array<{ kebab: string; title: string }> = [
 
 /// Kebab slug of the first entity — used as the default landing redirect.
 export const defaultEntity = "{{ entities[0].kebab }}"
+
+export const invitationRoutes = { invite: "/admin/users/invite", accept: "/invite/accept" } as const

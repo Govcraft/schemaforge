@@ -1,0 +1,74 @@
+import { ApiError, request, type SchemaResponse } from "./api-client"
+
+const prefix = "/api/v1/forge"
+export type InviteRequest = {
+  email: string
+  display_name?: string
+  role?: string
+  tenant_type?: string
+  tenant_id?: string
+}
+export type InviteResponse = { invite_id: string; email: string; expires_at: string }
+export type Role = { name: string; rank: number }
+export type Tenant = { id: string; label: string }
+
+export async function listInviteRoles(): Promise<Role[]> {
+  return (await request<{ roles: Role[] }>(`${prefix}/users/roles`)).roles
+}
+
+export function isTenantRoot(schema: SchemaResponse): boolean {
+  return schema.annotations.some((annotation) =>
+    typeof annotation === "object" && annotation !== null &&
+    "annotation" in annotation && annotation.annotation === "Tenant" && "Root" in annotation,
+  )
+}
+
+export async function listWritableTenants(schema: string): Promise<Tenant[]> {
+  const tenants: Tenant[] = []
+  for (let offset = 0; ; offset += 100) {
+    const page = await request<{
+      total_count?: number
+      entities: Array<{ id: string; fields: Record<string, unknown>; permissions?: { update: boolean } }>
+    }>(`${prefix}/schemas/${encodeURIComponent(schema)}/entities?limit=100&offset=${offset}&count=true`)
+    for (const row of page.entities) {
+      if (row.permissions?.update) {
+        const name = row.fields.name ?? row.fields.display_name ?? row.id
+        tenants.push({ id: row.id, label: typeof name === "string" ? name : row.id })
+      }
+    }
+    if (page.total_count !== undefined ? offset + 100 >= page.total_count : page.entities.length < 100) return tenants
+  }
+}
+
+export function createInvite(body: InviteRequest): Promise<InviteResponse> {
+  return request(`${prefix}/auth/invites`, { method: "POST", body: JSON.stringify(body) })
+}
+
+/** Public acceptance deliberately bypasses session credentials and refresh redirects. */
+export async function acceptInvite(body: { invite_id: string; password: string; display_name?: string }): Promise<{ email: string }> {
+  const base = (import.meta.env.VITE_API_BASE as string | undefined) ?? ""
+  const response = await fetch(`${base}${prefix}/auth/invites/accept`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "omit",
+  })
+  if (!response.ok) {
+    const raw = await response.text()
+    let parsed: unknown
+    try { parsed = JSON.parse(raw) } catch { parsed = undefined }
+    throw new ApiError(response.status, parsed, raw)
+  }
+  return response.json() as Promise<{ email: string }>
+}
+
+export function inviteError(error: unknown, context: "send" | "accept" = "send"): string {
+  if (error instanceof ApiError) {
+    if (context === "accept" && (error.status === 401 || error.status === 404 || error.status === 410)) return "This invitation is invalid, expired, or already used. Ask your administrator for a new invitation."
+    if (context === "send" && error.status === 404) return "Invitation options are unavailable on this server. Contact your administrator."
+    if (error.status === 403) return "You do not have permission to send this invitation with the selected role and tenant."
+    if (error.status === 409) return "An account already exists for this email address. Try signing in or contact your administrator."
+    if (error.status >= 500) return "The server could not complete the invitation. Contact your administrator before trying again."
+  }
+  return error instanceof Error ? error.message : "The request failed. Please try again."
+}

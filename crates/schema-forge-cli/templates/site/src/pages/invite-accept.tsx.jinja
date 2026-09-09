@@ -1,0 +1,40 @@
+import { useState, type FormEvent } from "react"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
+import { useMutation } from "@tanstack/react-query"
+import { acceptInvite, inviteError } from "@/generated/invites"
+import { useDocumentTitle } from "@/lib/use-document-title"
+
+export function InviteAcceptPage() {
+  useDocumentTitle("Accept invitation")
+  const [params] = useSearchParams()
+  const navigate = useNavigate()
+  const invite = params.get("invite")?.trim()
+  const [validation, setValidation] = useState("")
+  const mutation = useMutation({ mutationFn: acceptInvite, onSuccess: () => navigate("/login?invitation=accepted", { replace: true }) })
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const password = String(form.get("password"))
+    if (password !== form.get("confirmation")) { setValidation("Passwords must match."); return }
+    setValidation("")
+    if (invite) mutation.mutate({ invite_id: invite, password, display_name: String(form.get("display_name") ?? "").trim() || undefined })
+  }
+  return <main className="page-narrow" id="main-content">
+    <h1 className="page-title">Accept invitation</h1>
+    {!invite ? <p role="alert">The invitation link is missing its reference. Open the complete link from your invitation email.</p> : <>
+      <p>Choose a password to activate your account.</p>
+      {(validation || mutation.error) && <p role="alert">{validation || inviteError(mutation.error, "accept")}</p>}
+      <form onSubmit={submit}>
+        <fieldset disabled={mutation.isPending} style={ { border: 0, padding: 0 }}>
+          <div className="form-grid">
+            <label htmlFor="accept-name">Display name (optional)</label><input className="input" id="accept-name" name="display_name" autoComplete="name" />
+            <label htmlFor="accept-password">Password (at least 8 characters)</label><input className="input" id="accept-password" name="password" type="password" autoComplete="new-password" required minLength={8} />
+            <label htmlFor="accept-confirmation">Confirm password</label><input className="input" id="accept-confirmation" name="confirmation" type="password" autoComplete="new-password" required minLength={8} />
+          </div>
+          <button className="btn btn-primary" type="submit">{mutation.isPending ? "Creating account…" : "Create account"}</button>
+        </fieldset>
+      </form>
+    </>}
+    <Link to="/login">Go to sign in</Link>
+  </main>
+}

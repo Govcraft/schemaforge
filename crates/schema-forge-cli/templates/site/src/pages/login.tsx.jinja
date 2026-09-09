@@ -200,7 +200,6 @@ export function LoginPage() {
                 // single-purpose login page (WCAG 2.1 SC 3.2.1 historical
                 // exception). Remove if a banner/cookie notice is added
                 // above the form.
-                autoFocus
                 aria-invalid={errors.username ? "true" : undefined}
                 aria-describedby={errors.username ? "login-username-err" : undefined}
                 {...register("username")}
