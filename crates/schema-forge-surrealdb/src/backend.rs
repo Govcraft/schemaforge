@@ -512,6 +512,38 @@ impl EntityStore for SurrealBackend {
         surreal_row_to_entity(&entity.schema, &rows[0])
     }
 
+    async fn update_field_if_matches(
+        &self,
+        schema: &SchemaName,
+        id: &EntityId,
+        field: &schema_forge_core::types::FieldName,
+        expected: &DynamicValue,
+        value: &DynamicValue,
+    ) -> Result<bool, BackendError> {
+        let literal = field_surreal_value_to_literal(&crate::value::dynamic_to_surreal(expected));
+        let new_value = field_surreal_value_to_literal(&crate::value::dynamic_to_surreal(value));
+        let sql = format!(
+            "UPDATE `{schema}`:`{id}` SET `{field}` = {new_value} WHERE `{field}` = {literal} RETURN AFTER;"
+        );
+        let mut response = self.execute_raw(&sql).await?;
+        match response.take::<surrealdb::Value>(0) {
+            Ok(value) => Ok(match value.into_inner() {
+                surrealdb::sql::Value::Array(rows) => !rows.0.is_empty(),
+                surrealdb::sql::Value::None | surrealdb::sql::Value::Null => false,
+                _ => true,
+            }),
+            Err(surrealdb::Error::Db(surrealdb::error::Db::TxRetryable)) => Ok(false),
+            Err(surrealdb::Error::Db(surrealdb::error::Db::QueryNotExecutedDetail { message }))
+                if message == surrealdb::error::Db::TxRetryable.to_string() =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(BackendError::QueryError {
+                message: error.to_string(),
+            }),
+        }
+    }
+
     async fn delete(&self, schema: &SchemaName, id: &EntityId) -> Result<(), BackendError> {
         let table = schema.as_str();
         let id_str = id.as_str();
@@ -701,7 +733,7 @@ fn field_surreal_value_to_literal(value: &surrealdb::sql::Value) -> String {
             if chrono::DateTime::parse_from_rfc3339(s.as_str()).is_ok() {
                 format!("d'{}'", s.as_str())
             } else {
-                format!("'{}'", s.as_str().replace('\'', "\\'"))
+                value.to_string()
             }
         }
         surrealdb::sql::Value::Datetime(dt) => format!("d'{}'", dt.0.to_rfc3339()),
@@ -718,7 +750,13 @@ fn field_surreal_value_to_literal(value: &surrealdb::sql::Value) -> String {
         surrealdb::sql::Value::Object(obj) => {
             let entries: Vec<String> = obj
                 .iter()
-                .map(|(k, v)| format!("{k}: {}", field_surreal_value_to_literal(v)))
+                .map(|(k, v)| {
+                    format!(
+                        "{}: {}",
+                        surrealdb::sql::Value::from(k.as_str()),
+                        field_surreal_value_to_literal(v)
+                    )
+                })
                 .collect();
             format!("{{ {} }}", entries.join(", "))
         }

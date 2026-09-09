@@ -2,7 +2,7 @@ use std::future::Future;
 
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
-use schema_forge_core::types::{EntityId, SchemaDefinition, SchemaName};
+use schema_forge_core::types::{DynamicValue, EntityId, FieldName, SchemaDefinition, SchemaName};
 
 use crate::entity::{Entity, QueryResult};
 use crate::error::BackendError;
@@ -147,6 +147,27 @@ pub trait EntityStore: Send + Sync {
     /// All fields in `entity.fields` replace the existing fields.
     /// Returns the updated entity.
     fn update(&self, entity: &Entity) -> impl Future<Output = Result<Entity, BackendError>> + Send;
+
+    /// Atomically update one field only if its value still matches the snapshot.
+    ///
+    /// Returns `false` when the row is absent, the field has changed, or a
+    /// concurrent write prevents the conditional update from committing. Other
+    /// fields must be preserved. Missing fields compare equal to `DynamicValue::Null`.
+    /// Custom backends fail closed unless implemented.
+    fn update_field_if_matches(
+        &self,
+        _schema: &SchemaName,
+        _id: &EntityId,
+        _field: &FieldName,
+        _expected: &DynamicValue,
+        _value: &DynamicValue,
+    ) -> impl Future<Output = Result<bool, BackendError>> + Send {
+        async {
+            Err(BackendError::QueryError {
+                message: "backend does not support atomic field updates".into(),
+            })
+        }
+    }
 
     /// Delete an entity by schema name and entity ID.
     ///

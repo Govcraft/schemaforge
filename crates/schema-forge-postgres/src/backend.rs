@@ -665,6 +665,47 @@ impl EntityStore for PgBackend {
         Ok(updated)
     }
 
+    async fn update_field_if_matches(
+        &self,
+        schema: &SchemaName,
+        id: &EntityId,
+        field: &schema_forge_core::types::FieldName,
+        expected: &DynamicValue,
+        value: &DynamicValue,
+    ) -> Result<bool, BackendError> {
+        let definition = self.load_schema_metadata(schema).await?;
+        let field_type = definition
+            .as_ref()
+            .and_then(|schema| schema.field(field.as_str()))
+            .map(|field| &field.field_type);
+        let mut args = PgArguments::default();
+        args.add(id.as_str())
+            .map_err(|error| BackendError::Internal {
+                message: error.to_string(),
+            })?;
+        bind_dynamic_value(&mut args, expected, field_type)?;
+        bind_dynamic_value(&mut args, value, field_type)?;
+        let sql = format!("UPDATE \"{schema}\" SET \"{field}\" = $3 WHERE \"id\" = $1 AND \"{field}\" IS NOT DISTINCT FROM $2 RETURNING *;");
+        let mut tx = self.pool.begin().await.map_err(|error| {
+            map_write_error(error, schema.as_str(), "begin atomic field update")
+        })?;
+        let row = sqlx::query_with(&sql, args)
+            .persistent(false)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| {
+                map_write_error(error, schema.as_str(), "conditionally update field")
+            })?;
+        if let Some(row) = &row {
+            let updated = row_to_entity(row, schema, definition.as_ref())?;
+            Self::advance_revision(&mut tx, &updated).await?;
+        }
+        tx.commit().await.map_err(|error| {
+            map_write_error(error, schema.as_str(), "commit conditional field update")
+        })?;
+        Ok(row.is_some())
+    }
+
     async fn delete(&self, schema: &SchemaName, id: &EntityId) -> Result<(), BackendError> {
         let mut tx = self
             .pool

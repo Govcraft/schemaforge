@@ -14,7 +14,7 @@ use schema_forge_backend::traits::{EntityStore, SchemaBackend};
 use schema_forge_backend::user_store::{AuthStore, ForgeUser};
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
-use schema_forge_core::types::{EntityId, SchemaDefinition, SchemaName};
+use schema_forge_core::types::{DynamicValue, EntityId, FieldName, SchemaDefinition, SchemaName};
 use sync_wrapper::SyncFuture;
 use tokio::sync::RwLock;
 
@@ -133,6 +133,22 @@ impl<T: SchemaBackend + 'static> DynSchemaBackend for T {
 ///
 /// Same pattern as `DynSchemaBackend`: boxed futures for dynamic dispatch.
 pub trait DynEntityStore: Send + Sync {
+    /// Atomically replace the expected field snapshot; custom backends fail closed.
+    fn update_field_if_matches<'a>(
+        &'a self,
+        _schema: &'a SchemaName,
+        _id: &'a EntityId,
+        _field: &'a FieldName,
+        _expected: &'a DynamicValue,
+        _value: &'a DynamicValue,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, BackendError>> + Send + Sync + 'a>> {
+        Box::pin(async {
+            Err(BackendError::QueryError {
+                message: "backend does not support atomic field updates".into(),
+            })
+        })
+    }
+
     /// Durable optional create reconciliation.
     fn create_intent<'a>(
         &'a self,
@@ -253,6 +269,19 @@ pub trait DynEntityStore: Send + Sync {
 /// `Send + Sync` `FutureBox` bound, so backend calls can be awaited
 /// directly inside `act_on` handlers without an inner `tokio::spawn`.
 impl<T: EntityStore + 'static> DynEntityStore for T {
+    fn update_field_if_matches<'a>(
+        &'a self,
+        schema: &'a SchemaName,
+        id: &'a EntityId,
+        field: &'a FieldName,
+        expected: &'a DynamicValue,
+        value: &'a DynamicValue,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(EntityStore::update_field_if_matches(
+            self, schema, id, field, expected, value,
+        )))
+    }
+
     fn create_intent<'a>(
         &'a self,
         request: &'a schema_forge_backend::create_intent::CreateIntentRequest,

@@ -261,6 +261,48 @@ impl EntityStore for MssqlBackend {
         Ok(entity.clone())
     }
 
+    async fn update_field_if_matches(
+        &self,
+        schema: &SchemaName,
+        id: &EntityId,
+        field: &schema_forge_core::types::FieldName,
+        expected: &DynamicValue,
+        value: &DynamicValue,
+    ) -> Result<bool, BackendError> {
+        if matches!(value, DynamicValue::Null)
+            && self
+                .load_schema_metadata(schema)
+                .await?
+                .and_then(|schema| schema.field(field.as_str()).cloned())
+                .is_some_and(|field| field.is_required())
+        {
+            return Err(BackendError::RequiredFieldMissing {
+                field: field.to_string(),
+            });
+        }
+        let path = format!("$.\"{field}\"");
+        let missing_matches = matches!(expected, DynamicValue::Null);
+        let expected = serde_json::to_string(expected).map_err(json_error)?;
+        let value = serde_json::to_string(value).map_err(json_error)?;
+        let sql = format!("UPDATE {} SET [data] = JSON_MODIFY([data], @P2, JSON_QUERY(@P4)) WHERE [id] = @P1 AND (JSON_QUERY([data], @P2) COLLATE Latin1_General_100_BIN2 = @P3 OR (@P5 = 1 AND JSON_QUERY([data], @P2) IS NULL));", quote(schema.as_str()));
+        let mut connection = connection(&self.pool).await?;
+        let affected = connection
+            .execute(
+                sql,
+                &[
+                    &id.as_str(),
+                    &path.as_str(),
+                    &expected.as_str(),
+                    &value.as_str(),
+                    &missing_matches,
+                ],
+            )
+            .await
+            .map_err(query_error)?
+            .total();
+        Ok(affected != 0)
+    }
+
     async fn delete(&self, schema: &SchemaName, id: &EntityId) -> Result<(), BackendError> {
         let sql = format!("DELETE FROM {} WHERE [id] = @P1;", quote(schema.as_str()));
         let mut connection = connection(&self.pool).await?;
