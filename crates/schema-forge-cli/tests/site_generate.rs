@@ -626,3 +626,35 @@ fn missing_schema_name_errors_clearly() {
     let err = String::from_utf8_lossy(&output.get_output().stderr).to_string();
     assert!(err.contains("not found"), "stderr: {err}");
 }
+
+#[test]
+fn invitations_registered_and_hidden_fields_omitted_from_forms() {
+    let tmp = TempDir::new().unwrap();
+    let schemas = tmp.path().join("schemas");
+    let out = tmp.path().join("site");
+    write_schemas(&schemas, r#"
+        schema Profile {
+            name: text required
+            password_hash: text required @hidden
+        }
+    "#);
+    run_generate(&schemas, &out, "Profile", &[]).assert().success();
+    for file in ["src/pages/invite.tsx", "src/pages/invite-accept.tsx", "src/generated/invites.ts"] {
+        assert!(out.join(file).exists(), "missing {file}");
+    }
+    let routes = fs::read_to_string(out.join("src/generated/route-manifest.ts")).unwrap();
+    assert!(routes.contains("/admin/users/invite"));
+    assert!(routes.contains("/invite/accept"));
+    for file in ["src/generated/zod-schemas.ts", "src/app/pages/profile/edit.generated.tsx", "src/app/pages/profile/detail.generated.tsx"] {
+        let content = fs::read_to_string(out.join(file)).unwrap();
+        assert!(!content.contains("password_hash"), "hidden field leaked into {file}");
+        assert!(content.contains("name"));
+    }
+}
+
+#[test]
+fn invitation_tenant_picker_matches_annotation_wire_shape() {
+    use schema_forge_core::types::{Annotation, TenantKind};
+    let value = serde_json::to_value(Annotation::Tenant(TenantKind::Root)).unwrap();
+    assert_eq!(value, serde_json::json!({ "annotation": "Tenant", "Root": null }));
+}

@@ -330,6 +330,20 @@ fn is_true(b: &bool) -> bool {
 }
 
 impl Query {
+    /// Return a total ordering for paged or explicitly sorted entity queries.
+    /// The immutable id breaks ties without overriding an explicit id direction.
+    pub fn deterministic_sort(&self) -> Vec<(FieldPath, SortOrder)> {
+        let mut sort = self.sort.clone();
+        if (!sort.is_empty() || self.limit.is_some() || self.offset.is_some())
+            && !sort
+                .iter()
+                .any(|(path, _)| path.is_simple() && path.root() == "id")
+        {
+            sort.push((FieldPath::single("id"), SortOrder::Ascending));
+        }
+        sort
+    }
+
     /// Create a new query for a given schema with no filter, sort, or pagination.
     pub fn new(schema: SchemaId) -> Self {
         Self {
@@ -677,7 +691,7 @@ fn collect_filter_errors(filter: &Filter, schema: &SchemaDefinition, errors: &mu
 }
 
 fn check_field_exists(path: &FieldPath, schema: &SchemaDefinition, errors: &mut Vec<QueryError>) {
-    if schema.field(path.root()).is_none() {
+    if !(path.is_simple() && path.root() == "id") && schema.field(path.root()).is_none() {
         errors.push(QueryError::UnknownField {
             field: path.root().to_string(),
             schema: schema.name.as_str().to_string(),
@@ -1185,6 +1199,31 @@ mod tests {
             vec![],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn reserved_id_filters_and_total_order() {
+        let schema = test_schema();
+        assert!(validate_filter(
+            &Filter::gt(
+                FieldPath::single("id"),
+                DynamicValue::Text("contact_example".into())
+            ),
+            &schema
+        )
+        .is_ok());
+        assert!(validate_filter(
+            &Filter::eq(FieldPath::parse("id.child").unwrap(), DynamicValue::Null),
+            &schema
+        )
+        .is_err());
+        let query = Query::new(schema.id)
+            .with_limit(5)
+            .with_sort(FieldPath::single("id"), SortOrder::Descending);
+        assert_eq!(
+            query.deterministic_sort(),
+            vec![(FieldPath::single("id"), SortOrder::Descending)]
+        );
     }
 
     #[test]

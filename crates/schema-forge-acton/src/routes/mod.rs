@@ -91,7 +91,7 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
         )
         .route(
             "/schemas/{schema}/entities/{id}/fields/{field}",
-            get(files::download_file),
+            get(files::download_file).delete(files::clear_file),
         )
         .route(
             "/schemas/{schema}/entities/{id}/fields/{field}/scan-complete",

@@ -16,7 +16,7 @@ use schema_forge_backend::error::BackendError;
 use schema_forge_backend::tenant::TenantConfig;
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
-use schema_forge_core::types::{EntityId, SchemaDefinition, SchemaName};
+use schema_forge_core::types::{DynamicValue, EntityId, FieldName, SchemaDefinition, SchemaName};
 use tokio::sync::{oneshot, Mutex};
 
 // ---------------------------------------------------------------------------
@@ -182,6 +182,17 @@ pub struct GetEntity {
 pub struct UpdateEntity {
     pub entity: Entity,
     pub reply: ReplyChannel<Result<Entity, BackendError>>,
+}
+
+/// Atomically update a field only if its stored value still matches the authorized snapshot.
+#[derive(Clone, Debug)]
+pub struct UpdateFieldIfMatches {
+    pub schema: SchemaName,
+    pub id: EntityId,
+    pub field: FieldName,
+    pub expected: DynamicValue,
+    pub value: DynamicValue,
+    pub reply: ReplyChannel<Result<bool, BackendError>>,
 }
 
 /// Delete an entity by schema name and entity ID.

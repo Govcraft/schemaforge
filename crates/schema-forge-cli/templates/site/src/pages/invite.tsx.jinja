@@ -1,0 +1,48 @@
+import { useState, type FormEvent } from "react"
+import { useMutation, useQuery } from "@tanstack/react-query"
+import { listSchemas } from "@/generated/api-client"
+import { createInvite, inviteError, isTenantRoot, listInviteRoles, listWritableTenants } from "@/generated/invites"
+import { useDocumentTitle } from "@/lib/use-document-title"
+
+export function InvitePage() {
+  useDocumentTitle("Invite user")
+  const [tenantType, setTenantType] = useState("")
+  const [tenantId, setTenantId] = useState("")
+  const schemas = useQuery({ queryKey: ["schemas"], queryFn: listSchemas })
+  const roles = useQuery({ queryKey: ["invite-roles"], queryFn: listInviteRoles })
+  const tenants = useQuery({ queryKey: ["invite-tenants", tenantType], queryFn: () => listWritableTenants(tenantType), enabled: Boolean(tenantType) })
+  const mutation = useMutation({ mutationFn: createInvite })
+  const canInvite = schemas.data?.some((schema) => schema.name === "User" && schema.permissions?.create)
+  const loading = schemas.isPending || roles.isPending
+  const error = schemas.error ?? roles.error ?? tenants.error ?? mutation.error
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    mutation.mutate({
+      email: String(form.get("email")).trim(),
+      display_name: String(form.get("display_name") ?? "").trim() || undefined,
+      role: String(form.get("role") ?? "") || undefined,
+      ...(tenantType ? { tenant_type: tenantType, tenant_id: tenantId } : {}),
+    })
+  }
+  return <div className="page-narrow">
+    <h1 className="page-title">Invite user</h1>
+    <p>The recipient will receive an email to choose a password and activate their account.</p>
+    {loading && <p role="status">Loading invitation options…</p>}
+    {!loading && !canInvite && <p role="alert">You do not have permission to invite users.</p>}
+    {error && <p role="alert">{inviteError(error)}</p>}
+    {mutation.data ? <p role="status">Invitation sent to {mutation.data.email}. It expires {new Date(mutation.data.expires_at).toLocaleString()}.</p> :
+      <form onSubmit={submit}>
+        <fieldset disabled={loading || !canInvite || mutation.isPending} style={ { border: 0, padding: 0 }}>
+          <div className="form-grid">
+            <label htmlFor="invite-email">Email</label><input className="input" id="invite-email" name="email" type="email" autoComplete="email" required maxLength={512} />
+            <label htmlFor="invite-name">Display name (optional)</label><input className="input" id="invite-name" name="display_name" autoComplete="name" />
+            <label htmlFor="invite-role">Role (optional)</label><select className="select" id="invite-role" name="role"><option value="">Default role</option>{roles.data?.map((role) => <option key={role.name} value={role.name}>{role.name}</option>)}</select>
+            <label htmlFor="invite-type">Tenant type (optional)</label><select className="select" id="invite-type" value={tenantType} onChange={(event) => { setTenantType(event.target.value); setTenantId("") }}><option value="">No tenant</option>{schemas.data?.filter(isTenantRoot).map((schema) => <option key={schema.name}>{schema.name}</option>)}</select>
+            {tenantType && <><label htmlFor="invite-tenant">Tenant</label><select className="select" id="invite-tenant" required value={tenantId} disabled={tenants.isPending} onChange={(event) => setTenantId(event.target.value)}><option value="">{tenants.isPending ? "Loading tenants…" : "Select a writable tenant"}</option>{tenants.data?.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.label}</option>)}</select>{!tenants.isPending && tenants.data?.length === 0 && <p role="status">No writable tenants are available.</p>}</>}
+          </div>
+          <button className="btn btn-primary" type="submit" disabled={Boolean(schemas.error || roles.error || tenants.error) || Boolean(tenantType && (!tenantId || tenants.isPending))}>{mutation.isPending ? "Sending invitation…" : "Send invitation"}</button>
+        </fieldset>
+      </form>}
+  </div>
+}

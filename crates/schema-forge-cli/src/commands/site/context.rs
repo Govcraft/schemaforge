@@ -175,7 +175,7 @@ impl EntityView {
     ) -> Result<Self, CliError> {
         let name = def.name.as_str();
         let mut fields = Vec::with_capacity(def.fields.len());
-        for f in &def.fields {
+        for f in def.fields.iter().filter(|field| !field.is_hidden()) {
             match field_to_view(f, catalog) {
                 Ok(v) => fields.push(v),
                 Err(FieldMapError::Unsupported { field, reason }) => {

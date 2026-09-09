@@ -1,6 +1,6 @@
 //! HTTP handlers for `file` field uploads and downloads.
 //!
-//! Three endpoints per file field:
+//! Four endpoints per file field:
 //!
 //! - `POST /schemas/{schema}/entities/{id}/fields/{field}/upload-url` — mint a
 //!   presigned PUT URL for the client to upload bytes directly to S3.
@@ -10,6 +10,9 @@
 //! - `GET  /schemas/{schema}/entities/{id}/fields/{field}` — serve the file,
 //!   either by redirecting to a short-lived presigned GET (`access: :presigned`)
 //!   or by streaming bytes through the runtime (`access: :proxied`).
+//!
+//! - `DELETE /schemas/{schema}/entities/{id}/fields/{field}` clears an optional
+//!   attachment, retains object bytes, and records the detachment in the audit chain.
 //!
 //! The runtime never sees upload bytes. Downloads in presigned mode also skip
 //! the runtime entirely; only proxied mode streams through it.
@@ -47,8 +50,8 @@ use crate::hooks::{
     run_before_hook, DispatchHook, HookDispatchActor, HookDispatcher, HookInvocation, HooksConfig,
 };
 use crate::messages::{
-    GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema, GetStorageRegistry, ReplyChannel,
-    UpdateEntity,
+    GetEntity, GetHookDispatcher, GetRecordAccessPolicy, GetSchema, GetStorageRegistry,
+    ReplyChannel, UpdateFieldIfMatches,
 };
 use crate::storage::{S3Client, StorageRegistry};
 
@@ -174,7 +177,9 @@ async fn audit_file(
     target: FileTarget<'_>,
     extra: serde_json::Value,
 ) {
-    let Some(logger) = state.audit_logger() else { return };
+    let Some(logger) = state.audit_logger() else {
+        return;
+    };
     let mut metadata = serde_json::json!({
         "actor": actor.unwrap_or("_anonymous"),
         "schema": target.schema,
@@ -512,6 +517,70 @@ pub async fn confirm_upload(
     }))
 }
 
+/// Clear an optional file field while retaining its object for storage lifecycle rules.
+///
+/// All attachment states can be detached. Repeating a successful clear is a no-op.
+/// The durable audit event retains the object key so retained bytes remain traceable.
+#[instrument(skip(state, claims), fields(schema, entity_id))]
+pub async fn clear_file(
+    State(state): State<AppState<SchemaForgeConfig>>,
+    Path((schema, entity_id, field)): Path<(String, String, String)>,
+    OptionalClaims(claims): OptionalClaims,
+) -> Result<StatusCode, ForgeError> {
+    let ctx = load_file_context(&state, &schema, &entity_id, &field).await?;
+    let policy_store = fetch_policy_store(&state).await?;
+    check_file_access(
+        &state,
+        &policy_store,
+        &ctx,
+        &field,
+        claims.as_ref(),
+        AccessAction::Update,
+    )
+    .await?;
+    if ctx
+        .schema
+        .field(&field)
+        .is_some_and(|definition| definition.is_required())
+    {
+        return Err(ForgeError::ValidationFailed {
+            details: vec![format!("required file field '{field}' cannot be cleared")],
+        });
+    }
+    if matches!(
+        ctx.entity.fields.get(&field),
+        None | Some(DynamicValue::Null)
+    ) {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let attachment =
+        current_attachment(&ctx.entity, &field).ok_or_else(|| ForgeError::ValidationFailed {
+            details: vec![format!(
+                "file field '{field}' contains invalid attachment metadata"
+            )],
+        })?;
+    persist_file_value(&state, &ctx, &field, DynamicValue::Null).await?;
+    audit_file(
+        &state,
+        "forge.file.detached",
+        AuditSeverity::Notice,
+        claims.as_ref().map(|caller| caller.sub.as_str()),
+        FileTarget {
+            schema: ctx.schema.name.as_str(),
+            entity_id: ctx.entity.id.as_str(),
+            field: &field,
+        },
+        serde_json::json!({
+            "key": attachment.key,
+            "bucket": ctx.constraints.bucket,
+            "status": attachment.status.as_str(),
+            "object_disposition": "retained",
+        }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---------------------------------------------------------------------------
 // Scan-complete callback
 // ---------------------------------------------------------------------------
@@ -564,14 +633,13 @@ pub async fn scan_complete(
         });
     }
 
-    let new_status = FileStatus::from_str(&body.status).map_err(|()| {
-        ForgeError::ValidationFailed {
+    let new_status =
+        FileStatus::from_str(&body.status).map_err(|()| ForgeError::ValidationFailed {
             details: vec![format!(
                 "status must be 'available' or 'quarantined', got '{}'",
                 body.status
             )],
-        }
-    })?;
+        })?;
     if !matches!(new_status, FileStatus::Available | FileStatus::Quarantined) {
         return Err(ForgeError::ValidationFailed {
             details: vec![format!(
@@ -592,16 +660,15 @@ pub async fn scan_complete(
         AccessAction::Update,
     )
     .await?;
-    let mut current = current_attachment(&ctx.entity, &field).ok_or_else(|| {
-        ForgeError::ValidationFailed {
+    let mut current =
+        current_attachment(&ctx.entity, &field).ok_or_else(|| ForgeError::ValidationFailed {
             details: vec![format!(
                 "no attachment present on {}.{}[{}] to scan",
                 ctx.schema.name.as_str(),
                 field,
                 ctx.entity.id
             )],
-        }
-    })?;
+        })?;
 
     if current.status != FileStatus::Scanning {
         return Err(ForgeError::ValidationFailed {
@@ -688,12 +755,11 @@ pub async fn download_file(
     )
     .await?;
 
-    let attachment = current_attachment(&ctx.entity, &field).ok_or_else(|| {
-        ForgeError::EntityNotFound {
+    let attachment =
+        current_attachment(&ctx.entity, &field).ok_or_else(|| ForgeError::EntityNotFound {
             schema: ctx.schema.name.as_str().to_string(),
             entity_id: format!("{}#{field}", ctx.entity.id),
-        }
-    })?;
+        })?;
 
     if attachment.status != FileStatus::Available {
         return Err(ForgeError::ValidationFailed {
@@ -852,18 +918,20 @@ async fn load_file_context(
             reply: ReplyChannel::new(tx),
         })
         .await;
-    let schema_def = ask_forge(rx).await?.ok_or_else(|| ForgeError::SchemaNotFound {
-        name: schema_name.as_str().to_string(),
-    })?;
+    let schema_def = ask_forge(rx)
+        .await?
+        .ok_or_else(|| ForgeError::SchemaNotFound {
+            name: schema_name.as_str().to_string(),
+        })?;
 
-    let field_def = schema_def.field(field).ok_or_else(|| {
-        ForgeError::ValidationFailed {
+    let field_def = schema_def
+        .field(field)
+        .ok_or_else(|| ForgeError::ValidationFailed {
             details: vec![format!(
                 "schema '{}' has no field '{field}'",
                 schema_name.as_str()
             )],
-        }
-    })?;
+        })?;
     let constraints = match &field_def.field_type {
         FieldType::File(c) => c.clone(),
         other => {
@@ -904,10 +972,7 @@ async fn load_file_context(
     })
 }
 
-fn resolve_backend(
-    registry: &StorageRegistry,
-    bucket: &str,
-) -> Result<Arc<S3Client>, ForgeError> {
+fn resolve_backend(registry: &StorageRegistry, bucket: &str) -> Result<Arc<S3Client>, ForgeError> {
     registry
         .get(bucket)
         .ok_or_else(|| ForgeError::Internal {
@@ -1081,27 +1146,51 @@ async fn persist_attachment(
     field: &str,
     attachment: &FileAttachment,
 ) -> Result<(), ForgeError> {
+    let json = serde_json::to_value(attachment).map_err(|e| ForgeError::Internal {
+        message: format!("attachment serialization failed: {e}"),
+    })?;
+    persist_file_value(state, ctx, field, json_to_dynamic(json)).await
+}
+
+async fn persist_file_value(
+    state: &AppState<SchemaForgeConfig>,
+    ctx: &FileContext,
+    field: &str,
+    value: DynamicValue,
+) -> Result<(), ForgeError> {
     let forge = state
         .actor::<ForgeActor>()
         .ok_or_else(|| ForgeError::Internal {
             message: "ForgeActor not registered".into(),
         })?;
-
-    let mut updated = ctx.entity.clone();
-    let json = serde_json::to_value(attachment).map_err(|e| ForgeError::Internal {
-        message: format!("attachment serialization failed: {e}"),
-    })?;
-    let dyn_value = json_to_dynamic(json);
-    updated.fields.insert(field.to_string(), dyn_value);
-
+    let definition = ctx
+        .schema
+        .field(field)
+        .ok_or_else(|| ForgeError::Internal {
+            message: "file field disappeared from its schema snapshot".into(),
+        })?;
     let (tx, rx) = oneshot::channel();
     forge
-        .send(UpdateEntity {
-            entity: updated,
+        .send(UpdateFieldIfMatches {
+            schema: ctx.schema.name.clone(),
+            id: ctx.entity.id.clone(),
+            field: definition.name.clone(),
+            expected: ctx
+                .entity
+                .fields
+                .get(field)
+                .cloned()
+                .unwrap_or(DynamicValue::Null),
+            value,
             reply: ReplyChannel::new(tx),
         })
         .await;
-    let _ = ask_forge(rx).await?.map_err(ForgeError::from)?;
+    if !ask_forge(rx).await?.map_err(ForgeError::from)? {
+        return Err(ForgeError::Conflict {
+            reason: "attachment_changed",
+            message: "attachment changed while updating; reload the entity before retrying".into(),
+        });
+    }
     Ok(())
 }
 

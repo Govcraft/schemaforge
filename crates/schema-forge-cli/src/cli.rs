@@ -986,8 +986,8 @@ pub enum EntityCommands {
 /// A `file` field is an S3-backed attachment. The runtime never proxies upload
 /// bytes: `upload` performs the presigned handshake (mint → PUT direct to S3 →
 /// confirm), and `download` follows the runtime's presigned redirect (or
-/// streamed proxy) to the bytes. Clearing or replacing an attachment is not yet
-/// supported — there is no server route for it.
+/// streamed proxy) to the bytes. `clear` detaches an optional file and retains
+/// its object bytes under the server storage lifecycle policy.
 #[derive(Subcommand)]
 pub enum EntityFileCommands {
     /// Upload a local file to a `file` field via the presigned handshake.
@@ -998,6 +998,27 @@ pub enum EntityFileCommands {
     Upload(Box<EntityFileUploadArgs>),
     /// Download a `file` field's bytes to a path or stdout.
     Download(Box<EntityFileDownloadArgs>),
+    /// Clear an optional file field; retain object bytes under the storage lifecycle policy.
+    Clear(Box<EntityFileClearArgs>),
+}
+
+/// Arguments for `entity file clear`.
+#[derive(Args)]
+pub struct EntityFileClearArgs {
+    #[command(flatten)]
+    pub conn: EntityConnectionArgs,
+    /// Schema name.
+    pub schema: String,
+    /// Entity ID.
+    pub id: String,
+    /// Optional file field to clear.
+    pub field: String,
+    /// Skip the confirmation prompt (required in scripts).
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+    /// Show the request without sending it.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// Arguments for `entity file upload`.

@@ -501,6 +501,28 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         })
     });
 
+    actor.act_on::<crate::messages::UpdateFieldIfMatches>(|actor, ctx| {
+        let backend = actor.model.backend.clone();
+        let request = ctx.message().clone();
+        Reply::pending(async move {
+            let result = match backend {
+                Some(backend) => {
+                    backend
+                        .update_field_if_matches(
+                            &request.schema,
+                            &request.id,
+                            &request.field,
+                            &request.expected,
+                            &request.value,
+                        )
+                        .await
+                }
+                None => Err(no_backend_error()),
+            };
+            request.reply.send(result).await;
+        })
+    });
+
     actor.act_on::<UpdateEntity>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let entity = ctx.message().entity.clone();

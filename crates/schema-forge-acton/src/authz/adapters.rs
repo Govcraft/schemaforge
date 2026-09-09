@@ -22,7 +22,9 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use acton_service::middleware::Claims;
-use cedar_policy::{Entity as CedarEntity, EntityId, EntityTypeName, EntityUid, RestrictedExpression};
+use cedar_policy::{
+    Entity as CedarEntity, EntityId, EntityTypeName, EntityUid, RestrictedExpression,
+};
 use schema_forge_backend::entity::Entity;
 use schema_forge_backend::TenantRef;
 use schema_forge_core::types::{Cardinality, DynamicValue, FieldType, SchemaDefinition};
@@ -46,9 +48,11 @@ pub enum AdapterError {
 
 /// Builds the Cedar `EntityUid` for a SchemaForge action.
 pub fn action_entity_uid(verb: ActionVerb, schema_name: &str) -> Result<EntityUid, AdapterError> {
-    EntityUid::from_str(&action_uid(verb, schema_name)).map_err(|e| AdapterError::InvalidIdentifier {
-        value: action_uid(verb, schema_name),
-        detail: e.to_string(),
+    EntityUid::from_str(&action_uid(verb, schema_name)).map_err(|e| {
+        AdapterError::InvalidIdentifier {
+            value: action_uid(verb, schema_name),
+            detail: e.to_string(),
+        }
     })
 }
 
@@ -90,17 +94,20 @@ pub fn build_principal_entities(
 
     // Principal attributes
     let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
-    attrs.insert("id".into(), RestrictedExpression::new_string(id.to_string()));
-    attrs.insert("role_rank".into(), RestrictedExpression::new_long(role_rank));
+    attrs.insert(
+        "id".into(),
+        RestrictedExpression::new_string(id.to_string()),
+    );
+    attrs.insert(
+        "role_rank".into(),
+        RestrictedExpression::new_long(role_rank),
+    );
     let role_set: Vec<RestrictedExpression> = claims
         .roles
         .iter()
         .map(|r| RestrictedExpression::new_string(r.clone()))
         .collect();
-    attrs.insert(
-        "roles".into(),
-        RestrictedExpression::new_set(role_set),
-    );
+    attrs.insert("roles".into(), RestrictedExpression::new_set(role_set));
 
     // Operator-supplied principal-claim attributes are populated next.
     // Required-claim absence and type mismatches both surface as
@@ -130,15 +137,17 @@ pub fn build_principal_entities(
             // groups by rank if they prefer that to going through the user.
             let rank = role_ranks.get(role).unwrap_or(0);
             let mut group_attrs: HashMap<String, RestrictedExpression> = HashMap::new();
-            group_attrs.insert("name".into(), RestrictedExpression::new_string(role.clone()));
-            group_attrs.insert("rank".into(), RestrictedExpression::new_long(rank));
-            group_entities.push(
-                CedarEntity::new(uid, group_attrs, HashSet::new())
-                    .map_err(|e| AdapterError::UnrepresentableValue {
-                        field: format!("Group::{role}"),
-                        detail: e.to_string(),
-                    })?,
+            group_attrs.insert(
+                "name".into(),
+                RestrictedExpression::new_string(role.clone()),
             );
+            group_attrs.insert("rank".into(), RestrictedExpression::new_long(rank));
+            group_entities.push(CedarEntity::new(uid, group_attrs, HashSet::new()).map_err(
+                |e| AdapterError::UnrepresentableValue {
+                    field: format!("Group::{role}"),
+                    detail: e.to_string(),
+                },
+            )?);
         }
     }
 
@@ -221,6 +230,28 @@ pub fn build_resource_entity(
             if field_def.is_hidden() {
                 continue;
             }
+            // The Cedar schema declares file attributes as strings. Supply
+            // their object key rather than dropping structured attachment
+            // metadata, which makes required file records fail validation.
+            if matches!(field_def.field_type, FieldType::File(_)) {
+                let key = match value {
+                    DynamicValue::Json(value) => {
+                        value.get("key").and_then(serde_json::Value::as_str)
+                    }
+                    DynamicValue::Composite(fields) => match fields.get("key") {
+                        Some(DynamicValue::Text(key)) => Some(key.as_str()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(key) = key {
+                    attrs.insert(
+                        field_name.clone(),
+                        RestrictedExpression::new_string(key.to_string()),
+                    );
+                }
+                continue;
+            }
         }
         if let Some(expr) = dynamic_to_cedar(value) {
             attrs.insert(field_name.clone(), expr);
@@ -258,9 +289,7 @@ pub fn build_resource_entity(
 /// tenant guards are designed to fall through when the field doesn't equal
 /// the principal's identity, so the placeholder won't accidentally satisfy
 /// them.
-pub fn build_resource_placeholder(
-    schema: &SchemaDefinition,
-) -> Result<CedarEntity, AdapterError> {
+pub fn build_resource_placeholder(schema: &SchemaDefinition) -> Result<CedarEntity, AdapterError> {
     let raw = format!("{}::\"_any\"", schema.name.as_str());
     let uid = EntityUid::from_str(&raw).map_err(|e| AdapterError::InvalidIdentifier {
         value: raw,
@@ -332,9 +361,7 @@ pub fn dynamic_to_cedar(value: &DynamicValue) -> Option<RestrictedExpression> {
         // integer space.
         DynamicValue::Float(f) => Some(RestrictedExpression::new_long(*f as i64)),
         DynamicValue::Boolean(b) => Some(RestrictedExpression::new_bool(*b)),
-        DynamicValue::DateTime(dt) => {
-            Some(RestrictedExpression::new_long(dt.timestamp_millis()))
-        }
+        DynamicValue::DateTime(dt) => Some(RestrictedExpression::new_long(dt.timestamp_millis())),
         DynamicValue::Ref(id) => Some(RestrictedExpression::new_string(id.as_str().to_string())),
         DynamicValue::RefArray(ids) => {
             let items: Vec<RestrictedExpression> = ids
@@ -407,7 +434,9 @@ mod principal_claim_tests {
         }
     }
 
-    fn mappings(entries: &[(&str, PrincipalClaimType, bool, Option<serde_json::Value>)]) -> PrincipalClaimMappings {
+    fn mappings(
+        entries: &[(&str, PrincipalClaimType, bool, Option<serde_json::Value>)],
+    ) -> PrincipalClaimMappings {
         let mut cfg = PrincipalClaimsConfig::new();
         for (name, t, required, default) in entries {
             cfg.insert(
@@ -442,9 +471,12 @@ mod principal_claim_tests {
             "client_org_id".into(),
             serde_json::json!("org-42"),
         )]));
-        let entities =
-            build_principal_entities(&claims, &RoleRanks::empty(), &PrincipalClaimMappings::default())
-                .unwrap();
+        let entities = build_principal_entities(
+            &claims,
+            &RoleRanks::empty(),
+            &PrincipalClaimMappings::default(),
+        )
+        .unwrap();
         let mut keys = principal_attr_keys(&entities);
         keys.sort();
         assert_eq!(keys, vec!["id", "role_rank", "roles"]);

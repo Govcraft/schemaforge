@@ -364,6 +364,14 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         renderer.render("src/pages/login.tsx", ctx)?,
     ));
 
+    for path in ["src/pages/invite.tsx", "src/pages/invite-accept.tsx"] {
+        plan.push(preserve(path, renderer.render(path, ctx)?));
+    }
+    plan.push(owned(
+        "src/generated/invites.ts",
+        renderer.render("src/generated/invites.ts", ctx)?,
+    ));
+
     // ---- Public accessibility statement (Owned: regenerated so policy
     // text stays current with the SchemaForge baseline). Required by
     // OMB M-24-08 §§II.A–II.D and 36 CFR 1194 §§603.2–603.3 to live on

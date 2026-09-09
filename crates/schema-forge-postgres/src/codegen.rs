@@ -3,7 +3,7 @@
 //! No I/O. No side effects. Each function takes schema-forge-core types
 //! and returns one or more PostgreSQL statement strings.
 
-use schema_forge_core::migration::MigrationStep;
+use schema_forge_core::migration::{MigrationStep, ValueTransform};
 use schema_forge_core::types::{
     BytesConstraints, Cardinality, FieldDefinition, FieldModifier, FieldType, IntegerConstraints,
     TextConstraints,
@@ -105,7 +105,7 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
             name,
             old_type,
             new_type,
-            transform: _,
+            transform,
         } => {
             let old_is_enum = matches!(old_type, FieldType::Enum(_));
             let new_is_enum = matches!(new_type, FieldType::Enum(_));
@@ -118,6 +118,16 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
                 ));
             }
 
+            if let ValueTransform::NullRemovedEnumVariants { variants } = transform {
+                let literals = variants
+                    .iter()
+                    .map(|v| format!("'{}'", v.replace(char::from(39), "''")))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                stmts.push(format!(
+                    "UPDATE \"{table}\" SET \"{name}\" = NULL WHERE \"{name}\" IN ({literals});"
+                ));
+            }
             let old_pg = field_type_to_pg(old_type);
             let new_pg = field_type_to_pg(new_type);
             if old_pg != new_pg {
@@ -888,8 +898,7 @@ mod tests {
             stmts[0]
         );
         assert_eq!(
-            stmts[1],
-            "ALTER TABLE \"Contact\" ADD COLUMN IF NOT EXISTS \"_tenant\" TEXT;",
+            stmts[1], "ALTER TABLE \"Contact\" ADD COLUMN IF NOT EXISTS \"_tenant\" TEXT;",
             "expected _tenant column DDL immediately after CREATE TABLE"
         );
         assert_eq!(
@@ -1099,9 +1108,8 @@ mod tests {
     #[test]
     fn change_type_enum_to_enum_regenerates_check_constraint() {
         let old_type = FieldType::Enum(EnumVariants::new(vec!["a".into(), "b".into()]).unwrap());
-        let new_type = FieldType::Enum(
-            EnumVariants::new(vec!["a".into(), "b".into(), "c".into()]).unwrap(),
-        );
+        let new_type =
+            FieldType::Enum(EnumVariants::new(vec!["a".into(), "b".into(), "c".into()]).unwrap());
         let step = MigrationStep::ChangeType {
             name: FieldName::new("status").unwrap(),
             old_type,
@@ -1114,7 +1122,9 @@ mod tests {
             stmts[0],
             "ALTER TABLE \"Thing\" DROP CONSTRAINT IF EXISTS \"chk_Thing_status_enum\";"
         );
-        assert!(stmts[1].starts_with("ALTER TABLE \"Thing\" ADD CONSTRAINT \"chk_Thing_status_enum\""));
+        assert!(
+            stmts[1].starts_with("ALTER TABLE \"Thing\" ADD CONSTRAINT \"chk_Thing_status_enum\"")
+        );
         assert!(stmts[1].contains("'a'"));
         assert!(stmts[1].contains("'b'"));
         assert!(stmts[1].contains("'c'"));
@@ -1150,7 +1160,9 @@ mod tests {
             transform: schema_forge_core::migration::ValueTransform::Identity,
         };
         let stmts = migration_step_to_sql("Thing", &step);
-        assert!(stmts.iter().any(|s| s.contains("ADD CONSTRAINT \"chk_Thing_status_enum\"")));
+        assert!(stmts
+            .iter()
+            .any(|s| s.contains("ADD CONSTRAINT \"chk_Thing_status_enum\"")));
         assert!(!stmts.iter().any(|s| s.contains("DROP CONSTRAINT")));
     }
 
@@ -1181,9 +1193,7 @@ mod tests {
         let stmts = migration_step_to_sql("Contact", &step);
         assert_eq!(
             stmts,
-            vec![
-                "ALTER TABLE \"Contact\" ADD CONSTRAINT \"uq_Contact_email\" UNIQUE (\"email\");"
-            ]
+            vec!["ALTER TABLE \"Contact\" ADD CONSTRAINT \"uq_Contact_email\" UNIQUE (\"email\");"]
         );
     }
 

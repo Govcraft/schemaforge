@@ -38,10 +38,10 @@ pub fn query_to_sql(query: &Query, table: &str) -> CompiledQuery {
         sql.push_str(&format!(" WHERE {where_clause}"));
     }
 
-    if !query.sort.is_empty() {
+    let sort = query.deterministic_sort();
+    if !sort.is_empty() {
         sql.push_str(" ORDER BY ");
-        let clauses: Vec<String> = query
-            .sort
+        let clauses: Vec<String> = sort
             .iter()
             .map(|(path, order)| {
                 let dir = match order {
@@ -126,13 +126,25 @@ pub fn aggregate_to_sql(query: &AggregateQuery, table: &str) -> CompiledQuery {
 /// Each value is pushed into `params` and replaced with a `$N` placeholder.
 pub fn filter_to_sql(filter: &Filter, params: &mut Vec<DynamicValue>) -> String {
     match filter {
+        Filter::Eq {
+            path,
+            value: DynamicValue::Null,
+        } => format!("{} IS NULL", field_path_to_sql(path)),
+        Filter::Ne {
+            path,
+            value: DynamicValue::Null,
+        } => format!("{} IS NOT NULL", field_path_to_sql(path)),
         Filter::Eq { path, value } => {
             params.push(value.clone());
             format!("{} = ${}", field_path_to_sql(path), params.len())
         }
         Filter::Ne { path, value } => {
             params.push(value.clone());
-            format!("{} != ${}", field_path_to_sql(path), params.len())
+            format!(
+                "{} IS DISTINCT FROM ${}",
+                field_path_to_sql(path),
+                params.len()
+            )
         }
         Filter::Gt { path, value } => {
             params.push(value.clone());
@@ -221,6 +233,21 @@ mod tests {
     use super::*;
     use schema_forge_core::query::FieldPath;
     use schema_forge_core::types::SchemaId;
+
+    #[test]
+    fn null_filters_do_not_consume_bind_positions() {
+        let filter = Filter::and(vec![
+            Filter::eq(FieldPath::single("email"), DynamicValue::Null),
+            Filter::ne(FieldPath::single("status"), DynamicValue::Null),
+            Filter::ne(FieldPath::single("name"), DynamicValue::Text("x".into())),
+        ]);
+        let mut params = Vec::new();
+        assert_eq!(
+            filter_to_sql(&filter, &mut params),
+            "(\"email\" IS NULL AND \"status\" IS NOT NULL AND \"name\" IS DISTINCT FROM $1)"
+        );
+        assert_eq!(params, vec![DynamicValue::Text("x".into())]);
+    }
 
     #[test]
     fn simple_select_all() {
@@ -355,7 +382,7 @@ mod tests {
         let compiled = query_to_sql(&q, "Contact");
         assert_eq!(
             compiled.sql,
-            "SELECT * FROM \"Contact\" ORDER BY \"name\" ASC, \"age\" DESC;"
+            "SELECT * FROM \"Contact\" ORDER BY \"name\" ASC, \"age\" DESC, \"id\" ASC;"
         );
     }
 
@@ -365,7 +392,7 @@ mod tests {
         let compiled = query_to_sql(&q, "Contact");
         assert_eq!(
             compiled.sql,
-            "SELECT * FROM \"Contact\" LIMIT 10 OFFSET 20;"
+            "SELECT * FROM \"Contact\" ORDER BY \"id\" ASC LIMIT 10 OFFSET 20;"
         );
     }
 

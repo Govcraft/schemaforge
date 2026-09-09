@@ -274,7 +274,7 @@ fn field_to_view_with_prefix(
                 format!("{prefix}.{}", field.name.as_str())
             };
             let mut sub_fields = Vec::with_capacity(sub_defs.len());
-            for sub_def in sub_defs {
+            for sub_def in sub_defs.iter().filter(|field| !field.is_hidden()) {
                 // Composites that contain unsupported sub-fields cause the
                 // entire composite to be dropped (with a targeted error).
                 match field_to_view_with_prefix(sub_def, catalog, &my_path) {

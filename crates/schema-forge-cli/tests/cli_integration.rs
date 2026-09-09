@@ -546,3 +546,123 @@ fn no_color_environment_accepts_arbitrary_nonempty_values() {
             .success();
     }
 }
+
+#[test]
+fn entity_file_clear_dry_run_describes_delete_without_credentials() {
+    schema_forge()
+        .env_remove("SCHEMAFORGE_TOKEN")
+        .args([
+            "--format",
+            "json",
+            "entity",
+            "file",
+            "clear",
+            "Document",
+            "document_test",
+            "attachment",
+            "--server",
+            "http://127.0.0.1:1",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("DELETE"))
+        .stdout(predicate::str::contains(
+            "/schemas/Document/entities/document_test/fields/attachment",
+        ));
+}
+
+#[test]
+fn entity_file_clear_help_explains_retention_and_script_flags() {
+    schema_forge()
+        .args(["entity", "file", "clear", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("retain object bytes"))
+        .stdout(predicate::str::contains("--yes"))
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn entity_file_clear_sends_authenticated_delete_and_reports_retention() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "CLI never sent the clear request"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            }
+        };
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+            assert!(request.len() < 16384);
+        }
+        let request = String::from_utf8(request).unwrap();
+        assert!(request.starts_with("DELETE /api/v1/forge/schemas/Document/entities/document_test/fields/attachment HTTP/1.1\r\n"));
+        assert!(request
+            .to_lowercase()
+            .contains("authorization: bearer test-clear-token\r\n"));
+        socket
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+    });
+    schema_forge()
+        .env("SCHEMAFORGE_TOKEN", "test-clear-token")
+        .args([
+            "--format",
+            "json",
+            "entity",
+            "file",
+            "clear",
+            "Document",
+            "document_test",
+            "attachment",
+            "--server",
+            &format!("http://{address}"),
+            "--yes",
+        ])
+        .timeout(std::time::Duration::from_secs(15))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"cleared\": true"))
+        .stdout(predicate::str::contains(
+            "\"object_disposition\": \"retained\"",
+        ));
+    server.join().unwrap();
+}
+
+#[test]
+fn entity_file_clear_requires_yes_in_scripts() {
+    schema_forge()
+        .env("SCHEMAFORGE_TOKEN", "test-clear-token")
+        .args([
+            "entity",
+            "file",
+            "clear",
+            "Document",
+            "document_test",
+            "attachment",
+            "--server",
+            "http://127.0.0.1:1",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires --yes"));
+}

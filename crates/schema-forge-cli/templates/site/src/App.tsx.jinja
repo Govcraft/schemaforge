@@ -32,7 +32,9 @@ import {
   Target,
   Users,
 } from "lucide-react"
-import { defaultEntity, routeManifest } from "@/generated/route-manifest"
+import { defaultEntity, routeManifest, invitationRoutes } from "@/generated/route-manifest"
+import { InvitePage } from "@/pages/invite"
+import { InviteAcceptPage } from "@/pages/invite-accept"
 import { LoginPage } from "@/pages/login"
 import { RequireAuth } from "@/lib/require-auth"
 import {
@@ -166,6 +168,9 @@ function Sidebar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
             </Link>
           )
         })}
+        {schemas?.some((schema) => schema.name === "User" && schema.permissions?.create) && (
+          <Link to={invitationRoutes.invite} className={"rail-link" + (isActive(invitationRoutes.invite) ? " active" : "")}><Users size={14} /><span>Invite user</span></Link>
+        )}
         {appSchemas.length === 0 ? (
           <div style={ { padding: "4px 8px", color: "var(--app-rail-fg-3)", fontSize: 12 }}>
             No application schemas yet.
@@ -416,9 +421,11 @@ export default function App() {
   // subscribing to `useLocation` re-renders App when the LoginPage calls
   // `navigate('/')` after a successful login, at which point the freshly
   // stored token flips this branch on.
-  useLocation()
+  const location = useLocation()
   const authed = isAuthenticated()
   const [theme, toggleTheme] = useTheme()
+
+  if (location.pathname === invitationRoutes.accept) return <InviteAcceptPage />
 
   if (!authed) {
     return (
@@ -446,6 +453,8 @@ export default function App() {
       <main className="shell-main" id="main-content" tabIndex={-1}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+
+          <Route path={invitationRoutes.invite} element={<RequireAuth><InvitePage /></RequireAuth>} />
 
           {/* Land on the first declared entity's list. */}
           <Route
@@ -478,7 +487,6 @@ export default function App() {
       <Toaster
         position="bottom-right"
         closeButton
-        toastOptions={ { ariaLive: "polite" }}
       />
     </div>
   )

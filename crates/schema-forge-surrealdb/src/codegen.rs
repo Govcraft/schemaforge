@@ -3,7 +3,7 @@
 //! No I/O. No side effects. Each function takes schema-forge-core types
 //! and returns one or more SurrealQL statement strings.
 
-use schema_forge_core::migration::MigrationStep;
+use schema_forge_core::migration::{MigrationStep, ValueTransform};
 use schema_forge_core::types::{
     Cardinality, FieldDefinition, FieldModifier, FieldType, FloatConstraints, IntegerConstraints,
     TextConstraints,
@@ -56,7 +56,7 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
             name,
             old_type: _,
             new_type,
-            transform: _,
+            transform,
         } => {
             let surql_type = field_type_to_surql(new_type);
             let assertions = field_assertions(new_type);
@@ -71,7 +71,23 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
                 stmt.push_str(&format!(" ASSERT {}", assertions.join(" AND ")));
             }
             stmt.push(';');
-            vec![stmt]
+            let mut statements = Vec::new();
+            if let ValueTransform::NullRemovedEnumVariants { variants } = transform {
+                let literals = variants
+                    .iter()
+                    .map(|v| {
+                        crate::query::dynamic_value_to_surql_literal(
+                            &schema_forge_core::types::DynamicValue::Enum(v.clone()),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                statements.push(format!(
+                    "UPDATE {table} SET {name} = NONE WHERE {name} IN [{literals}];"
+                ));
+            }
+            statements.push(stmt);
+            statements
         }
         MigrationStep::AddIndex { field } => {
             let idx_name = format!("idx_{table}_{field}");
@@ -241,15 +257,25 @@ pub fn field_assertions(field_type: &FieldType) -> Vec<String> {
             Vec::new()
         }
         FieldType::Enum(variants) => {
-            let values: Vec<String> = variants.iter().map(|v| format!("'{v}'")).collect();
-            vec![format!("$value IN [{}]", values.join(", "))]
+            let values: Vec<String> = variants
+                .iter()
+                .map(|v| {
+                    crate::query::dynamic_value_to_surql_literal(
+                        &schema_forge_core::types::DynamicValue::Enum(v.clone()),
+                    )
+                })
+                .collect();
+            vec![format!(
+                "($value = NONE OR $value IN [{}])",
+                values.join(", ")
+            )]
         }
         _ => Vec::new(),
     }
 }
 
 /// Generate a complete DEFINE FIELD statement (possibly multiple for composites).
-fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
+pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
     let name = &field.name;
     let base_type = field_type_to_surql(&field.field_type);
 
@@ -417,13 +443,11 @@ mod tests {
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(stmts[0], "DEFINE TABLE Contact SCHEMAFULL;");
         assert_eq!(
-            stmts[1],
-            "DEFINE FIELD _tenant ON TABLE Contact TYPE option<string>;",
+            stmts[1], "DEFINE FIELD _tenant ON TABLE Contact TYPE option<string>;",
             "expected _tenant field definition immediately after DEFINE TABLE"
         );
         assert_eq!(
-            stmts[2],
-            "DEFINE INDEX idx_Contact_tenant ON TABLE Contact COLUMNS _tenant;",
+            stmts[2], "DEFINE INDEX idx_Contact_tenant ON TABLE Contact COLUMNS _tenant;",
             "expected tenant index after the _tenant field"
         );
         assert!(
@@ -632,7 +656,7 @@ mod tests {
         assert_eq!(
             stmts,
             vec![
-                "DEFINE FIELD status ON Contact TYPE option<string> ASSERT $value IN ['Active', 'Inactive'];"
+                "DEFINE FIELD status ON Contact TYPE option<string> ASSERT ($value = NONE OR $value IN ['Active', 'Inactive']);"
             ]
         );
     }
@@ -916,7 +940,7 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         assert_eq!(
             stmts[0],
-            "DEFINE FIELD OVERWRITE status ON Contact TYPE string ASSERT $value IN ['active', 'inactive', 'archived'];"
+            "DEFINE FIELD OVERWRITE status ON Contact TYPE string ASSERT ($value = NONE OR $value IN ['active', 'inactive', 'archived']);"
         );
     }
 

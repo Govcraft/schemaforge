@@ -94,7 +94,7 @@ export type ListResponse<T> = {
   permissions?: SchemaPermissions
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res = await sendRequest(path, init)
   if (res.status === 401) {
     // Try to silently refresh the token once before giving up. If

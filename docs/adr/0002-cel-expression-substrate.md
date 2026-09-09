@@ -120,3 +120,12 @@ runtime. Cedar continues to serve only authorization; its scope does not expand.
 - `crates/schema-forge-cel/src/value/mod.rs` — `CelValue` / `CelType`;
   `DynamicValue` integration
 - ADR-0001 — `uint`: distinct DSL type vs. unsigned constraint
+
+## Scalar proof assurance (#115)
+
+The owned scalar arithmetic and conversion kernels now have Kani function
+contracts and direct proofs, run separately from the conformance test gate.
+[CEL verification scope](../cel-verification.md) records full-width numeric and
+temporal input domains, bounded Chrono adapter checks, pinned tooling, and what
+remains the responsibility of conformance examples and future fuzzing. These
+proofs add no dependency or code to deployed binaries.

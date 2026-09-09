@@ -21,9 +21,9 @@ use schema_forge_acton::{
 };
 use schema_forge_backend::{entity::Entity, tenant::TenantConfig};
 use schema_forge_core::types::{
-    Annotation, DynamicValue, EntityId, FieldAnnotation, FieldDefinition, FieldName, FieldType,
-    FileAccess, FileConstraints, MimePattern, SchemaDefinition, SchemaId, SchemaName, TenantKind,
-    TextConstraints,
+    Annotation, DynamicValue, EntityId, FieldAnnotation, FieldDefinition, FieldModifier, FieldName,
+    FieldType, FileAccess, FileConstraints, MimePattern, SchemaDefinition, SchemaId, SchemaName,
+    TenantKind, TextConstraints,
 };
 use schema_forge_surrealdb::SurrealBackend;
 use std::{
@@ -66,6 +66,17 @@ async fn fixture_with_owner(
     restricted: bool,
     owner: Option<&str>,
 ) -> (Router, String) {
+    fixture_with_options(caller, restricted, owner, false, "available", None).await
+}
+
+async fn fixture_with_options(
+    caller: Option<Claims>,
+    restricted: bool,
+    owner: Option<&str>,
+    required: bool,
+    attachment_status: &str,
+    race: Option<ConcurrentEdit>,
+) -> (Router, String) {
     let field_annotations = if restricted {
         vec![FieldAnnotation::FieldAccess {
             read: vec!["file_reader".into()],
@@ -82,7 +93,11 @@ async fn fixture_with_owner(
             mime_allowlist: vec![MimePattern::Exact("text/plain".into())],
             access: FileAccess::Presigned,
         }),
-        vec![],
+        if required {
+            vec![FieldModifier::Required]
+        } else {
+            vec![]
+        },
         field_annotations,
     )];
     if owner.is_some() {
@@ -129,7 +144,7 @@ async fn fixture_with_owner(
         "_tenant".into(),
         DynamicValue::Text("organization_alpha".into()),
     );
-    fields.insert("attachment".into(), DynamicValue::Json(serde_json::json!({"key":"synthetic/result.txt","size":1,"mime":"text/plain","status":"available","created_at":"2026-01-01T00:00:00Z","uploaded_at":"2026-01-01T00:00:00Z","checksum":null})));
+    fields.insert("attachment".into(), DynamicValue::Json(serde_json::json!({"key":"synthetic/result.txt","size":1,"mime":"text/plain","status":attachment_status,"created_at":"2026-01-01T00:00:00Z","uploaded_at":"2026-01-01T00:00:00Z","checksum":null})));
     let entity = Entity::with_id(EntityId::new("document"), schema.name.clone(), fields);
     DynEntityStore::create(backend.as_ref(), &entity)
         .await
@@ -164,9 +179,14 @@ async fn fixture_with_owner(
                 ("Document".into(), schema),
                 ("Organization".into(), organization),
             ]),
-            backend,
+            backend: backend.clone(),
             tenant_config: Some(tenant_config),
-            record_access_policy: None,
+            record_access_policy: race.map(|edit| {
+                Arc::new(EditDuringAuthorization {
+                    backend: backend.clone(),
+                    edit,
+                }) as Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>
+            }),
             hook_dispatcher: None,
             storage_registry: StorageRegistry::default(),
             policy_store: None,
@@ -213,6 +233,7 @@ async fn status_with_tenant(
 ) -> StatusCode {
     let (method, suffix, body) = match operation {
         "download" => ("GET", "?redirect=false", ""),
+        "clear" => ("DELETE", "", ""),
         "mint" => (
             "POST",
             "/upload-url",
@@ -264,7 +285,7 @@ async fn file_routes_deny_another_tenant_and_missing_tenant_context() {
             .await
             .unwrap();
         assert_eq!(entity_response.status(), StatusCode::FORBIDDEN);
-        for operation in ["download", "mint", "confirm", "scan"] {
+        for operation in ["download", "mint", "confirm", "scan", "clear"] {
             assert_eq!(
                 status(&app, &path, operation).await,
                 StatusCode::FORBIDDEN,
@@ -277,7 +298,7 @@ async fn file_routes_deny_another_tenant_and_missing_tenant_context() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn file_routes_require_authentication() {
     let (app, path) = fixture(None, false).await;
-    for operation in ["download", "mint", "confirm", "scan"] {
+    for operation in ["download", "mint", "confirm", "scan", "clear"] {
         assert_eq!(
             status(&app, &path, operation).await,
             StatusCode::UNAUTHORIZED,
@@ -319,7 +340,7 @@ async fn same_tenant_and_platform_admin_reach_storage() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_file_field_denies_otherwise_authorized_record() {
     let (app, path) = fixture(Some(claims(Some("organization_alpha"), &["editor"])), true).await;
-    for operation in ["download", "mint", "confirm"] {
+    for operation in ["download", "mint", "confirm", "clear"] {
         assert_eq!(
             status(&app, &path, operation).await,
             StatusCode::FORBIDDEN,
@@ -376,7 +397,7 @@ async fn field_permissions_separate_read_and_write() {
 async fn same_tenant_cannot_modify_another_owners_file() {
     let caller = Some(claims(Some("organization_alpha"), &["editor"]));
     let (app, path) = fixture_with_owner(caller.clone(), false, Some("someone-else")).await;
-    for operation in ["mint", "confirm"] {
+    for operation in ["mint", "confirm", "clear"] {
         assert_eq!(status(&app, &path, operation).await, StatusCode::FORBIDDEN);
     }
     let (app, path) = fixture_with_owner(caller, false, Some("file-tester")).await;
@@ -440,4 +461,256 @@ async fn selected_tenant_scopes_files_for_multi_membership_callers() {
             );
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clearing_attachment_is_idempotent_and_preserves_record() {
+    for attachment_status in [
+        "pending",
+        "uploaded",
+        "scanning",
+        "available",
+        "quarantined",
+        "rejected",
+    ] {
+        let (app, path) = fixture_with_options(
+            Some(claims(Some("organization_alpha"), &["editor"])),
+            false,
+            Some("file-tester"),
+            false,
+            attachment_status,
+            None,
+        )
+        .await;
+        assert_eq!(
+            status(&app, &path, "clear").await,
+            StatusCode::NO_CONTENT,
+            "{attachment_status}"
+        );
+        assert_eq!(status(&app, &path, "clear").await, StatusCode::NO_CONTENT);
+        assert_eq!(status(&app, &path, "download").await, StatusCode::NOT_FOUND);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(path.trim_end_matches("/fields/attachment"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entity: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(entity["fields"]["attachment"].is_null(), "{entity}");
+        assert_eq!(entity["fields"]["owner"], "file-tester");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn required_file_cannot_be_cleared_even_by_admin() {
+    let (app, path) = fixture_with_options(
+        Some(claims(None, &["platform_admin"])),
+        false,
+        None,
+        true,
+        "available",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status(&app, &path, "clear").await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // The existing attachment remains in place and download reaches storage resolution.
+    assert_eq!(
+        status(&app, &path, "download").await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clearing_obeys_selected_tenant_and_field_write_access() {
+    let mut caller = claims(None, &["editor", "file_writer"]);
+    caller.custom.insert(
+        "tenant_chain".into(),
+        serde_json::json!([
+            {"schema":"Organization","entity_id":"organization_alpha"},
+            {"schema":"Organization","entity_id":"organization_beta"}
+        ]),
+    );
+    let (app, path) = fixture(Some(caller), true).await;
+    assert_eq!(
+        status_with_tenant(&app, &path, "clear", Some("Organization:organization_beta")).await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(status(&app, &path, "clear").await, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        status_with_tenant(
+            &app,
+            &path,
+            "clear",
+            Some("Organization:organization_alpha")
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clearing_requires_schema_update_and_a_file_field() {
+    let (app, path) = fixture(Some(claims(Some("organization_alpha"), &["viewer"])), false).await;
+    assert_eq!(status(&app, &path, "clear").await, StatusCode::FORBIDDEN);
+    let (app, path) = fixture_with_owner(
+        Some(claims(None, &["platform_admin"])),
+        false,
+        Some("file-tester"),
+    )
+    .await;
+    let not_file = path.replace("/fields/attachment", "/fields/owner");
+    assert_eq!(
+        status(&app, &not_file, "clear").await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let missing_field = path.replace("/fields/attachment", "/fields/missing");
+    assert_eq!(
+        status(&app, &missing_field, "clear").await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        status(&app, &path, "download").await,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+}
+
+#[derive(Clone, Copy)]
+enum ConcurrentEdit {
+    Owner,
+    Attachment,
+    Clear,
+}
+
+struct EditDuringAuthorization {
+    backend: Arc<SurrealBackend>,
+    edit: ConcurrentEdit,
+}
+
+impl schema_forge_backend::auth::RecordAccessPolicy for EditDuringAuthorization {
+    fn filter_visible<'a>(
+        &'a self,
+        _: &'a SchemaDefinition,
+        _: &'a Claims,
+        entities: Vec<Entity>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<Entity>> + Send + 'a>> {
+        Box::pin(async move { entities })
+    }
+    fn can_modify<'a>(
+        &'a self,
+        _: &'a SchemaDefinition,
+        _: &'a Claims,
+        entity: &'a Entity,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move {
+            let mut changed = entity.clone();
+            match self.edit {
+                ConcurrentEdit::Owner => {
+                    changed.fields.insert(
+                        "owner".into(),
+                        DynamicValue::Text("concurrent-owner".into()),
+                    );
+                }
+                ConcurrentEdit::Clear => {
+                    changed
+                        .fields
+                        .insert("attachment".into(), DynamicValue::Null);
+                }
+                ConcurrentEdit::Attachment => {
+                    let replacement = serde_json::json!({"key":"synthetic/replacement.txt","size":2,"mime":"text/plain","status":"available","created_at":"2026-01-01T00:00:00Z","uploaded_at":"2026-01-01T00:00:00Z","checksum":null});
+                    changed
+                        .fields
+                        .insert("attachment".into(), DynamicValue::Json(replacement));
+                }
+            }
+            DynEntityStore::update(self.backend.as_ref(), &changed)
+                .await
+                .unwrap();
+            true
+        })
+    }
+    fn can_delete<'a>(
+        &'a self,
+        _: &'a SchemaDefinition,
+        _: &'a Claims,
+        _: &'a Entity,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async { false })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clearing_preserves_concurrent_edits_and_rejects_replaced_attachment() {
+    for edit in [ConcurrentEdit::Owner, ConcurrentEdit::Attachment] {
+        let (app, path) = fixture_with_options(
+            Some(claims(None, &["platform_admin"])),
+            false,
+            Some("file-tester"),
+            false,
+            "available",
+            Some(edit),
+        )
+        .await;
+        let expected = match edit {
+            ConcurrentEdit::Owner => StatusCode::NO_CONTENT,
+            ConcurrentEdit::Attachment | ConcurrentEdit::Clear => StatusCode::CONFLICT,
+        };
+        assert_eq!(status(&app, &path, "clear").await, expected);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(path.trim_end_matches("/fields/attachment"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entity: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        match edit {
+            ConcurrentEdit::Owner => {
+                assert_eq!(entity["fields"]["owner"], "concurrent-owner");
+                assert!(entity["fields"]["attachment"].is_null());
+            }
+            ConcurrentEdit::Clear => assert!(entity["fields"]["attachment"].is_null()),
+            ConcurrentEdit::Attachment => assert_eq!(
+                entity["fields"]["attachment"]["key"],
+                "synthetic/replacement.txt"
+            ),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_flight_scan_cannot_restore_cleared_attachment() {
+    let (app, path) = fixture_with_options(
+        Some(claims(None, &["platform_admin"])),
+        false,
+        None,
+        false,
+        "scanning",
+        Some(ConcurrentEdit::Clear),
+    )
+    .await;
+    assert_eq!(status(&app, &path, "scan").await, StatusCode::CONFLICT);
+    assert_eq!(status(&app, &path, "download").await, StatusCode::NOT_FOUND);
+    let (app, path) = fixture_with_options(
+        Some(claims(None, &["platform_admin"])),
+        false,
+        None,
+        false,
+        "scanning",
+        None,
+    )
+    .await;
+    assert_eq!(status(&app, &path, "scan").await, StatusCode::OK);
+    assert_eq!(status(&app, &path, "clear").await, StatusCode::NO_CONTENT);
 }

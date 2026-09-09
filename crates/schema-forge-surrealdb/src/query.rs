@@ -37,13 +37,16 @@ pub fn query_to_surql_with_schema(
     let mut sql = format!("SELECT {select_clause} FROM {table}");
 
     if let Some(filter) = &query.filter {
-        sql.push_str(&format!(" WHERE {}", filter_to_surql_with_schema(filter, schema)));
+        sql.push_str(&format!(
+            " WHERE {}",
+            filter_to_surql_with_schema(filter, schema)
+        ));
     }
 
-    if !query.sort.is_empty() {
+    let sort = query.deterministic_sort();
+    if !sort.is_empty() {
         sql.push_str(" ORDER BY ");
-        let clauses: Vec<String> = query
-            .sort
+        let clauses: Vec<String> = sort
             .iter()
             .map(|(path, order)| {
                 let dir = match order {
@@ -84,7 +87,10 @@ pub fn count_to_surql_with_schema(
     let mut sql = format!("SELECT count() FROM {table}");
 
     if let Some(filter) = &query.filter {
-        sql.push_str(&format!(" WHERE {}", filter_to_surql_with_schema(filter, schema)));
+        sql.push_str(&format!(
+            " WHERE {}",
+            filter_to_surql_with_schema(filter, schema)
+        ));
     }
 
     sql.push_str(" GROUP ALL;");
@@ -101,10 +107,7 @@ pub fn filter_to_surql(filter: &Filter) -> String {
 /// emitted as record-link literals (`Target:⟨id⟩`) so the comparison
 /// matches the stored `record<Target>` column instead of always being
 /// false.
-pub fn filter_to_surql_with_schema(
-    filter: &Filter,
-    schema: Option<&SchemaDefinition>,
-) -> String {
+pub fn filter_to_surql_with_schema(filter: &Filter, schema: Option<&SchemaDefinition>) -> String {
     match filter {
         Filter::Eq { path, value } => {
             format!(
@@ -124,28 +127,28 @@ pub fn filter_to_surql_with_schema(
             format!(
                 "{} > {}",
                 field_path_to_surql(path),
-                dynamic_value_to_surql_literal(value)
+                value_for_path(value, path, schema)
             )
         }
         Filter::Gte { path, value } => {
             format!(
                 "{} >= {}",
                 field_path_to_surql(path),
-                dynamic_value_to_surql_literal(value)
+                value_for_path(value, path, schema)
             )
         }
         Filter::Lt { path, value } => {
             format!(
                 "{} < {}",
                 field_path_to_surql(path),
-                dynamic_value_to_surql_literal(value)
+                value_for_path(value, path, schema)
             )
         }
         Filter::Lte { path, value } => {
             format!(
                 "{} <= {}",
                 field_path_to_surql(path),
-                dynamic_value_to_surql_literal(value)
+                value_for_path(value, path, schema)
             )
         }
         Filter::Contains { path, value } => {
@@ -450,14 +453,20 @@ mod tests {
             .with_sort(FieldPath::single("name"), SortOrder::Ascending)
             .with_sort(FieldPath::single("age"), SortOrder::Descending);
         let sql = query_to_surql(&q, "Contact");
-        assert_eq!(sql, "SELECT * FROM Contact ORDER BY name ASC, age DESC;");
+        assert_eq!(
+            sql,
+            "SELECT * FROM Contact ORDER BY name ASC, age DESC, id ASC;"
+        );
     }
 
     #[test]
     fn select_with_limit_and_offset() {
         let q = Query::new(SchemaId::new()).with_limit(10).with_offset(20);
         let sql = query_to_surql(&q, "Contact");
-        assert_eq!(sql, "SELECT * FROM Contact LIMIT 10 START 20;");
+        assert_eq!(
+            sql,
+            "SELECT * FROM Contact ORDER BY id ASC LIMIT 10 START 20;"
+        );
     }
 
     #[test]
