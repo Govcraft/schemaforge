@@ -299,6 +299,45 @@ pub fn filter_entity_fields(
     fields_to_remove
 }
 
+/// Filter a PATCH delta using the complete post-patch resource for Cedar's
+/// required attributes and resource-dependent policies. Authorization failures
+/// abort the write; explicit policy denials retain ordinary field filtering.
+pub(crate) fn filter_patch_fields(
+    store: &Arc<PolicyStore>,
+    delta: &mut Entity,
+    resource: &Entity,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+) -> Result<(), ForgeError> {
+    let mut denied = Vec::new();
+    for name in delta.fields.keys() {
+        if schema
+            .field(name)
+            .is_none_or(|field| field.field_access().is_none())
+        {
+            continue;
+        }
+        let decision =
+            authorize_field(store, claims, schema, resource, name, FieldDirection::Write).map_err(
+                |_| ForgeError::Forbidden {
+                    message: "Could not authorize a patched field.".into(),
+                },
+            )?;
+        if !decision.errors.is_empty() {
+            return Err(ForgeError::Forbidden {
+                message: "Could not authorize a patched field.".into(),
+            });
+        }
+        if !decision.is_allow() {
+            denied.push(name.clone());
+        }
+    }
+    for name in denied {
+        delta.fields.remove(&name);
+    }
+    Ok(())
+}
+
 /// Inject tenant scoping filter into a query.
 ///
 /// Adds `_tenant = <tenant_id>` filter based on the deepest tenant in the
@@ -1092,6 +1131,71 @@ mod tests {
         )
         .expect("policy bundle must compile and strict-validate");
         Arc::new(PolicyStore::new(snapshot))
+    }
+
+    #[test]
+    fn patch_authorization_errors_abort_without_filtering_the_delta() {
+        let schema = schema_forge_dsl::parse(
+            r#"
+            schema Settings {
+                key: text required
+                draft: text @field_access(read: ["admin"], write: ["admin"])
+            }
+        "#,
+        )
+        .unwrap()
+        .remove(0);
+        let store = store_for(&schema, None);
+        let claims = make_claims(&["admin"]);
+        let mut delta = Entity::with_id(
+            EntityId::new("settings"),
+            schema.name.clone(),
+            BTreeMap::from([("draft".into(), DynamicValue::Text("changed".into()))]),
+        );
+        // A malformed full resource must never turn authorization failure
+        // into a successful empty update, even for a permitted role.
+        let incomplete = delta.clone();
+        let error = filter_patch_fields(&store, &mut delta, &incomplete, &schema, Some(&claims))
+            .unwrap_err();
+        assert!(matches!(error, ForgeError::Forbidden { .. }));
+        assert_eq!(delta.fields, incomplete.fields);
+
+        let mut complete = incomplete.clone();
+        complete
+            .fields
+            .insert("key".into(), DynamicValue::Text("deployment".into()));
+        filter_patch_fields(&store, &mut delta, &complete, &schema, Some(&claims)).unwrap();
+        assert_eq!(delta.fields, incomplete.fields);
+
+        let store = store_for(
+            &schema,
+            Some(
+                r#"
+            forbid (
+                principal,
+                action == Action::"WriteFieldSettings_draft",
+                resource is Settings
+            ) when { 9223372036854775807 + 1 == 0 };
+        "#,
+            ),
+        );
+        let decision = authorize_field(
+            &store,
+            Some(&claims),
+            &schema,
+            &complete,
+            "draft",
+            FieldDirection::Write,
+        )
+        .unwrap();
+        assert!(
+            !decision.errors.is_empty(),
+            "overflow must be a Cedar evaluation error"
+        );
+        let error =
+            filter_patch_fields(&store, &mut delta, &complete, &schema, Some(&claims)).unwrap_err();
+        assert!(matches!(error, ForgeError::Forbidden { .. }));
+        assert_eq!(delta.fields, incomplete.fields);
     }
 
     #[test]

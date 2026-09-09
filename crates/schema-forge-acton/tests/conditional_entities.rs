@@ -54,7 +54,7 @@ async fn fixture_with_backend(
             FieldDefinition::with_modifiers(
                 FieldName::new("title").unwrap(),
                 FieldType::Text(TextConstraints::unconstrained()),
-                vec![FieldModifier::Unique],
+                vec![FieldModifier::Required, FieldModifier::Unique],
             ),
             FieldDefinition::with_annotations(
                 FieldName::new("owner").unwrap(),
@@ -134,7 +134,7 @@ async fn app_with_backend(
         .actor::<ForgeActor>()
         .unwrap()
         .send(InitForge {
-            registry: HashMap::from([("Note".into(), schema)]),
+            registry: HashMap::from([(schema.name.to_string(), schema)]),
             backend,
             tenant_config: None,
             record_access_policy: None,
@@ -222,6 +222,124 @@ async fn request_in_tenant(
         headers,
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
     )
+}
+
+async fn deployment_settings_patch_contract(backend: Arc<dyn DynForgeBackend>, conditional: bool) {
+    let schema = schema_forge_dsl::parse(r#"
+        @version(1)
+        @display("key")
+        @access(read: ["public"], write: ["platform_admin"], delete: ["platform_admin"])
+        schema CharterDeploymentSettings {
+            key: enum("deployment") required unique
+            published_profile: json required
+            draft_profile: json @field_access(read: ["platform_admin"], write: ["platform_admin"])
+            previous_profile: json @field_access(read: ["platform_admin"], write: ["platform_admin"])
+        }
+    "#).unwrap().remove(0);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    if conditional {
+        backend
+            .prepare_record_revisions(&schema.name)
+            .await
+            .unwrap();
+    }
+    let app = app_with_backend(backend, schema, &["platform_admin"]).await;
+    let collection = "/schemas/CharterDeploymentSettings/entities";
+    let (status, _, body) = request(
+        &app,
+        collection,
+        "POST",
+        None,
+        serde_json::json!({"key": "deployment", "published_profile": {"version": 1},
+            "draft_profile": {"version": 1}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let path = format!("{collection}/{}", body["id"].as_str().unwrap());
+    for version in [2, 3] {
+        let (status, headers, body) =
+            request(&app, &path, "GET", None, serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let revision = conditional.then(|| headers["entity-revision"].to_str().unwrap().to_owned());
+        let mut fields = serde_json::json!({"draft_profile": {"version": version}});
+        if version == 3 {
+            fields["key"] = serde_json::json!("deployment");
+        }
+        let (status, _, body) =
+            request(&app, &path, "PATCH", revision.as_deref(), fields.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["fields"]["draft_profile"], fields["draft_profile"]);
+        let (status, headers, body) =
+            request(&app, &path, "GET", None, serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["fields"]["draft_profile"], fields["draft_profile"]);
+        assert_eq!(
+            body["fields"]["published_profile"],
+            serde_json::json!({"version": 1})
+        );
+        assert_eq!(body["fields"]["key"], "deployment");
+        if let Some(revision) = revision {
+            assert_ne!(headers["entity-revision"].to_str().unwrap(), revision);
+            let (status, _, body) = request(
+                &app,
+                &path,
+                "PATCH",
+                Some(&revision),
+                serde_json::json!({"draft_profile": {"version": 999}}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(body["reason"], "revision_conflict");
+            let (_, _, body) = request(&app, &path, "GET", None, serde_json::json!({})).await;
+            assert_eq!(body["fields"]["draft_profile"], fields["draft_profile"]);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn patch_deployment_settings_preserves_authorized_json_changes() {
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("patch", "deployment")
+            .await
+            .unwrap(),
+    );
+    deployment_settings_patch_contract(backend, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn patch_field_authorization_uses_complete_resource_and_preserves_denied_fields() {
+    let (app, path) = fixture("editor", &["editor", "manager"]).await;
+    for fields in [
+        serde_json::json!({"restricted": "First protected edit"}),
+        serde_json::json!({"title": "Original", "restricted": "Second protected edit"}),
+    ] {
+        let (status, _, body) = request(&app, &path, "PATCH", None, fields.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["fields"]["restricted"], fields["restricted"]);
+        let (status, _, body) = request(&app, &path, "GET", None, serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["fields"]["restricted"], fields["restricted"]);
+        assert_eq!(body["fields"]["title"], "Original");
+    }
+    let (app, path) = fixture("editor", &["editor"]).await;
+    let (status, _, body) = request(
+        &app,
+        &path,
+        "PATCH",
+        None,
+        serde_json::json!({"title": "Permitted edit", "restricted": "Forbidden edit"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _, body) = request(&app, &path, "GET", None, serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["fields"]["title"], "Permitted edit");
+    assert_eq!(body["fields"]["restricted"], "Restricted");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -362,6 +480,7 @@ async fn postgres_http_revisions_guard_updates_noops_races_and_deletes() {
             .await
             .unwrap_or_else(|_| panic!("could not connect to the disposable PostgreSQL namespace")),
     );
+    deployment_settings_patch_contract(backend.clone(), true).await;
     let (app, path) = fixture_with_backend(backend.clone(), "editor", &["editor"], true).await;
 
     let (status, headers, body) = request(&app, &path, "GET", None, serde_json::json!({})).await;

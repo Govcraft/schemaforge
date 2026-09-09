@@ -21,10 +21,10 @@ use tracing::instrument;
 
 use super::query_params::{parse_fields_param, parse_filter_params, parse_sort_param};
 use crate::access::{
-    check_schema_access, entity_permissions, filter_entity_fields, inject_audit_columns_on_create,
-    inject_audit_columns_on_update, inject_owner_on_create, inject_tenant_on_create,
-    inject_tenant_scope, schema_permissions, strip_owner_on_update, AccessAction,
-    EntityPermissions, FieldFilterDirection, OptionalClaims, SchemaPermissions,
+    check_schema_access, entity_permissions, filter_entity_fields, filter_patch_fields,
+    inject_audit_columns_on_create, inject_audit_columns_on_update, inject_owner_on_create,
+    inject_tenant_on_create, inject_tenant_scope, schema_permissions, strip_owner_on_update,
+    AccessAction, EntityPermissions, FieldFilterDirection, OptionalClaims, SchemaPermissions,
 };
 use crate::actor::ForgeActor;
 use crate::authz::{authorize, namespace::ActionVerb};
@@ -3409,8 +3409,9 @@ pub async fn patch_entity(
 
     // Merge the patch onto the existing entity's field map so hooks see
     // the post-patch view of the entity. The merged map is only used to
-    // drive the hook path and to compute the final delta against the
-    // loaded baseline; it is NOT what gets written to the backend.
+    // drive the hook path, authorize changed fields against the complete
+    // resource, and compute the final delta against the loaded baseline;
+    // it is NOT what gets written to the backend.
     let mut merged = existing.fields.clone();
     for (k, v) in patch_fields {
         merged.insert(k, v);
@@ -3510,14 +3511,15 @@ pub async fn patch_entity(
     let (mut updated, revision) = if delta.is_empty() && expected.is_none() {
         (existing, None)
     } else {
+        let resource = Entity::with_id(entity_id.clone(), schema_name.clone(), merged);
         let mut entity = Entity::with_id(entity_id, schema_name, delta);
-        filter_entity_fields(
+        filter_patch_fields(
             &policy_store,
             &mut entity,
+            &resource,
             &schema_def,
             claims.as_ref(),
-            FieldFilterDirection::Write,
-        );
+        )?;
         check_field_constraints(&schema_def, &entity.fields)?;
         persist_entity_update(&forge, entity, expected).await?
     };
