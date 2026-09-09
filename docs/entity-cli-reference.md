@@ -432,11 +432,22 @@ until it becomes `available`**. `download` of a non-available attachment is
 refused with a legible error (e.g. `file not yet available (status: scanning)`);
 scripts and agents will hit this routinely while a scan runs, so branch on it.
 
-### Not yet supported
+### Clear an attachment
 
-There is no `entity file clear` (or replace) verb: the attachment lifecycle is
-deliberately centralized server-side and no route exists to detach or overwrite
-an attachment. Re-uploading creates a new object under a new key.
+```sh
+schemaforge entity file clear Document 01J... contract --dry-run
+schemaforge entity file clear Document 01J... contract --yes
+```
+
+`clear` calls the server's audited attachment-detach route. It clears an optional
+file field and retains the object bytes under the storage lifecycle policy.
+Required fields are rejected. Repeating the command for an empty field succeeds.
+Use `--yes` in scripts; interactive use prompts for confirmation. `--format json`
+reports the target and `object_disposition: retained`.
+
+There is no separate replace verb. Re-uploading creates a new object under a new
+key. See [attachment clearing](file-clearing.md) for authorization, audit, and
+retention details.
 
 ---
 

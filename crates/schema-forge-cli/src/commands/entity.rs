@@ -12,8 +12,8 @@ use serde_json::{json, Map, Value};
 
 use crate::cli::{
     EntityCommands, EntityConnectionArgs, EntityCreateArgs, EntityDeleteArgs, EntityExportArgs,
-    EntityFileCommands, EntityFileDownloadArgs, EntityFileUploadArgs, EntityGetArgs,
-    EntityInputArgs, EntityListArgs, EntityQueryArgs, EntityWriteArgs, GlobalOpts,
+    EntityFileClearArgs, EntityFileCommands, EntityFileDownloadArgs, EntityFileUploadArgs,
+    EntityGetArgs, EntityInputArgs, EntityListArgs, EntityQueryArgs, EntityWriteArgs, GlobalOpts,
 };
 use crate::config::{load_svc_config, resolve_client_config, ResolvedClient};
 use crate::error::CliError;
@@ -50,6 +50,7 @@ async fn run_file(
     match command {
         EntityFileCommands::Upload(args) => upload(*args, global, output).await,
         EntityFileCommands::Download(args) => download(*args, global, output).await,
+        EntityFileCommands::Clear(args) => clear_file(*args, global, output).await,
     }
 }
 
@@ -356,6 +357,56 @@ fn write_export_artifact(
 // ---------------------------------------------------------------------------
 // File field handlers
 // ---------------------------------------------------------------------------
+
+async fn clear_file(
+    args: EntityFileClearArgs,
+    global: &GlobalOpts,
+    output: &OutputContext,
+) -> Result<(), CliError> {
+    let (rc, client) = build_client(&args.conn, global, output, !args.dry_run)?;
+    let path = format!(
+        "/schemas/{}/entities/{}/fields/{}",
+        args.schema, args.id, args.field
+    );
+    if args.dry_run {
+        return dry_run_report(output, &rc, "DELETE", &path, None);
+    }
+    if !args.yes {
+        if !Term::stderr().is_term() {
+            return Err(CliError::Config {
+                message: "clearing a file requires --yes in non-interactive mode".into(),
+            });
+        }
+        let confirmed = dialoguer::Confirm::new()
+            .with_prompt(format!(
+                "Clear {}.{} on {}? Object bytes will be retained.",
+                args.schema, args.field, args.id
+            ))
+            .default(false)
+            .interact()
+            .map_err(|_| CliError::Cancelled)?;
+        if !confirmed {
+            return Err(CliError::Cancelled);
+        }
+    }
+    call_with_spinner(
+        output,
+        "Clearing attachment…",
+        client.clear_file(&args.schema, &args.id, &args.field),
+    )
+    .await?;
+    if output.mode == OutputMode::Json {
+        output.print_json(&json!({"schema": args.schema, "id": args.id, "field": args.field, "cleared": true, "object_disposition": "retained"}));
+    } else if output.mode == OutputMode::Plain {
+        println!("{}\t{}\t{}\tretained", args.schema, args.id, args.field);
+    } else {
+        output.success(&format!(
+            "cleared {}.{} on {}; object bytes retained",
+            args.schema, args.field, args.id
+        ));
+    }
+    Ok(())
+}
 
 /// Upload a local file to a `file` field via the presigned handshake:
 /// mint a presigned PUT URL, stream the bytes straight to storage with the

@@ -357,6 +357,12 @@ impl ForgeClient {
 
     // --- File field operations --------------------------------------------
 
+    /// Clear an optional attachment, preserving retained object bytes on the server.
+    pub async fn clear_file(&self, schema: &str, id: &str, field: &str) -> Result<(), CliError> {
+        let url = self.url(&["schemas", schema, "entities", id, "fields", field])?;
+        self.send(Method::DELETE, url, &[], None).await.map(|_| ())
+    }
+
     /// `POST /schemas/{schema}/entities/{id}/fields/{field}/upload-url`.
     ///
     /// Mints a presigned PUT URL plus the exact headers the client must replay
