@@ -10,6 +10,7 @@
 use chrono::{DateTime, TimeDelta, Timelike, Utc};
 
 use crate::error::EvalError;
+use crate::eval::scalar;
 use crate::value::CelValue;
 
 /// CEL bounds timestamps to the years 1..=9999 (the `google.protobuf.Timestamp`
@@ -42,9 +43,9 @@ pub(crate) fn duration_in_range(d: &TimeDelta) -> bool {
 pub fn to_int(x: &CelValue) -> Result<CelValue, EvalError> {
     match x {
         CelValue::Int(i) => Ok(CelValue::Int(*i)),
-        CelValue::Uint(u) => i64::try_from(*u)
+        CelValue::Uint(u) => scalar::uint_to_int(*u)
             .map(CelValue::Int)
-            .map_err(|_| range_err()),
+            .ok_or_else(range_err),
         CelValue::Double(d) => double_to_int(*d),
         CelValue::String(s) => s
             .parse::<i64>()
@@ -62,20 +63,18 @@ pub fn to_int(x: &CelValue) -> Result<CelValue, EvalError> {
 /// the exact double `-2^63` (`int(-9223372036854775808.0)` → range), so both
 /// endpoints are excluded.
 fn double_to_int(d: f64) -> Result<CelValue, EvalError> {
-    let t = d.trunc();
-    if !t.is_finite() || t <= -9_223_372_036_854_775_808.0 || t >= 9_223_372_036_854_775_808.0 {
-        return Err(range_err());
-    }
-    Ok(CelValue::Int(t as i64))
+    scalar::double_to_int(d)
+        .map(CelValue::Int)
+        .ok_or_else(range_err)
 }
 
 /// `uint(x)`.
 pub fn to_uint(x: &CelValue) -> Result<CelValue, EvalError> {
     match x {
         CelValue::Uint(u) => Ok(CelValue::Uint(*u)),
-        CelValue::Int(i) => u64::try_from(*i)
+        CelValue::Int(i) => scalar::int_to_uint(*i)
             .map(CelValue::Uint)
-            .map_err(|_| range_err()),
+            .ok_or_else(range_err),
         CelValue::Double(d) => double_to_uint(*d),
         CelValue::String(s) => s
             .parse::<u64>()
@@ -86,21 +85,17 @@ pub fn to_uint(x: &CelValue) -> Result<CelValue, EvalError> {
 }
 
 fn double_to_uint(d: f64) -> Result<CelValue, EvalError> {
-    let t = d.trunc();
-    // `Range::contains` is false for NaN and for the unrepresentable upper
-    // endpoint `2^64`, so this rejects NaN/±inf and out-of-range in one test.
-    if !(0.0..18_446_744_073_709_551_616.0).contains(&t) {
-        return Err(range_err());
-    }
-    Ok(CelValue::Uint(t as u64))
+    scalar::double_to_uint(d)
+        .map(CelValue::Uint)
+        .ok_or_else(range_err)
 }
 
 /// `double(x)`.
 pub fn to_double(x: &CelValue) -> Result<CelValue, EvalError> {
     match x {
         CelValue::Double(d) => Ok(CelValue::Double(*d)),
-        CelValue::Int(i) => Ok(CelValue::Double(*i as f64)),
-        CelValue::Uint(u) => Ok(CelValue::Double(*u as f64)),
+        CelValue::Int(i) => Ok(CelValue::Double(scalar::int_to_double(*i))),
+        CelValue::Uint(u) => Ok(CelValue::Double(scalar::uint_to_double(*u))),
         CelValue::String(s) => s
             .parse::<f64>()
             .map(CelValue::Double)
@@ -150,17 +145,17 @@ fn format_timestamp(t: &DateTime<Utc>) -> String {
 /// Go-style duration string: total seconds with a fractional part, suffixed `s`
 /// (e.g. `1000000s`, `100.5s`). The corpus only round-trips whole-second values.
 fn format_duration(d: &TimeDelta) -> String {
-    let total_nanos = d
-        .num_nanoseconds()
-        .unwrap_or_else(|| d.num_seconds() * 1_000_000_000);
-    let secs = total_nanos / 1_000_000_000;
-    let nanos = (total_nanos % 1_000_000_000).abs();
+    let total_nanos = scalar::duration_nanos(d.num_seconds(), d.subsec_nanos());
+    let sign = if total_nanos < 0 { "-" } else { "" };
+    let magnitude = total_nanos.abs();
+    let secs = magnitude / 1_000_000_000;
+    let nanos = magnitude % 1_000_000_000;
     if nanos == 0 {
-        format!("{secs}s")
+        format!("{sign}{secs}s")
     } else {
         let frac = format!("{nanos:09}");
         let frac = frac.trim_end_matches('0');
-        format!("{secs}.{frac}s")
+        format!("{sign}{secs}.{frac}s")
     }
 }
 
@@ -371,6 +366,23 @@ mod tests {
             to_double(&s("6.02214e23")).unwrap(),
             CelValue::Double(6.02214e23)
         );
+    }
+
+    #[test]
+    fn duration_formatting_preserves_large_values_and_negative_fractions() {
+        for (duration, expected) in [
+            (TimeDelta::seconds(315_576_000_000), "315576000000s"),
+            (TimeDelta::seconds(-315_576_000_000), "-315576000000s"),
+            (TimeDelta::milliseconds(-500), "-0.5s"),
+            (TimeDelta::milliseconds(-1500), "-1.5s"),
+            (TimeDelta::MAX, "9223372036854775.807s"),
+            (TimeDelta::MIN, "-9223372036854775.807s"),
+        ] {
+            assert_eq!(
+                to_string(&CelValue::Duration(duration)).unwrap(),
+                s(expected)
+            );
+        }
     }
 
     #[test]

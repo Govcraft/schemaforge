@@ -16,6 +16,7 @@
 
 pub mod funcs;
 pub mod ops;
+mod scalar;
 
 use std::collections::BTreeMap;
 

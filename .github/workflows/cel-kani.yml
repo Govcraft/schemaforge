@@ -1,0 +1,44 @@
+name: CEL scalar proofs
+
+on:
+  pull_request:
+    paths:
+      - 'crates/schema-forge-cel/**'
+      - 'crates/schema-forge-core/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '.github/workflows/cel-kani.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/schema-forge-cel/**'
+      - 'crates/schema-forge-core/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '.github/workflows/cel-kani.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scalar-proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install pinned integer solver
+        run: |
+          curl -fLsS -o "$RUNNER_TEMP/z3.zip" https://github.com/Z3Prover/z3/releases/download/z3-5.1.0/z3-5.1.0-x64-glibc-2.39.zip
+          echo "f47be8d27d3230e823bf1eeede2fe0abaca55bb78d0b59974370e6689a92284a  $RUNNER_TEMP/z3.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/z3.zip" -d "$RUNNER_TEMP/z3"
+          echo "$RUNNER_TEMP/z3/z3-5.1.0-x64-glibc-2.39/bin" >> "$GITHUB_PATH"
+      - name: Install pinned verifier
+        run: |
+          cargo install --locked kani-verifier --version 0.67.0
+          cargo kani setup
+      - name: Prove production scalar contracts and temporal arithmetic
+        run: cargo kani -p schema-forge-cel -Z function-contracts --jobs 4 --output-format terse

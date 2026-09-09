@@ -20,7 +20,8 @@ use crate::ast::{BinaryOp, UnaryOp};
 use crate::error::EvalError;
 use crate::value::{CelKey, CelValue};
 
-use super::funcs::convert::ts_in_range;
+use super::scalar;
+use super::scalar::{int_double_cmp, int_uint_cmp, uint_double_cmp};
 
 /// Canonical spec error for an operator applied to operand types it has no
 /// overload for (used by comparison/arithmetic).
@@ -45,71 +46,6 @@ fn num_cmp(a: &CelValue, b: &CelValue) -> Option<Ordering> {
         (CelValue::Uint(x), CelValue::Double(y)) => uint_double_cmp(*x, *y),
         (CelValue::Double(x), CelValue::Uint(y)) => uint_double_cmp(*y, *x).map(Ordering::reverse),
         _ => None,
-    }
-}
-
-fn int_uint_cmp(i: i64, u: u64) -> Ordering {
-    if i < 0 {
-        Ordering::Less
-    } else {
-        (i as u64).cmp(&u)
-    }
-}
-
-/// Compare an `i64` against an `f64` exactly (no precision loss): widen the int to
-/// `f64` only when it is exactly representable, otherwise reason via the float's
-/// integer/fractional decomposition.
-fn int_double_cmp(i: i64, d: f64) -> Option<Ordering> {
-    if d.is_nan() {
-        return None;
-    }
-    if d.is_infinite() {
-        return Some(if d > 0.0 {
-            Ordering::Less
-        } else {
-            Ordering::Greater
-        });
-    }
-    // f64 has 53 bits of mantissa; |i| below 2^53 is exact as f64.
-    if i.unsigned_abs() < (1u64 << 53) {
-        return (i as f64).partial_cmp(&d);
-    }
-    // Large magnitude: compare against the floor/ceil of d.
-    let floor = d.floor();
-    if floor < i64::MIN as f64 {
-        return Some(Ordering::Greater);
-    }
-    if floor >= 9_223_372_036_854_775_808.0 {
-        return Some(Ordering::Less);
-    }
-    let di = floor as i64;
-    match i.cmp(&di) {
-        Ordering::Equal if d > floor => Some(Ordering::Less),
-        other => Some(other),
-    }
-}
-
-fn uint_double_cmp(u: u64, d: f64) -> Option<Ordering> {
-    if d.is_nan() {
-        return None;
-    }
-    if d < 0.0 {
-        return Some(Ordering::Greater);
-    }
-    if d.is_infinite() {
-        return Some(Ordering::Less);
-    }
-    if u < (1u64 << 53) {
-        return (u as f64).partial_cmp(&d);
-    }
-    let floor = d.floor();
-    if floor >= 18_446_744_073_709_551_616.0 {
-        return Some(Ordering::Less);
-    }
-    let du = floor as u64;
-    match u.cmp(&du) {
-        Ordering::Equal if d > floor => Some(Ordering::Less),
-        other => Some(other),
     }
 }
 
@@ -234,12 +170,12 @@ fn overflow() -> EvalError {
 
 fn add(a: &CelValue, b: &CelValue) -> Result<CelValue, EvalError> {
     match (a, b) {
-        (CelValue::Int(x), CelValue::Int(y)) => {
-            x.checked_add(*y).map(CelValue::Int).ok_or_else(overflow)
-        }
-        (CelValue::Uint(x), CelValue::Uint(y)) => {
-            x.checked_add(*y).map(CelValue::Uint).ok_or_else(overflow)
-        }
+        (CelValue::Int(x), CelValue::Int(y)) => scalar::i64_add(*x, *y)
+            .map(CelValue::Int)
+            .ok_or_else(overflow),
+        (CelValue::Uint(x), CelValue::Uint(y)) => scalar::u64_add(*x, *y)
+            .map(CelValue::Uint)
+            .ok_or_else(overflow),
         (CelValue::Double(x), CelValue::Double(y)) => Ok(CelValue::Double(x + y)),
         (CelValue::String(x), CelValue::String(y)) => {
             let mut s = String::with_capacity(x.len() + y.len());
@@ -270,28 +206,26 @@ fn add(a: &CelValue, b: &CelValue) -> Result<CelValue, EvalError> {
 
 fn sub(a: &CelValue, b: &CelValue) -> Result<CelValue, EvalError> {
     match (a, b) {
-        (CelValue::Int(x), CelValue::Int(y)) => {
-            x.checked_sub(*y).map(CelValue::Int).ok_or_else(overflow)
-        }
-        (CelValue::Uint(x), CelValue::Uint(y)) => {
-            x.checked_sub(*y).map(CelValue::Uint).ok_or_else(overflow)
-        }
+        (CelValue::Int(x), CelValue::Int(y)) => scalar::i64_sub(*x, *y)
+            .map(CelValue::Int)
+            .ok_or_else(overflow),
+        (CelValue::Uint(x), CelValue::Uint(y)) => scalar::u64_sub(*x, *y)
+            .map(CelValue::Uint)
+            .ok_or_else(overflow),
         (CelValue::Double(x), CelValue::Double(y)) => Ok(CelValue::Double(x - y)),
         // timestamp - duration → timestamp.
-        (CelValue::Timestamp(t), CelValue::Duration(d)) => match TimeDelta::zero().checked_sub(d) {
-            Some(neg) => ts_plus_duration(t, &neg),
-            None => Err(range()),
-        },
+        (CelValue::Timestamp(t), CelValue::Duration(d)) => scalar::timestamp_sub(*t, *d)
+            .map(CelValue::Timestamp)
+            .ok_or_else(range),
         // timestamp - timestamp → duration.
         (CelValue::Timestamp(x), CelValue::Timestamp(y)) => {
             let delta = x.signed_duration_since(*y);
             in_range_duration(delta)
         }
         // duration - duration → duration.
-        (CelValue::Duration(x), CelValue::Duration(y)) => {
-            let delta = x.checked_sub(y).ok_or_else(range)?;
-            in_range_duration(delta)
-        }
+        (CelValue::Duration(x), CelValue::Duration(y)) => scalar::duration_sub(*x, *y)
+            .map(CelValue::Duration)
+            .ok_or_else(range),
         _ => Err(no_such_overload()),
     }
 }
@@ -303,18 +237,16 @@ fn range() -> EvalError {
 
 /// Add a duration to a timestamp, enforcing CEL's timestamp range on the result.
 fn ts_plus_duration(t: &DateTime<Utc>, d: &TimeDelta) -> Result<CelValue, EvalError> {
-    let result = t.checked_add_signed(*d).ok_or_else(range)?;
-    if ts_in_range(&result) {
-        Ok(CelValue::Timestamp(result))
-    } else {
-        Err(range())
-    }
+    scalar::timestamp_add(*t, *d)
+        .map(CelValue::Timestamp)
+        .ok_or_else(range)
 }
 
 /// Add two durations, enforcing CEL's duration range on the result.
 fn duration_plus_duration(x: &TimeDelta, y: &TimeDelta) -> Result<CelValue, EvalError> {
-    let delta = x.checked_add(y).ok_or_else(range)?;
-    in_range_duration(delta)
+    scalar::duration_add(*x, *y)
+        .map(CelValue::Duration)
+        .ok_or_else(range)
 }
 
 /// Wrap a computed duration in the arithmetic range check.
@@ -336,12 +268,12 @@ fn in_range_duration(delta: TimeDelta) -> Result<CelValue, EvalError> {
 
 fn mul(a: &CelValue, b: &CelValue) -> Result<CelValue, EvalError> {
     match (a, b) {
-        (CelValue::Int(x), CelValue::Int(y)) => {
-            x.checked_mul(*y).map(CelValue::Int).ok_or_else(overflow)
-        }
-        (CelValue::Uint(x), CelValue::Uint(y)) => {
-            x.checked_mul(*y).map(CelValue::Uint).ok_or_else(overflow)
-        }
+        (CelValue::Int(x), CelValue::Int(y)) => scalar::i64_mul(*x, *y)
+            .map(CelValue::Int)
+            .ok_or_else(overflow),
+        (CelValue::Uint(x), CelValue::Uint(y)) => scalar::u64_mul(*x, *y)
+            .map(CelValue::Uint)
+            .ok_or_else(overflow),
         (CelValue::Double(x), CelValue::Double(y)) => Ok(CelValue::Double(x * y)),
         _ => Err(no_such_overload()),
     }
@@ -353,10 +285,12 @@ fn div(a: &CelValue, b: &CelValue) -> Result<CelValue, EvalError> {
             Err(EvalError::new("divide by zero"))
         }
         // i64::MIN / -1 overflows.
-        (CelValue::Int(x), CelValue::Int(y)) => {
-            x.checked_div(*y).map(CelValue::Int).ok_or_else(overflow)
-        }
-        (CelValue::Uint(x), CelValue::Uint(y)) => Ok(CelValue::Uint(x / y)),
+        (CelValue::Int(x), CelValue::Int(y)) => scalar::i64_div(*x, *y)
+            .map(CelValue::Int)
+            .ok_or_else(overflow),
+        (CelValue::Uint(x), CelValue::Uint(y)) => scalar::u64_div(*x, *y)
+            .map(CelValue::Uint)
+            .ok_or_else(overflow),
         (CelValue::Double(x), CelValue::Double(y)) => Ok(CelValue::Double(x / y)),
         _ => Err(no_such_overload()),
     }
@@ -368,10 +302,12 @@ fn rem(a: &CelValue, b: &CelValue) -> Result<CelValue, EvalError> {
             Err(EvalError::new("modulus by zero"))
         }
         // i64::MIN % -1 overflows in Rust's checked_rem.
-        (CelValue::Int(x), CelValue::Int(y)) => {
-            x.checked_rem(*y).map(CelValue::Int).ok_or_else(overflow)
-        }
-        (CelValue::Uint(x), CelValue::Uint(y)) => Ok(CelValue::Uint(x % y)),
+        (CelValue::Int(x), CelValue::Int(y)) => scalar::i64_rem(*x, *y)
+            .map(CelValue::Int)
+            .ok_or_else(overflow),
+        (CelValue::Uint(x), CelValue::Uint(y)) => scalar::u64_rem(*x, *y)
+            .map(CelValue::Uint)
+            .ok_or_else(overflow),
         // CEL has no `%` overload on doubles; emit the spec's specific
         // no-matching-overload text for `(double, double)` so it grades green.
         (CelValue::Double(_), CelValue::Double(_)) => Err(EvalError::new(
@@ -387,7 +323,9 @@ pub fn unary(op: UnaryOp, v: &CelValue) -> Result<CelValue, EvalError> {
         // `!` of a non-bool is reported with the logical-overload spelling.
         (UnaryOp::Not, CelValue::Bool(b)) => Ok(CelValue::Bool(!b)),
         (UnaryOp::Not, _) => Err(EvalError::new("no matching overload")),
-        (UnaryOp::Neg, CelValue::Int(i)) => i.checked_neg().map(CelValue::Int).ok_or_else(overflow),
+        (UnaryOp::Neg, CelValue::Int(i)) => {
+            scalar::i64_neg(*i).map(CelValue::Int).ok_or_else(overflow)
+        }
         (UnaryOp::Neg, CelValue::Double(d)) => Ok(CelValue::Double(-d)),
         (UnaryOp::Neg, _) => Err(no_such_overload()),
     }
@@ -766,6 +704,62 @@ mod tests {
     }
     fn dur(secs: i64) -> CelValue {
         CelValue::Duration(TimeDelta::seconds(secs))
+    }
+
+    #[test]
+    fn temporal_arithmetic_preserves_large_cancellation_and_leap_seconds() {
+        assert_eq!(
+            arithmetic(
+                BinaryOp::Add,
+                &CelValue::Duration(TimeDelta::MAX),
+                &CelValue::Duration(TimeDelta::MIN)
+            )
+            .unwrap(),
+            CelValue::Duration(TimeDelta::zero())
+        );
+        let epoch = DateTime::<chrono::Utc>::UNIX_EPOCH;
+        let max = DateTime::<chrono::Utc>::MAX_UTC;
+        let min = DateTime::<chrono::Utc>::MIN_UTC;
+        assert_eq!(
+            arithmetic(
+                BinaryOp::Sub,
+                &CelValue::Timestamp(max),
+                &CelValue::Duration(max.signed_duration_since(epoch))
+            )
+            .unwrap(),
+            CelValue::Timestamp(epoch)
+        );
+        assert_eq!(
+            arithmetic(
+                BinaryOp::Add,
+                &CelValue::Timestamp(min),
+                &CelValue::Duration(epoch.signed_duration_since(min))
+            )
+            .unwrap(),
+            CelValue::Timestamp(epoch)
+        );
+        let leap = DateTime::parse_from_rfc3339("2016-12-31T23:59:60Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let offset = TimeDelta::milliseconds(500);
+        assert_eq!(
+            arithmetic(
+                BinaryOp::Add,
+                &CelValue::Timestamp(leap),
+                &CelValue::Duration(offset)
+            )
+            .unwrap(),
+            CelValue::Timestamp(leap.checked_add_signed(offset).unwrap())
+        );
+        assert_eq!(
+            arithmetic(
+                BinaryOp::Sub,
+                &CelValue::Timestamp(leap),
+                &CelValue::Duration(offset)
+            )
+            .unwrap(),
+            CelValue::Timestamp(leap.checked_sub_signed(offset).unwrap())
+        );
     }
 
     #[test]
