@@ -11,6 +11,7 @@ use schema_forge_core::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub async fn exercise(backend: &(impl EntityStore + SchemaBackend)) {
+    enum_narrowing_with_changed_default_preserves_retained_rows(backend).await;
     atomic_attachment_clear_preserves_concurrent_changes(backend).await;
     required_enum_narrowing_preserves_rows(backend).await;
     let mut schema = SchemaDefinition::new(
@@ -396,4 +397,58 @@ pub async fn atomic_attachment_clear_preserves_concurrent_changes(
         )
         .await
         .unwrap());
+}
+
+pub async fn enum_narrowing_with_changed_default_preserves_retained_rows(
+    backend: &(impl EntityStore + SchemaBackend),
+) {
+    use schema_forge_core::types::{DefaultValue, FieldModifier};
+    let mut schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("EnumDefault").unwrap(),
+        vec![FieldDefinition::with_modifiers(
+            FieldName::new("status").unwrap(),
+            FieldType::Enum(EnumVariants::new(vec!["pending".into(), "live".into()]).unwrap()),
+            vec![FieldModifier::Default {
+                value: DefaultValue::String("pending".into()),
+            }],
+        )],
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_migration(&schema.name, &DiffEngine::create_new(&schema).steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    let pending = Entity::new(
+        schema.name.clone(),
+        BTreeMap::from([("status".into(), DynamicValue::Enum("pending".into()))]),
+    );
+    let live = Entity::new(
+        schema.name.clone(),
+        BTreeMap::from([("status".into(), DynamicValue::Enum("live".into()))]),
+    );
+    backend.create(&pending).await.unwrap();
+    backend.create(&live).await.unwrap();
+    let old = schema.clone();
+    schema.fields[0].field_type =
+        FieldType::Enum(EnumVariants::new(vec!["live".into(), "blocked".into()]).unwrap());
+    schema.fields[0].modifiers = vec![FieldModifier::Default {
+        value: DefaultValue::String("live".into()),
+    }];
+    backend
+        .apply_migration(&schema.name, &DiffEngine::diff(&old, &schema).steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    let retained = backend.get(&schema.name, &live.id).await.unwrap();
+    assert!(
+        matches!(retained.field("status"), Some(DynamicValue::Enum(value) | DynamicValue::Text(value)) if value == "live")
+    );
+    let removed = backend.get(&schema.name, &pending.id).await.unwrap();
+    assert!(
+        matches!(removed.field("status"), None | Some(DynamicValue::Null)),
+        "removed variant must be null, not reintroduced by a default: {removed:?}"
+    );
 }
