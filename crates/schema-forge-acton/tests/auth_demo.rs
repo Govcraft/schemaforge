@@ -88,6 +88,17 @@ async fn build_test_app_state(
     tenant_config: Option<TenantConfig>,
     record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
 ) -> AppState<SchemaForgeConfig> {
+    build_test_app_state_with_store(backend, registry, tenant_config, record_access_policy, None)
+        .await
+}
+
+async fn build_test_app_state_with_store(
+    backend: Arc<dyn DynForgeBackend>,
+    registry: HashMap<String, SchemaDefinition>,
+    tenant_config: Option<TenantConfig>,
+    record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
+    policy_store: Option<Arc<schema_forge_acton::authz::PolicyStore>>,
+) -> AppState<SchemaForgeConfig> {
     use acton_service::service_builder::ServiceBuilder;
 
     let config = Config::<SchemaForgeConfig>::default();
@@ -111,7 +122,7 @@ async fn build_test_app_state(
             record_access_policy,
             hook_dispatcher: None,
             storage_registry: schema_forge_acton::storage::StorageRegistry::default(),
-            policy_store: None,
+            policy_store,
             custom_policies_dir: None,
             reply: ReplyChannel::new(tx),
         })
@@ -535,10 +546,8 @@ async fn demo_record_ownership() {
 
     // --- Admin can modify anyone's note ---
     println!("  Admin overrides ownership check");
-    let admin_claims = make_test_claims_with_sub(
-        &format!("user:{}", bob_id.as_str()),
-        &["platform_admin"],
-    );
+    let admin_claims =
+        make_test_claims_with_sub(&format!("user:{}", bob_id.as_str()), &["platform_admin"]);
     let state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -995,8 +1004,10 @@ async fn demo_all_auth_layers_combined() {
     // @access: manager in read list -> allowed
     // @owner: manager is NOT the author -> 403
     println!("  Step 2: non-owner manager blocked by @owner");
-    let manager_claims =
-        make_test_claims_with_sub(&format!("user:{}", EntityId::new("user").as_str()), &["manager"]);
+    let manager_claims = make_test_claims_with_sub(
+        &format!("user:{}", EntityId::new("user").as_str()),
+        &["manager"],
+    );
     let manager_state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -1044,8 +1055,10 @@ async fn demo_all_auth_layers_combined() {
     // --- Step 4: Guest blocked at schema level (@access) ---
     // @access: guest NOT in read list -> 403 (never reaches @owner check)
     println!("  Step 4: guest blocked by @access (schema level)");
-    let guest_claims =
-        make_test_claims_with_sub(&format!("user:{}", EntityId::new("user").as_str()), &["guest"]);
+    let guest_claims = make_test_claims_with_sub(
+        &format!("user:{}", EntityId::new("user").as_str()),
+        &["guest"],
+    );
     let guest_state = build_test_app_state(
         backend.clone(),
         registry.clone(),
@@ -1176,8 +1189,7 @@ async fn list_field_projection_omitting_required_field_returns_rows() {
     assert_eq!(status, StatusCode::CREATED);
 
     // --- Control: list WITHOUT a projection returns the row ---
-    let (status, json) =
-        json_request(&app, Method::GET, "/schemas/Widget/entities", None).await;
+    let (status, json) = json_request(&app, Method::GET, "/schemas/Widget/entities", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["total_count"], 1, "control list should count the row");
     assert_eq!(
@@ -1219,4 +1231,172 @@ async fn list_field_projection_omitting_required_field_returns_rows() {
     );
 
     println!("  PASSED\n");
+}
+
+/// Public configuration must remain editable only by its application admin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn public_configuration_reads_preserve_write_and_field_authorization() {
+    let backend: Arc<dyn DynForgeBackend> = Arc::new(
+        SurrealBackend::connect_memory("test", "public_configuration")
+            .await
+            .unwrap(),
+    );
+    let mut registry = HashMap::new();
+    let schema = schema_forge_dsl::parse(
+        r#"
+        @access(read: ["public"], write: ["admin"], delete: ["admin"])
+        schema Branding {
+            title: text
+            secret: text @field_access(read: ["admin"], write: ["admin"])
+            authenticated: text @field_access(read: [], write: ["admin"])
+        }
+    "#,
+    )
+    .unwrap()
+    .remove(0);
+    register_schema(&schema, &backend, &mut registry).await;
+    let protected = schema_forge_dsl::parse(
+        r#"
+        @access(read: [], write: [], delete: [])
+        schema Protected { title: text }
+    "#,
+    )
+    .unwrap()
+    .remove(0);
+    register_schema(&protected, &backend, &mut registry).await;
+    let state = build_test_app_state(backend, registry, None, None).await;
+    let admin = test_app_with_claims(state.clone(), make_test_claims(&["admin"]));
+    let member = test_app_with_claims(state.clone(), make_test_claims(&["member"]));
+    let anonymous = forge_routes().with_state(state);
+    let collection = "/schemas/Branding/entities";
+    let (status, created) = json_request(&admin, Method::POST, collection,
+        Some(serde_json::json!({"fields": {"title": "Brand", "secret": "private", "authenticated": "members"}}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let record = format!("{collection}/{}", created["id"].as_str().unwrap());
+    for path in [collection, record.as_str()] {
+        let (status, body) = json_request(&anonymous, Method::GET, path, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let row = if path == collection {
+            &body["entities"][0]
+        } else {
+            &body
+        };
+        assert_eq!(row["fields"]["title"], "Brand");
+        assert!(row["fields"].get("secret").is_none(), "{row}");
+        assert!(row["fields"].get("authenticated").is_none(), "{row}");
+    }
+    for (app, expected) in [
+        (&anonymous, StatusCode::UNAUTHORIZED),
+        (&member, StatusCode::FORBIDDEN),
+    ] {
+        for (method, path, payload) in [
+            (
+                Method::POST,
+                collection,
+                Some(serde_json::json!({"fields": {"title": "blocked"}})),
+            ),
+            (
+                Method::PUT,
+                record.as_str(),
+                Some(serde_json::json!({"fields": {"title": "blocked"}})),
+            ),
+            (
+                Method::PATCH,
+                record.as_str(),
+                Some(serde_json::json!({"fields": {"title": "blocked"}})),
+            ),
+            (Method::DELETE, record.as_str(), None),
+        ] {
+            let (status, body) = json_request(app, method, path, payload).await;
+            assert_eq!(status, expected, "{body}");
+        }
+    }
+    for path in [
+        "/schemas/Protected/entities".to_string(),
+        format!(
+            "/schemas/Protected/entities/{}",
+            created["id"].as_str().unwrap()
+        ),
+    ] {
+        let (status, body) = json_request(&anonymous, Method::GET, &path, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    }
+    let (status, body) = json_request(&admin, Method::PUT, &record,
+        Some(serde_json::json!({"fields": {"title": "Updated", "secret": "private", "authenticated": "members"}}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = json_request(&member, Method::GET, &record, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["fields"]["authenticated"], "members");
+    assert_eq!(body["fields"]["title"], "Updated");
+    assert!(body["fields"].get("secret").is_none());
+    let (status, body) = json_request(&admin, Method::DELETE, &record, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn public_reads_enforce_record_forbids_and_ownership() {
+    use schema_forge_acton::authz::{
+        PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,
+    };
+    let backend: Arc<dyn DynForgeBackend> = Arc::new(
+        SurrealBackend::connect_memory("test", "public_restrictions")
+            .await
+            .unwrap(),
+    );
+    let schemas = schema_forge_dsl::parse(
+        r#"
+        @access(read: ["public"], write: ["admin"], delete: ["admin"])
+        schema Notice { title: text }
+        @access(read: ["public"], write: ["admin"], delete: ["admin"])
+        schema OwnedNotice { title: text owner: text @owner }
+    "#,
+    )
+    .unwrap();
+    let mut registry = HashMap::new();
+    for schema in &schemas {
+        register_schema(schema, &backend, &mut registry).await;
+    }
+    let policies = tempfile::tempdir().unwrap();
+    std::fs::write(
+        policies.path().join("restrictions.cedar"),
+        r#"
+        @id("notice.hide_private")
+        forbid(principal, action == Action::"ReadNotice", resource is Notice)
+        when { resource has title && resource.title == "private" };
+    "#,
+    )
+    .unwrap();
+    let store = Arc::new(PolicyStore::new(
+        PolicyStoreSnapshot::from_schemas(
+            &schemas,
+            Some(policies.path()),
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap(),
+    ));
+    let state = build_test_app_state_with_store(backend, registry, None, None, Some(store)).await;
+    let admin = test_app_with_claims(state.clone(), make_test_claims(&["admin"]));
+    let anonymous = forge_routes().with_state(state);
+    for (schema, title, expected_count) in [("Notice", "private", 0), ("OwnedNotice", "owned", 0)] {
+        let collection = format!("/schemas/{schema}/entities");
+        let (status, created) = json_request(
+            &admin,
+            Method::POST,
+            &collection,
+            Some(serde_json::json!({"fields": {"title": title}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let record = format!("{collection}/{}", created["id"].as_str().unwrap());
+        let (status, body) = json_request(&anonymous, Method::GET, &record, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        let (status, body) = json_request(&anonymous, Method::GET, &collection, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["count"], expected_count, "{body}");
+        assert!(
+            body.get("total_count").is_none(),
+            "storage totals must not reveal hidden rows: {body}"
+        );
+    }
 }

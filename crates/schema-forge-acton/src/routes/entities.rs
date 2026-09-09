@@ -27,6 +27,7 @@ use crate::access::{
     EntityPermissions, FieldFilterDirection, OptionalClaims, SchemaPermissions,
 };
 use crate::actor::ForgeActor;
+use crate::authz::{authorize, namespace::ActionVerb};
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
 use crate::hooks::{
@@ -1338,7 +1339,9 @@ async fn execute_entity_query(
     resolve_relations: bool,
     include_total: bool,
 ) -> Result<ListEntitiesResponse, ForgeError> {
-    query.include_total = include_total;
+    // Storage totals precede record authorization and can reveal private rows.
+    // Anonymous callers receive only the count of their visible page.
+    query.include_total = include_total && claims.is_some();
     let forge = state
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered");
@@ -1388,12 +1391,26 @@ async fn execute_entity_query(
         .await;
     let record_access_policy = ask_forge(rx).await?;
 
-    let mut visible_entities = if let (Some(ref policy), Some(c)) = (&record_access_policy, claims)
-    {
-        policy.filter_visible(schema_def, c, result.entities).await
+    let policy_store = fetch_policy_store(state).await?;
+    let mut visible_entities = if let Some(ref policy) = record_access_policy {
+        policy
+            .filter_visible_optional(schema_def, claims, result.entities)
+            .await
     } else {
         result.entities
     };
+
+    // Cedar always evaluates the actual row, including for anonymous callers.
+    visible_entities.retain(|entity| {
+        authorize(
+            &policy_store,
+            claims,
+            ActionVerb::Read,
+            schema_def,
+            Some(entity),
+        )
+        .is_ok_and(|decision| decision.is_allow())
+    });
 
     // Populate derived inverse collection fields (issue #34). Each derived
     // field is resolved by one batched child-table query keyed on the FK,
@@ -1403,6 +1420,7 @@ async fn execute_entity_query(
     // stored RefArrays.
     populate_derived_collections(
         &forge,
+        &policy_store,
         schema_def,
         &mut visible_entities,
         claims,
@@ -1417,6 +1435,7 @@ async fn execute_entity_query(
     let display_map = if resolve_relations && !visible_entities.is_empty() {
         resolve_relation_displays(
             &forge,
+            &policy_store,
             schema_def,
             &visible_entities,
             claims,
@@ -1428,7 +1447,6 @@ async fn execute_entity_query(
     };
 
     // Filter read-restricted fields, then apply optional field projection
-    let policy_store = fetch_policy_store(state).await?;
     let entities: Vec<EntityResponse> = visible_entities
         .into_iter()
         .map(|mut e| {
@@ -1464,6 +1482,53 @@ async fn execute_entity_query(
     })
 }
 
+/// Apply an operator's record policy before Cedar checks on related rows.
+async fn filter_public_relation_entities_with_policy(
+    record_policy: Option<&dyn schema_forge_backend::auth::RecordAccessPolicy>,
+    policy_store: &Arc<crate::authz::PolicyStore>,
+    schema: &SchemaDefinition,
+    entities: Vec<Entity>,
+) -> Vec<Entity> {
+    let entities = match record_policy {
+        Some(policy) => policy.filter_visible_optional(schema, None, entities).await,
+        None => entities,
+    };
+    filter_public_relation_entities(policy_store, schema, entities)
+}
+
+/// Apply public read authorization to complete related rows before enrichment.
+/// Both display text and inverse child IDs must respect the target's policies.
+fn filter_public_relation_entities(
+    policy_store: &Arc<crate::authz::PolicyStore>,
+    schema: &SchemaDefinition,
+    entities: Vec<Entity>,
+) -> Vec<Entity> {
+    if check_schema_access(policy_store, schema, None, AccessAction::Read).is_err() {
+        return Vec::new();
+    }
+    entities
+        .into_iter()
+        .filter_map(|mut entity| {
+            if !authorize(policy_store, None, ActionVerb::Read, schema, Some(&entity))
+                .is_ok_and(|decision| decision.is_allow())
+            {
+                return None;
+            }
+            filter_entity_fields(
+                policy_store,
+                &mut entity,
+                schema,
+                None,
+                FieldFilterDirection::Read,
+            );
+            entity
+                .fields
+                .retain(|name, _| !schema.field(name).is_some_and(|field| field.is_hidden()));
+            Some(entity)
+        })
+        .collect()
+}
+
 /// Collect distinct relation IDs across `visible_entities` and resolve each
 /// target schema's `@display("...")` field in a single batched IN-query.
 ///
@@ -1473,6 +1538,7 @@ async fn execute_entity_query(
 /// missing entry as "fall back to the raw ID".
 async fn resolve_relation_displays(
     forge: &acton_service::prelude::ActorHandle,
+    policy_store: &Arc<crate::authz::PolicyStore>,
     parent_schema: &SchemaDefinition,
     visible_entities: &[Entity],
     claims: Option<&Claims>,
@@ -1502,6 +1568,7 @@ async fn resolve_relation_displays(
     // Build per-target query jobs, skipping targets with no display field,
     // no registered schema, or no referenced IDs.
     let mut jobs: Vec<(
+        &SchemaDefinition,
         Vec<String>, // source field names sharing this target
         String,      // display_field
         schema_forge_core::query::Query,
@@ -1540,7 +1607,9 @@ async fn resolve_relation_displays(
                 values: id_values,
             })
             .without_total_count();
-        display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
+        if claims.is_some() {
+            display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
+        }
         // Apply tenant scope so we never leak rows the caller couldn't
         // otherwise see through a direct list call.
         inject_tenant_scope(&mut display_query, claims, tenant_config);
@@ -1549,19 +1618,31 @@ async fn resolve_relation_displays(
             .iter()
             .map(|f| f.name.as_str().to_string())
             .collect();
-        jobs.push((source_fields, display_field, display_query));
+        jobs.push((target_def, source_fields, display_field, display_query));
     }
 
     if jobs.is_empty() {
         return Ok(HashMap::new());
     }
 
+    let record_access_policy = if claims.is_none() {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetRecordAccessPolicy {
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        ask_forge(rx).await?
+    } else {
+        None
+    };
+    let record_access_policy = record_access_policy.as_deref();
+
     // Fire all per-target queries concurrently. The Postgres pool has
     // multiple connections so these genuinely run in parallel instead of
     // serializing one-by-one on the actor mailbox.
-    let futures_iter = jobs
-        .into_iter()
-        .map(|(source_fields, display_field, query)| async move {
+    let futures_iter = jobs.into_iter().map(
+        |(target_def, source_fields, display_field, query)| async move {
             let (tx, rx) = oneshot::channel();
             forge
                 .send(QueryEntities {
@@ -1574,14 +1655,26 @@ async fn resolve_relation_displays(
                 _ => return (source_fields, HashMap::new()),
             };
             let mut id_to_display: HashMap<String, String> = HashMap::new();
-            for target_entity in target_result.entities {
+            let targets = if claims.is_none() {
+                filter_public_relation_entities_with_policy(
+                    record_access_policy,
+                    policy_store,
+                    target_def,
+                    target_result.entities,
+                )
+                .await
+            } else {
+                target_result.entities
+            };
+            for target_entity in targets {
                 if let Some(display_value) = target_entity.field(&display_field) {
                     let rendered = display_value_to_string(display_value);
                     id_to_display.insert(target_entity.id.as_str().to_string(), rendered);
                 }
             }
             (source_fields, id_to_display)
-        });
+        },
+    );
     let completed = futures::future::join_all(futures_iter).await;
 
     let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
@@ -1922,6 +2015,7 @@ fn parent_id_from_fk(value: &DynamicValue) -> Option<String> {
 /// pagination story for derived collections is a follow-up.
 async fn populate_derived_collections(
     forge: &acton_service::prelude::ActorHandle,
+    policy_store: &Arc<crate::authz::PolicyStore>,
     parent_schema: &SchemaDefinition,
     entities: &mut [Entity],
     claims: Option<&Claims>,
@@ -1973,8 +2067,12 @@ async fn populate_derived_collections(
     // and whose parents have IDs to match against. Fields whose target
     // didn't resolve get an empty array right here so parents still see a
     // `RefArray(vec![])` instead of `null`.
-    let mut jobs: Vec<(String, String, schema_forge_core::query::Query)> =
-        Vec::with_capacity(derived.len());
+    let mut jobs: Vec<(
+        &SchemaDefinition,
+        String,
+        String,
+        schema_forge_core::query::Query,
+    )> = Vec::with_capacity(derived.len());
     for (parent_field_name, target_name, fk_field_name) in derived {
         let Some(target_def) = target_defs.get(&target_name) else {
             for entity in entities.iter_mut() {
@@ -1993,34 +2091,59 @@ async fn populate_derived_collections(
                 values: parent_id_values.clone(),
             })
             .without_total_count();
-        child_query.projection = Some(vec!["id".to_string(), fk_field_name.clone()]);
+        if claims.is_some() {
+            child_query.projection = Some(vec!["id".to_string(), fk_field_name.clone()]);
+        }
         inject_tenant_scope(&mut child_query, claims, tenant_config);
 
-        jobs.push((parent_field_name, fk_field_name, child_query));
+        jobs.push((target_def, parent_field_name, fk_field_name, child_query));
     }
 
     if jobs.is_empty() {
         return Ok(());
     }
 
+    let record_access_policy = if claims.is_none() {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetRecordAccessPolicy {
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        ask_forge(rx).await?
+    } else {
+        None
+    };
+    let record_access_policy = record_access_policy.as_deref();
+
     // Fire all child-table queries concurrently so derived-field latency
     // is one wall-clock round-trip instead of N serial ones.
-    let futures_iter =
-        jobs.into_iter()
-            .map(|(parent_field_name, fk_field_name, query)| async move {
-                let (tx, rx) = oneshot::channel();
-                forge
-                    .send(QueryEntities {
-                        query,
-                        reply: ReplyChannel::new(tx),
-                    })
-                    .await;
-                let entities_opt = match ask_forge(rx).await {
-                    Ok(Ok(r)) => Some(r.entities),
-                    _ => None,
-                };
-                (parent_field_name, fk_field_name, entities_opt)
-            });
+    let futures_iter = jobs.into_iter().map(
+        |(target_def, parent_field_name, fk_field_name, query)| async move {
+            let (tx, rx) = oneshot::channel();
+            forge
+                .send(QueryEntities {
+                    query,
+                    reply: ReplyChannel::new(tx),
+                })
+                .await;
+            let entities_opt = match ask_forge(rx).await {
+                Ok(Ok(r)) => Some(if claims.is_none() {
+                    filter_public_relation_entities_with_policy(
+                        record_access_policy,
+                        policy_store,
+                        target_def,
+                        r.entities,
+                    )
+                    .await
+                } else {
+                    r.entities
+                }),
+                _ => None,
+            };
+            (parent_field_name, fk_field_name, entities_opt)
+        },
+    );
     let completed = futures::future::join_all(futures_iter).await;
 
     for (parent_field_name, fk_field_name, child_entities_opt) in completed {
@@ -2761,6 +2884,20 @@ pub async fn get_entity(
     let (mut entity, revision) =
         load_mutation_baseline(&forge, &schema_name, &entity_id, true).await?;
 
+    if !authorize(
+        &policy_store,
+        claims.as_ref(),
+        ActionVerb::Read,
+        &schema_def,
+        Some(&entity),
+    )
+    .is_ok_and(|decision| decision.is_allow())
+    {
+        return Err(ForgeError::Forbidden {
+            message: format!("not authorized to view entity '{id}'"),
+        });
+    }
+
     // Record-level visibility check
     let (tx, rx) = oneshot::channel();
     forge
@@ -2770,9 +2907,9 @@ pub async fn get_entity(
         .await;
     let record_access_policy = ask_forge(rx).await?;
 
-    if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
+    if let Some(ref policy) = record_access_policy {
         let visible = policy
-            .filter_visible(&schema_def, c, vec![entity.clone()])
+            .filter_visible_optional(&schema_def, claims.as_ref(), vec![entity.clone()])
             .await;
         if visible.is_empty() {
             return Err(ForgeError::Forbidden {
@@ -2786,15 +2923,6 @@ pub async fn get_entity(
     // full record. Capture before field filtering strips read-restricted
     // fields from the response payload.
     let perms = entity_permissions(&policy_store, &schema_def, &entity, claims.as_ref());
-
-    // Filter read-restricted fields from response
-    filter_entity_fields(
-        &policy_store,
-        &mut entity,
-        &schema_def,
-        claims.as_ref(),
-        FieldFilterDirection::Read,
-    );
 
     // after_read hook (blocking; runs through the same call_before path
     // so it can patch the response payload — e.g. redact, decorate).
@@ -2830,13 +2958,23 @@ pub async fn get_entity(
     let mut single = [entity];
     populate_derived_collections(
         &forge,
+        &policy_store,
         &schema_def,
         &mut single,
         claims.as_ref(),
         &tenant_config,
     )
     .await?;
-    let [entity] = single;
+    let [mut entity] = single;
+
+    // Filter read-restricted fields from response
+    filter_entity_fields(
+        &policy_store,
+        &mut entity,
+        &schema_def,
+        claims.as_ref(),
+        FieldFilterDirection::Read,
+    );
 
     let mut response = entity_to_response(&entity, &schema_def);
     response.permissions = Some(perms);
@@ -2849,6 +2987,7 @@ pub async fn get_entity(
         let entities_slice = std::slice::from_ref(&entity);
         let display_map = resolve_relation_displays(
             &forge,
+            &policy_store,
             &schema_def,
             entities_slice,
             claims.as_ref(),
@@ -3831,18 +3970,22 @@ mod tests {
 
     #[test]
     fn check_field_constraints_rejects_an_over_length_text() {
-        let errors = constraint_errors(&[(
-            "name",
-            DynamicValue::Text("this is far too long".into()),
-        )]);
+        let errors =
+            constraint_errors(&[("name", DynamicValue::Text("this is far too long".into()))]);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("field 'name'"), "got: {}", errors[0]);
     }
 
     #[test]
     fn check_field_constraints_rejects_an_out_of_range_integer() {
-        assert_eq!(constraint_errors(&[("size", DynamicValue::Integer(0))]).len(), 1);
-        assert_eq!(constraint_errors(&[("size", DynamicValue::Integer(9))]).len(), 1);
+        assert_eq!(
+            constraint_errors(&[("size", DynamicValue::Integer(0))]).len(),
+            1
+        );
+        assert_eq!(
+            constraint_errors(&[("size", DynamicValue::Integer(9))]).len(),
+            1
+        );
     }
 
     #[test]
@@ -3861,9 +4004,9 @@ mod tests {
     fn check_field_constraints_skips_fields_not_in_the_schema() {
         // Server-injected columns like `_tenant` carry no declared
         // constraints and must pass straight through.
-        assert!(constraint_errors(&[
-            ("_tenant", DynamicValue::Text("org_0123456789".repeat(10))),
-        ])
+        assert!(constraint_errors(
+            &[("_tenant", DynamicValue::Text("org_0123456789".repeat(10))),]
+        )
         .is_empty());
     }
 
@@ -4692,3 +4835,7 @@ mod tests {
         assert_eq!(result, DynamicValue::Integer(42));
     }
 }
+
+#[cfg(test)]
+#[path = "public_relations_tests.rs"]
+mod public_relations_tests;

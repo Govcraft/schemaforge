@@ -15,6 +15,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // Refresh the compile-time revision when an incremental build changes it.
+    println!("cargo:rerun-if-env-changed=SCHEMAFORGE_SOURCE_REVISION");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let templates_root = manifest_dir.join("templates").join("site");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());

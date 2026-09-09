@@ -51,6 +51,11 @@ pub struct MetaBuild {
     /// (`env!("CARGO_PKG_VERSION")`). The CLI's version may differ; the
     /// runtime value is what's most actionable for incident triage.
     pub version: &'static str,
+    /// Binary/release version supplied by the embedding application, or null
+    /// when unavailable. This is independent of the runtime crate version.
+    pub release_version: Option<&'static str>,
+    /// Source revision supplied by the binary build, or null when unavailable.
+    pub source_revision: Option<&'static str>,
 }
 
 impl MetaInfo {
@@ -68,8 +73,24 @@ impl MetaInfo {
             },
             build: MetaBuild {
                 version: env!("CARGO_PKG_VERSION"),
+                release_version: None,
+                source_revision: None,
             },
         }
+    }
+    /// Attach deployment identity provided by the embedding binary.
+    ///
+    /// Missing or whitespace-only values serialize as JSON null. The runtime
+    /// version remains unchanged; no deployment identity is inferred from it.
+    #[must_use]
+    pub fn with_release_metadata(
+        mut self,
+        release_version: Option<&'static str>,
+        source_revision: Option<&'static str>,
+    ) -> Self {
+        self.build.release_version = release_version.map(str::trim).filter(|s| !s.is_empty());
+        self.build.source_revision = source_revision.map(str::trim).filter(|s| !s.is_empty());
+        self
     }
 }
 
@@ -134,6 +155,52 @@ mod tests {
         assert_eq!(info.auth.ttl_seconds, 3600);
         // The build version is whatever Cargo stamped on this crate.
         assert!(!info.build.version.is_empty());
+    }
+
+    #[tokio::test]
+    async fn metadata_exposes_binary_identity_without_changing_runtime_version() {
+        let release = "99.12.3";
+        assert_ne!(release, env!("CARGO_PKG_VERSION"));
+        let revision = "30dc5a512f43d1d18e6e94cd3414ef712d41f2ce";
+        let info = MetaInfo::new("postgres", "PostgreSQL", 3600)
+            .with_release_metadata(Some(release), Some(revision));
+        let response = get_meta(Some(Extension(Arc::new(info)))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["build"]["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(body["build"]["release_version"], release);
+        assert_eq!(body["build"]["source_revision"], revision);
+    }
+
+    #[test]
+    fn metadata_serializes_unknown_deployment_identity_as_null() {
+        let info = MetaInfo::new("postgres", "PostgreSQL", 3600);
+        let body = serde_json::to_value(&info).unwrap();
+        assert_eq!(body["build"]["release_version"], serde_json::Value::Null);
+        assert_eq!(body["build"]["source_revision"], serde_json::Value::Null);
+        assert!(body["build"]
+            .as_object()
+            .unwrap()
+            .contains_key("release_version"));
+        assert!(body["build"]
+            .as_object()
+            .unwrap()
+            .contains_key("source_revision"));
+        for (release, revision) in [(None, Some("abc123")), (Some("1.2.3"), None)] {
+            let body = serde_json::to_value(info.clone().with_release_metadata(release, revision))
+                .unwrap();
+            assert_eq!(body["build"]["release_version"], serde_json::json!(release));
+            assert_eq!(
+                body["build"]["source_revision"],
+                serde_json::json!(revision)
+            );
+        }
+        let blank = info.with_release_metadata(Some("  "), Some("\t"));
+        assert!(blank.build.release_version.is_none());
+        assert!(blank.build.source_revision.is_none());
     }
 
     #[tokio::test]
