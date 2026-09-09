@@ -98,7 +98,9 @@ pub fn generate_cedar_policies(schema: &SchemaDefinition) -> Vec<CedarPolicy> {
 
 fn platform_admin_permit_policy() -> CedarPolicy {
     CedarPolicy {
-        description: "Members of Forge::Group::\"platform_admin\" are permitted any action on any resource".to_string(),
+        description:
+            "Members of Forge::Group::\"platform_admin\" are permitted any action on any resource"
+                .to_string(),
         cedar_text: r#"@id("forge.global.platform_admin_permit")
 permit (
     principal,
@@ -107,7 +109,7 @@ permit (
 ) when {
     principal in Forge::Group::"platform_admin"
 };"#
-            .to_string(),
+        .to_string(),
     }
 }
 
@@ -130,7 +132,7 @@ forbid (
 ) unless {
     principal.role_rank >= resource.role_rank
 };"#
-            .to_string(),
+        .to_string(),
     }
 }
 
@@ -152,7 +154,7 @@ permit (
     action == Action::"Update{name}",
     resource is {name}
 ) when {{
-    resource has "{field}" && resource["{field}"] == principal.id
+    principal has id && resource has "{field}" && resource["{field}"] == principal.id
 }};"#,
             lname = name.to_ascii_lowercase()
         ),
@@ -190,7 +192,7 @@ forbid (
     resource is {name}
 ) when {{
     resource has "{field}"
-    && resource["{field}"] != principal.id
+    && (!(principal has id) || resource["{field}"] != principal.id)
     && !(principal in Forge::Group::"platform_admin")
 }};"#,
             lname = name.to_ascii_lowercase()
@@ -307,16 +309,14 @@ fn push_role_policies(
 
     if roles.is_empty() {
         out.push(CedarPolicy {
-            description: format!(
-                "Allow any authenticated user to {label} {schema_name} entities"
-            ),
+            description: format!("Allow any authenticated user to {label} {schema_name} entities"),
             cedar_text: format!(
                 r#"@id("forge.{lname}.{label}_authenticated")
 permit (
     principal is Forge::Principal,
     {actions_clause},
     resource is {schema_name}
-);"#
+) when {{ principal has id }};"#
             ),
         });
         return;
@@ -416,7 +416,7 @@ permit (
     principal is Forge::Principal,
     action == {action_uid},
     resource is {schema_name}
-);"#
+) when {{ principal has id }};"#
             ),
         }];
     }
@@ -447,7 +447,13 @@ permit (
 
 fn sanitize_id(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -612,11 +618,14 @@ mod tests {
         assert!(
             policies
                 .iter()
-                .any(|p| p.cedar_text.contains("UpdateSchema") && p.cedar_text.contains("schema-admin")),
+                .any(|p| p.cedar_text.contains("UpdateSchema")
+                    && p.cedar_text.contains("schema-admin")),
             "expected the schema-admin policy"
         );
         assert!(
-            policies.iter().any(|p| p.cedar_text.contains("tenant_guard")),
+            policies
+                .iter()
+                .any(|p| p.cedar_text.contains("tenant_guard")),
             "expected the tenant guard policy"
         );
         // No user-facing permits.
@@ -724,7 +733,9 @@ mod tests {
         //   !(principal in resource._tenant) → enforces tenant membership
         //   !platform_admin → bypass for the superuser
         assert!(guard.cedar_text.contains("resource has \"_tenant\""));
-        assert!(guard.cedar_text.contains("!(principal in resource[\"_tenant\"])"));
+        assert!(guard
+            .cedar_text
+            .contains("!(principal in resource[\"_tenant\"])"));
         assert!(guard
             .cedar_text
             .contains("!(principal in Forge::Group::\"platform_admin\")"));

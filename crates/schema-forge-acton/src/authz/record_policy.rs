@@ -64,6 +64,23 @@ impl RecordAccessPolicy for CedarRecordPolicy {
         })
     }
 
+    fn filter_visible_optional<'a>(
+        &'a self,
+        schema: &'a SchemaDefinition,
+        claims: Option<&'a Claims>,
+        entities: Vec<Entity>,
+    ) -> Pin<Box<dyn Future<Output = Vec<Entity>> + Send + 'a>> {
+        Box::pin(async move {
+            entities
+                .into_iter()
+                .filter(|entity| {
+                    authorize(&self.store, claims, ActionVerb::Read, schema, Some(entity))
+                        .is_ok_and(|decision| decision.is_allow())
+                })
+                .collect()
+        })
+    }
+
     fn can_modify<'a>(
         &'a self,
         schema: &'a SchemaDefinition,

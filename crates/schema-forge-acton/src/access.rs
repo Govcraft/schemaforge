@@ -121,12 +121,12 @@ pub const PUBLIC_ROLE: &str = "public";
 /// one place — the lower crate where `OwnershipBasedPolicy` also reads it.
 pub use schema_forge_backend::PLATFORM_ADMIN_ROLE;
 
-/// Check whether the authenticated user is permitted to perform `action` on
+/// Check whether the caller is permitted to perform `action` on
 /// `schema`, delegating the decision to the Cedar policy engine.
 ///
 /// Returns `Ok(())` on Allow, `Err(ForgeError::Unauthorized)` when no
-/// claims are present, and `Err(ForgeError::Forbidden)` on Deny. Cedar
-/// is the single source of truth: this function is a thin shim that
+/// claims are present and Cedar denies, and `Err(ForgeError::Forbidden)` when
+/// an authenticated caller is denied. Cedar is the single source of truth: this function is a thin shim that
 /// builds the request and translates the engine's decision into a
 /// `ForgeError`.
 pub fn check_schema_access(
@@ -135,30 +135,30 @@ pub fn check_schema_access(
     claims: Option<&Claims>,
     action: AccessAction,
 ) -> Result<(), ForgeError> {
-    if claims.is_none() {
-        return Err(ForgeError::Unauthorized {
-            message: "authentication required".to_string(),
-        });
-    }
-
     let primary = action.primary_verb();
-    let primary_decision = authorize(store, claims, primary, schema, None).map_err(|e| {
-        ForgeError::Internal {
+    let primary_decision =
+        authorize(store, claims, primary, schema, None).map_err(|e| ForgeError::Internal {
             message: format!("authz engine error: {e}"),
-        }
-    })?;
+        })?;
     if primary_decision.is_allow() {
         return Ok(());
     }
 
     // For `Write`, also try the alternate verb (Create OR Update suffices).
     for &verb in action.additional_verbs() {
-        let alt = authorize(store, claims, verb, schema, None).map_err(|e| ForgeError::Internal {
-            message: format!("authz engine error: {e}"),
-        })?;
+        let alt =
+            authorize(store, claims, verb, schema, None).map_err(|e| ForgeError::Internal {
+                message: format!("authz engine error: {e}"),
+            })?;
         if alt.is_allow() {
             return Ok(());
         }
+    }
+
+    if claims.is_none() {
+        return Err(ForgeError::Unauthorized {
+            message: "authentication required".to_string(),
+        });
     }
 
     Err(ForgeError::Forbidden {
@@ -257,9 +257,9 @@ pub fn entity_permissions(
 ///
 /// Silently removes fields the user cannot access. Fields without any
 /// `@field_access` annotation are always retained (no per-field action is
-/// generated for them, so Cedar trivially allows). When `claims` is `None`,
-/// no filtering occurs — unauthenticated requests are rejected upstream and
-/// any open-access pipeline ought to surface every field.
+/// generated for them, so Cedar trivially allows). Anonymous callers also
+/// undergo field authorization; a public schema permit does not grant access
+/// to restricted fields.
 pub fn filter_entity_fields(
     store: &Arc<PolicyStore>,
     entity: &mut Entity,
@@ -267,10 +267,6 @@ pub fn filter_entity_fields(
     claims: Option<&Claims>,
     direction: FieldFilterDirection,
 ) -> Vec<String> {
-    if claims.is_none() {
-        return Vec::new();
-    }
-
     let cedar_dir = match direction {
         FieldFilterDirection::Read => FieldDirection::Read,
         FieldFilterDirection::Write => FieldDirection::Write,
@@ -343,7 +339,10 @@ pub fn inject_tenant_scope(
         .map(|t| DynamicValue::Text(t.entity_id.clone()))
         .collect();
     let tenant_filter = if tenant_values.len() == 1 {
-        Filter::eq(FieldPath::single("_tenant"), tenant_values.into_iter().next().unwrap())
+        Filter::eq(
+            FieldPath::single("_tenant"),
+            tenant_values.into_iter().next().unwrap(),
+        )
     } else {
         Filter::in_set(FieldPath::single("_tenant"), tenant_values)
     };
@@ -951,8 +950,14 @@ mod tests {
                     FieldName::new("title").unwrap(),
                     FT::Text(TextConstraints::unconstrained()),
                 ),
-                FieldDefinition::new(FieldName::new("created_by").unwrap(), FT::Text(TextConstraints::unconstrained())),
-                FieldDefinition::new(FieldName::new("updated_by").unwrap(), FT::Text(TextConstraints::unconstrained())),
+                FieldDefinition::new(
+                    FieldName::new("created_by").unwrap(),
+                    FT::Text(TextConstraints::unconstrained()),
+                ),
+                FieldDefinition::new(
+                    FieldName::new("updated_by").unwrap(),
+                    FT::Text(TextConstraints::unconstrained()),
+                ),
                 FieldDefinition::new(FieldName::new("created_at").unwrap(), FT::DateTime),
                 FieldDefinition::new(FieldName::new("updated_at").unwrap(), FT::DateTime),
             ],
@@ -971,7 +976,10 @@ mod tests {
         inject_audit_columns_on_create(&mut fields, &schema, Some(&claims), now);
 
         let expected_actor = user_id_from_sub(&claims.sub).to_string();
-        assert_eq!(fields["created_by"], DynamicValue::Text(expected_actor.clone()));
+        assert_eq!(
+            fields["created_by"],
+            DynamicValue::Text(expected_actor.clone())
+        );
         assert_eq!(fields["updated_by"], DynamicValue::Text(expected_actor));
         assert_eq!(fields["created_at"], DynamicValue::DateTime(now));
         assert_eq!(fields["updated_at"], DynamicValue::DateTime(now));
@@ -1174,5 +1182,72 @@ permit (
             matches!(err, ForgeError::Forbidden { .. }),
             "export permit is role-scoped; outsider must be denied, got: {err:?}"
         );
+    }
+    #[test]
+    fn anonymous_public_read_still_obeys_tenant_and_explicit_forbid() {
+        let schema = schema_forge_dsl::parse(
+            r#"
+            @access(read: ["public"], write: ["admin"], delete: ["admin"])
+            schema Announcement { title: text }
+        "#,
+        )
+        .unwrap()
+        .remove(0);
+        let store = store_for(&schema, None);
+        check_schema_access(&store, &schema, None, AccessAction::Read).unwrap();
+        let entity = Entity::new(
+            schema.name.clone(),
+            BTreeMap::from([
+                ("title".into(), DynamicValue::Text("Tenant secret".into())),
+                (
+                    "_tenant".into(),
+                    DynamicValue::Text("organization_private".into()),
+                ),
+            ]),
+        );
+        let decision = authorize(&store, None, ActionVerb::Read, &schema, Some(&entity)).unwrap();
+        assert!(!decision.is_allow());
+        assert!(decision.errors.is_empty(), "{:?}", decision.errors);
+        let forbidden = store_for(
+            &schema,
+            Some(
+                r#"
+            @id("test.no_announcements")
+            forbid(principal, action == Action::"ReadAnnouncement", resource is Announcement);
+        "#,
+            ),
+        );
+        assert!(matches!(
+            check_schema_access(&forbidden, &schema, None, AccessAction::Read),
+            Err(ForgeError::Unauthorized { .. })
+        ));
+    }
+
+    #[test]
+    fn authenticated_only_generated_permits_deny_anonymous_for_every_action() {
+        let schema = schema_forge_dsl::parse(
+            r#"
+            @access(read: [], write: [], delete: [])
+            schema Authenticated { title: text }
+        "#,
+        )
+        .unwrap()
+        .remove(0);
+        let store = store_for(&schema, None);
+        let member = make_claims(&[]);
+        for action in [
+            AccessAction::Read,
+            AccessAction::List,
+            AccessAction::Create,
+            AccessAction::Update,
+            AccessAction::Delete,
+            AccessAction::Write,
+        ] {
+            assert!(matches!(
+                check_schema_access(&store, &schema, None, action),
+                Err(ForgeError::Unauthorized { .. })
+            ));
+            check_schema_access(&store, &schema, Some(&member), action).unwrap();
+        }
     }
 }

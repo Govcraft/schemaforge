@@ -467,6 +467,9 @@ pub async fn run(
     // Build service with ForgeActor registered as an actor extension
     let service = ServiceBuilder::new()
         .with_config(svc_config)
+        .with_optional_token_auth(
+            schema_forge_acton::middleware::public_read::allows_missing_credentials,
+        )
         .with_actor::<ForgeActor>()
         .with_actor::<schema_forge_acton::HookDispatchActor>()
         .with_actor::<schema_forge_acton::ExportJobActor>()
@@ -965,7 +968,12 @@ fn build_meta_info(db_params: &DbParams) -> Arc<schema_forge_acton::MetaInfo> {
         _ => ("unknown", "Unknown backend"),
     };
     let ttl = schema_forge_acton::routes::auth::LOGIN_TOKEN_LIFETIME.as_secs();
-    Arc::new(schema_forge_acton::MetaInfo::new(backend, label, ttl))
+    Arc::new(
+        schema_forge_acton::MetaInfo::new(backend, label, ttl).with_release_metadata(
+            Some(env!("CARGO_PKG_VERSION")),
+            option_env!("SCHEMAFORGE_SOURCE_REVISION"),
+        ),
+    )
 }
 
 /// Backend-agnostic tests for `resolve_custom_policies_dir`. Kept out of the
@@ -979,6 +987,25 @@ mod resolve_tests {
     // CWD is process-global. Serialize the two tests below that mutate it
     // so they don't race against each other under `cargo nextest run`.
     static CWD_GUARD: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn cli_metadata_supplies_binary_version_and_compile_time_revision() {
+        let params = crate::config::DbParams::Postgres(crate::config::PostgresParams {
+            url: "postgres://localhost/metadata_test".to_owned(),
+        });
+        let info = super::build_meta_info(&params);
+        assert_eq!(info.build.release_version, Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            info.build.version,
+            schema_forge_acton::SCHEMA_FORGE_ACTON_VERSION
+        );
+        assert_eq!(
+            info.build.source_revision,
+            option_env!("SCHEMAFORGE_SOURCE_REVISION")
+                .map(str::trim)
+                .filter(|revision| !revision.is_empty())
+        );
+    }
 
     #[test]
     fn cli_flag_wins_over_config() {

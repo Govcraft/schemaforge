@@ -443,8 +443,13 @@ async fn require_annotation_rejects_invalid_entity_with_422() {
 
     // Invalid entity (age < 18) → 422 with the require message in the body.
     let invalid = serde_json::json!({ "fields": { "age": 10 } });
-    let (status, json) =
-        json_request(&app, Method::POST, "/schemas/Person/entities", Some(invalid)).await;
+    let (status, json) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Person/entities",
+        Some(invalid),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -2250,8 +2255,7 @@ async fn relation_one_display_sibling_resolves_on_surrealdb() {
     );
 
     // List.
-    let (status, body) =
-        json_request(&app, Method::GET, "/schemas/Document/entities", None).await;
+    let (status, body) = json_request(&app, Method::GET, "/schemas/Document/entities", None).await;
     assert_eq!(status, StatusCode::OK);
     let entities = body["entities"].as_array().unwrap();
     assert_eq!(entities.len(), 1);
@@ -2318,4 +2322,160 @@ async fn parent_with_no_children_gets_empty_array_not_null() {
         "documents should always be an array, got {documents}"
     );
     assert_eq!(documents.as_array().unwrap().len(), 0);
+}
+
+/// Exercise the same token verifier and route selector used by `serve`, with
+/// real entity handlers and the live Cedar store behind the ForgeActor.
+#[tokio::test(flavor = "multi_thread")]
+async fn public_entity_reads_through_production_token_middleware() {
+    use acton_service::auth::{
+        config::TokenGenerationConfig,
+        tokens::{paseto_generator::PasetoGenerator, TokenGenerator},
+    };
+    use acton_service::config::PasetoConfig;
+    use acton_service::middleware::paseto::PasetoAuth;
+    use schema_forge_acton::messages::GetPolicyStore;
+    use schema_forge_core::types::{
+        FieldDefinition, FieldName, FieldType, SchemaId, SchemaName, TextConstraints,
+    };
+
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("Branding").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("title").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![],
+    )
+    .unwrap();
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("public_read", "public_read")
+            .await
+            .unwrap(),
+    );
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    let state = build_test_app_state(TestForgeInit {
+        backend,
+        registry: HashMap::from([("Branding".into(), schema.clone())]),
+        tenant_config: None,
+        record_access_policy: None,
+        hook_dispatcher: None,
+    })
+    .await;
+    let (tx, rx) = oneshot::channel();
+    state
+        .actor::<ForgeActor>()
+        .unwrap()
+        .send(GetPolicyStore {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let policy_store = rx.await.unwrap().unwrap();
+
+    let key = [71_u8; 32];
+    let key_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(key_file.path(), key).unwrap();
+    let validator = PasetoAuth::new(&PasetoConfig {
+        key_path: key_file.path().into(),
+        ..Default::default()
+    })
+    .unwrap()
+    .with_optional_auth(schema_forge_acton::middleware::public_read::allows_missing_credentials);
+    let generator = PasetoGenerator::with_symmetric_key(key, TokenGenerationConfig::default());
+    let token = generator
+        .generate_token(&make_test_claims(&["platform_admin"]))
+        .unwrap();
+    let app = Router::new()
+        .nest("/api/v1/forge", forge_routes())
+        .layer(axum::middleware::from_fn_with_state(
+            validator,
+            PasetoAuth::middleware,
+        ))
+        .with_state(state);
+    let list_path = "/api/v1/forge/schemas/Branding/entities";
+    let (status, _) = json_request(&app, Method::GET, list_path, None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a protected schema stays protected"
+    );
+
+    let custom = tempfile::tempdir().unwrap();
+    std::fs::write(custom.path().join("public.cedar"), r#"
+        permit(principal, action in [Action::"ListBranding", Action::"ReadBranding"], resource);
+    "#).unwrap();
+    policy_store
+        .recompile_from_schemas(std::slice::from_ref(&schema), Some(custom.path()))
+        .unwrap();
+
+    let create_request = Request::builder()
+        .method(Method::POST)
+        .uri(list_path)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(r#"{"fields":{"title":"Public branding"}}"#))
+        .unwrap();
+    let created = app.clone().oneshot(create_request).await.unwrap();
+    assert_eq!(
+        created.status(),
+        StatusCode::CREATED,
+        "validated admin claims permit creation"
+    );
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let detail_path = format!("{list_path}/{}", created["id"].as_str().unwrap());
+
+    for path in [list_path, detail_path.as_str()] {
+        let (status, body) = json_request(&app, Method::GET, path, None).await;
+        assert_eq!(status, StatusCode::OK, "anonymous GET {path}: {body}");
+        let (status, _) = json_request(&app, Method::HEAD, path, None).await;
+        assert_eq!(status, StatusCode::OK, "anonymous HEAD {path}");
+        for value in ["", "Basic invalid", "Bearer ", "Bearer invalid"] {
+            let request = Request::builder()
+                .uri(path)
+                .header("authorization", value)
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "invalid credentials at {path}"
+            );
+        }
+    }
+    let update_request = Request::builder()
+        .method(Method::PUT)
+        .uri(&detail_path)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(r#"{"fields":{"title":"Updated branding"}}"#))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(update_request).await.unwrap().status(),
+        StatusCode::OK,
+        "admin identity survives public-read authentication"
+    );
+    let (status, _) = json_request(
+        &app,
+        Method::POST,
+        list_path,
+        Some(serde_json::json!({"fields": {"title": "unauthorized"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    policy_store
+        .recompile_from_schemas(&[schema], None)
+        .unwrap();
+    let (status, _) = json_request(&app, Method::GET, &detail_path, None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "removing the live permit immediately protects reads"
+    );
 }

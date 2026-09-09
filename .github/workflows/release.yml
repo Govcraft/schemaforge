@@ -110,6 +110,10 @@ jobs:
           mkdir -p console-dist
           tar -xzf console-dist-*.tar.gz -C console-dist
 
+      - name: Stamp checked-out source revision
+        shell: bash
+        run: echo "SCHEMAFORGE_SOURCE_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Build release binary (${{ matrix.backend }} / ${{ matrix.target }})
         env:
           # Points rust-embed at the verified console bundle (build.rs re-exports

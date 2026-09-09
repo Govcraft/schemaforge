@@ -44,6 +44,23 @@ pub trait RecordAccessPolicy: Send + Sync {
         entities: Vec<Entity>,
     ) -> Pin<Box<dyn Future<Output = Vec<Entity>> + Send + 'a>>;
 
+    /// Filter records for a caller who may be anonymous.
+    ///
+    /// Existing custom policies deny anonymous reads by default. Implementations
+    /// that support public reads must explicitly override this method; callers
+    /// never synthesize authenticated claims for an anonymous request.
+    fn filter_visible_optional<'a>(
+        &'a self,
+        schema: &'a SchemaDefinition,
+        claims: Option<&'a Claims>,
+        entities: Vec<Entity>,
+    ) -> Pin<Box<dyn Future<Output = Vec<Entity>> + Send + 'a>> {
+        match claims {
+            Some(claims) => self.filter_visible(schema, claims, entities),
+            None => Box::pin(async { Vec::new() }),
+        }
+    }
+
     /// Check if the user can modify (update) the given entity.
     fn can_modify<'a>(
         &'a self,

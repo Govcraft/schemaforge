@@ -4,4 +4,5 @@
 //! middleware plus any state struct it needs. Middleware is layered onto
 //! the versioned router in `schema_forge_cli::commands::serve`.
 
+pub mod public_read;
 pub mod tenant_scope;
