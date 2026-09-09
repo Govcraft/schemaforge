@@ -1,14 +1,14 @@
 [package]
 name = "schema-forge-mssql"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 
 [dependencies]
 acton-service = { version = "0.40.0", features = ["mssql", "crypto-aws-lc-rs"] }
 bb8 = "0.9.1"
 bb8-tiberius = "0.16.0"
-schema-forge-backend = { version = "0.16.0", path = "../schema-forge-backend" }
-schema-forge-core = { version = "0.16.0", path = "../schema-forge-core" }
+schema-forge-backend = { version = "0.17.0", path = "../schema-forge-backend" }
+schema-forge-core = { version = "0.17.0", path = "../schema-forge-core" }
 serde_json = "1.0.151"
 tiberius = "0.12.3"
 

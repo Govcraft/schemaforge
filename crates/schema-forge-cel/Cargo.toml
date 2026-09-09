@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-cel"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Minimal, owned CEL (Common Expression Language) evaluator over SchemaForge DynamicValue."
 
@@ -17,7 +17,7 @@ chrono-tz = "0.10.4"
 # catastrophic backtracking (no ReDoS), matching the evaluator's
 # guaranteed-terminating / DoS-hardened posture.
 regex = "1.12.3"
-schema-forge-core = { version = "0.16.0", path = "../schema-forge-core" }
+schema-forge-core = { version = "0.17.0", path = "../schema-forge-core" }
 serde_json = "1.0.150"
 tracing = "0.1"
 
