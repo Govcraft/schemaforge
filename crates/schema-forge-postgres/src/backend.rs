@@ -861,6 +861,15 @@ impl EntityStore for PgBackend {
         Ok(QueryResult::new(entities, None))
     }
 
+    async fn query_cedar_compatible(
+        &self,
+        expected_schema: &SchemaDefinition,
+        query: &Query,
+        scope: &schema_forge_backend::auth::CedarReadScope,
+    ) -> Result<Option<QueryResult>, BackendError> {
+        crate::cedar_read::query_compatible(self.pool(), expected_schema, query, scope).await
+    }
+
     async fn count(&self, query: &Query) -> Result<usize, BackendError> {
         let schema_def = self.resolve_schema_for_query(&query.schema).await?;
         let table = schema_def.name.as_str();

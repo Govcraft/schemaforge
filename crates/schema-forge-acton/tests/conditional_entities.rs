@@ -1030,3 +1030,79 @@ async fn conditional_mutations_honor_selected_tenant_before_condition_details() 
         "denied mutations preserve the entire row"
     );
 }
+
+/// The same route must preserve totals and projection whether storage can
+/// certify all rows or a malformed required value forces Cedar scanning.
+#[cfg(feature = "postgres")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a scoped disposable PostgreSQL URL and SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE=1"]
+async fn postgres_http_exact_counts_preserve_projection_and_malformed_row_fallback() {
+    use schema_forge_acton::state::DynSchemaBackend;
+    assert_eq!(
+        std::env::var("SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE").as_deref(),
+        Ok("1")
+    );
+    let url = std::env::var("SCHEMAFORGE_TEST_POSTGRES_URL")
+        .expect("SCHEMAFORGE_TEST_POSTGRES_URL must name a disposable namespace");
+    let backend = Arc::new(
+        schema_forge_postgres::PgBackend::connect(&url)
+            .await
+            .unwrap_or_else(|_| panic!("could not connect to disposable PostgreSQL")),
+    );
+    let mut schema = schema_forge_dsl::parse(
+        r#"
+        @access(read: ["editor"], write: ["editor"], delete: ["editor"])
+        schema CountNotice {
+            title: text
+            secret: text @field_access(read: ["manager"], write: ["manager"])
+        }
+    "#,
+    )
+    .unwrap()
+    .remove(0);
+    backend
+        .apply_migration(
+            &schema.name,
+            &schema_forge_core::migration::DiffEngine::create_new(&schema).steps,
+        )
+        .await
+        .unwrap();
+    // Deliberately retain a nullable physical column, as can occur after drift.
+    schema.fields[0].modifiers.push(FieldModifier::Required);
+    backend.store_schema_metadata(&schema).await.unwrap();
+    for title in ["Alpha", "Beta", "Gamma"] {
+        DynEntityStore::create(
+            backend.as_ref(),
+            &Entity::new(
+                schema.name.clone(),
+                BTreeMap::from([
+                    ("title".into(), DynamicValue::Text(title.into())),
+                    ("secret".into(), DynamicValue::Text("restricted".into())),
+                ]),
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    let app = app_with_backend(backend.clone(), schema.clone(), &["editor"]).await;
+    let path = "/schemas/CountNotice/entities?limit=1&offset=1&sort=title&fields=title,secret";
+    for malformed in [false, true] {
+        if malformed {
+            DynEntityStore::create(
+                backend.as_ref(),
+                &Entity::new(schema.name.clone(), BTreeMap::new()),
+            )
+            .await
+            .unwrap();
+        }
+        let (status, _, body) = request(&app, path, "GET", None, serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["total_count"], 3, "{body}");
+        assert_eq!(body["count"], 1, "{body}");
+        assert_eq!(body["entities"][0]["fields"]["title"], "Beta", "{body}");
+        assert!(
+            body["entities"][0]["fields"].get("secret").is_none(),
+            "{body}"
+        );
+    }
+}

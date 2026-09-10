@@ -7,6 +7,29 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-09-10
+
+### Fixed
+
+- PostgreSQL list requests with generated Read policies can return exact totals
+  without per-record Cedar evaluation after policy and storage checks establish
+  equivalent authorization, including tenant isolation. Fixes the default-count
+  timeout reported in [#159](https://github.com/Govcraft/schemaforge/issues/159).
+  A synthetic 202,628-row fixture returned exact totals in approximately 0.6
+  seconds for simple records and 0.8 seconds for richer records; the v0.44.0
+  baseline timed out after 30 seconds.
+- List requests capture one Cedar policy snapshot and reuse prepared principal
+  and action state. The default Cedar adapter no longer evaluates each row
+  twice. Explicit operator policies remain enforced alongside Cedar.
+- Exact totals remain enabled by default. `count=false` still stops after the
+  readable page is filled. Custom applicable Read policies, unsupported storage
+  shapes, and other backends retain exact authorized scanning, which can still
+  reach the request deadline on large collections. See
+  [authorized pagination](docs/authorized-entity-pagination.md).
+
+No schema or policy migration is required from v0.44.0. CLI/release version is
+0.44.1; integration crate version is 0.43.1.
+
 ## [0.44.0] - 2026-09-09
 
 ### Fixed
