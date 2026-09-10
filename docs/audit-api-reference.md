@@ -18,6 +18,10 @@ Every endpoint requires an authenticated `platform_admin`. Access is **deploymen
 
 An explicit `[audit] enabled = false` means disabled collection. An absent `[audit]` section uses the framework defaults, which enable collection. An enabled configuration without a queryable persistent store means unavailable. An enabled, reachable store containing no events means empty. SQL Server, PostgreSQL and SurrealDB release flavors use the storage initialized by acton-service. No separate audit database is created by these routes.
 
+HTTP request collection defaults to `audit_all_requests = false` with an empty `audited_routes` list, so enabling audit storage alone does not record completed HTTP requests. Set `[audit] audit_all_requests = true`, or configure matching `audited_routes`, to collect method, path, response status and duration. Excluded routes still apply. Authentication and domain events remain separate records; use `request_id` to correlate them with the completed HTTP request.
+
+SchemaForge v0.44.0 uses acton-service v0.43.1 to establish request context before authentication and audit middleware. With request-ID generation enabled (the default), clients do not need to supply an `X-Request-ID` header for correlation. Successful token validation records method and path; response status and duration belong to the completed HTTP event. This change does not fill missing historical fields.
+
 Events are emitted asynchronously. A successful application mutation does not acknowledge that its audit event reached persistent storage. Route exclusions, selective capture, dropped events, storage failures, retention and process failure can limit coverage. Status describes configuration and observed storage, not delivery guarantees or historical collection coverage.
 
 ## Browse a stable sequence snapshot

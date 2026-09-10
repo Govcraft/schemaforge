@@ -7,6 +7,108 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-09-09
+
+### Fixed
+
+- **`@owner` no longer hides records from the roles a schema grants read to.**
+  The generated `forge.<schema>.owner_restrict` policy listed `Read` and
+  `List` alongside `Update` and `Delete`. A Cedar `forbid` overrides every
+  `permit`, so the annotation silently revoked the schema's own
+  `@access(read: [...])` grant for every record the caller had not personally
+  created, turning any shared workspace into per-user silos, with only
+  `platform_admin` exempt. The policy now covers `Update` and `Delete` only;
+  read access follows `@access(read:)`, tenant restrictions, and other
+  applicable policies. Owner write behavior is unchanged: the server still stamps the creator
+  (`inject_owner_on_create`), the value is still immutable after create
+  (`strip_owner_on_update`), and the owner-write permit still lets a creator
+  update their own record. **Fixes
+  [#151](https://github.com/govcraft/schemaforge/issues/151).**
+- **A `required` `@owner` field no longer answers `403` on the collection
+  endpoint.** `build_resource_placeholder` populates required fields with type
+  defaults, so a `required @owner` text field gave the schema-level
+  placeholder `owner = ""`, which satisfied the old forbid's
+  `resource has "<owner>"` conjunct and denied the whole collection. An
+  optional owner field on an otherwise identical schema answered `200` with
+  zero rows instead. Scoping the policy to the per-record actions removes the
+  placeholder from that decision, so `required` and optional owner fields now
+  behave identically. Hand-written policies that dereference a resource
+  attribute still see those defaults on a schema preflight, and now separate
+  the two cases with `context.resource_is_placeholder`
+  ([#155](https://github.com/govcraft/schemaforge/issues/155)).
+
+- Entity counts, offsets, and limits now apply after record-policy and Cedar authorization for both GET lists and POST queries. Totals count only readable records; pages no longer lose entries to filtering after pagination. Fixes [#152](https://github.com/Govcraft/schemaforge/issues/152). Exact totals scan matching candidates; see [authorized pagination](docs/authorized-entity-pagination.md) for cost and consistency limits.
+- Cedar decision logs identify placeholder checks, resource UIDs, matched policy IDs, and evaluation errors. Effective rejections are logged as denials even when Cedar also reports a matching permit. Fixes [#155](https://github.com/Govcraft/schemaforge/issues/155).
+- Upgraded all direct `acton-service` dependencies to published **0.43.1**. Generated request IDs now reach authentication, HTTP audit, and application events. Token validation events include method and path; completed HTTP events provide response status and duration when HTTP collection is enabled. Historical events are unchanged.
+
+### Security / Breaking
+
+- **Records on `@owner` schemas become visible to every role named in
+  `@access(read: [...])`.** This is the intended behavior and the fix for
+  [#151](https://github.com/govcraft/schemaforge/issues/151), but it *widens*
+  read access relative to previous releases. A deployment that was relying on
+  `@owner` to keep records private, whether deliberately or without realising
+  it, will see those records become readable by the roles its own schema
+  already granted. Audit any schema carrying `@owner` before upgrading, and
+  see the migration note below to restore owner-only reads deliberately.
+
+- Generated application and field actions now require Boolean `context.resource_is_placeholder`. SchemaForge's authorization entry points set it automatically. Manual Cedar callers must supply it from trusted server context; empty context fails strict request validation. Existing custom policies retain their behavior and must explicitly handle preflights where appropriate. See [custom policy context](docs/custom-policy-context.md).
+- `@access(read:)` remains subject to tenant restrictions and other applicable custom forbids. The owner fix removes only the generated owner Read/List restriction; non-owner updates and deletes remain restricted.
+
+### Migration
+
+#### Restoring owner-only reads after the `@owner` fix (#151)
+
+Most deployments need nothing: `@owner` was almost always used to stamp the
+creator on a shared record, and the read restriction was an unintended side
+effect. Check by listing the schemas that carry the annotation and reading
+their `@access(read:)` grant. If the grant names roles that *should* see every
+record, the new behavior is what the schema always said, and there is nothing
+to do.
+
+If a schema genuinely wants owner-only reads, say so explicitly with a custom
+policy under `policies/custom`, which keeps the intent visible in review
+rather than implied by a field annotation:
+
+```cedar
+@id("myapp.document.owner_only_read")
+forbid (
+    principal is Forge::Principal,
+    action == Action::"ReadDocument",
+    resource is Document
+) when {
+    !context.resource_is_placeholder
+    && resource has "created_by"
+    && (!(principal has id) || resource["created_by"] != principal.id)
+    && !(principal in Forge::Group::"platform_admin")
+};
+```
+
+The `!context.resource_is_placeholder` guard is what keeps the restriction on
+the records instead of on the whole collection: without it, a schema preflight
+against the synthetic resource reads `created_by = ""`, the forbid fires, and
+the endpoint answers 403, the defect this release fixes, reintroduced by hand.
+Scope the forbid to `Read` rather than `List`, because a collection request
+preflights the `Read<Schema>` action at schema scope before checking each row.
+See [Custom policies and authorization context](docs/custom-policy-context.md)
+for the full context contract.
+
+Run `schemaforge policies validate` afterwards to compile the bundle in strict
+mode before deploying.
+
+#### Manual Cedar requests and custom policies (#155)
+
+Set `context.resource_is_placeholder` to true only when authorizing a synthetic schema resource, and false for concrete resources and field checks. Do not derive it from client input. Guard Read restrictions with `!context.resource_is_placeholder`; a conditional permit must separately admit the preflight. Do not copy that guard to Create expecting proposed-field validation: the generic Create route currently performs schema authorization without a concrete proposed entity.
+
+### Versions
+
+- Product and CLI: **0.44.0**.
+- Independently versioned integration crate: **0.43.0** (`build.version`).
+- CLI deployments report **0.44.0** as `build.release_version`, plus the release source revision.
+- Framework dependency: **acton-service 0.43.1**, resolved from crates.io.
+
+## Earlier release notes (legacy unversioned entries)
+
 ### Added
 
 - **Signed-schema enforcement.** New `schema-forge-signing` crate verifies
@@ -132,32 +234,6 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Fixed
 
-- **`@owner` no longer hides records from the roles a schema grants read to.**
-  The generated `forge.<schema>.owner_restrict` policy listed `Read` and
-  `List` alongside `Update` and `Delete`. A Cedar `forbid` overrides every
-  `permit`, so the annotation silently revoked the schema's own
-  `@access(read: [...])` grant for every record the caller had not personally
-  created — turning any shared workspace into per-user silos, with only
-  `platform_admin` exempt. The policy now covers `Update` and `Delete` only;
-  who may *see* a record is decided by `@access(read:)` alone. Everything
-  `@owner` is relied on for is unchanged: the server still stamps the creator
-  (`inject_owner_on_create`), the value is still immutable after create
-  (`strip_owner_on_update`), and the owner-write permit still lets a creator
-  update their own record. **Fixes
-  [#151](https://github.com/govcraft/schemaforge/issues/151).**
-- **A `required` `@owner` field no longer answers `403` on the collection
-  endpoint.** `build_resource_placeholder` populates required fields with type
-  defaults, so a `required @owner` text field gave the schema-level
-  placeholder `owner = ""`, which satisfied the old forbid's
-  `resource has "<owner>"` conjunct and denied the whole collection. An
-  optional owner field on an otherwise identical schema answered `200` with
-  zero rows instead. Scoping the policy to the per-record actions removes the
-  placeholder from that decision, so `required` and optional owner fields now
-  behave identically. Hand-written policies that dereference a resource
-  attribute still see those defaults on a schema preflight, and now separate
-  the two cases with `context.resource_is_placeholder`
-  ([#155](https://github.com/govcraft/schemaforge/issues/155)).
-
 - **`enum`, `text(max:)`, and `integer(min:/max:)` are now enforced
   in-process.** They were declared in the DSL but never checked before the
   write reached the database, so the only thing refusing them was the
@@ -204,15 +280,6 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Security / Breaking
 
-- **Records on `@owner` schemas become visible to every role named in
-  `@access(read: [...])`.** This is the intended behavior and the fix for
-  [#151](https://github.com/govcraft/schemaforge/issues/151), but it *widens*
-  read access relative to previous releases. A deployment that was relying on
-  `@owner` to keep records private — whether deliberately or without realising
-  it — will see those records become readable by the roles its own schema
-  already granted. Audit any schema carrying `@owner` before upgrading, and
-  see the migration note below to restore owner-only reads deliberately.
-
 - `schemaforge serve` no longer auto-seeds the five SchemaForge demo personas
   (alice, bob, charlie, dana, eve — each with the literal password
   `"password"`) when bootstrapping the admin user via `--admin-user` /
@@ -231,45 +298,6 @@ is pre-1.0; breaking changes bump the **minor** version per
   default is `false`, matching the new safe-by-construction posture.
 
 ### Migration
-
-#### Restoring owner-only reads after the `@owner` fix (#151)
-
-Most deployments need nothing: `@owner` was almost always used to stamp the
-creator on a shared record, and the read restriction was an unintended side
-effect. Check by listing the schemas that carry the annotation and reading
-their `@access(read:)` grant. If the grant names roles that *should* see every
-record, the new behavior is what the schema always said, and there is nothing
-to do.
-
-If a schema genuinely wants owner-only reads, say so explicitly with a custom
-policy under `policies/custom`, which keeps the intent visible in review
-rather than implied by a field annotation:
-
-```cedar
-@id("myapp.document.owner_only_read")
-forbid (
-    principal is Forge::Principal,
-    action == Action::"ReadDocument",
-    resource is Document
-) when {
-    !context.resource_is_placeholder
-    && resource has "created_by"
-    && (!(principal has id) || resource["created_by"] != principal.id)
-    && !(principal in Forge::Group::"platform_admin")
-};
-```
-
-The `!context.resource_is_placeholder` guard is what keeps the restriction on
-the records instead of on the whole collection: without it, a schema preflight
-against the synthetic resource reads `created_by = ""`, the forbid fires, and
-the endpoint answers 403 — the defect this release fixes, reintroduced by hand.
-Scope the forbid to `Read` rather than `List`, because a collection request
-preflights the `Read<Schema>` action at schema scope before checking each row.
-See [Custom policies and authorization context](docs/custom-policy-context.md)
-for the full context contract.
-
-Run `schemaforge policies validate` afterwards to compile the bundle in strict
-mode before deploying.
 
 #### `unique` on a tenant root (#134)
 

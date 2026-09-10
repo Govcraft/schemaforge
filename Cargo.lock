@@ -58,9 +58,9 @@ dependencies = [
 
 [[package]]
 name = "acton-service"
-version = "0.43.0"
+version = "0.43.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74d0c0f751b1ffc99ee266783a07eacfff1a0196acdfdf96438d6dae7e444852"
+checksum = "d2a244a2facfd82c18f987dbc186bb34764fe9bd44896325af127425d0c6d34c"
 dependencies = [
  "acton-reactive",
  "anyhow",
@@ -8099,7 +8099,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-acton"
-version = "0.42.0"
+version = "0.43.0"
 dependencies = [
  "acton-service",
  "arc-swap",
@@ -8187,7 +8187,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.43.0"
+version = "0.44.0"
 dependencies = [
  "acton-service",
  "assert_cmd",
