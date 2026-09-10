@@ -93,8 +93,9 @@ preflights the `Read<Schema>` action at schema scope before checking each row.
 See [Custom policies and authorization context](docs/custom-policy-context.md)
 for the full context contract.
 
-Run `schemaforge policies validate` afterwards to compile the bundle in strict
-mode before deploying.
+Run `schemaforge policies validate --custom-dir policies/custom` afterwards
+to compile the bundle, including the custom policy, in strict mode before
+deploying. Use the configured custom-policy directory if it differs.
 
 #### Manual Cedar requests and custom policies (#155)
 
