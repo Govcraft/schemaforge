@@ -285,10 +285,11 @@ pub fn build_resource_entity(
 /// in the Cedar schema — `""` for `String`, `0` for `Long`, `false` for
 /// `Bool`, an empty set for `Set<...>` — so the strict-mode entity validator
 /// accepts it as a member of the declared entity type. Policies that
-/// dereference a required attribute will read the default; ownership /
-/// tenant guards are designed to fall through when the field doesn't equal
-/// the principal's identity, so the placeholder won't accidentally satisfy
-/// them.
+/// dereference a required attribute will read the default. The authorization
+/// engine sets `context.resource_is_placeholder = true` for this request;
+/// custom policies must explicitly account for schema preflights rather than
+/// infer them from the default values. Concrete resources use false, even when
+/// their stored values happen to equal these defaults.
 pub fn build_resource_placeholder(schema: &SchemaDefinition) -> Result<CedarEntity, AdapterError> {
     let raw = format!("{}::\"_any\"", schema.name.as_str());
     let uid = EntityUid::from_str(&raw).map_err(|e| AdapterError::InvalidIdentifier {
