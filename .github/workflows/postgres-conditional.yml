@@ -54,6 +54,8 @@ jobs:
           SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE: "1"
           SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dconditional_http
         run: cargo nextest run -p schema-forge-acton --features postgres --test conditional_entities --run-ignored all
+      - name: Run audit authorization and bounded verification regressions
+        run: cargo nextest run -p schema-forge-acton --features postgres --test audit_api
       - name: Check CLI preparation behavior
         run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres -E 'test(explicit_revision_preparation)'
       - name: Clean disposable HTTP namespace

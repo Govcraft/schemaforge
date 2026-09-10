@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod auth;
 pub mod create_intents;
 pub mod entities;
@@ -35,6 +36,10 @@ use crate::config::SchemaForgeConfig;
 /// (see [`SchemaForgeExtension::register_routes`]).
 pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
     Router::new()
+        // Deployment-wide audit access uses its own platform-admin gate.
+        .route("/audit/status", get(audit::status))
+        .route("/audit/events", get(audit::events))
+        .route("/audit/verify", post(audit::verify))
         // Schema management
         .route(
             "/schemas",
