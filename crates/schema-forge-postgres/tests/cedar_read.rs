@@ -259,7 +259,7 @@ async fn ordinary_rich_types_are_certified_but_unsafe_arrays_dates_and_tenants_f
 
 #[tokio::test]
 #[ignore = "requires SCHEMAFORGE_TEST_POSTGRES_URL with CREATE SCHEMA privilege"]
-async fn json_outside_serde_decoder_limits_cannot_enter_an_exact_total() {
+async fn unselected_json_decoder_errors_do_not_disable_exact_authorized_totals() {
     with_database(|backend| async move {
         let mut schema = definition();
         schema.fields.push(field("payload", FieldType::Json));
@@ -298,15 +298,22 @@ async fn json_outside_serde_decoder_limits_cannot_enter_an_exact_total() {
             if json == "1e400" {
                 assert_eq!(rendered, format!("1{}", "0".repeat(400)));
             }
-            // The invalid row lies beyond the requested page, so decoding only
-            // that page would hide the original full-scan decoding failure.
+            // JSON contributes no Cedar attributes. The unselected payload's
+            // decoder failure must not prevent an exact authorized count.
             assert_eq!(backend.query(&query).await.unwrap().entities.len(), 1);
             assert!(backend.query(&Query::new(schema.id.clone())).await.is_err());
-            assert!(backend
+            let result = backend
                 .query_cedar_compatible(&schema, &query, &scope)
                 .await
                 .unwrap()
-                .is_none());
+                .unwrap();
+            assert_eq!(result.total_count, Some(2));
+            assert_eq!(result.entities.len(), 1);
+            let selected_invalid = query.clone().with_offset(1);
+            assert!(backend
+                .query_cedar_compatible(&schema, &selected_invalid, &scope)
+                .await
+                .is_err());
         }
     })
     .await;
@@ -359,6 +366,98 @@ async fn identifier_boundaries_preserve_decoder_compatibility() {
         }
     })
     .await;
+}
+
+async fn assert_selected_json_is_readable(
+    backend: &PgBackend,
+    schema: &SchemaDefinition,
+    json: &str,
+) {
+    sqlx::query("UPDATE \"CountProof\" SET payload = $1::jsonb")
+        .bind(json)
+        .execute(backend.pool())
+        .await
+        .unwrap();
+    let rendered: String = sqlx::query_scalar("SELECT payload::text FROM \"CountProof\"")
+        .fetch_one(backend.pool())
+        .await
+        .unwrap();
+    assert!(serde_json::from_str::<serde_json::Value>(&rendered).is_ok());
+    let query = Query::new(schema.id.clone());
+    assert!(backend.query(&query).await.is_ok());
+    let result = backend
+        .query_cedar_compatible(schema, &query, &CedarReadScope::Unrestricted)
+        .await
+        .unwrap();
+    assert_eq!(result.unwrap().total_count, Some(1));
+}
+
+#[tokio::test]
+#[ignore = "requires SCHEMAFORGE_TEST_POSTGRES_URL with CREATE SCHEMA privilege"]
+async fn broad_json_and_quoted_delimiters_or_digits_remain_certified() {
+    with_database(|backend| async move {
+        let mut schema = definition();
+        schema.fields.push(field("payload", FieldType::Json));
+        install(&backend, &schema).await;
+        insert(&backend, &schema, "broad").await;
+        let array = (0..300)
+            .map(|index| serde_json::json!({"index": index, "nested": [true, null]}))
+            .collect::<Vec<_>>();
+        let object = (0..300)
+            .map(|index| {
+                (
+                    format!("field_{index}"),
+                    serde_json::json!({"value": index}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        for json in [
+            serde_json::json!(array),
+            serde_json::Value::Object(object),
+            serde_json::json!({"delimiters": "[{}]".repeat(500), "digits": "9".repeat(600),
+                "numeric_text": "1e400", "quoted": "\\\"[".repeat(100)}),
+        ] {
+            assert_selected_json_is_readable(&backend, &schema, &json.to_string()).await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires SCHEMAFORGE_TEST_POSTGRES_URL with CREATE SCHEMA privilege"]
+async fn required_and_hidden_json_cannot_change_tenant_visibility() {
+    with_database(|backend| async move {
+        let mut schema = definition();
+        let mut required = field("payload", FieldType::Json);
+        required.modifiers.push(FieldModifier::Required);
+        let mut hidden = field("secret", FieldType::Json);
+        hidden.annotations.push(FieldAnnotation::Hidden);
+        schema.fields.extend([required, hidden]);
+        install(&backend, &schema).await;
+        execute(&backend, "ALTER TABLE \"CountProof\" ADD COLUMN _tenant TEXT").await;
+        for label in ["a_valid", "z_invalid"] {
+            backend.create(&Entity::new(schema.name.clone(), BTreeMap::from([
+                ("label".into(), DynamicValue::Text(label.into())),
+                ("payload".into(), DynamicValue::Json(serde_json::json!({}))),
+                ("secret".into(), DynamicValue::Json(serde_json::json!({}))),
+            ]))).await.unwrap();
+        }
+        sqlx::query("UPDATE \"CountProof\" SET payload = '1e400', secret = $1::jsonb, _tenant = 'foreign' WHERE label = 'z_invalid'")
+            .bind(format!("{}0{}", "[".repeat(150), "]".repeat(150)))
+            .execute(backend.pool()).await.unwrap();
+        let mut query = Query::new(schema.id.clone()).with_limit(1);
+        query.sort = vec![(FieldPath::single("label"), SortOrder::Ascending)];
+        let result = backend.query_cedar_compatible(&schema, &query, &CedarReadScope::Unrestricted)
+            .await.unwrap().unwrap();
+        assert_eq!(result.total_count, Some(2));
+        let tenant_scope = CedarReadScope::TenantMembers(vec!["own".into()]);
+        let result = backend.query_cedar_compatible(&schema, &query, &tenant_scope)
+            .await.unwrap().unwrap();
+        assert_eq!(result.total_count, Some(1));
+        assert_eq!(result.entities[0].fields["label"], DynamicValue::Text("a_valid".into()));
+        assert!(backend.query_cedar_compatible(&schema, &query.with_offset(1), &CedarReadScope::Unrestricted)
+            .await.is_err());
+    }).await;
 }
 
 async fn with_database<Test, Pending>(test: Test)

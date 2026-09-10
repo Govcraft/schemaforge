@@ -7,6 +7,23 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.44.2] - 2026-09-10
+
+### Fixed
+
+- Removed an unnecessary JSON-payload gate from PostgreSQL exact authorized
+  counts. In v0.44.1, a single broad, shallow JSON document could force a whole
+  collection back to per-record scanning and restore the 30-second timeout
+  reported in [#159](https://github.com/Govcraft/schemaforge/issues/159).
+  JSON contents are absent from Cedar's resource representation and cannot
+  affect a certified generated Read decision. Physical types, tenant isolation,
+  and checks on represented authorization attributes remain enforced.
+- Selected rows retain normal decoding and error handling. Undecodable JSON
+  outside the selected page no longer fails an otherwise valid certified page
+  and exact authorized total. Custom-policy fallback behavior is unchanged.
+- Debug diagnostics identify failed authorization-value checks and
+  fields without logging row values.
+
 ## [0.44.1] - 2026-09-10
 
 ### Fixed
