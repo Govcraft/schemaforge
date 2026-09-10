@@ -417,23 +417,34 @@ async fn conditional_schema_denial_precedes_token_validation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn conditional_delete_and_versioned_get_preserve_owner_denial() {
+async fn conditional_delete_preserves_owner_denial_without_hiding_the_record() {
     let (app, path) = fixture("other", &["editor"]).await;
-    for method in ["GET", "DELETE"] {
-        let (status, headers, body) = request(
-            &app,
-            &path,
-            method,
-            Some("malformed"),
-            serde_json::json!({}),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{method}: {body}");
-        assert!(!headers.contains_key("entity-revision"));
-        assert!(!body
-            .to_string()
-            .contains("conditional_mutation_unsupported"));
-    }
+    // The owner denial is reached before the malformed conditional header is parsed, so the
+    // refusal names neither a revision nor the conditional-support error.
+    let (status, headers, body) = request(
+        &app,
+        &path,
+        "DELETE",
+        Some("malformed"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(!headers.contains_key("entity-revision"));
+    assert!(!body.to_string().contains("conditional_mutation_unsupported"));
+    // `@owner` governs the write, never the read: the editor role the schema grants read to
+    // still sees a record it does not own.
+    let (status, headers, body) = request(
+        &app,
+        &path,
+        "GET",
+        Some("malformed"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["fields"]["title"], "Original");
+    assert!(!headers.contains_key("entity-revision"));
 }
 
 #[cfg(feature = "postgres")]

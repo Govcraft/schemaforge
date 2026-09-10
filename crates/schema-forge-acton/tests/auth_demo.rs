@@ -1000,10 +1000,11 @@ async fn demo_all_auth_layers_combined() {
         "Layer 3 (@field_access): employee should not see confidential_notes"
     );
 
-    // --- Step 2: Non-owner manager is blocked by @owner ---
-    // @access: manager in read list -> allowed
-    // @owner: manager is NOT the author -> 403
-    println!("  Step 2: non-owner manager blocked by @owner");
+    // --- Step 2: Non-owner manager reads, but @owner blocks the write ---
+    // @access: manager in read list -> read allowed; @owner never restricts reads
+    // @field_access: manager IS in the confidential_notes read list -> field returned
+    // @owner: manager is NOT the author -> update and delete refused
+    println!("  Step 2: non-owner manager reads but cannot change");
     let manager_claims = make_test_claims_with_sub(
         &format!("user:{}", EntityId::new("user").as_str()),
         &["manager"],
@@ -1018,12 +1019,25 @@ async fn demo_all_auth_layers_combined() {
     let app = test_app_with_claims(manager_state, manager_claims);
 
     let path = format!("/schemas/Document/entities/{doc_id}");
-    let (status, _json) = json_request(&app, Method::GET, &path, None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, json) = json_request(&app, Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["fields"]["title"], "Q4 Report");
     println!(
-        "    Manager GET: {} -- Layer 2 (@owner) blocks non-owner",
+        "    Manager GET: {} -- Layer 1 (@access) grants the read, @owner does not revoke it",
         status
     );
+
+    let (status, body) = json_request(
+        &app,
+        Method::PUT,
+        &path,
+        Some(serde_json::json!({"fields": {"title": "Rewritten"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = json_request(&app, Method::DELETE, &path, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    println!("    Manager PUT/DELETE: 403 -- Layer 2 (@owner) blocks a non-owner write");
 
     // --- Step 3: Admin bypasses ALL layers (schema, record, field) ---
     // @access: admin bypasses
@@ -1378,7 +1392,12 @@ async fn public_reads_enforce_record_forbids_and_ownership() {
     let state = build_test_app_state_with_store(backend, registry, None, None, Some(store)).await;
     let admin = test_app_with_claims(state.clone(), make_test_claims(&["admin"]));
     let anonymous = forge_routes().with_state(state);
-    for (schema, title, expected_count) in [("Notice", "private", 0), ("OwnedNotice", "owned", 0)] {
+    // A custom record forbid hides the row from a reader the schema otherwise grants read to.
+    // `@owner` does not: it governs who may change a record, never who may see one, so the
+    // owned notice stays readable by the `public` role its own `@access(read:)` names.
+    let mut owned = String::new();
+    let cases = [("Notice", "private", false), ("OwnedNotice", "owned", true)];
+    for (schema, title, readable) in cases {
         let collection = format!("/schemas/{schema}/entities");
         let (status, created) = json_request(
             &admin,
@@ -1389,14 +1408,31 @@ async fn public_reads_enforce_record_forbids_and_ownership() {
         .await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
         let record = format!("{collection}/{}", created["id"].as_str().unwrap());
+        if readable {
+            owned = record.clone();
+        }
         let (status, body) = json_request(&anonymous, Method::GET, &record, None).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        let expected = if readable {
+            StatusCode::OK
+        } else {
+            StatusCode::FORBIDDEN
+        };
+        assert_eq!(status, expected, "{body}");
         let (status, body) = json_request(&anonymous, Method::GET, &collection, None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["count"], expected_count, "{body}");
+        assert_eq!(body["count"], i64::from(readable), "{body}");
         assert!(
             body.get("total_count").is_none(),
             "storage totals must not reveal hidden rows: {body}"
         );
     }
+
+    // Reading the owned notice carries no right to change it. Mutations by an unauthenticated
+    // caller stop at authentication, so the read's own permissions block is what states the
+    // owner restriction here; the non-owner write refusal itself is covered by
+    // `demo_all_auth_layers_combined`.
+    let (status, body) = json_request(&anonymous, Method::GET, &owned, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["permissions"]["update"], false, "{body}");
+    assert_eq!(body["permissions"]["delete"], false, "{body}");
 }

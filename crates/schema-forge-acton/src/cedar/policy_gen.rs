@@ -161,31 +161,43 @@ permit (
     })
 }
 
-/// Forbids any per-record action on an `@owner` schema whose owner does not
-/// match the caller, with one carefully-shaped condition.
+/// Forbids a non-owner from *mutating* a record on an `@owner` schema.
 ///
-/// The rule fires only when the resource carries the owner field *and* the
+/// `@owner` establishes who created a record and protects that record from
+/// being changed by anyone else. It does not decide who may *see* the
+/// record: that is what `@access(read: [...])` is for, and a schema author
+/// who names roles there has stated the intent explicitly.
+///
+/// This policy therefore covers `Update` and `Delete` only. It deliberately
+/// does **not** cover `Read` and `List`. A Cedar `forbid` overrides every
+/// `permit`, so including the read actions here silently revoked the
+/// schema's own `@access(read:)` grant for every record the caller had not
+/// personally created, turning any shared workspace into a set of private
+/// silos with no diagnostic and no way to opt out. See the sibling issue on
+/// count-before-authorization for why that failure was close to invisible:
+/// the list endpoint answered `200` with a truthful `total_count` and an
+/// empty item array.
+///
+/// The guard fires only when the resource carries the owner field *and* the
 /// owner value does not equal `principal.id`, *and* the caller is not
-/// `platform_admin`. Schema-level checks (which use a placeholder resource
-/// without attributes) leave the first conjunct false and the forbid does
-/// not fire — leaving the schema-level `@access` permit to govern. The
-/// per-record check (with a real entity) carries the owner field, so the
-/// rule fires for non-owners on every Read/List/Update/Delete and the
-/// expected ownership semantics hold.
+/// `platform_admin`. Note that a schema-level check uses a placeholder
+/// resource which, for a **required** owner field, does carry the attribute
+/// with a type default (`""` for text). Restricting this policy to the
+/// per-record actions keeps that placeholder out of the decision entirely,
+/// which is what made a `required @owner` field answer `403` on the
+/// collection endpoint while an optional one answered `200` with no rows.
 fn owner_restrict_forbid_policy(schema: &SchemaDefinition) -> Option<CedarPolicy> {
     let name = schema.name.as_str();
     let field = find_owner_field(schema)?;
     Some(CedarPolicy {
         description: format!(
-            "Forbid per-record actions on {name} when the caller does not own the record (resource.{field})"
+            "Forbid a non-owner from updating or deleting a {name} record (resource.{field}); reads stay governed by @access(read:)"
         ),
         cedar_text: format!(
             r#"@id("forge.{lname}.owner_restrict")
 forbid (
     principal is Forge::Principal,
     action in [
-        Action::"Read{name}",
-        Action::"List{name}",
         Action::"Update{name}",
         Action::"Delete{name}"
     ],
@@ -634,6 +646,95 @@ mod tests {
             .filter(|p| p.cedar_text.starts_with("@id") && p.cedar_text.contains("\npermit"))
             .count();
         assert_eq!(permit_count, 1, "only schema-admin should be a permit");
+    }
+
+    /// `@owner` must never revoke the schema's own `@access(read:)` grant.
+    ///
+    /// A Cedar `forbid` overrides every `permit`, so listing the read actions
+    /// in `owner_restrict` made every record invisible to anyone who had not
+    /// created it, regardless of what `@access(read:)` said. That turned any
+    /// shared workspace into private silos, and it presented as an empty list
+    /// under a correct total rather than as an error, so it was very hard to
+    /// see. Pin the action set so it cannot come back.
+    #[test]
+    fn owner_restrict_covers_mutations_only_and_never_reads() {
+        let schema = make_owner_schema();
+        let policies = generate_cedar_policies(&schema);
+        let restrict = policies
+            .iter()
+            .find(|p| p.cedar_text.contains("owner_restrict"))
+            .expect("expected the owner_restrict policy");
+
+        assert!(
+            restrict.cedar_text.contains("Action::\"UpdateTask\""),
+            "owner_restrict must still stop a non-owner updating a record"
+        );
+        assert!(
+            restrict.cedar_text.contains("Action::\"DeleteTask\""),
+            "owner_restrict must still stop a non-owner deleting a record"
+        );
+        assert!(
+            !restrict.cedar_text.contains("Action::\"ReadTask\""),
+            "owner_restrict must not forbid reads; @access(read:) governs visibility"
+        );
+        assert!(
+            !restrict.cedar_text.contains("Action::\"ListTask\""),
+            "owner_restrict must not forbid lists; @access(read:) governs visibility"
+        );
+    }
+
+    /// The read grant and `@owner` have to coexist on one schema: the grant
+    /// decides who sees a record, `@owner` decides who may change it.
+    ///
+    /// The owner field here is `required` deliberately. That is the case that
+    /// produced a `403` on the collection endpoint, because the schema-level
+    /// placeholder resource carries type defaults for required fields and so
+    /// satisfied the old forbid's `resource has "<owner>"` conjunct.
+    #[test]
+    fn owner_schema_keeps_its_read_permit_intact() {
+        use schema_forge_core::types::FieldModifier;
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Task").unwrap(),
+            vec![
+                FieldDefinition::new(
+                    FieldName::new("title").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                ),
+                FieldDefinition::with_annotations(
+                    FieldName::new("created_by").unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                    vec![FieldModifier::Required],
+                    vec![FieldAnnotation::Owner],
+                ),
+            ],
+            vec![Annotation::Access {
+                read: vec!["viewer".to_string(), "platform_user".to_string()],
+                write: vec!["platform_user".to_string()],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            }],
+        )
+        .unwrap();
+        let policies = generate_cedar_policies(&schema);
+
+        let grants_a_read = policies
+            .iter()
+            .any(|p| p.cedar_text.contains("read_viewer") && p.cedar_text.contains("ListTask"));
+        assert!(
+            grants_a_read,
+            "the @access(read:) grant must still be emitted for a schema with @owner"
+        );
+        let forbids_a_read = policies.iter().any(|p| {
+            p.cedar_text.contains("\nforbid")
+                && (p.cedar_text.contains("Action::\"ReadTask\"")
+                    || p.cedar_text.contains("Action::\"ListTask\""))
+                && !p.cedar_text.contains("tenant_guard")
+        });
+        assert!(
+            !forbids_a_read,
+            "no owner-derived forbid may cover a read action and override the grant"
+        );
     }
 
     #[test]

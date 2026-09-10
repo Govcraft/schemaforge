@@ -451,9 +451,13 @@ Query results are filtered through multiple access control layers:
    automatically injected into every query. Callers only see entities belonging
    to their tenant.
 
-3. **Record-level visibility** — schemas with `@owner` or similar annotations
-   restrict which records are visible to each caller. Applied after the query
-   executes.
+3. **Record-level authorization** — every returned row is authorized
+   individually against the Cedar policy set after the query executes, so a
+   custom policy can withhold specific records. Note that `@owner` does *not*
+   restrict visibility: it establishes who created a record and stops anyone
+   else changing it, while who may *see* a record is decided by
+   `@access(read: [...])` alone. A schema that wants owner-only reads must say
+   so with a custom Cedar policy.
 
 4. **Field-level filtering** — fields with read restrictions are stripped from
    the response. The entity still appears, but restricted fields are omitted.
