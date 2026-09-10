@@ -1400,3 +1400,239 @@ async fn public_reads_enforce_record_forbids_and_ownership() {
         );
     }
 }
+
+/// This fixture uses an explicit row forbid, independently of owner semantics.
+async fn readable_paging_fixture(
+    rows: Vec<(String, bool, String)>,
+    policy: Option<Arc<dyn RecordAccessPolicy>>,
+) -> Router {
+    use schema_forge_acton::authz::{
+        PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,
+    };
+    use schema_forge_backend::entity::Entity;
+    use schema_forge_core::types::DynamicValue;
+
+    let backend: Arc<dyn DynForgeBackend> = Arc::new(
+        SurrealBackend::connect_memory("test", "readable_paging")
+            .await
+            .unwrap(),
+    );
+    let schemas = schema_forge_dsl::parse(
+        r#"
+        @access(read: ["reader"], write: ["admin"], delete: ["admin"])
+        schema PageNotice { title: text visible: boolean state: text }
+        "#,
+    )
+    .unwrap();
+    let schema = &schemas[0];
+    let mut registry = HashMap::new();
+    register_schema(schema, &backend, &mut registry).await;
+    for (title, visible, state) in rows {
+        let fields = std::collections::BTreeMap::from([
+            ("title".into(), DynamicValue::Text(title)),
+            ("visible".into(), DynamicValue::Boolean(visible)),
+            ("state".into(), DynamicValue::Text(state)),
+        ]);
+        backend
+            .create(&Entity::with_id(
+                EntityId::new("pagenotice"),
+                schema.name.clone(),
+                fields,
+            ))
+            .await
+            .unwrap();
+    }
+    let policies = tempfile::tempdir().unwrap();
+    std::fs::write(
+        policies.path().join("readable.cedar"),
+        r#"
+        @id("page_notice.hide_unreadable")
+        forbid(principal, action == Action::"ReadPageNotice", resource is PageNotice)
+        when { resource has visible && !resource.visible };
+        "#,
+    )
+    .unwrap();
+    let store = Arc::new(PolicyStore::new(
+        PolicyStoreSnapshot::from_schemas(
+            &schemas,
+            Some(policies.path()),
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap(),
+    ));
+    let state = build_test_app_state_with_store(backend, registry, None, policy, Some(store)).await;
+    test_app_with_claims(state, make_test_claims(&["reader"]))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn readable_paging_counts_filters_and_offsets_after_cedar_for_get_and_post() {
+    let app = readable_paging_fixture(
+        [
+            ("00", false, "draft"),
+            ("01", true, "draft"),
+            ("02", false, "draft"),
+            ("03", true, "draft"),
+            ("04", true, "published"),
+            ("05", false, "blocked"),
+        ]
+        .into_iter()
+        .map(|(title, visible, state)| (title.into(), visible, state.into()))
+        .collect(),
+        None,
+    )
+    .await;
+    for (offset, expected) in [(0, Some("01")), (1, Some("03")), (2, None), (20, None)] {
+        for method in [Method::GET, Method::POST] {
+            let (path, body) = if method == Method::GET {
+                (format!("/schemas/PageNotice/entities?state=draft&sort=title&limit=1&offset={offset}&fields=title"), None)
+            } else {
+                (
+                    "/schemas/PageNotice/entities/query".into(),
+                    Some(serde_json::json!({
+                        "filter": {"op":"eq", "field":"state", "value":"draft"},
+                        "sort":[{"field":"title"}], "limit":1, "offset":offset, "fields":["title"]
+                    })),
+                )
+            };
+            let (status, body) = json_request(&app, method, &path, body).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["total_count"], 2, "{body}");
+            assert_eq!(body["count"], usize::from(expected.is_some()), "{body}");
+            let entities = body["entities"].as_array().unwrap();
+            assert_eq!(entities.len(), usize::from(expected.is_some()));
+            if let Some(title) = expected {
+                assert_eq!(entities[0]["fields"]["title"], title);
+                assert_eq!(entities[0]["fields"].as_object().unwrap().len(), 1);
+            }
+        }
+    }
+    for method in [Method::GET, Method::POST] {
+        let (path, body) = if method == Method::GET {
+            ("/schemas/PageNotice/entities?state=blocked&limit=1", None)
+        } else {
+            (
+                "/schemas/PageNotice/entities/query",
+                Some(serde_json::json!({
+                    "filter":{"op":"eq", "field":"state", "value":"blocked"}, "limit":1
+                })),
+            )
+        };
+        let (status, body) = json_request(&app, method, path, body).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["total_count"], 0);
+        assert_eq!(body["count"], 0);
+        assert!(body["entities"].as_array().unwrap().is_empty());
+    }
+}
+
+#[derive(Default)]
+struct PagingRecordPolicy {
+    evaluated: std::sync::atomic::AtomicUsize,
+    largest_batch: std::sync::atomic::AtomicUsize,
+}
+
+impl RecordAccessPolicy for PagingRecordPolicy {
+    fn filter_visible<'a>(
+        &'a self,
+        _: &'a SchemaDefinition,
+        _: &'a Claims,
+        entities: Vec<schema_forge_backend::entity::Entity>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Vec<schema_forge_backend::entity::Entity>> + Send + 'a,
+        >,
+    > {
+        use std::sync::atomic::Ordering;
+        self.evaluated.fetch_add(entities.len(), Ordering::Relaxed);
+        self.largest_batch
+            .fetch_max(entities.len(), Ordering::Relaxed);
+        Box::pin(async move {
+            entities
+                .into_iter()
+                .filter(|entity| {
+                    entity.fields.get("state")
+                        != Some(&schema_forge_core::types::DynamicValue::Text(
+                            "policy_hidden".into(),
+                        ))
+                })
+                .collect()
+        })
+    }
+    fn can_modify<'a>(
+        &'a self,
+        _: &'a SchemaDefinition,
+        _: &'a Claims,
+        _: &'a schema_forge_backend::entity::Entity,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async { false })
+    }
+    fn can_delete<'a>(
+        &'a self,
+        _: &'a SchemaDefinition,
+        _: &'a Claims,
+        _: &'a schema_forge_backend::entity::Entity,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async { false })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn readable_paging_crosses_denied_batches_and_stops_early_without_count() {
+    use std::sync::atomic::Ordering;
+    let policy = Arc::new(PagingRecordPolicy::default());
+    let rows = (0..520)
+        .map(|index| {
+            let state = if index == 257 {
+                "policy_hidden"
+            } else {
+                "draft"
+            };
+            (format!("{index:03}"), index >= 255, state.into())
+        })
+        .collect();
+    let app = readable_paging_fixture(rows, Some(policy.clone())).await;
+    let (status, body) = json_request(
+        &app,
+        Method::GET,
+        "/schemas/PageNotice/entities?limit=0&count=false",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["count"], 0);
+    assert!(body.get("total_count").is_none());
+    assert_eq!(policy.evaluated.load(Ordering::Relaxed), 0);
+
+    let (status, body) = json_request(
+        &app,
+        Method::GET,
+        "/schemas/PageNotice/entities?sort=title&limit=2&offset=1&count=false",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["count"], 2);
+    assert!(body.get("total_count").is_none());
+    assert_eq!(body["entities"][0]["fields"]["title"], "256");
+    assert_eq!(body["entities"][1]["fields"]["title"], "258");
+    assert!(
+        policy.evaluated.load(Ordering::Relaxed) < 520,
+        "page-only reads must stop before the end"
+    );
+    assert!(policy.largest_batch.load(Ordering::Relaxed) <= 256);
+
+    let (status, body) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/PageNotice/entities/query",
+        Some(serde_json::json!({
+            "sort":[{"field":"title"}], "limit":2, "offset":1
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total_count"], 264);
+    assert_eq!(body["entities"][0]["fields"]["title"], "256");
+    assert_eq!(body["entities"][1]["fields"]["title"], "258");
+}

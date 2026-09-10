@@ -649,7 +649,7 @@ pub struct ListEntitiesResponse {
     pub entities: Vec<EntityResponse>,
     /// The count of entities in this response.
     pub count: usize,
-    /// The total count of matching entities before pagination, if available.
+    /// The total count of readable matching entities before pagination, if requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_count: Option<usize>,
     /// Schema-level permissions for the caller, populated on read paths so
@@ -684,7 +684,7 @@ pub struct EntityQueryBody {
     pub resolve: bool,
     /// Whether to compute `total_count`. Defaults to `true` for backward
     /// compatibility with paginating UIs. Set to `false` to skip the
-    /// extra COUNT(*) round-trip when the caller doesn't need it.
+    /// full authorization scan when the caller only needs the requested page.
     #[serde(default = "default_true_bool")]
     pub count: bool,
 }
@@ -1321,6 +1321,89 @@ fn coerce_json_filter_value(
     }
 }
 
+/// Maximum candidate rows retained while evaluating a readable page.
+const AUTHORIZATION_QUERY_BATCH_SIZE: usize = 256;
+
+/// Apply both record policies before counting or paging the readable stream.
+/// Backend totals are never used: they precede authorization. Exact readable
+/// totals require examining all matches; page-only requests can stop early.
+async fn query_readable_page(
+    forge: &acton_service::prelude::ActorHandle,
+    policy_store: &Arc<crate::authz::PolicyStore>,
+    record_policy: Option<&dyn schema_forge_backend::auth::RecordAccessPolicy>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+    query: &schema_forge_core::query::Query,
+    include_total: bool,
+) -> Result<schema_forge_backend::entity::QueryResult, ForgeError> {
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(usize::MAX);
+    let mut page = Vec::new();
+    let mut readable_count = 0;
+    let mut candidates = query.clone();
+    candidates.include_total = false;
+    candidates.projection = None;
+    candidates.limit = Some(AUTHORIZATION_QUERY_BATCH_SIZE);
+    candidates.offset = Some(0);
+
+    // A zero-size page without a total does not require any storage access.
+    while include_total || page.len() < limit {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(QueryEntities {
+                query: candidates.clone(),
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let result = ask_forge(rx).await?.map_err(ForgeError::from)?;
+        let candidate_count = result.entities.len();
+        let visible = match record_policy {
+            Some(policy) => {
+                policy
+                    .filter_visible_optional(schema, claims, result.entities)
+                    .await
+            }
+            None => result.entities,
+        };
+        for entity in visible {
+            if !authorize(
+                policy_store,
+                claims,
+                ActionVerb::Read,
+                schema,
+                Some(&entity),
+            )
+            .is_ok_and(|decision| decision.is_allow())
+            {
+                continue;
+            }
+            if readable_count >= offset && page.len() < limit {
+                page.push(entity);
+            }
+            readable_count += 1;
+            if !include_total && page.len() == limit {
+                break;
+            }
+        }
+        if candidate_count < AUTHORIZATION_QUERY_BATCH_SIZE {
+            break;
+        }
+        candidates.offset = Some(
+            candidates
+                .offset
+                .unwrap_or(0)
+                .checked_add(candidate_count)
+                .ok_or_else(|| ForgeError::Internal {
+                    message: "entity query scan offset overflow".into(),
+                })?,
+        );
+    }
+    Ok(schema_forge_backend::entity::QueryResult::new(
+        page,
+        include_total.then_some(readable_count),
+    ))
+}
+
 /// Execute a query with the standard access-control pipeline.
 ///
 /// Shared by `list_entities` and `query_entities`. Sends backend queries
@@ -1339,9 +1422,6 @@ async fn execute_entity_query(
     resolve_relations: bool,
     include_total: bool,
 ) -> Result<ListEntitiesResponse, ForgeError> {
-    // Storage totals precede record authorization and can reveal private rows.
-    // Anonymous callers receive only the count of their visible page.
-    query.include_total = include_total && claims.is_some();
     let forge = state
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered");
@@ -1372,16 +1452,6 @@ async fn execute_entity_query(
     // (display resolution, derived collections) that don't run user-facing
     // record authorization.
 
-    // Execute query via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(QueryEntities {
-            query: query.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    let result = ask_forge(rx).await?.map_err(ForgeError::from)?;
-
     // Record-level access filtering (e.g. @owner)
     let (tx, rx) = oneshot::channel();
     forge
@@ -1392,25 +1462,17 @@ async fn execute_entity_query(
     let record_access_policy = ask_forge(rx).await?;
 
     let policy_store = fetch_policy_store(state).await?;
-    let mut visible_entities = if let Some(ref policy) = record_access_policy {
-        policy
-            .filter_visible_optional(schema_def, claims, result.entities)
-            .await
-    } else {
-        result.entities
-    };
-
-    // Cedar always evaluates the actual row, including for anonymous callers.
-    visible_entities.retain(|entity| {
-        authorize(
-            &policy_store,
-            claims,
-            ActionVerb::Read,
-            schema_def,
-            Some(entity),
-        )
-        .is_ok_and(|decision| decision.is_allow())
-    });
+    let result = query_readable_page(
+        &forge,
+        &policy_store,
+        record_access_policy.as_deref(),
+        schema_def,
+        claims,
+        query,
+        include_total && claims.is_some(),
+    )
+    .await?;
+    let mut visible_entities = result.entities;
 
     // Populate derived inverse collection fields (issue #34). Each derived
     // field is resolved by one batched child-table query keyed on the FK,
