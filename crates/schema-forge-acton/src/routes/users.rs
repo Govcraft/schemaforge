@@ -90,6 +90,8 @@ async fn audit_password_changed(
     state: &AppState<SchemaForgeConfig>,
     actor: &str,
     target: &str,
+    self_service: bool,
+    source: &AuditSource,
 ) {
     let Some(logger) = state.audit_logger() else { return };
     logger
@@ -98,7 +100,7 @@ async fn audit_password_changed(
             AuditSeverity::Notice,
             AuditSource {
                 subject: Some(format!("user:{target}")),
-                ..AuditSource::default()
+                ..source.clone()
             },
         )
         .await;
@@ -107,11 +109,16 @@ async fn audit_password_changed(
     let metadata = serde_json::json!({
         "actor": actor,
         "target": target,
-        "self_service": actor == target,
+        "self_service": self_service,
     });
-    logger
-        .log_custom("forge.user.password_changed", AuditSeverity::Notice, Some(metadata))
-        .await;
+    let mut event = acton_service::audit::AuditEvent::new(
+        AuditEventKind::Custom("forge.user.password_changed".into()),
+        AuditSeverity::Notice,
+        logger.service_name().into(),
+    );
+    event.source = AuditSource { subject: Some(actor.into()), ..source.clone() };
+    event.metadata = Some(metadata);
+    logger.log(event).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +938,7 @@ pub async fn update_user(
 #[instrument(skip_all)]
 pub async fn change_password(
     State(state): State<AppState<SchemaForgeConfig>>,
+    super::audit::RequestAuditSource(source): super::audit::RequestAuditSource,
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Path(username): Path<String>,
     OptionalClaims(claims): OptionalClaims,
@@ -987,7 +995,7 @@ pub async fn change_password(
     auth_store
         .change_password(&username, &body.password)
         .await?;
-    audit_password_changed(&state, &claims.sub, &username).await;
+    audit_password_changed(&state, &claims.sub, &username, is_self, &source).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

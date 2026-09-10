@@ -67,6 +67,11 @@ pub enum DbParams {
 }
 
 impl DbParams {
+    /// Connection location safe for status messages; credentials and URL options are omitted.
+    pub fn redacted_url(&self) -> String {
+        redact_connection_url(self.url())
+    }
+
     /// The connection URL, regardless of backend.
     pub fn url(&self) -> &str {
         match self {
@@ -75,6 +80,21 @@ impl DbParams {
             DbParams::Mssql(p) => &p.config.url,
         }
     }
+}
+
+fn redact_connection_url(value: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(value) else {
+        return "(configured database)".into();
+    };
+    if !url.has_host() {
+        return "(configured database)".into();
+    }
+    if url.set_password(None).is_err() || url.set_username("").is_err() {
+        return "(configured database)".into();
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 impl std::fmt::Display for DbParams {
@@ -90,11 +110,11 @@ impl std::fmt::Display for DbParams {
                 write!(
                     f,
                     "surrealdb {}/{}@{} (user={user}, pass={masked_pass})",
-                    p.namespace, p.database, p.url
+                    p.namespace, p.database, self.redacted_url()
                 )
             }
-            DbParams::Postgres(p) => write!(f, "postgres {}", p.url),
-            DbParams::Mssql(p) => write!(f, "mssql {}", p.config.url),
+            DbParams::Postgres(_) => write!(f, "postgres {}", self.redacted_url()),
+            DbParams::Mssql(_) => write!(f, "mssql {}", self.redacted_url()),
         }
     }
 }
@@ -833,5 +853,21 @@ mod tests {
         let s = svc.surrealdb.as_ref().unwrap();
         assert_eq!(s.namespace, "cli_ns");
         assert_eq!(s.database, "cli_db");
+    }
+}
+
+#[cfg(test)]
+mod connection_redaction_tests {
+    use super::*;
+
+    #[test]
+    fn connection_labels_do_not_disclose_uri_or_dsn_credentials() {
+        let params = DbParams::Postgres(PostgresParams {
+            url: "postgresql://operator:SECRET@localhost:5432/example?password=SECRET#SECRET".into(),
+        });
+        assert_eq!(params.redacted_url(), "postgresql://localhost:5432/example");
+        assert!(!params.to_string().contains("SECRET"));
+        assert_eq!(redact_connection_url("Server=localhost;User ID=operator;Password=SECRET;Database=example"), "(configured database)");
+        assert_eq!(redact_connection_url("not a URL with SECRET"), "(configured database)");
     }
 }

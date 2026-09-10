@@ -2279,6 +2279,20 @@ fn apply_relation_displays(
     }
 }
 
+fn changed_field_names(
+    before: &BTreeMap<String, DynamicValue>,
+    after: &BTreeMap<String, DynamicValue>,
+) -> Vec<String> {
+    before
+        .keys()
+        .chain(after.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|name| before.get(*name) != after.get(*name))
+        .cloned()
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -2318,19 +2332,19 @@ pub async fn create_entity(
         claims.as_ref(),
         AccessAction::Write,
     ) {
-        if let Some(logger) = state.audit_logger() {
-            logger
-                .log_custom(
-                    "forge.access.denied",
-                    acton_service::audit::AuditSeverity::Warning,
-                    Some(serde_json::json!({
-                        "schema": &schema,
-                        "action": "write",
-                        "user": claims.as_ref().map(|c| &c.sub),
-                    })),
-                )
-                .await;
-        }
+        super::audit::log_forge_event(
+            &state,
+            claims.as_ref(),
+            &headers,
+            "forge.access.denied",
+            acton_service::audit::AuditSeverity::Warning,
+            serde_json::json!({
+                "schema": &schema,
+                "action": "write",
+                "user": claims.as_ref().map(|c| &c.sub),
+            }),
+        )
+        .await;
         return Err(e);
     }
 
@@ -2339,7 +2353,8 @@ pub async fn create_entity(
             .await?;
     if let Some(intent) = &intent {
         if intent.receipt.entity_id.is_some() {
-            return super::create_intents::result(state, schema, claims, &intent.receipt).await;
+            return super::create_intents::result(state, schema, claims, headers, &intent.receipt)
+                .await;
         }
     }
 
@@ -2445,13 +2460,12 @@ pub async fn create_entity(
     check_field_constraints(&schema_def, &entity.fields)?;
 
     if let Some(intent) = intent {
+        let changed_fields: Vec<_> = entity.fields.keys().cloned().collect();
         let receipt = super::create_intents::commit(&state, intent, entity).await?;
         if receipt.created {
-            if let Some(logger) = state.audit_logger() {
-                logger.log_custom("forge.entity.created", acton_service::audit::AuditSeverity::Informational, Some(serde_json::json!({"schema":schema,"intent_id":receipt.id.as_str(),"entity_id":receipt.entity_id.as_ref().map(|id|id.as_str())}))).await;
-            }
+            super::audit::log_forge_event(&state, claims.as_ref(), &headers, "forge.entity.created", acton_service::audit::AuditSeverity::Informational, serde_json::json!({"schema":schema,"intent_id":receipt.id.as_str(),"changed_fields":changed_fields,"entity_id":receipt.entity_id.as_ref().map(|id|id.as_str())})).await;
         }
-        return super::create_intents::result(state, schema, claims, &receipt).await;
+        return super::create_intents::result(state, schema, claims, headers, &receipt).await;
     }
 
     // Create entity via actor (supervised backend call)
@@ -2482,6 +2496,8 @@ pub async fn create_entity(
         .await;
     }
 
+    let changed_fields: Vec<_> = created.fields.keys().cloned().collect();
+
     // Filter read-restricted fields from response
     filter_entity_fields(
         &policy_store,
@@ -2492,19 +2508,20 @@ pub async fn create_entity(
     );
 
     // Audit: entity created
-    if let Some(logger) = state.audit_logger() {
-        logger
-            .log_custom(
-                "forge.entity.created",
-                acton_service::audit::AuditSeverity::Informational,
-                Some(serde_json::json!({
-                    "schema": schema,
-                    "entity_id": created.id.as_str(),
-                    "user": claims.as_ref().map(|c| &c.sub),
-                })),
-            )
-            .await;
-    }
+    super::audit::log_forge_event(
+        &state,
+        claims.as_ref(),
+        &headers,
+        "forge.entity.created",
+        acton_service::audit::AuditSeverity::Informational,
+        serde_json::json!({
+            "schema": schema,
+            "entity_id": created.id.as_str(),
+            "changed_fields": changed_fields,
+            "user": claims.as_ref().map(|c| &c.sub),
+        }),
+    )
+    .await;
 
     // Webhook: fire notifications
     let webhook_event = crate::webhook::WebhookEvent::from_create(
@@ -2531,6 +2548,7 @@ pub async fn list_entities(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -2553,12 +2571,23 @@ pub async fn list_entities(
     let policy_store = fetch_policy_store(&state).await?;
 
     // Access check
-    check_schema_access(
+    if let Err(error) = check_schema_access(
         &policy_store,
         &schema_def,
         claims.as_ref(),
         AccessAction::Read,
-    )?;
+    ) {
+        super::audit::log_forge_event(
+            &state,
+            claims.as_ref(),
+            &headers,
+            "forge.access.denied",
+            acton_service::audit::AuditSeverity::Warning,
+            serde_json::json!({"schema": schema, "action": "read", "reason": "schema_access"}),
+        )
+        .await;
+        return Err(error);
+    }
 
     // before_read hook gate (no entity_id, no fields — list scope).
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
@@ -2676,6 +2705,7 @@ pub async fn query_entities(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
     Json(body): Json<EntityQueryBody>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -2698,12 +2728,23 @@ pub async fn query_entities(
     let policy_store = fetch_policy_store(&state).await?;
 
     // Access check
-    check_schema_access(
+    if let Err(error) = check_schema_access(
         &policy_store,
         &schema_def,
         claims.as_ref(),
         AccessAction::Read,
-    )?;
+    ) {
+        super::audit::log_forge_event(
+            &state,
+            claims.as_ref(),
+            &headers,
+            "forge.access.denied",
+            acton_service::audit::AuditSeverity::Warning,
+            serde_json::json!({"schema": schema, "action": "read", "reason": "schema_access"}),
+        )
+        .await;
+        return Err(error);
+    }
 
     // before_read hook gate (no entity_id, no fields — query scope).
     let hooks_config = state.config().custom.schema_forge.hooks.clone();
@@ -2817,6 +2858,7 @@ pub async fn get_entity(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
@@ -2839,12 +2881,23 @@ pub async fn get_entity(
     let policy_store = fetch_policy_store(&state).await?;
 
     // Access check
-    check_schema_access(
+    if let Err(error) = check_schema_access(
         &policy_store,
         &schema_def,
         claims.as_ref(),
         AccessAction::Read,
-    )?;
+    ) {
+        super::audit::log_forge_event(
+            &state,
+            claims.as_ref(),
+            &headers,
+            "forge.access.denied",
+            acton_service::audit::AuditSeverity::Warning,
+            serde_json::json!({"schema": schema, "action": "read", "reason": "schema_access"}),
+        )
+        .await;
+        return Err(error);
+    }
 
     // Parse the entity ID
     let entity_id =
@@ -2893,6 +2946,8 @@ pub async fn get_entity(
     )
     .is_ok_and(|decision| decision.is_allow())
     {
+        super::audit::log_forge_event(&state, claims.as_ref(), &headers, "forge.access.denied", acton_service::audit::AuditSeverity::Warning,
+            serde_json::json!({"schema": schema, "entity_id": id, "action": "read", "reason": "record_access"})).await;
         return Err(ForgeError::Forbidden {
             message: format!("not authorized to view entity '{id}'"),
         });
@@ -2912,6 +2967,8 @@ pub async fn get_entity(
             .filter_visible_optional(&schema_def, claims.as_ref(), vec![entity.clone()])
             .await;
         if visible.is_empty() {
+            super::audit::log_forge_event(&state, claims.as_ref(), &headers, "forge.access.denied", acton_service::audit::AuditSeverity::Warning,
+                serde_json::json!({"schema": schema, "entity_id": id, "action": "read", "reason": "record_visibility"})).await;
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to view entity '{id}'"),
             });
@@ -3046,19 +3103,19 @@ pub async fn update_entity(
             AccessAction::Write
         },
     ) {
-        if let Some(logger) = state.audit_logger() {
-            logger
-                .log_custom(
-                    "forge.access.denied",
-                    acton_service::audit::AuditSeverity::Warning,
-                    Some(serde_json::json!({
-                        "schema": &schema,
-                        "action": "write",
-                        "user": claims.as_ref().map(|c| &c.sub),
-                    })),
-                )
-                .await;
-        }
+        super::audit::log_forge_event(
+            &state,
+            claims.as_ref(),
+            &headers,
+            "forge.access.denied",
+            acton_service::audit::AuditSeverity::Warning,
+            serde_json::json!({
+                "schema": &schema,
+                "action": "write",
+                "user": claims.as_ref().map(|c| &c.sub),
+            }),
+        )
+        .await;
         return Err(e);
     }
 
@@ -3081,21 +3138,21 @@ pub async fn update_entity(
 
     if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
         if !policy.can_modify(&schema_def, c, &existing).await {
-            if let Some(logger) = state.audit_logger() {
-                logger
-                    .log_custom(
-                        "forge.access.denied",
-                        acton_service::audit::AuditSeverity::Warning,
-                        Some(serde_json::json!({
-                            "schema": &schema,
-                            "entity_id": existing.id.as_str(),
-                            "action": "update",
-                            "user": &c.sub,
-                            "reason": "record_can_modify",
-                        })),
-                    )
-                    .await;
-            }
+            super::audit::log_forge_event(
+                &state,
+                claims.as_ref(),
+                &headers,
+                "forge.access.denied",
+                acton_service::audit::AuditSeverity::Warning,
+                serde_json::json!({
+                    "schema": &schema,
+                    "entity_id": existing.id.as_str(),
+                    "action": "update",
+                    "user": &c.sub,
+                    "reason": "record_can_modify",
+                }),
+            )
+            .await;
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to modify entity '{id}'"),
             });
@@ -3215,6 +3272,7 @@ pub async fn update_entity(
     check_field_constraints(&schema_def, &entity.fields)?;
 
     let (mut updated, revision) = persist_entity_update(&forge, entity, expected).await?;
+    let changed_fields = changed_field_names(&existing.fields, &updated.fields);
 
     // after_change hook — handed off to HookDispatchActor for
     // detached dispatch under acton supervision.
@@ -3244,19 +3302,20 @@ pub async fn update_entity(
     );
 
     // Audit: entity updated
-    if let Some(logger) = state.audit_logger() {
-        logger
-            .log_custom(
-                "forge.entity.updated",
-                acton_service::audit::AuditSeverity::Informational,
-                Some(serde_json::json!({
-                    "schema": schema,
-                    "entity_id": updated.id.as_str(),
-                    "user": claims.as_ref().map(|c| &c.sub),
-                })),
-            )
-            .await;
-    }
+    super::audit::log_forge_event(
+        &state,
+        claims.as_ref(),
+        &headers,
+        "forge.entity.updated",
+        acton_service::audit::AuditSeverity::Informational,
+        serde_json::json!({
+            "schema": schema,
+            "entity_id": updated.id.as_str(),
+            "changed_fields": changed_fields,
+            "user": claims.as_ref().map(|c| &c.sub),
+        }),
+    )
+    .await;
 
     // Webhook: fire notifications
     let webhook_event = crate::webhook::WebhookEvent::from_update(
@@ -3324,19 +3383,19 @@ pub async fn patch_entity(
             AccessAction::Write
         },
     ) {
-        if let Some(logger) = state.audit_logger() {
-            logger
-                .log_custom(
-                    "forge.access.denied",
-                    acton_service::audit::AuditSeverity::Warning,
-                    Some(serde_json::json!({
-                        "schema": &schema,
-                        "action": "write",
-                        "user": claims.as_ref().map(|c| &c.sub),
-                    })),
-                )
-                .await;
-        }
+        super::audit::log_forge_event(
+            &state,
+            claims.as_ref(),
+            &headers,
+            "forge.access.denied",
+            acton_service::audit::AuditSeverity::Warning,
+            serde_json::json!({
+                "schema": &schema,
+                "action": "write",
+                "user": claims.as_ref().map(|c| &c.sub),
+            }),
+        )
+        .await;
         return Err(e);
     }
 
@@ -3359,21 +3418,21 @@ pub async fn patch_entity(
 
     if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
         if !policy.can_modify(&schema_def, c, &existing).await {
-            if let Some(logger) = state.audit_logger() {
-                logger
-                    .log_custom(
-                        "forge.access.denied",
-                        acton_service::audit::AuditSeverity::Warning,
-                        Some(serde_json::json!({
-                            "schema": &schema,
-                            "entity_id": existing.id.as_str(),
-                            "action": "patch",
-                            "user": &c.sub,
-                            "reason": "record_can_modify",
-                        })),
-                    )
-                    .await;
-            }
+            super::audit::log_forge_event(
+                &state,
+                claims.as_ref(),
+                &headers,
+                "forge.access.denied",
+                acton_service::audit::AuditSeverity::Warning,
+                serde_json::json!({
+                    "schema": &schema,
+                    "entity_id": existing.id.as_str(),
+                    "action": "patch",
+                    "user": &c.sub,
+                    "reason": "record_can_modify",
+                }),
+            )
+            .await;
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to modify entity '{id}'"),
             });
@@ -3506,6 +3565,8 @@ pub async fn patch_entity(
         }
     }
 
+    let baseline_fields = existing.fields.clone();
+
     // A conditional no-op still reaches storage to compare the authorized
     // baseline atomically, and advances the revision on acceptance.
     let (mut updated, revision) = if delta.is_empty() && expected.is_none() {
@@ -3523,6 +3584,8 @@ pub async fn patch_entity(
         check_field_constraints(&schema_def, &entity.fields)?;
         persist_entity_update(&forge, entity, expected).await?
     };
+
+    let changed_fields = changed_field_names(&baseline_fields, &updated.fields);
 
     // after_change hook — dispatched via HookDispatchActor
     if let Some(dispatcher) = hook_dispatcher.clone() {
@@ -3551,19 +3614,20 @@ pub async fn patch_entity(
     );
 
     // Audit: entity patched
-    if let Some(logger) = state.audit_logger() {
-        logger
-            .log_custom(
-                "forge.entity.patched",
-                acton_service::audit::AuditSeverity::Informational,
-                Some(serde_json::json!({
-                    "schema": schema,
-                    "entity_id": updated.id.as_str(),
-                    "user": claims.as_ref().map(|c| &c.sub),
-                })),
-            )
-            .await;
-    }
+    super::audit::log_forge_event(
+        &state,
+        claims.as_ref(),
+        &headers,
+        "forge.entity.patched",
+        acton_service::audit::AuditSeverity::Informational,
+        serde_json::json!({
+            "schema": schema,
+            "entity_id": updated.id.as_str(),
+            "changed_fields": changed_fields,
+            "user": claims.as_ref().map(|c| &c.sub),
+        }),
+    )
+    .await;
 
     // Webhook: fire notifications
     let webhook_event = crate::webhook::WebhookEvent::from_update(
@@ -3616,19 +3680,19 @@ pub async fn delete_entity(
         claims.as_ref(),
         AccessAction::Delete,
     ) {
-        if let Some(logger) = state.audit_logger() {
-            logger
-                .log_custom(
-                    "forge.access.denied",
-                    acton_service::audit::AuditSeverity::Warning,
-                    Some(serde_json::json!({
-                        "schema": &schema,
-                        "action": "delete",
-                        "user": claims.as_ref().map(|c| &c.sub),
-                    })),
-                )
-                .await;
-        }
+        super::audit::log_forge_event(
+            &state,
+            claims.as_ref(),
+            &headers,
+            "forge.access.denied",
+            acton_service::audit::AuditSeverity::Warning,
+            serde_json::json!({
+                "schema": &schema,
+                "action": "delete",
+                "user": claims.as_ref().map(|c| &c.sub),
+            }),
+        )
+        .await;
         return Err(e);
     }
 
@@ -3654,21 +3718,21 @@ pub async fn delete_entity(
 
     if let (Some(ref policy), Some(ref c)) = (&record_access_policy, &claims) {
         if !policy.can_delete(&schema_def, c, &existing).await {
-            if let Some(logger) = state.audit_logger() {
-                logger
-                    .log_custom(
-                        "forge.access.denied",
-                        acton_service::audit::AuditSeverity::Warning,
-                        Some(serde_json::json!({
-                            "schema": &schema,
-                            "entity_id": existing.id.as_str(),
-                            "action": "delete",
-                            "user": &c.sub,
-                            "reason": "record_can_delete",
-                        })),
-                    )
-                    .await;
-            }
+            super::audit::log_forge_event(
+                &state,
+                claims.as_ref(),
+                &headers,
+                "forge.access.denied",
+                acton_service::audit::AuditSeverity::Warning,
+                serde_json::json!({
+                    "schema": &schema,
+                    "entity_id": existing.id.as_str(),
+                    "action": "delete",
+                    "user": &c.sub,
+                    "reason": "record_can_delete",
+                }),
+            )
+            .await;
             return Err(ForgeError::Forbidden {
                 message: format!("not authorized to delete entity '{id}'"),
             });
@@ -3746,19 +3810,19 @@ pub async fn delete_entity(
     }
 
     // Audit: entity deleted
-    if let Some(logger) = state.audit_logger() {
-        logger
-            .log_custom(
-                "forge.entity.deleted",
-                acton_service::audit::AuditSeverity::Warning,
-                Some(serde_json::json!({
-                    "schema": schema,
-                    "entity_id": id,
-                    "user": claims.as_ref().map(|c| &c.sub),
-                })),
-            )
-            .await;
-    }
+    super::audit::log_forge_event(
+        &state,
+        claims.as_ref(),
+        &headers,
+        "forge.entity.deleted",
+        acton_service::audit::AuditSeverity::Warning,
+        serde_json::json!({
+            "schema": schema,
+            "entity_id": id,
+            "user": claims.as_ref().map(|c| &c.sub),
+        }),
+    )
+    .await;
 
     // Webhook: fire notifications
     let webhook_event = crate::webhook::WebhookEvent::from_delete(
@@ -4841,3 +4905,27 @@ mod tests {
 #[cfg(test)]
 #[path = "public_relations_tests.rs"]
 mod public_relations_tests;
+
+#[cfg(test)]
+mod audit_change_tests {
+    use super::*;
+
+    #[test]
+    fn changed_names_include_removed_and_added_but_never_unchanged_fields_or_values() {
+        let before = BTreeMap::from([
+            ("same".into(), DynamicValue::Text("same".into())),
+            ("removed".into(), DynamicValue::Text("SECRET".into())),
+            ("changed".into(), DynamicValue::Text("old".into())),
+        ]);
+        let after = BTreeMap::from([
+            ("same".into(), DynamicValue::Text("same".into())),
+            ("added".into(), DynamicValue::Text("SECRET".into())),
+            ("changed".into(), DynamicValue::Text("new".into())),
+        ]);
+        assert_eq!(
+            changed_field_names(&before, &after),
+            vec!["added", "changed", "removed"]
+        );
+        assert!(changed_field_names(&before, &before).is_empty());
+    }
+}

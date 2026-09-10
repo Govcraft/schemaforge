@@ -171,6 +171,7 @@ fn resolve_active_tenant(memberships: &[TenantRef], header: Option<&str>) -> Opt
 /// credentials" case.
 pub async fn login(
     State(state): State<AppState<SchemaForgeConfig>>,
+    super::audit::RequestAuditSource(source): super::audit::RequestAuditSource,
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Extension(generator): Extension<Arc<PasetoGenerator>>,
     Extension(principal_claims): Extension<Arc<PrincipalClaimMappings>>,
@@ -183,11 +184,11 @@ pub async fn login(
     {
         Ok(Some(u)) => u,
         Ok(None) => {
-            emit_login_failed(&state, &req.username).await;
+            emit_login_failed(&state, &req.username, &source).await;
             return unauthorized_response();
         }
         Err(e) => {
-            emit_login_failed(&state, &req.username).await;
+            emit_login_failed(&state, &req.username, &source).await;
             return internal_error_response(format!("auth store error: {e}"));
         }
     };
@@ -196,7 +197,7 @@ pub async fn login(
         match auth_store.get_user_entity(&user.username).await {
             Ok(Some(e)) => Some(e),
             Ok(None) => {
-                emit_login_failed(&state, &req.username).await;
+                emit_login_failed(&state, &req.username, &source).await;
                 return unauthorized_response();
             }
             Err(e) => return internal_error_response(format!("auth store error: {e}")),
@@ -210,12 +211,10 @@ pub async fn login(
         Err(e) => return internal_error_response(format!("auth store error: {e}")),
     };
 
-    if let Err(refusal) = enforce_tenant_membership_policy(
-        &memberships,
-        &user.roles,
-        tenant_config.as_ref().as_ref(),
-    ) {
-        emit_login_failed(&state, &req.username).await;
+    if let Err(refusal) =
+        enforce_tenant_membership_policy(&memberships, &user.roles, tenant_config.as_ref().as_ref())
+    {
+        emit_login_failed(&state, &req.username, &source).await;
         return refusal.into_response();
     }
 
@@ -228,7 +227,7 @@ pub async fn login(
     ) {
         Ok(c) => c,
         Err(BuildLoginClaimsError::NullRequired(_)) => {
-            emit_login_failed(&state, &req.username).await;
+            emit_login_failed(&state, &req.username, &source).await;
             return unauthorized_response();
         }
         Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
@@ -250,7 +249,7 @@ pub async fn login(
         return internal_error_response(format!("failed to record last_login: {e}"));
     }
 
-    emit_login_success(&state, &user.username).await;
+    emit_login_success(&state, &user.username, &source).await;
 
     let expires_at = issued_at + chrono::Duration::seconds(LOGIN_TOKEN_LIFETIME.as_secs() as i64);
 
@@ -272,6 +271,7 @@ pub async fn login(
 /// login screen without hitting a ginned-up internal error.
 pub async fn refresh(
     State(state): State<AppState<SchemaForgeConfig>>,
+    super::audit::RequestAuditSource(source): super::audit::RequestAuditSource,
     OptionalClaims(claims): OptionalClaims,
     Extension(auth_store): Extension<Arc<dyn DynAuthStore>>,
     Extension(generator): Extension<Arc<PasetoGenerator>>,
@@ -314,11 +314,9 @@ pub async fn refresh(
         Err(e) => return internal_error_response(format!("auth store error: {e}")),
     };
 
-    if let Err(refusal) = enforce_tenant_membership_policy(
-        &memberships,
-        &user.roles,
-        tenant_config.as_ref().as_ref(),
-    ) {
+    if let Err(refusal) =
+        enforce_tenant_membership_policy(&memberships, &user.roles, tenant_config.as_ref().as_ref())
+    {
         return refusal.into_response();
     }
 
@@ -341,7 +339,7 @@ pub async fn refresh(
 
     let expires_at = Utc::now() + chrono::Duration::seconds(LOGIN_TOKEN_LIFETIME.as_secs() as i64);
 
-    emit_token_refresh(&state, &user.username).await;
+    emit_token_refresh(&state, &user.username, &source).await;
 
     let body = LoginResponse {
         token,
@@ -410,7 +408,9 @@ pub async fn me(
 
     let active_tenant = resolve_active_tenant(
         &memberships,
-        headers.get(ACTIVE_TENANT_HEADER).and_then(|v| v.to_str().ok()),
+        headers
+            .get(ACTIVE_TENANT_HEADER)
+            .and_then(|v| v.to_str().ok()),
     );
 
     let body = MeResponse {
@@ -430,7 +430,11 @@ pub async fn me(
 // Audit emission helpers
 // ---------------------------------------------------------------------------
 
-async fn emit_login_success(state: &AppState<SchemaForgeConfig>, username: &str) {
+async fn emit_login_success(
+    state: &AppState<SchemaForgeConfig>,
+    username: &str,
+    source: &AuditSource,
+) {
     if let Some(logger) = state.audit_logger() {
         logger
             .log_auth(
@@ -438,14 +442,18 @@ async fn emit_login_success(state: &AppState<SchemaForgeConfig>, username: &str)
                 AuditSeverity::Informational,
                 AuditSource {
                     subject: Some(format!("user:{username}")),
-                    ..AuditSource::default()
+                    ..source.clone()
                 },
             )
             .await;
     }
 }
 
-async fn emit_login_failed(state: &AppState<SchemaForgeConfig>, attempted_username: &str) {
+async fn emit_login_failed(
+    state: &AppState<SchemaForgeConfig>,
+    attempted_username: &str,
+    source: &AuditSource,
+) {
     if let Some(logger) = state.audit_logger() {
         logger
             .log_auth(
@@ -453,14 +461,18 @@ async fn emit_login_failed(state: &AppState<SchemaForgeConfig>, attempted_userna
                 AuditSeverity::Warning,
                 AuditSource {
                     subject: Some(format!("user:{attempted_username}")),
-                    ..AuditSource::default()
+                    ..source.clone()
                 },
             )
             .await;
     }
 }
 
-async fn emit_token_refresh(state: &AppState<SchemaForgeConfig>, username: &str) {
+async fn emit_token_refresh(
+    state: &AppState<SchemaForgeConfig>,
+    username: &str,
+    source: &AuditSource,
+) {
     if let Some(logger) = state.audit_logger() {
         logger
             .log_auth(
@@ -468,7 +480,7 @@ async fn emit_token_refresh(state: &AppState<SchemaForgeConfig>, username: &str)
                 AuditSeverity::Informational,
                 AuditSource {
                     subject: Some(format!("user:{username}")),
-                    ..AuditSource::default()
+                    ..source.clone()
                 },
             )
             .await;
@@ -736,8 +748,7 @@ mod tests {
                 entity_id: "org-b".to_string(),
             },
         ];
-        let claims =
-            build_login_claims("alice", &[], None, &mappings, &memberships).unwrap();
+        let claims = build_login_claims("alice", &[], None, &mappings, &memberships).unwrap();
         let chain = claims
             .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
             .expect("tenant_chain populated");
@@ -754,11 +765,11 @@ mod tests {
 
     #[test]
     fn enforce_policy_platform_admin_bypasses_when_tenancy_enabled() {
-        use schema_forge_core::types::{
-            Annotation, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaId,
-            SchemaName, TenantKind, TextConstraints,
-        };
         use schema_forge_core::types::SchemaDefinition;
+        use schema_forge_core::types::{
+            Annotation, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaId, SchemaName,
+            TenantKind, TextConstraints,
+        };
         // Minimal @tenant(root) schema so TenantConfig::is_enabled() is true.
         let root = SchemaDefinition::new(
             SchemaId::new(),
@@ -775,21 +786,21 @@ mod tests {
         let cfg = TenantConfig::from_schemas(&[root]).unwrap();
         assert!(cfg.is_enabled());
 
-        let res = enforce_tenant_membership_policy(
-            &[],
-            &[PLATFORM_ADMIN_ROLE.to_string()],
-            Some(&cfg),
+        let res =
+            enforce_tenant_membership_policy(&[], &[PLATFORM_ADMIN_ROLE.to_string()], Some(&cfg));
+        assert!(
+            res.is_ok(),
+            "platform_admin must bypass zero-membership refusal"
         );
-        assert!(res.is_ok(), "platform_admin must bypass zero-membership refusal");
     }
 
     #[test]
     fn enforce_policy_zero_membership_with_enabled_tenancy_refuses() {
-        use schema_forge_core::types::{
-            Annotation, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaId,
-            SchemaName, TenantKind, TextConstraints,
-        };
         use schema_forge_core::types::SchemaDefinition;
+        use schema_forge_core::types::{
+            Annotation, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaId, SchemaName,
+            TenantKind, TextConstraints,
+        };
         let root = SchemaDefinition::new(
             SchemaId::new(),
             SchemaName::new("Organization").unwrap(),
@@ -804,11 +815,7 @@ mod tests {
         .unwrap();
         let cfg = TenantConfig::from_schemas(&[root]).unwrap();
 
-        let res = enforce_tenant_membership_policy(
-            &[],
-            &["member".to_string()],
-            Some(&cfg),
-        );
+        let res = enforce_tenant_membership_policy(&[], &["member".to_string()], Some(&cfg));
         assert_eq!(res, Err(LoginRefusal::NoTenantAssigned));
     }
 

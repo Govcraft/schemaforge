@@ -49,7 +49,7 @@ pub async fn connect_backend(
     match result {
         Ok(backend) => {
             if let Some(sp) = &spinner {
-                progress::finish_spinner(sp, &format!("Connected to {}", db_params.url()));
+                progress::finish_spinner(sp, &format!("Connected to {}", db_params.redacted_url()));
             }
             Ok(backend)
         }
