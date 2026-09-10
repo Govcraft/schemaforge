@@ -459,7 +459,9 @@ Query results are filtered through multiple access control layers:
    restrict visibility: it establishes who created a record and stops anyone
    else changing it, while who may *see* a record is decided by
    `@access(read: [...])` alone. A schema that wants owner-only reads must say
-   so with a custom Cedar policy.
+   so with a custom Cedar policy, guarded by `!context.resource_is_placeholder`
+   so the schema preflight is not denied along with the records — see
+   [Custom policies and authorization context](custom-policy-context.md).
 
 4. **Field-level filtering** — fields with read restrictions are stripped from
    the response. The entity still appears, but restricted fields are omitted.

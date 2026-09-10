@@ -153,9 +153,10 @@ is pre-1.0; breaking changes bump the **minor** version per
   optional owner field on an otherwise identical schema answered `200` with
   zero rows instead. Scoping the policy to the per-record actions removes the
   placeholder from that decision, so `required` and optional owner fields now
-  behave identically. The broader hazard for hand-written policies is tracked
-  separately in
-  [#155](https://github.com/govcraft/schemaforge/issues/155).
+  behave identically. Hand-written policies that dereference a resource
+  attribute still see those defaults on a schema preflight, and now separate
+  the two cases with `context.resource_is_placeholder`
+  ([#155](https://github.com/govcraft/schemaforge/issues/155)).
 
 - **`enum`, `text(max:)`, and `integer(min:/max:)` are now enforced
   in-process.** They were declared in the DSL but never checked before the
@@ -248,14 +249,24 @@ rather than implied by a field annotation:
 @id("myapp.document.owner_only_read")
 forbid (
     principal is Forge::Principal,
-    action in [Action::"ReadDocument", Action::"ListDocument"],
+    action == Action::"ReadDocument",
     resource is Document
 ) when {
-    resource has "created_by"
+    !context.resource_is_placeholder
+    && resource has "created_by"
     && (!(principal has id) || resource["created_by"] != principal.id)
     && !(principal in Forge::Group::"platform_admin")
 };
 ```
+
+The `!context.resource_is_placeholder` guard is what keeps the restriction on
+the records instead of on the whole collection: without it, a schema preflight
+against the synthetic resource reads `created_by = ""`, the forbid fires, and
+the endpoint answers 403 — the defect this release fixes, reintroduced by hand.
+Scope the forbid to `Read` rather than `List`, because a collection request
+preflights the `Read<Schema>` action at schema scope before checking each row.
+See [Custom policies and authorization context](docs/custom-policy-context.md)
+for the full context contract.
 
 Run `schemaforge policies validate` afterwards to compile the bundle in strict
 mode before deploying.
