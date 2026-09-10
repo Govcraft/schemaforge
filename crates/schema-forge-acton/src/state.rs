@@ -245,6 +245,17 @@ pub trait DynEntityStore: Send + Sync {
         query: &'a Query,
     ) -> Pin<Box<dyn Future<Output = Result<QueryResult, BackendError>> + Send + Sync + 'a>>;
 
+    /// Optionally return a storage-certified page equivalent to generated Cedar Read.
+    fn query_cedar_compatible<'a>(
+        &'a self,
+        _schema: &'a SchemaDefinition,
+        _query: &'a Query,
+        _scope: &'a schema_forge_backend::auth::CedarReadScope,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<QueryResult>, BackendError>> + Send + Sync + 'a>>
+    {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Count entities matching a query (ignoring limit/offset).
     fn count<'a>(
         &'a self,
@@ -379,6 +390,18 @@ impl<T: EntityStore + 'static> DynEntityStore for T {
         query: &'a Query,
     ) -> Pin<Box<dyn Future<Output = Result<QueryResult, BackendError>> + Send + Sync + 'a>> {
         Box::pin(SyncFuture::new(EntityStore::query(self, query)))
+    }
+
+    fn query_cedar_compatible<'a>(
+        &'a self,
+        schema: &'a SchemaDefinition,
+        query: &'a Query,
+        scope: &'a schema_forge_backend::auth::CedarReadScope,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<QueryResult>, BackendError>> + Send + Sync + 'a>>
+    {
+        Box::pin(SyncFuture::new(EntityStore::query_cedar_compatible(
+            self, schema, query, scope,
+        )))
     }
 
     fn count<'a>(

@@ -28,6 +28,16 @@ use crate::entity::Entity;
 /// JWT issuance and bootstrap routines.
 pub const PLATFORM_ADMIN_ROLE: &str = "platform_admin";
 
+/// A row-independent Cedar read decision whose tenant restriction can be
+/// translated by a backend after certifying the stored resource shape.
+#[derive(Debug, Clone)]
+pub enum CedarReadScope {
+    /// The policy proof permits every representable resource.
+    Unrestricted,
+    /// Permit resources with no tenant, a null tenant, or one of these tenants.
+    TenantMembers(Vec<String>),
+}
+
 /// Trait for record-level access control.
 ///
 /// Implementations decide whether the authenticated user can see, modify, or

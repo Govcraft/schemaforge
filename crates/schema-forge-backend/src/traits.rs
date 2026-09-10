@@ -188,6 +188,24 @@ pub trait EntityStore: Send + Sync {
         query: &Query,
     ) -> impl Future<Output = Result<QueryResult, BackendError>> + Send;
 
+    /// Execute a proven row-independent Cedar read without decoding all matches.
+    ///
+    /// The caller must prove the policy decision and strict Cedar schema shape
+    /// against one frozen authorization snapshot. The backend must certify that
+    /// every stored resource matches `expected_schema` and the caller's Cedar
+    /// representation, including physical tenant columns and required values.
+    /// `Some` guarantees equivalent tenant filtering, pagination, and exact totals
+    /// when requested. Projections and unproven shapes return `None`; real I/O
+    /// failures return an error. Custom backends remain unsupported by default.
+    fn query_cedar_compatible(
+        &self,
+        _expected_schema: &SchemaDefinition,
+        _query: &Query,
+        _scope: &crate::auth::CedarReadScope,
+    ) -> impl Future<Output = Result<Option<QueryResult>, BackendError>> + Send {
+        async { Ok(None) }
+    }
+
     /// Count entities matching a query (ignoring limit/offset).
     ///
     /// Returns the total number of entities that match the query's schema

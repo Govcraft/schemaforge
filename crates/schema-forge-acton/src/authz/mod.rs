@@ -32,6 +32,7 @@ pub mod engine;
 pub mod loader;
 pub mod namespace;
 pub mod principal_claims;
+pub(crate) mod read_scope;
 pub mod record_policy;
 pub mod role_ranks;
 pub mod store;

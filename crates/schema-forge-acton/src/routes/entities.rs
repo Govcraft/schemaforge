@@ -1325,8 +1325,8 @@ fn coerce_json_filter_value(
 const AUTHORIZATION_QUERY_BATCH_SIZE: usize = 256;
 
 /// Apply both record policies before counting or paging the readable stream.
-/// Backend totals are never used: they precede authorization. Exact readable
-/// totals require examining all matches; page-only requests can stop early.
+/// Generated Read rules can use storage-certified totals. Other policies scan
+/// all matches for exact totals; page-only requests can stop early.
 async fn query_readable_page(
     forge: &acton_service::prelude::ActorHandle,
     policy_store: &Arc<crate::authz::PolicyStore>,
@@ -1336,6 +1336,44 @@ async fn query_readable_page(
     query: &schema_forge_core::query::Query,
     include_total: bool,
 ) -> Result<schema_forge_backend::entity::QueryResult, ForgeError> {
+    let prepared = crate::authz::engine::PreparedAuthorization::new(
+        policy_store.current(),
+        claims,
+        ActionVerb::Read,
+        schema,
+    )
+    .map_err(|error| ForgeError::Forbidden {
+        message: error.to_string(),
+    })?;
+    if !prepared
+        .authorize(None)
+        .is_ok_and(|decision| decision.is_allow())
+    {
+        return Err(ForgeError::Forbidden {
+            message: "Read access denied by the current policy snapshot".into(),
+        });
+    }
+    if include_total && record_policy.is_none() {
+        if let Some(scope) =
+            crate::authz::read_scope::generated_read_scope(&prepared.snapshot, schema, claims)
+        {
+            let mut certified_query = query.clone();
+            certified_query.projection = None;
+            certified_query.include_total = include_total;
+            let (tx, rx) = oneshot::channel();
+            forge
+                .send(crate::messages::QueryCedarCompatibleEntities {
+                    schema: schema.clone(),
+                    query: certified_query,
+                    scope,
+                    reply: ReplyChannel::new(tx),
+                })
+                .await;
+            if let Some(result) = ask_forge(rx).await?.map_err(ForgeError::from)? {
+                return Ok(result);
+            }
+        }
+    }
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
     let mut page = Vec::new();
@@ -1366,14 +1404,9 @@ async fn query_readable_page(
             None => result.entities,
         };
         for entity in visible {
-            if !authorize(
-                policy_store,
-                claims,
-                ActionVerb::Read,
-                schema,
-                Some(&entity),
-            )
-            .is_ok_and(|decision| decision.is_allow())
+            if !prepared
+                .authorize(Some(&entity))
+                .is_ok_and(|decision| decision.is_allow())
             {
                 continue;
             }
@@ -1455,7 +1488,7 @@ async fn execute_entity_query(
     // Record-level access filtering (e.g. @owner)
     let (tx, rx) = oneshot::channel();
     forge
-        .send(GetRecordAccessPolicy {
+        .send(crate::messages::GetOperatorRecordAccessPolicy {
             reply: ReplyChannel::new(tx),
         })
         .await;

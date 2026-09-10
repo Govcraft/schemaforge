@@ -101,6 +101,12 @@ pub struct GetRecordAccessPolicy {
     pub reply: ReplyChannel<Option<Arc<dyn RecordAccessPolicy>>>,
 }
 
+/// Retrieve only the explicitly configured operator record policy.
+#[derive(Clone, Debug)]
+pub(crate) struct GetOperatorRecordAccessPolicy {
+    pub reply: ReplyChannel<Option<Arc<dyn RecordAccessPolicy>>>,
+}
+
 /// Retrieve the configured hook dispatcher, if any.
 ///
 /// Returns `None` when hook dispatch has not been wired into the actor
@@ -208,6 +214,15 @@ pub struct DeleteEntity {
 pub struct QueryEntities {
     pub query: Query,
     pub reply: ReplyChannel<Result<QueryResult, BackendError>>,
+}
+
+/// Request a backend-certified Cedar-compatible page and exact total.
+#[derive(Clone, Debug)]
+pub(crate) struct QueryCedarCompatibleEntities {
+    pub schema: SchemaDefinition,
+    pub query: Query,
+    pub scope: schema_forge_backend::auth::CedarReadScope,
+    pub reply: ReplyChannel<Result<Option<QueryResult>, BackendError>>,
 }
 
 /// Count entities matching a query.

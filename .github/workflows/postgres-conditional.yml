@@ -56,6 +56,10 @@ jobs:
         run: cargo nextest run -p schema-forge-acton --features postgres --test conditional_entities --run-ignored all
       - name: Run audit authorization and bounded verification regressions
         run: cargo nextest run -p schema-forge-acton --features postgres --test audit_api
+      - name: Run exact authorized count policy and paging regressions
+        run: |
+          cargo nextest run -p schema-forge-acton --features postgres --lib --test authorization_context -E 'test(authz::read_scope) | binary(authorization_context)'
+          cargo nextest run -p schema-forge-acton --features postgres --test auth_demo -E 'test(readable_paging)'
       - name: Check CLI preparation behavior
         run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres -E 'test(explicit_revision_preparation)'
       - name: Clean disposable HTTP namespace

@@ -13,7 +13,9 @@ use std::error::Error as StdError;
 use std::sync::Arc;
 
 use acton_service::middleware::Claims;
-use cedar_policy::{Authorizer, Context, Decision, Entities, EntityUid, Request, RestrictedExpression};
+use cedar_policy::{
+    Authorizer, Context, Decision, Entities, EntityUid, Request, RestrictedExpression,
+};
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::SchemaDefinition;
 
@@ -107,90 +109,162 @@ pub fn authorize(
     schema: &SchemaDefinition,
     resource: Option<&Entity>,
 ) -> Result<AuthzDecision, AuthzError> {
-    let snapshot = store.current();
-    let action = action_entity_uid(verb, schema.name.as_str())?;
+    PreparedAuthorization::new(store.current(), claims, verb, schema)?.authorize(resource)
+}
 
-    let (principal_uid_value, principal_entities) = match claims {
-        Some(c) => {
-            let entities = build_principal_entities(c, &snapshot.role_ranks, &snapshot.principal_claims)?;
-            let uid = principal_uid(c)?;
-            (uid, entities)
-        }
-        None => {
-            // Anonymous principal: a stable synthetic UID with no parent
-            // groups and an empty role list. Cedar policies that require a
-            // membership predicate will simply not match.
-            let raw = format!("{PRINCIPAL_TYPE}::\"_anonymous\"");
-            let uid = raw
-                .parse::<EntityUid>()
-                .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
-            (uid, Vec::new())
-        }
-    };
+/// Request-local immutable authorization state, reused across candidate rows.
+pub(crate) struct PreparedAuthorization<'a> {
+    pub(crate) snapshot: Arc<crate::authz::PolicyStoreSnapshot>,
+    claims: Option<&'a Claims>,
+    verb: ActionVerb,
+    schema: &'a SchemaDefinition,
+    principal_uid: EntityUid,
+    action: EntityUid,
+    entities: Entities,
+    authorizer: Authorizer,
+    policies: cedar_policy::PolicySet,
+}
 
-    let (resource_uid, resource_entities): (EntityUid, Vec<cedar_policy::Entity>) = match resource {
-        Some(entity) => {
-            let res_entity = build_resource_entity(schema, entity)?;
-            let uid = res_entity.uid().clone();
-            (uid, vec![res_entity])
-        }
-        None => {
-            // Schema-level checks (no specific resource yet — e.g. authorising
-            // a `CreateX` request before the entity exists) need a placeholder
-            // resource of the correct app-schema entity type so per-action
-            // `appliesTo` declarations match and the strict-mode entity
-            // validator accepts the entity. The placeholder is populated with
-            // synthetic default values for every required field — policies
-            // that inspect attributes will see the defaults. The explicit
-            // context marker lets policies distinguish this preflight from a
-            // concrete resource without inferring scope from attribute values.
-            let placeholder = build_resource_placeholder(schema)?;
-            let uid = placeholder.uid().clone();
-            (uid, vec![placeholder])
-        }
-    };
+impl<'a> PreparedAuthorization<'a> {
+    pub(crate) fn new(
+        snapshot: Arc<crate::authz::PolicyStoreSnapshot>,
+        claims: Option<&'a Claims>,
+        verb: ActionVerb,
+        schema: &'a SchemaDefinition,
+    ) -> Result<Self, AuthzError> {
+        let action = action_entity_uid(verb, schema.name.as_str())?;
 
-    let mut all_entities: Vec<cedar_policy::Entity> = Vec::new();
-    all_entities.extend(principal_entities);
-    all_entities.extend(resource_entities);
+        let (principal_uid_value, principal_entities) = match claims {
+            Some(c) => {
+                let entities =
+                    build_principal_entities(c, &snapshot.role_ranks, &snapshot.principal_claims)?;
+                let uid = principal_uid(c)?;
+                (uid, entities)
+            }
+            None => {
+                // Anonymous principal: a stable synthetic UID with no parent
+                // groups and an empty role list. Cedar policies that require a
+                // membership predicate will simply not match.
+                let raw = format!("{PRINCIPAL_TYPE}::\"_anonymous\"");
+                let uid = raw
+                    .parse::<EntityUid>()
+                    .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
+                (uid, Vec::new())
+            }
+        };
 
-    // The policy_store recompiles atomically on every InsertSchema /
-    // RemoveSchema, so its Cedar `schema` snapshot is always in sync with
-    // the live registry. Validate entities and the request against that
-    // snapshot — a request for an unknown action or a malformed entity
-    // surfaces an explicit error rather than silently default-denying.
-    let entities = Entities::from_entities(all_entities, Some(&snapshot.schema))
+        let entities = Entities::from_entities(principal_entities, Some(&snapshot.schema))
+            .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
+        // Policy heads alone can exclude other actions/resource types without
+        // evaluating or dropping any applicable custom condition.
+        let policies = relevant_policies(&snapshot, &action, schema)
+            .unwrap_or_else(|| snapshot.policy_set.clone());
+        Ok(Self {
+            policies,
+            snapshot,
+            claims,
+            verb,
+            schema,
+            principal_uid: principal_uid_value,
+            action,
+            entities,
+            authorizer: Authorizer::new(),
+        })
+    }
+
+    pub(crate) fn authorize(&self, resource: Option<&Entity>) -> Result<AuthzDecision, AuthzError> {
+        let (resource_uid, resource_entities): (EntityUid, Vec<cedar_policy::Entity>) =
+            match resource {
+                Some(entity) => {
+                    let res_entity = build_resource_entity(self.schema, entity)?;
+                    let uid = res_entity.uid().clone();
+                    (uid, vec![res_entity])
+                }
+                None => {
+                    // Schema-level checks (no specific resource yet — e.g. authorising
+                    // a `CreateX` request before the entity exists) need a placeholder
+                    // resource of the correct app-schema entity type so per-action
+                    // `appliesTo` declarations match and the strict-mode entity
+                    // validator accepts the entity. The placeholder is populated with
+                    // synthetic default values for every required field — policies
+                    // that inspect attributes will see the defaults. The explicit
+                    // context marker lets policies distinguish this preflight from a
+                    // concrete resource without inferring scope from attribute values.
+                    let placeholder = build_resource_placeholder(self.schema)?;
+                    let uid = placeholder.uid().clone();
+                    (uid, vec![placeholder])
+                }
+            };
+
+        let entities = self
+            .entities
+            .clone()
+            .add_entities(resource_entities, Some(&self.snapshot.schema))
+            .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
+
+        let request = Request::new(
+            self.principal_uid.clone(),
+            self.action.clone(),
+            resource_uid.clone(),
+            authorization_context(resource.is_none())?,
+            Some(&self.snapshot.schema),
+        )
         .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
 
-    let request = Request::new(
-        principal_uid_value,
-        action,
-        resource_uid.clone(),
-        authorization_context(resource.is_none())?,
-        Some(&snapshot.schema),
-    )
-    .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
+        let response = self
+            .authorizer
+            .is_authorized(&request, &self.policies, &entities);
+        let allowed = matches!(response.decision(), Decision::Allow);
+        let matched_policies: Vec<String> = response
+            .diagnostics()
+            .reason()
+            .map(|id| id.to_string())
+            .collect();
+        let errors: Vec<String> = response
+            .diagnostics()
+            .errors()
+            .map(|e| e.to_string())
+            .collect();
 
-    let response = Authorizer::new().is_authorized(&request, &snapshot.policy_set, &entities);
-    let allowed = matches!(response.decision(), Decision::Allow);
-    let matched_policies: Vec<String> = response
-        .diagnostics()
-        .reason()
-        .map(|id| id.to_string())
-        .collect();
-    let errors: Vec<String> = response
-        .diagnostics()
-        .errors()
-        .map(|e| e.to_string())
-        .collect();
+        let decision = AuthzDecision {
+            allowed,
+            matched_policies,
+            errors,
+        };
+        audit_decision(
+            self.claims,
+            self.verb,
+            self.schema,
+            resource,
+            &resource_uid,
+            &decision,
+        );
+        Ok(decision)
+    }
+}
 
-    let decision = AuthzDecision {
-        allowed,
-        matched_policies,
-        errors,
-    };
-    audit_decision(claims, verb, schema, resource, &resource_uid, &decision);
-    Ok(decision)
+fn relevant_policies(
+    snapshot: &crate::authz::PolicyStoreSnapshot,
+    action: &EntityUid,
+    schema: &SchemaDefinition,
+) -> Option<cedar_policy::PolicySet> {
+    if snapshot
+        .schema
+        .action_entities()
+        .ok()?
+        .ancestors(action)?
+        .next()
+        .is_some()
+    {
+        return None;
+    }
+    let mut policies = cedar_policy::PolicySet::new();
+    for policy in snapshot.policy_set.policies() {
+        if crate::authz::read_scope::can_apply(policy, action, schema) {
+            policies.add(policy.clone()).ok()?;
+        }
+    }
+    Some(policies)
 }
 
 /// Authorizes reading or writing a single field on `entity`.
@@ -221,7 +295,8 @@ pub fn authorize_field(
 
     let (principal_uid_value, principal_entities) = match claims {
         Some(c) => {
-            let entities = build_principal_entities(c, &snapshot.role_ranks, &snapshot.principal_claims)?;
+            let entities =
+                build_principal_entities(c, &snapshot.role_ranks, &snapshot.principal_claims)?;
             let uid = principal_uid(c)?;
             (uid, entities)
         }

@@ -114,7 +114,7 @@ GET /schemas/Contact/entities?limit=25&offset=50
 }
 ```
 
-Record policies and Cedar checks run before offset, limit, and total counting. Denied rows do not contribute to totals or create gaps in pages. Exact totals require evaluating all matching candidates; use `count=false` (GET) or `"count": false` (POST) to stop after the requested readable page is filled. Anonymous responses omit totals. See [authorized entity pagination](authorized-entity-pagination.md) for backend costs and concurrent-write limits.
+Record policies and Cedar checks run before offset, limit, and total counting. Denied rows do not contribute to totals or create gaps in pages. Exact totals use a storage count when PostgreSQL certifies the generated Read policy and stored row shape. Other cases evaluate all matching candidates; use `count=false` (GET) or `"count": false` (POST) to stop after the requested readable page is filled. Anonymous responses omit totals. See [authorized entity pagination](authorized-entity-pagination.md) for backend costs and concurrent-write limits.
 
 Use `total_count` from the response to calculate page counts:
 

@@ -41,6 +41,7 @@ pub struct ForgeActor {
     pub(crate) registry: HashMap<String, SchemaDefinition>,
     pub(crate) backend: Option<Arc<dyn DynForgeBackend>>,
     pub(crate) tenant_config: Option<TenantConfig>,
+    operator_record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
     pub(crate) record_access_policy: Option<Arc<dyn RecordAccessPolicy>>,
     pub(crate) hook_dispatcher: Option<Arc<dyn HookDispatcher>>,
     pub(crate) storage_registry: StorageRegistry,
@@ -83,6 +84,7 @@ impl ForgeActor {
             backend: Some(backend),
             tenant_config: None,
             record_access_policy: None,
+            operator_record_access_policy: None,
             hook_dispatcher: None,
             storage_registry: StorageRegistry::default(),
             policy_store: None,
@@ -172,6 +174,7 @@ fn configure_init(actor: &mut ManagedActor<Idle, ForgeActor>) {
         // whenever the caller did not supply one. This mirrors the
         // `SchemaForgeExtension::build()` path so the actor flow used by
         // tests and the CLI is also Cedar-canonical by default.
+        actor.model.operator_record_access_policy = msg.record_access_policy.clone();
         actor.model.record_access_policy = msg.record_access_policy.clone().or_else(|| {
             actor.model.policy_store.clone().map(|store| {
                 std::sync::Arc::new(crate::authz::CedarRecordPolicy::new(store))
@@ -226,6 +229,14 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             reply.send(config).await;
+        })
+    });
+
+    actor.act_on::<crate::messages::GetOperatorRecordAccessPolicy>(|actor, ctx| {
+        let policy = actor.model.operator_record_access_policy.clone();
+        let reply = ctx.message().reply.clone();
+        Reply::pending(async move {
+            reply.send(policy).await;
         })
     });
 
@@ -569,6 +580,22 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
                 }
             };
             reply.send(result).await;
+        })
+    });
+
+    actor.act_on::<crate::messages::QueryCedarCompatibleEntities>(|actor, ctx| {
+        let backend = actor.model.backend.clone();
+        let message = ctx.message().clone();
+        Reply::pending(async move {
+            let result = match backend {
+                Some(backend) => {
+                    backend
+                        .query_cedar_compatible(&message.schema, &message.query, &message.scope)
+                        .await
+                }
+                None => Err(no_backend_error()),
+            };
+            message.reply.send(result).await;
         })
     });
 
