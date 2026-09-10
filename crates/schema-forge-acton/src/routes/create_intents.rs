@@ -238,6 +238,7 @@ pub async fn read(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
 ) -> Result<Response, ForgeError> {
     let scope = load_scope(&state, &schema, claims.as_ref()).await?;
     let receipt = process(
@@ -255,6 +256,7 @@ pub async fn read(
         State(state),
         Path((schema, entity_id.to_string())),
         OptionalClaims(claims),
+        headers,
         Query(HashMap::new()),
     )
     .await
@@ -343,6 +345,7 @@ pub(super) async fn result(
     state: AppState<SchemaForgeConfig>,
     schema: String,
     claims: Option<Claims>,
+    headers: HeaderMap,
     receipt: &CreateIntentReceipt,
 ) -> Result<Response, ForgeError> {
     let id = receipt
@@ -353,6 +356,7 @@ pub(super) async fn result(
         State(state),
         Path((schema, id.to_string())),
         OptionalClaims(claims),
+        headers,
         Query(HashMap::new()),
     )
     .await;

@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use acton_service::audit::storage::{AuditOrder, AuditQuery};
 use acton_service::audit::{
     AuditChain, AuditConfig, AuditEvent, AuditEventId, AuditEventKind, AuditSeverity, AuditStorage,
 };
@@ -70,6 +71,22 @@ impl AuditStorage for Store {
             .cloned()
             .collect())
     }
+    async fn query_filtered(&self, query: &AuditQuery) -> Result<Vec<AuditEvent>, Error> {
+        query.validate()?;
+        let mut events: Vec<_> = self
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| query.matches(event))
+            .cloned()
+            .collect();
+        if query.order == AuditOrder::NewestFirst {
+            events.reverse();
+        }
+        events.truncate(query.limit);
+        Ok(events)
+    }
     async fn sequence_bounds(&self) -> Result<Option<(u64, u64)>, Error> {
         if self.unavailable {
             return Err(Error::Internal("SECRET storage connection details".into()));
@@ -92,8 +109,8 @@ fn fixture(count: usize) -> (Arc<Store>, AuditChain) {
                 "synthetic".into(),
             );
             event.metadata = Some(json!({"password": "SECRET"}));
-            event.path = Some("/SECRET?token=SECRET".into());
-            event.source.subject = Some("SECRET subject".into());
+            event.path = Some("/safe-path?token=SECRET".into());
+            event.source.subject = Some("user:operator".into());
             chain.seal(event)
         })
         .collect();
@@ -302,13 +319,15 @@ async fn pagination_excludes_concurrent_appends_and_never_exposes_private_fields
     );
     assert!(!serde_json::to_string(&all).unwrap().contains("SECRET"));
     for event in all {
-        assert_eq!(event.as_object().unwrap().len(), 8);
+        assert_eq!(event["path"], "/safe-path");
+        assert_eq!(event["subject"], "user:operator");
+        assert_eq!(event["changed_fields"], json!([]));
         let encoded_id = event["id"].as_str().unwrap();
         assert!(encoded_id.starts_with("audit_"));
         let id: AuditEventId = encoded_id.parse().unwrap();
         assert_eq!(id.as_uuid().get_version_num(), 7);
         assert_eq!(id.to_string(), encoded_id);
-        for excluded in ["metadata", "source", "path", "method", "duration_ms"] {
+        for excluded in ["metadata", "source", "ip", "user_agent"] {
             assert!(event.get(excluded).is_none());
         }
     }
@@ -490,4 +509,186 @@ async fn maximum_verification_range_and_empty_snapshot_have_defined_results() {
     assert_eq!(page["events"], json!([]));
     assert_eq!(page["next_after_sequence"], Value::Null);
     assert_eq!(page["retained_range"], Value::Null);
+}
+
+#[tokio::test]
+async fn newest_filters_page_across_gaps_with_fixed_snapshot() {
+    let (store, mut chain) = fixture(8);
+    {
+        let mut events = store.events.lock().unwrap();
+        for event in events.iter_mut().filter(|e| e.sequence % 2 == 0) {
+            event.kind = AuditEventKind::Custom("forge.entity.patched".into());
+            event.metadata = Some(
+                json!({"schema":"Record", "entity_id":"record_example", "actor":"operator", "changed_fields":["name"], "password":"SECRET", "body":{"name":"SECRET"}}),
+            );
+        }
+    }
+    let app = app(
+        Some(store.clone()),
+        Some(claims("platform_admin", "tenant-a")),
+        true,
+    )
+    .await;
+    let (status, first) = request(
+        &app,
+        "events?order=newest&schema=Record&actor=operator&limit=2",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first["through_sequence"], 8);
+    assert_eq!(first["next_cursor"], 6);
+    assert_eq!(first["events"][0]["sequence"], 8);
+    assert_eq!(first["events"][0]["schema"], "Record");
+    assert_eq!(first["events"][0]["changed_fields"], json!(["name"]));
+    assert!(!first.to_string().contains("SECRET"));
+    let mut appended = AuditEvent::new(
+        AuditEventKind::Custom("forge.entity.patched".into()),
+        AuditSeverity::Notice,
+        "synthetic".into(),
+    );
+    appended.metadata = Some(json!({"schema":"Record", "actor":"operator"}));
+    store.append(&chain.seal(appended)).await.unwrap();
+    let (status, second) = request(
+        &app,
+        "events?order=newest&schema=Record&actor=operator&limit=2&cursor=6&through_sequence=8",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        second["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["sequence"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![4, 2]
+    );
+    assert!(second["next_cursor"].is_null());
+    assert!(second["next_after_sequence"].is_null());
+}
+
+#[tokio::test]
+async fn unknown_event_metadata_never_becomes_projected_evidence() {
+    let (store, _) = fixture(1);
+    {
+        let mut events = store.events.lock().unwrap();
+        events[0].kind = AuditEventKind::Custom("forge.unregistered".into());
+        events[0].metadata = Some(
+            json!({"schema":"SECRET", "actor":"SECRET", "reason":"SECRET", "changed_fields":["SECRET"]}),
+        );
+    }
+    let app = app(
+        Some(store),
+        Some(claims("platform_admin", "tenant-a")),
+        true,
+    )
+    .await;
+    let (status, result) = request(&app, "events?order=newest", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!result.to_string().contains("SECRET"));
+    assert!(result["events"][0]["schema"].is_null());
+    assert!(result["events"][0]["actor"].is_null());
+    let (status, filtered) = request(&app, "events?order=newest&actor=SECRET", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(filtered["events"], json!([]));
+    let (status, filtered) = request(&app, "events?order=newest&schema=SECRET", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(filtered["events"], json!([]));
+}
+
+#[tokio::test]
+async fn investigation_rejects_invalid_filters_and_requires_privilege() {
+    let (store, _) = fixture(2);
+    let admin = app(
+        Some(store.clone()),
+        Some(claims("platform_admin", "tenant-a")),
+        true,
+    )
+    .await;
+    for query in [
+        "order=descending",
+        "schema=Record",
+        "order=newest&severity=nope",
+        "order=newest&kind=nope",
+        "order=newest&cursor=1",
+        "order=newest&cursor=3&through_sequence=2",
+        "order=newest&from=2026-09-10T00:00:00Z&to=2026-09-09T00:00:00Z",
+        "order=newest&status_code=999",
+        "order=newest&after_sequence=0",
+        "order=newest&limit=201",
+    ] {
+        let (status, _) = request(&admin, &format!("events?{query}"), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+    }
+    let tenant = app(Some(store), Some(claims("tenant_admin", "tenant-a")), true).await;
+    let (status, _) = request(&tenant, "events?order=newest&actor=operator", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn investigation_combines_http_and_timestamp_filters() {
+    let (store, _) = fixture(3);
+    {
+        let mut events = store.events.lock().unwrap();
+        for event in events.iter_mut() {
+            event.timestamp = "2026-09-09T12:00:00Z".parse().unwrap();
+            event.status_code = Some(if event.sequence == 2 { 403 } else { 200 });
+            event.source.request_id = Some("request_example".into());
+            event.method = Some("PATCH".into());
+            event.duration_ms = Some(17);
+        }
+    }
+    let app = app(
+        Some(store),
+        Some(claims("platform_admin", "tenant-a")),
+        true,
+    )
+    .await;
+    let (status, result) = request(&app, "events?order=newest&kind=http.request&severity=INFO&subject=user:operator&request_id=request_example&status_code=403&from=2026-09-09T12:00:00Z&to=2026-09-09T12:00:00Z", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["events"].as_array().unwrap().len(), 1);
+    assert_eq!(result["events"][0]["sequence"], 2);
+    assert_eq!(result["events"][0]["method"], "PATCH");
+    assert_eq!(result["events"][0]["duration_ms"], 17);
+    assert_eq!(result["events"][0]["request_id"], "request_example");
+}
+
+#[tokio::test]
+async fn user_change_details_are_typed_and_restricted_to_their_producer() {
+    let (store, _) = fixture(4);
+    {
+        let mut events = store.events.lock().unwrap();
+        let kinds = [
+            "forge.user.updated",
+            "forge.user.active_toggled",
+            "forge.user.password_changed",
+            "forge.entity.updated",
+        ];
+        for (event, kind) in events.iter_mut().zip(kinds) {
+            event.kind = AuditEventKind::Custom(kind.into());
+            event.metadata = Some(
+                json!({"prev_roles": [], "new_roles": ["administrator"], "active": false, "self_service": true, "password":"SECRET", "unapproved":"SECRET"}),
+            );
+        }
+    }
+    let app = app(
+        Some(store),
+        Some(claims("platform_admin", "tenant-a")),
+        true,
+    )
+    .await;
+    let (status, result) = request(&app, "events", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["events"][0]["previous_roles"], json!([]));
+    assert_eq!(result["events"][0]["new_roles"], json!(["administrator"]));
+    assert!(result["events"][0]["active"].is_null());
+    assert_eq!(result["events"][1]["active"], false);
+    assert!(result["events"][1]["previous_roles"].is_null());
+    assert_eq!(result["events"][2]["self_service"], true);
+    for name in ["previous_roles", "new_roles", "active", "self_service"] {
+        assert!(result["events"][3][name].is_null());
+    }
+    assert!(!result.to_string().contains("SECRET"));
 }

@@ -3,7 +3,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use acton_service::audit::{AuditEvent, AuditStorage};
+use acton_service::audit::storage::{AuditOrder, AuditQuery};
+use acton_service::audit::{AuditEvent, AuditEventKind, AuditSeverity, AuditStorage};
 use acton_service::middleware::Claims;
 use acton_service::state::AppState;
 use axum::extract::{Query, State};
@@ -79,6 +80,9 @@ struct AuditStatus {
     max_verification_events: u64,
     order: &'static str,
     filters: [&'static str; 3],
+    investigation_available: bool,
+    investigation_order: &'static str,
+    investigation_filters: Vec<&'static str>,
     verification_trust: &'static str,
 }
 
@@ -140,12 +144,29 @@ pub async fn status(
         max_verification_events: MAX_VERIFY,
         order: "sequence_ascending",
         filters: ["after_sequence", "through_sequence", "limit"],
+        investigation_available: true,
+        investigation_order: "newest",
+        investigation_filters: vec![
+            "from",
+            "to",
+            "kind",
+            "severity",
+            "subject",
+            "actor",
+            "request_id",
+            "schema",
+            "entity_id",
+            "status_code",
+            "cursor",
+            "through_sequence",
+            "limit",
+        ],
         verification_trust: "local_stored_anchor_only",
     })
     .into_response())
 }
 
-/// Only sequence bounds and page size are supported; unknown filters are rejected.
+/// Legacy sequence browsing plus an explicit filtered investigation mode.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EventsQuery {
@@ -155,9 +176,33 @@ pub struct EventsQuery {
     pub through_sequence: Option<u64>,
     /// Requested page size, 1 through 200 (default 100).
     pub limit: Option<usize>,
+    /// Opt in to filtered newest-first investigation; omitted keeps legacy order.
+    pub order: Option<String>,
+    /// Exclusive descending sequence cursor.
+    pub cursor: Option<u64>,
+    /// Inclusive timestamp lower bound.
+    pub from: Option<DateTime<Utc>>,
+    /// Inclusive timestamp upper bound.
+    pub to: Option<DateTime<Utc>>,
+    /// Exact event kind as displayed in events.
+    pub kind: Option<String>,
+    /// Syslog severity name, case insensitive.
+    pub severity: Option<String>,
+    /// Exact source subject.
+    pub subject: Option<String>,
+    /// Exact source subject or recognized forge actor/user.
+    pub actor: Option<String>,
+    /// Exact request correlation identifier.
+    pub request_id: Option<String>,
+    /// Exact schema name on recognized forge events.
+    pub schema: Option<String>,
+    /// Exact entity identifier on recognized forge events.
+    pub entity_id: Option<String>,
+    /// Exact HTTP status code.
+    pub status_code: Option<u16>,
 }
 
-/// Approved projection. Request paths, source details and metadata are intentionally absent.
+/// Approved evidence projection; arbitrary metadata and request query strings never leave storage.
 #[derive(Debug, Serialize)]
 struct EventView {
     id: String,
@@ -168,11 +213,113 @@ struct EventView {
     service_name: String,
     hash: Option<String>,
     previous_hash: Option<String>,
+    subject: Option<String>,
+    request_id: Option<String>,
+    method: Option<String>,
+    path: Option<String>,
+    status_code: Option<u16>,
+    duration_ms: Option<u64>,
+    schema: Option<String>,
+    entity_id: Option<String>,
+    user: Option<String>,
+    actor: Option<String>,
+    target: Option<String>,
+    changed_fields: Vec<String>,
+    reason: Option<String>,
+    tenant_id: Option<String>,
+    previous_roles: Option<Vec<String>>,
+    new_roles: Option<Vec<String>>,
+    active: Option<bool>,
+    self_service: Option<bool>,
 }
 
 impl From<AuditEvent> for EventView {
     fn from(event: AuditEvent) -> Self {
+        let metadata = known_forge_event(&event.kind)
+            .then_some(event.metadata.as_ref())
+            .flatten();
+        let field = |name: &str| {
+            metadata
+                .and_then(|v| v.get(name))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        };
+        let changed_fields = metadata
+            .and_then(|v| v.get("changed_fields"))
+            .and_then(|v| v.as_array())
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let is_kind =
+            |name: &str| matches!(&event.kind, AuditEventKind::Custom(kind) if kind == name);
+        let roles = |name: &str| -> Option<Vec<String>> {
+            metadata?
+                .get(name)?
+                .as_array()?
+                .iter()
+                .map(|role| role.as_str().map(str::to_owned))
+                .collect()
+        };
+        let previous_roles = is_kind("forge.user.updated")
+            .then(|| roles("prev_roles"))
+            .flatten();
+        let new_roles = is_kind("forge.user.updated")
+            .then(|| roles("new_roles"))
+            .flatten();
+        let active = is_kind("forge.user.active_toggled")
+            .then(|| metadata?.get("active")?.as_bool())
+            .flatten();
+        let self_service = is_kind("forge.user.password_changed")
+            .then(|| metadata?.get("self_service")?.as_bool())
+            .flatten();
+        let user = field("user");
+        let actor = field("actor").or_else(|| user.clone());
         Self {
+            previous_roles,
+            new_roles,
+            active,
+            self_service,
+            schema: field("schema"),
+            entity_id: field("entity_id"),
+            user,
+            actor,
+            target: field("target"),
+            changed_fields,
+            reason: field("reason").filter(|reason| {
+                matches!(
+                    reason.as_str(),
+                    "record_can_modify"
+                        | "record_can_delete"
+                        | "schema_access"
+                        | "record_access"
+                        | "record_visibility"
+                        | "role_rank_guard"
+                        | "file_access"
+                        | "platform_admin_required"
+                        | "export_not_enabled"
+                        | "format_not_allowed"
+                        | "authz_denied"
+                        | "no_exportable_fields_requested"
+                        | "rate_limited"
+                        | "row_cap_exceeded"
+                        | "generation_failed"
+                        | "expired"
+                        | "not_pending"
+                )
+            }),
+            tenant_id: field("tenant_id"),
+            request_id: event.source.request_id.or_else(|| field("request_id")),
+            subject: event.source.subject,
+            method: event.method,
+            path: event
+                .path
+                .and_then(|p| p.split(['?', '#']).next().map(str::to_owned)),
+            status_code: event.status_code,
+            duration_ms: event.duration_ms,
             id: event.id.to_string(),
             sequence: event.sequence,
             timestamp: event.timestamp,
@@ -185,11 +332,45 @@ impl From<AuditEvent> for EventView {
     }
 }
 
+const KNOWN_FORGE_EVENTS: &[&str] = &[
+    "forge.entity.created",
+    "forge.entity.updated",
+    "forge.entity.patched",
+    "forge.entity.deleted",
+    "forge.access.denied",
+    "forge.schema.created",
+    "forge.schema.migrated",
+    "forge.schema.deleted",
+    "forge.user.created",
+    "forge.user.updated",
+    "forge.user.deleted",
+    "forge.user.active_toggled",
+    "forge.user.password_changed",
+    "forge.invite.created",
+    "forge.invite.accepted",
+    "forge.invite.rejected",
+    "forge.invite.send_failed",
+    "forge.file.upload_minted",
+    "forge.file.uploaded",
+    "forge.file.detached",
+    "forge.file.scan_complete",
+    "forge.file.downloaded",
+    "forge.export.denied",
+    "forge.export.initiated",
+    "forge.export.completed",
+];
+
+fn known_forge_event(kind: &AuditEventKind) -> bool {
+    matches!(kind, AuditEventKind::Custom(name) if KNOWN_FORGE_EVENTS.contains(&name.as_str()))
+}
+
 #[derive(Debug, Serialize)]
 struct EventsPage {
     events: Vec<EventView>,
     through_sequence: u64,
     next_after_sequence: Option<u64>,
+    order: &'static str,
+    next_cursor: Option<u64>,
     retained_range: Option<SequenceRange>,
     observed_at: DateTime<Utc>,
 }
@@ -224,6 +405,29 @@ pub async fn events(
     let limit = query.limit.unwrap_or(100);
     if limit == 0 || limit > MAX_PAGE {
         return Err(invalid("limit must be between 1 and 200"));
+    }
+    if query.order.as_deref() == Some("newest") {
+        let storage = active_storage(&state).ok_or_else(unavailable)?;
+        let page =
+            tokio::time::timeout(DEADLINE, read_investigation(storage.as_ref(), query, limit))
+                .await
+                .map_err(|_| unavailable())??;
+        return Ok(Json(page).into_response());
+    }
+    if query.order.is_some()
+        || query.cursor.is_some()
+        || query.from.is_some()
+        || query.to.is_some()
+        || query.kind.is_some()
+        || query.severity.is_some()
+        || query.subject.is_some()
+        || query.actor.is_some()
+        || query.request_id.is_some()
+        || query.schema.is_some()
+        || query.entity_id.is_some()
+        || query.status_code.is_some()
+    {
+        return Err(invalid("investigation filters require order=newest"));
     }
     if query.after_sequence.is_some() && query.through_sequence.is_none() {
         return Err(invalid("through_sequence is required with after_sequence"));
@@ -286,6 +490,122 @@ async fn read_page(
         events,
         through_sequence: through,
         next_after_sequence,
+        order: "oldest",
+        next_cursor: None,
+        retained_range: bounds.map(|(from_sequence, to_sequence)| SequenceRange {
+            from_sequence,
+            to_sequence,
+        }),
+        observed_at: Utc::now(),
+    })
+}
+
+fn parse_severity(value: &str) -> Result<AuditSeverity, ForgeError> {
+    match value.to_ascii_uppercase().as_str() {
+        "EMERGENCY" => Ok(AuditSeverity::Emergency),
+        "ALERT" => Ok(AuditSeverity::Alert),
+        "CRITICAL" => Ok(AuditSeverity::Critical),
+        "ERROR" => Ok(AuditSeverity::Error),
+        "WARNING" => Ok(AuditSeverity::Warning),
+        "NOTICE" => Ok(AuditSeverity::Notice),
+        "INFO" | "INFORMATIONAL" => Ok(AuditSeverity::Informational),
+        "DEBUG" => Ok(AuditSeverity::Debug),
+        _ => Err(invalid("unsupported audit severity")),
+    }
+}
+
+async fn read_investigation(
+    storage: &dyn AuditStorage,
+    query: EventsQuery,
+    limit: usize,
+) -> Result<EventsPage, ForgeError> {
+    if query.after_sequence.is_some()
+        || (query.cursor.is_some() && query.through_sequence.is_none())
+    {
+        return Err(invalid(
+            "newest browsing uses cursor with through_sequence, not after_sequence",
+        ));
+    }
+    if query.from.zip(query.to).is_some_and(|(from, to)| from > to) {
+        return Err(invalid("from must not exceed to"));
+    }
+    if query
+        .status_code
+        .is_some_and(|status| !(100..=599).contains(&status))
+    {
+        return Err(invalid("status_code must be between 100 and 599"));
+    }
+    let kind = query
+        .kind
+        .as_deref()
+        .map(|kind| {
+            AuditEventKind::from_wire(kind).ok_or_else(|| invalid("unsupported audit event kind"))
+        })
+        .transpose()?;
+    let severity = query.severity.as_deref().map(parse_severity).transpose()?;
+    let bounds = storage.sequence_bounds().await.map_err(|_| unavailable())?;
+    let (first, latest) = bounds.unwrap_or((1, 0));
+    let through = query.through_sequence.unwrap_or(latest);
+    if through > latest || (through > 0 && through < first) {
+        return Err(snapshot_incomplete());
+    }
+    if query
+        .cursor
+        .is_some_and(|cursor| cursor == 0 || cursor > through)
+    {
+        return Err(invalid("cursor must be within the snapshot"));
+    }
+    if query.cursor.is_some_and(|cursor| cursor < first) {
+        return Err(snapshot_incomplete());
+    }
+    let storage_query = AuditQuery {
+        metadata_kinds: Some(
+            KNOWN_FORGE_EVENTS
+                .iter()
+                .map(|name| format!("custom.{name}"))
+                .collect(),
+        ),
+        from: query.from,
+        to: query.to,
+        kind,
+        severity,
+        subject: query.subject,
+        actor: query.actor,
+        request_id: query.request_id,
+        schema: query.schema,
+        entity_id: query.entity_id,
+        status_code: query.status_code,
+        cursor: query.cursor,
+        through_sequence: Some(through),
+        order: AuditOrder::NewestFirst,
+        limit: limit + 1,
+        ..AuditQuery::default()
+    };
+    let mut fetched = storage
+        .query_filtered(&storage_query)
+        .await
+        .map_err(|_| unavailable())?;
+    if fetched.len() > limit + 1
+        || fetched
+            .windows(2)
+            .any(|pair| pair[0].sequence <= pair[1].sequence)
+        || fetched.iter().any(|event| {
+            event.sequence > through || query.cursor.is_some_and(|cursor| event.sequence >= cursor)
+        })
+    {
+        return Err(unavailable());
+    }
+    let more = fetched.len() > limit;
+    fetched.truncate(limit);
+    let next_cursor = more
+        .then(|| fetched.last().map(|event| event.sequence))
+        .flatten();
+    Ok(EventsPage {
+        events: fetched.into_iter().map(EventView::from).collect(),
+        through_sequence: through,
+        next_after_sequence: None,
+        order: "newest",
+        next_cursor,
         retained_range: bounds.map(|(from_sequence, to_sequence)| SequenceRange {
             from_sequence,
             to_sequence,
@@ -406,4 +726,118 @@ pub async fn verify(
         }),
     )
         .into_response())
+}
+
+/// Emit a known forge event with identity and correlation, never request bodies.
+pub(super) async fn log_forge_event(
+    state: &AppState<SchemaForgeConfig>,
+    claims: Option<&Claims>,
+    headers: &axum::http::HeaderMap,
+    name: &str,
+    severity: AuditSeverity,
+    mut metadata: serde_json::Value,
+) {
+    let Some(logger) = state.audit_logger() else {
+        return;
+    };
+    let subject = claims.map(|claims| claims.sub.clone());
+    let request_id = headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    if let Some(fields) = metadata.as_object_mut() {
+        fields.insert("actor".into(), serde_json::json!(subject));
+        fields.insert("request_id".into(), serde_json::json!(request_id));
+        let tenant = claims
+            .filter(|claims| !claims.has_role(PLATFORM_ADMIN_ROLE))
+            .and_then(|claims| claims.custom.get("tenant_chain"))
+            .and_then(|chain| chain.as_array())
+            .and_then(|chain| chain.first())
+            .and_then(|tenant| tenant.get("entity_id"))
+            .and_then(|id| id.as_str());
+        fields.insert("tenant_id".into(), serde_json::json!(tenant));
+    }
+    let mut event = AuditEvent::new(
+        AuditEventKind::Custom(name.into()),
+        severity,
+        logger.service_name().into(),
+    );
+    event.source.subject = subject;
+    event.source.request_id = request_id;
+    event.metadata = Some(metadata);
+    logger.log(event).await;
+}
+
+/// Trusted request context for application authentication audit events.
+pub struct RequestAuditSource(pub acton_service::audit::AuditSource);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequestAuditSource {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let source = parts
+            .extensions
+            .get::<acton_service::middleware::request_context::RequestContext>()
+            .map(|context| context.audit_source())
+            .unwrap_or_else(|| acton_service::audit::AuditSource {
+                request_id: parts
+                    .headers
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned),
+                ..acton_service::audit::AuditSource::default()
+            });
+        Ok(Self(source))
+    }
+}
+
+#[cfg(test)]
+mod investigation_tests {
+    use super::*;
+    use axum::extract::FromRequestParts;
+
+    #[tokio::test]
+    async fn authentication_source_prefers_resolved_context_over_untrusted_headers() {
+        let (mut parts, ()) = axum::http::Request::builder()
+            .header("x-request-id", "header-request")
+            .header("x-forwarded-for", "203.0.113.77")
+            .body(())
+            .unwrap()
+            .into_parts();
+        parts
+            .extensions
+            .insert(acton_service::middleware::request_context::RequestContext {
+                request_id: Some("resolved-request".into()),
+                ip: Some("127.0.0.1".parse().unwrap()),
+                user_agent: None,
+            });
+        let RequestAuditSource(source) = RequestAuditSource::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        assert_eq!(source.request_id.as_deref(), Some("resolved-request"));
+        assert_eq!(source.ip.as_deref(), Some("127.0.0.1"));
+        parts.extensions.clear();
+        let RequestAuditSource(source) = RequestAuditSource::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        assert_eq!(source.request_id.as_deref(), Some("header-request"));
+        assert!(source.ip.is_none());
+    }
+
+    #[test]
+    fn scanner_free_text_is_not_an_approved_reason() {
+        let mut event = AuditEvent::new(
+            AuditEventKind::Custom("forge.file.scan_complete".into()),
+            AuditSeverity::Notice,
+            "synthetic".into(),
+        );
+        event.metadata =
+            Some(serde_json::json!({"reason":"SECRET scanner body", "schema":"Record"}));
+        let view = EventView::from(event);
+        assert!(view.reason.is_none());
+        assert_eq!(view.schema.as_deref(), Some("Record"));
+    }
 }
