@@ -55,5 +55,12 @@ all passed in 0.29 to 0.39 seconds. Seven PostgreSQL regressions and affected
 all-target Clippy passed. The published patch must be verified against the
 affected endpoint before the issue is closed again.
 
+CI exposed a separate fixture-initialization race: both PostgreSQL HTTP tests
+created metadata concurrently in their shared disposable namespace. PostgreSQL
+reported a duplicate catalog type for the metadata table. A nextest test group
+now serializes those two fixtures while preserving the concurrent mutation
+requests inside each test. All ten HTTP authorization/concurrency tests passed
+locally against a fresh disposable namespace with this configuration.
+
 The parent owns deployment diagnosis, integration, release preparation, and
 acceptance. The PostgreSQL worker owns the proof module and its tests.
