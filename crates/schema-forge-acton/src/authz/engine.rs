@@ -13,7 +13,7 @@ use std::error::Error as StdError;
 use std::sync::Arc;
 
 use acton_service::middleware::Claims;
-use cedar_policy::{Authorizer, Context, Decision, Entities, EntityUid, Request};
+use cedar_policy::{Authorizer, Context, Decision, Entities, EntityUid, Request, RestrictedExpression};
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::SchemaDefinition;
 
@@ -67,7 +67,8 @@ pub enum AuthzError {
 /// Result of a single authorization evaluation.
 #[derive(Debug, Clone)]
 pub struct AuthzDecision {
-    /// Whether the request was allowed.
+    /// Cedar's raw Allow result. Use [`Self::is_allow`] for the effective
+    /// decision, which also rejects evaluation errors.
     pub allowed: bool,
     /// Cedar policy IDs that contributed to the decision.
     pub matched_policies: Vec<String>,
@@ -82,12 +83,23 @@ impl AuthzDecision {
     }
 }
 
+/// Context is derived by the engine, never from claims or resource fields.
+fn authorization_context(resource_is_placeholder: bool) -> Result<Context, AuthzError> {
+    Context::from_pairs([(
+        "resource_is_placeholder".into(),
+        RestrictedExpression::new_bool(resource_is_placeholder),
+    )])
+    .map_err(|error| AuthzError::Request(render_error_chain(&error)))
+}
+
 /// Authorizes a schema-level action against the current policy bundle.
 ///
 /// `resource` may be `None` for actions whose decision depends only on the
 /// resource type (e.g., `ListContact`). When `Some`, the entity is converted
 /// to a Cedar resource entity carrying every field as a typed attribute, so
 /// per-record policies (`@owner`, `@tenant`, custom predicates) can apply.
+/// `context.resource_is_placeholder` is true for `None` and false for `Some`.
+/// Schema checks include Read preflights for both lists and point reads.
 pub fn authorize(
     store: &Arc<PolicyStore>,
     claims: Option<&Claims>,
@@ -129,9 +141,9 @@ pub fn authorize(
             // `appliesTo` declarations match and the strict-mode entity
             // validator accepts the entity. The placeholder is populated with
             // synthetic default values for every required field — policies
-            // that inspect attributes will see the defaults; ownership / tenant
-            // checks are designed to fall through when the relevant fields
-            // aren't the principal's.
+            // that inspect attributes will see the defaults. The explicit
+            // context marker lets policies distinguish this preflight from a
+            // concrete resource without inferring scope from attribute values.
             let placeholder = build_resource_placeholder(schema)?;
             let uid = placeholder.uid().clone();
             (uid, vec![placeholder])
@@ -153,8 +165,8 @@ pub fn authorize(
     let request = Request::new(
         principal_uid_value,
         action,
-        resource_uid,
-        Context::empty(),
+        resource_uid.clone(),
+        authorization_context(resource.is_none())?,
         Some(&snapshot.schema),
     )
     .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
@@ -177,7 +189,7 @@ pub fn authorize(
         matched_policies,
         errors,
     };
-    audit_decision(claims, verb, schema, resource, &decision);
+    audit_decision(claims, verb, schema, resource, &resource_uid, &decision);
     Ok(decision)
 }
 
@@ -239,7 +251,7 @@ pub fn authorize_field(
         principal_uid_value,
         action,
         resource_uid,
-        Context::empty(),
+        authorization_context(false)?,
         Some(&snapshot.schema),
     )
     .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
@@ -274,19 +286,22 @@ fn audit_decision(
     verb: ActionVerb,
     schema: &SchemaDefinition,
     resource: Option<&Entity>,
+    resource_uid: &EntityUid,
     decision: &AuthzDecision,
 ) {
     let principal = claims.map(|c| c.sub.as_str()).unwrap_or("_anonymous");
     let resource_id = resource
         .map(|e| e.id.as_str().to_string())
         .unwrap_or_else(|| schema.name.as_str().to_string());
-    if decision.allowed {
+    if decision.is_allow() {
         tracing::info!(
             target: "schema_forge_acton::authz",
             principal,
             action = verb.as_str(),
             schema = schema.name.as_str(),
             resource = %resource_id,
+            resource_uid = %resource_uid,
+            resource_is_placeholder = resource.is_none(),
             matched_policies = ?decision.matched_policies,
             "authz allow"
         );
@@ -297,6 +312,9 @@ fn audit_decision(
             action = verb.as_str(),
             schema = schema.name.as_str(),
             resource = %resource_id,
+            resource_uid = %resource_uid,
+            resource_is_placeholder = resource.is_none(),
+            matched_policies = ?decision.matched_policies,
             errors = ?decision.errors,
             "authz deny"
         );
@@ -321,7 +339,8 @@ fn audit_field_decision(
         schema = schema.name.as_str(),
         field = field_name,
         direction = dir,
-        allowed = decision.allowed,
+        resource_is_placeholder = false,
+        allowed = decision.is_allow(),
         "field-level authz decision"
     );
 }

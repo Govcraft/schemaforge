@@ -47,8 +47,7 @@ pub struct CedarSchemaInputs<'a> {
 }
 
 impl<'a> CedarSchemaInputs<'a> {
-    /// Inputs covering `schemas` with no principal-claim mappings. Matches
-    /// pre-#50 behaviour byte-for-byte.
+    /// Inputs covering `schemas` with no principal-claim mappings.
     pub fn new(schemas: &'a [SchemaDefinition]) -> Self {
         // Borrows a shared empty mapping so the schema fragment is empty and
         // no attribute lines are spliced in.
@@ -70,8 +69,8 @@ fn empty_principal_claims() -> &'static PrincipalClaimMappings {
 /// Generates Cedar schema source covering `schemas` with no extra inputs.
 ///
 /// Convenience wrapper around [`generate_cedar_schema_with_inputs`]; equivalent
-/// to passing `CedarSchemaInputs::new(schemas)`. Output is byte-identical to
-/// the pre-#50 generator when no principal-claim mappings are configured.
+/// to passing `CedarSchemaInputs::new(schemas)`. Application and field actions
+/// require the Boolean context attribute `resource_is_placeholder`.
 pub fn generate_cedar_schema(schemas: &[SchemaDefinition]) -> Result<String, SchemaGenError> {
     generate_cedar_schema_with_inputs(CedarSchemaInputs::new(schemas))
 }
@@ -183,6 +182,7 @@ fn write_schema_actions(out: &mut String, schema: &SchemaDefinition) -> Result<(
         "action Read{name}, List{name}, Create{name}, Update{name}, Delete{name}, Export{name} appliesTo {{
     principal: [Forge::Principal],
     resource: [{name}],
+    context: {{ resource_is_placeholder: Bool }},
 }};\n"
     )?;
     Ok(())
@@ -220,6 +220,7 @@ fn write_per_field_actions(
         "action {joined} appliesTo {{
     principal: [Forge::Principal],
     resource: [{name}],
+    context: {{ resource_is_placeholder: Bool }},
 }};\n"
     )?;
     Ok(())
