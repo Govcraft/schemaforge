@@ -663,7 +663,10 @@ async fn postgres_http_revisions_guard_updates_noops_races_and_deletes() {
         .await
         .unwrap();
     let other_path = format!("/schemas/Note/entities/{}", other.id);
-    for method in ["GET", "PUT", "PATCH", "DELETE"] {
+    // `@owner` governs the mutations, not the read. Every attempt to change a record the caller
+    // does not own is refused before the conditional header is honored, and the refusal leaks
+    // neither a revision nor the record it was denied.
+    for method in ["PUT", "PATCH", "DELETE"] {
         let (status, headers, body) = request(
             &app,
             &other_path,
@@ -677,6 +680,13 @@ async fn postgres_http_revisions_guard_updates_noops_races_and_deletes() {
         assert!(!body.to_string().contains("revision_conflict"));
         assert!(!body.to_string().contains("Other owner record"));
     }
+    // The read the schema grants to `editor` still succeeds, and says plainly that this caller
+    // may not change what it is reading.
+    let (status, _, body) = request(&app, &other_path, "GET", None, serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["fields"]["title"], "Other owner record");
+    assert_eq!(body["permissions"]["update"], false, "{body}");
+    assert_eq!(body["permissions"]["delete"], false, "{body}");
     let (status, headers, body) = request(
         &app,
         &path,
