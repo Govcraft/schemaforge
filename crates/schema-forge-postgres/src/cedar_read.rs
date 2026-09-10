@@ -84,15 +84,34 @@ pub(crate) async fn query_compatible(
     let Some(proof) = certify_columns(expected, &columns)? else {
         return Ok(None);
     };
-    let unsafe_sql = format!(
-        "SELECT EXISTS (SELECT 1 FROM {table} WHERE {})",
-        proof.unsafe_values.join(" OR ")
-    );
-    let unsafe_values: bool = sqlx::query_scalar(&unsafe_sql)
-        .fetch_one(&mut *tx)
+    // Only the first rejected row evaluates the CASE projection. Passing
+    // proofs retain one scan and emit no row data for diagnostics.
+    let cases = proof
+        .unsafe_values
+        .iter()
+        .enumerate()
+        .map(|(index, check)| format!("WHEN {} THEN {index}", check.predicate))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let predicates = proof
+        .unsafe_values
+        .iter()
+        .map(|check| check.predicate.as_str())
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let unsafe_sql = format!("SELECT CASE {cases} END FROM {table} WHERE {predicates} LIMIT 1");
+    let rejected: Option<i32> = sqlx::query_scalar(&unsafe_sql)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(database_error)?;
-    if unsafe_values {
+    if let Some(index) = rejected {
+        if let Some(check) = usize::try_from(index)
+            .ok()
+            .and_then(|index| proof.unsafe_values.get(index))
+        {
+            tracing::debug!(schema = %expected.name, field = %check.field,
+                reason = check.reason, "Cedar storage certification fell back");
+        }
         return Ok(None);
     }
     let scoped = scoped_query(query, scope, proof.has_tenant);
@@ -126,7 +145,23 @@ pub(crate) async fn query_compatible(
 
 struct StorageProof {
     has_tenant: bool,
-    unsafe_values: Vec<String>,
+    unsafe_values: Vec<UnsafeValueCheck>,
+}
+
+struct UnsafeValueCheck {
+    field: String,
+    reason: &'static str,
+    predicate: String,
+}
+
+impl UnsafeValueCheck {
+    fn new(field: &str, reason: &'static str, predicate: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            reason,
+            predicate: predicate.into(),
+        }
+    }
 }
 
 fn certify_columns(
@@ -138,7 +173,10 @@ fn certify_columns(
         has_tenant: false,
         // A conservative subset of valid TypeIDs, including every generated ID.
         // Invalid IDs could prevent row decoding before Cedar is reached.
-        unsafe_values: vec![r#"NOT ("id" IS NOT NULL AND length("id") BETWEEN 26 AND 90
+        unsafe_values: vec![UnsafeValueCheck::new(
+            "id",
+            "identifier_shape",
+            r#"NOT ("id" IS NOT NULL AND length("id") BETWEEN 26 AND 90
                 AND translate(right("id", 26), '0123456789abcdefghjkmnpqrstvwxyz', '') = ''
                 AND left(right("id", 26), 1) COLLATE "C" BETWEEN '0' AND '7'
                 AND (length("id") = 26 OR (
@@ -146,8 +184,8 @@ fn certify_columns(
                     AND translate(left("id", -27), 'abcdefghijklmnopqrstuvwxyz_', '') = ''
                     AND left("id", 1) COLLATE "C" BETWEEN 'a' AND 'z'
                     AND right(left("id", -27), 1) COLLATE "C" BETWEEN 'a' AND 'z'
-                )))"#
-            .into()],
+                )))"#,
+        )],
     };
     for column in columns {
         let name: String = column.try_get("attname").map_err(database_error)?;
@@ -177,10 +215,11 @@ fn certify_columns(
             proof.has_tenant = true;
             // The adapter constructs an EntityUid through Cedar text parsing.
             // Restrict to strings whose parsed identity equals the stored text.
-            proof.unsafe_values.push(
-                "(\"_tenant\" IS NOT NULL AND \"_tenant\" COLLATE \"C\" !~ '^[a-zA-Z0-9_:-]+$')"
-                    .into(),
-            );
+            proof.unsafe_values.push(UnsafeValueCheck::new(
+                "_tenant",
+                "tenant_identity",
+                "(\"_tenant\" IS NOT NULL AND \"_tenant\" COLLATE \"C\" !~ '^[a-zA-Z0-9_:-]+$')",
+            ));
             continue;
         }
         let Some(field) = schema.field(&name) else {
@@ -195,33 +234,25 @@ fn certify_columns(
         let quoted = quoted(&name);
         if !field.is_hidden() && field.is_required() && !matches!(field.field_type, FieldType::Json)
         {
-            proof.unsafe_values.push(format!("{quoted} IS NULL"));
+            proof.unsafe_values.push(UnsafeValueCheck::new(
+                &name,
+                "required_null",
+                format!("{quoted} IS NULL"),
+            ));
         }
         if matches!(field.field_type, FieldType::Array(_)) {
-            proof.unsafe_values.push(format!(
+            proof.unsafe_values.push(UnsafeValueCheck::new(&name, "array_shape", format!(
                 "(array_ndims({quoted}) > 1 OR array_lower({quoted}, 1) <> 1 OR EXISTS (SELECT 1 FROM unnest({quoted}) AS item WHERE item IS NULL))"
-            ));
+            )));
         }
-        if matches!(field.field_type, FieldType::Json) {
-            // PostgreSQL accepts JSON numbers and nesting beyond serde_json's
-            // decoder limits. Its jsonb text rendering expands numeric exponents.
-            // These deliberately conservative bounds also count digits/brackets
-            // inside strings: uncertain shapes fall back instead of being counted.
-            // CASE guarantees that short ordinary JSON never pays for the
-            // expensive long-number regex or delimiter count. AND alone permits
-            // the planner to reorder evaluation and loses this bound.
-            proof.unsafe_values.push(format!(
-                "(CASE WHEN octet_length({quoted}::text) < 100 THEN false ELSE \
-                 (CASE WHEN octet_length({quoted}::text) < 300 THEN false ELSE \
-                  {quoted}::text COLLATE \"C\" ~ '[0-9]{{150}}[0-9]{{150}}' END) OR \
-                 length({quoted}::text) - length(translate({quoted}::text, '{{[', '')) >= 100 END)"
-            ));
-        }
+        // JSON is deliberately absent from Cedar, including required/hidden
+        // JSON fields. Only selected rows need to satisfy serde_json decoding;
+        // an unrelated row's payload must not disable exact authorized counts.
         if matches!(field.field_type, FieldType::DateTime) {
             // PostgreSQL's timestamps include infinity and exceed chrono's range.
-            proof.unsafe_values.push(format!(
+            proof.unsafe_values.push(UnsafeValueCheck::new(&name, "date_range", format!(
                 "({quoted} < TIMESTAMPTZ '0001-01-01 UTC' OR {quoted} >= TIMESTAMPTZ '10000-01-01 UTC')"
-            ));
+            )));
         }
     }
     if !names.contains("id")

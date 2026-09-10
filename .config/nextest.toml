@@ -1,0 +1,9 @@
+[test-groups]
+# These HTTP fixtures share the caller-provided disposable PostgreSQL namespace.
+# Serialize their initialization; each test still runs its own concurrent
+# mutation requests on its multithreaded Tokio runtime.
+postgres-http-fixtures = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(schema-forge-acton) & binary(conditional_entities) & test(/^postgres_http_/)'
+test-group = 'postgres-http-fixtures'
