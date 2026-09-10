@@ -99,6 +99,8 @@ pre-feature deployments — no extra attributes are emitted on
 
 ## 3. Writing custom policies that read mapped claims
 
+Policies that also inspect resource fields must distinguish schema preflights from concrete records. See [custom policy context](custom-policy-context.md) for the server-set placeholder flag, guarded Read examples, Create limitations, and the manual Cedar request contract.
+
 Mapped attributes are emitted as **optional** in the generated Cedar
 schema. Cedar 4.x's strict-mode validator therefore requires every
 reference to be guarded with `principal has X` before any dereference.

@@ -76,9 +76,9 @@ Both endpoints require read access to the schema and return the same
 
 | Field         | Type                  | Description                                              |
 |---------------|-----------------------|----------------------------------------------------------|
-| `entities`    | array of objects      | Matching entities after pagination                       |
+| `entities`    | array of objects      | Readable matching entities after pagination                       |
 | `count`       | integer               | Number of entities in this page                          |
-| `total_count` | integer or null       | Total matching entities before pagination (when available)|
+| `total_count` | integer or null       | Readable matching entities before pagination (when requested)|
 
 Each entity object contains:
 
@@ -97,7 +97,7 @@ Both endpoints accept `limit` and `offset`.
 | Parameter | Type    | Default | Description              |
 |-----------|---------|---------|--------------------------|
 | `limit`   | integer | none    | Maximum results to return|
-| `offset`  | integer | 0       | Number of results to skip|
+| `offset`  | integer | 0       | Number of readable results to skip|
 
 **GET example:**
 
@@ -113,6 +113,8 @@ GET /schemas/Contact/entities?limit=25&offset=50
   "offset": 50
 }
 ```
+
+Record policies and Cedar checks run before offset, limit, and total counting. Denied rows do not contribute to totals or create gaps in pages. Exact totals require evaluating all matching candidates; use `count=false` (GET) or `"count": false` (POST) to stop after the requested readable page is filled. Anonymous responses omit totals. See [authorized entity pagination](authorized-entity-pagination.md) for backend costs and concurrent-write limits.
 
 Use `total_count` from the response to calculate page counts:
 
