@@ -1,6 +1,6 @@
 # Authorized entity pagination
 
-Starting with SchemaForge v0.43.1, GET `/api/v1/forge/schemas/{schema}/entities` and POST `/api/v1/forge/schemas/{schema}/entities/query` apply record authorization before response pagination and total counting.
+GET `/api/v1/forge/schemas/{schema}/entities` and POST `/api/v1/forge/schemas/{schema}/entities/query` apply record authorization before response pagination and total counting.
 
 `count` is the number of entities in the returned page. For authenticated callers requesting a total, `total_count` is the number of readable records matching the tenant scope and query filters, before the caller's offset and limit. Offsets skip readable records. Denied records neither contribute to the total nor leave gaps in a page. A filter that matches only denied records returns an empty page with a zero total. An offset beyond the readable end returns an empty page with the readable total unchanged.
 
