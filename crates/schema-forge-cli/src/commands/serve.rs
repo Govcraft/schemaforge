@@ -563,11 +563,11 @@ async fn connect_with_retries(
                 if attempt > 0 {
                     output.success(&format!(
                         "Connected to {} after {} attempt(s)",
-                        db_params.url(),
+                        db_params.redacted_url(),
                         attempt + 1
                     ));
                 } else {
-                    output.success(&format!("Connected to {}", db_params.url()));
+                    output.success(&format!("Connected to {}", db_params.redacted_url()));
                 }
                 return Ok(connected);
             }
@@ -589,7 +589,7 @@ async fn connect_with_retries(
     Err(CliError::Server {
         message: format!(
             "failed to connect to {} after {} attempts: {}",
-            db_params.url(),
+            db_params.redacted_url(),
             MAX_CONNECT_RETRIES + 1,
             last_err.unwrap(),
         ),
