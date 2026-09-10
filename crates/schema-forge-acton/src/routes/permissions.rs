@@ -40,6 +40,10 @@ pub struct AdminPermissions {
     pub schemas_manage: bool,
     /// Whether the Users admin section should be shown.
     pub users_manage: bool,
+    /// Whether deployment-wide audit events may be read.
+    pub audit_read: bool,
+    /// Whether bounded audit integrity checks may be requested.
+    pub audit_verify: bool,
 }
 
 /// Top-level response envelope, structured to leave room for non-admin
@@ -79,6 +83,8 @@ pub async fn get_permissions(
         admin: AdminPermissions {
             schemas_manage,
             users_manage,
+            audit_read: super::audit::can_access_audit(&claims),
+            audit_verify: super::audit::can_access_audit(&claims),
         },
     }))
 }
@@ -128,4 +134,3 @@ async fn fetch_policy_store(
             message: "Cedar policy store not initialized".into(),
         })
 }
-

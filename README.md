@@ -1050,3 +1050,7 @@ cargo clippy --workspace -- -D warnings
 ## License
 
 See the project repository for license information.
+
+### Audit browsing and verification
+
+Platform administrators can browse recorded audit events and verify bounded chain ranges through the [audit API](docs/audit-api-reference.md). Access is deployment-wide, uses the active framework audit store, and reports collection limits separately from local chain consistency. Available in v0.42.0.

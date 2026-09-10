@@ -1,0 +1,75 @@
+# Audit browsing and scoped verification
+
+SchemaForge v0.42.0 adds read-only audit access under `/api/v1/forge/audit`, using the active acton-service v0.41.0 audit store. That upstream release includes the anchored suffix-verification correction from v0.40.1.
+
+Every endpoint requires an authenticated `platform_admin`. Access is **deployment-wide**, including events from all tenants. Tenant administrators, ordinary users, anonymous callers and schema-level Cedar grants do not receive audit access. Missing authentication returns 401; insufficient privileges return 403. The `/api/v1/forge/permissions` response includes `admin.audit_read` and `admin.audit_verify` using the same dedicated gate.
+
+## Availability and collection
+
+`GET /audit/status` returns:
+
+- `availability`: `disabled`, `unavailable`, `empty` or `available`.
+- `scope: "deployment"` and `required_role: "platform_admin"`.
+- `retained_range`: inclusive `from_sequence` and `to_sequence`, or null when unavailable/empty. These are observed storage boundaries, not proof of complete collection.
+- `collection`: whether collection is configured, whether the logger is active, HTTP/auth/config collection flags, included and excluded route patterns, and `mutation_success_acknowledges_persistence: false`.
+- `retention_days`, `observed_at`, supported query parameters, ordering, page/verification limits and `verification_trust: "local_stored_anchor_only"`.
+
+An explicit `[audit] enabled = false` means disabled collection. An absent `[audit]` section uses the framework defaults, which enable collection. An enabled configuration without a queryable persistent store means unavailable. An enabled, reachable store containing no events means empty. SQL Server, PostgreSQL and SurrealDB release flavors use the storage initialized by acton-service. No separate audit database is created by these routes.
+
+Events are emitted asynchronously. A successful application mutation does not acknowledge that its audit event reached persistent storage. Route exclusions, selective capture, dropped events, storage failures, retention and process failure can limit coverage. Status describes configuration and observed storage, not delivery guarantees or historical collection coverage.
+
+## Browse a stable sequence snapshot
+
+Start with `GET /audit/events?limit=100`. The response contains:
+
+```json
+{
+  "events": [],
+  "through_sequence": 0,
+  "next_after_sequence": null,
+  "retained_range": null,
+  "observed_at": "2026-09-09T23:00:00Z"
+}
+```
+
+This example is an empty store. With events, the first response fixes `through_sequence` to the observed last sequence. Continue with the returned cursor and **the same upper bound**:
+
+```text
+GET /audit/events?after_sequence=100&through_sequence=425&limit=100
+```
+
+`after_sequence` is exclusive; `through_sequence` is inclusive. Ordering is ascending sequence. Page size defaults to 100 and must be 1 through 200. A cursor requires an explicit upper bound. `next_after_sequence: null` means the snapshot is exhausted. Later appends are excluded. A supplied upper bound can also restrict a first page to an earlier prefix.
+
+The only supported query parameters are `after_sequence`, `through_sequence` and `limit`. Unknown filters, invalid bounds and invalid limits return 400. There are no tenant, subject, kind or time filters in this version. Sequence values are JSON integers; clients must preserve 64-bit precision.
+
+Each event exposes exactly `id`, `sequence`, `timestamp`, `kind`, `severity`, `service_name`, `hash` and `previous_hash`. The ID is the existing upstream audit-event UUID. Paths, methods, source IPs, subjects, user agents, request IDs, durations, request bodies and arbitrary metadata are excluded. The projection is for browsing; clients cannot recompute full event hashes from it.
+
+If retention or missing sequences prevents a complete requested page, the API returns 409 with reason `audit_snapshot_incomplete`. Restart browsing to observe the new retained boundary or investigate the gap. The fixed upper bound protects against concurrent appends, but does not preserve deleted rows or create a database transaction across requests. Storage failures or the five-second deadline return 502 with a generic error; connection details are not disclosed.
+
+## Verify an inclusive range
+
+```text
+POST /audit/verify
+Content-Type: application/json
+
+{"from_sequence": 1, "to_sequence": 425}
+```
+
+Both bounds are required. Genesis is sequence 1. The range must contain 1 through 1,000 requested events. The verifier fetches at most those events plus the immediate predecessor. Invalid ranges, unknown fields and malformed JSON return 400. Storage work has a five-second deadline.
+
+The response includes `outcome`, `requested_range`, `checked_range`, `anchor`, `broken_sequence`, `observed_at` and `establishes`:
+
+| Outcome | Meaning | HTTP status |
+|---|---|---|
+| `valid` | All requested event hashes, consecutive sequences and links agree with the checked genesis or stored predecessor. | 200 |
+| `broken` | An event hash, sequence or link failed; `broken_sequence` identifies the failure, which can be the predecessor. | 200 |
+| `incomplete` | The requested start, end or predecessor is missing, or the range is empty. | 200 |
+| `unavailable` | Audit is disabled, storage is missing/unsupported/unreachable, or the deadline expired. | 503 |
+
+For a valid result, `checked_range` is the requested range. For a broken result it ends at the failed sequence; it is null when the predecessor itself failed. Incomplete/unavailable results have a null checked range and make no affirmative verification claim. Interior sequence gaps produce a broken result. The `anchor` identifies the required genesis (sequence 0) or immediate stored predecessor; in incomplete/unavailable responses it describes the required anchor, not an assertion that it was available. `independently_trusted` is always false.
+
+A suffix check validates the predecessor's content hash and its link into the requested range. It does not validate history before that predecessor. After prefix retention, checking the first retained event is incomplete unless its predecessor still exists; this API has no trusted retention-checkpoint facility. Checking the next retained event can establish local consistency against its retained predecessor.
+
+Verification establishes local chain consistency only. It cannot establish capture completeness, prove that a successful mutation was logged, detect all truncation or coherent rewriting without an independently trusted chain-head anchor, or strengthen legacy v1 hashes to v2 coverage. It does not attest the projected browser fields independently of the server. Preserve a separately trusted chain head when that stronger assurance is required.
+
+New events are sealed at millisecond timestamp precision so their hashes survive the timestamp precision supported across the built-in storage adapters. Earlier releases could seal finer precision that a database later discarded. Such historical rows can fail verification even without malicious alteration; the original precision cannot be reconstructed from the stored timestamp. This release does not rewrite those rows or reinterpret their hashes as valid.
