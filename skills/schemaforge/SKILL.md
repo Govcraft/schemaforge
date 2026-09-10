@@ -882,4 +882,4 @@ For complete details, load these supporting files:
 
 ### Audit access (v0.42.0)
 
-Platform administrators can use `/api/v1/forge/audit/status`, `/audit/events` and `/audit/verify` for deployment-wide audit browsing and bounded chain checks. Reuses acton-service 0.41.0 storage, including the 0.40.1 suffix-verification fix. Tenant administrators cannot access these routes. See [audit API reference](../../docs/audit-api-reference.md) for the field projection, fixed upper sequence pagination, limits, permission flags and verification trust boundaries.
+Platform administrators can use `/api/v1/forge/audit/status`, `/audit/events` and `/audit/verify` for deployment-wide audit browsing and bounded chain checks. Reuses acton-service 0.42.0 storage, including the 0.40.1 suffix-verification fix. Tenant administrators cannot access these routes. See [audit API reference](../../docs/audit-api-reference.md) for the field projection, fixed upper sequence pagination, limits, permission flags and verification trust boundaries.

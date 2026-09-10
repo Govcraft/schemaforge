@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use acton_service::audit::{
-    AuditChain, AuditConfig, AuditEvent, AuditEventKind, AuditSeverity, AuditStorage,
+    AuditChain, AuditConfig, AuditEvent, AuditEventId, AuditEventKind, AuditSeverity, AuditStorage,
 };
 use acton_service::config::Config;
 use acton_service::error::Error;
@@ -303,6 +303,11 @@ async fn pagination_excludes_concurrent_appends_and_never_exposes_private_fields
     assert!(!serde_json::to_string(&all).unwrap().contains("SECRET"));
     for event in all {
         assert_eq!(event.as_object().unwrap().len(), 8);
+        let encoded_id = event["id"].as_str().unwrap();
+        assert!(encoded_id.starts_with("audit_"));
+        let id: AuditEventId = encoded_id.parse().unwrap();
+        assert_eq!(id.as_uuid().get_version_num(), 7);
+        assert_eq!(id.to_string(), encoded_id);
         for excluded in ["metadata", "source", "path", "method", "duration_ms"] {
             assert!(event.get(excluded).is_none());
         }
