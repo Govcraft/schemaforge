@@ -13,6 +13,7 @@ use crate::access::{
     FieldFilterDirection,
 };
 use crate::error::ForgeError;
+use crate::authz::{authorize, namespace::ActionVerb};
 
 /// Entity data stored in resolver parent values.
 pub struct EntityFields {
@@ -102,6 +103,7 @@ pub async fn resolve_get_entity<'a>(
         Err(e) => return Err(forge_error_to_gql(ForgeError::from(e))),
     };
 
+    require_record_access(gql_ctx, schema_def, &entity, ActionVerb::Read)?;
     // Record-level visibility check
     if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
         let visible = policy
@@ -211,16 +213,22 @@ pub async fn resolve_list_entities<'a>(
         .await
         .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
 
+    // Canonical Cedar decisions apply even without a custom record policy.
+    let authorized = result.entities.into_iter().filter(|entity| {
+        require_record_access(gql_ctx, schema_def, entity, ActionVerb::Read).is_ok()
+            && require_record_access(gql_ctx, schema_def, entity, ActionVerb::List).is_ok()
+    }).collect();
     // Record-level access filtering
     let visible_entities =
         if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
-            policy.filter_visible(schema_def, c, result.entities).await
+            policy.filter_visible(schema_def, c, authorized).await
         } else {
-            result.entities
+            authorized
         };
 
     let count = visible_entities.len();
-    let total_count = result.total_count;
+    // The raw storage count precedes authorization and could disclose hidden rows.
+    let total_count = None;
 
     let items: Vec<EntityFields> = visible_entities
         .into_iter()
@@ -393,6 +401,10 @@ pub async fn resolve_delete_entity(
     let entity_id = EntityId::parse(&id_arg)
         .map_err(|_| forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() }))?;
 
+    let entity = gql_ctx.state.backend.get(&schema, &entity_id).await
+        .map_err(|error| forge_error_to_gql(ForgeError::from(error)))?;
+    require_record_access(gql_ctx, schema_def, &entity, ActionVerb::Delete)?;
+
     // Record-level ownership check
     if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
         let entity = gql_ctx
@@ -455,6 +467,10 @@ pub async fn resolve_relation_one<'a>(
         Err(_) => return Ok(None),
     };
 
+    if require_record_access(gql_ctx, target_schema_def, &entity, ActionVerb::Read).is_err() {
+        return Ok(None);
+    }
+    entity.strip_hidden(target_schema_def);
     filter_entity_fields(
         &gql_ctx.state.policy_store,
         &mut entity,
@@ -503,6 +519,9 @@ pub async fn resolve_relation_many<'a>(
     let mut results = Vec::new();
     for ref_id in ref_ids {
         if let Ok(mut entity) = gql_ctx.state.backend.get(&target_schema, &ref_id).await {
+            if require_record_access(gql_ctx, target_schema_def, &entity, ActionVerb::Read).is_err() {
+                continue;
+            }
             entity.strip_hidden(target_schema_def);
             filter_entity_fields(
                 &gql_ctx.state.policy_store,
@@ -516,6 +535,19 @@ pub async fn resolve_relation_many<'a>(
     }
 
     Ok(Some(FieldValue::list(results)))
+}
+
+fn require_record_access(
+    context: &ForgeGraphqlContext,
+    schema: &SchemaDefinition,
+    entity: &Entity,
+    action: ActionVerb,
+) -> async_graphql::Result<()> {
+    let decision = authorize(&context.state.policy_store, context.claims.as_ref(), action, schema, Some(entity))
+        .map_err(|_| forge_error_to_gql(ForgeError::Forbidden { message: "could not authorize entity".into() }))?;
+    if decision.is_allow() && decision.errors.is_empty() { Ok(()) } else {
+        Err(forge_error_to_gql(ForgeError::Forbidden { message: "not authorized for this entity".into() }))
+    }
 }
 
 /// Convert an Entity to a FieldValue wrapping EntityFields.

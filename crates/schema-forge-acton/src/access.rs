@@ -407,7 +407,7 @@ pub fn inject_tenant_on_create(
     tenant_config: &Option<TenantConfig>,
     schema: &SchemaDefinition,
 ) {
-    if !schema.is_tenanted() {
+    if !schema.is_tenanted() || is_tenant_root(schema) {
         return;
     }
     let _config = match tenant_config {
