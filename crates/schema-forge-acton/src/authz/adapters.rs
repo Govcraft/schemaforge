@@ -189,13 +189,12 @@ pub fn build_principal_entities(
     parents.extend(group_uids);
     parents.extend(tenant_uids);
 
-    let principal_entity =
-        CedarEntity::new(principal_uid_value, attrs, parents).map_err(|e| {
-            AdapterError::UnrepresentableValue {
-                field: "principal".into(),
-                detail: e.to_string(),
-            }
-        })?;
+    let principal_entity = CedarEntity::new(principal_uid_value, attrs, parents).map_err(|e| {
+        AdapterError::UnrepresentableValue {
+            field: "principal".into(),
+            detail: e.to_string(),
+        }
+    })?;
 
     let mut all = Vec::with_capacity(1 + group_entities.len() + tenant_entities.len());
     all.push(principal_entity);

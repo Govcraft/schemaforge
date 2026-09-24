@@ -290,12 +290,23 @@ fn supported_type(field: &FieldType) -> Option<&'static str> {
     }
 }
 
-fn scoped_query(query: &Query, scope: &CedarReadScope, has_tenant: bool, schema: &SchemaDefinition) -> Query {
+fn scoped_query(
+    query: &Query,
+    scope: &CedarReadScope,
+    has_tenant: bool,
+    schema: &SchemaDefinition,
+) -> Query {
     let mut query = query.clone();
     if let CedarReadScope::TenantMembers(members) = scope {
         if has_tenant {
-            let root = schema.annotations.iter().any(|annotation| matches!(annotation,
-                schema_forge_core::types::Annotation::Tenant(schema_forge_core::types::TenantKind::Root)));
+            let root = schema.annotations.iter().any(|annotation| {
+                matches!(
+                    annotation,
+                    schema_forge_core::types::Annotation::Tenant(
+                        schema_forge_core::types::TenantKind::Root
+                    )
+                )
+            });
             let tenant = Filter::in_set(
                 FieldPath::single(if root { "id" } else { "_tenant" }),
                 members.iter().cloned().map(DynamicValue::Text).collect(),
@@ -305,7 +316,12 @@ fn scoped_query(query: &Query, scope: &CedarReadScope, has_tenant: bool, schema:
             } else {
                 // Legacy unannotated resources may carry tenant metadata. Their
                 // generated guard permits missing metadata, so retain exact parity.
-                Filter::Or { filters: vec![Filter::eq(FieldPath::single("_tenant"), DynamicValue::Null), tenant] }
+                Filter::Or {
+                    filters: vec![
+                        Filter::eq(FieldPath::single("_tenant"), DynamicValue::Null),
+                        tenant,
+                    ],
+                }
             };
             query.filter = Some(match query.filter.take() {
                 Some(filter) => Filter::And {

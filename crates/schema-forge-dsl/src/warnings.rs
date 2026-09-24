@@ -25,25 +25,39 @@ impl std::fmt::Display for EmptyAccessGrant {
 /// Comments, string contents, omitted grants and cross_tenant_read are ignored.
 /// Invalid token streams are left to the parser's error diagnostics.
 pub fn empty_access_grants(source: &str) -> Vec<EmptyAccessGrant> {
-    let Ok(tokens) = tokenize(source) else { return vec![] };
+    let Ok(tokens) = tokenize(source) else {
+        return vec![];
+    };
     let mut warnings = Vec::new();
     let mut annotation = None;
     for (index, token) in tokens.iter().enumerate() {
         if token.token == Token::At {
             annotation = tokens.get(index + 1).and_then(|name| {
-                matches!(name.text.as_str(), "access" | "field_access").then_some(name.text.as_str())
+                matches!(name.text.as_str(), "access" | "field_access")
+                    .then_some(name.text.as_str())
             });
         }
         if token.token == Token::RParen {
             annotation = None;
         }
-        let Some(annotation) = annotation else { continue };
+        let Some(annotation) = annotation else {
+            continue;
+        };
         if !matches!(token.text.as_str(), "read" | "write" | "delete") {
             continue;
         }
-        let Some(rest) = tokens.get(index + 1..index + 4) else { continue };
-        if rest[0].token == Token::Colon && rest[1].token == Token::LBracket && rest[2].token == Token::RBracket {
-            warnings.push(EmptyAccessGrant { annotation: annotation.into(), direction: token.text.clone(), span: Span::new(token.span.start, rest[2].span.end) });
+        let Some(rest) = tokens.get(index + 1..index + 4) else {
+            continue;
+        };
+        if rest[0].token == Token::Colon
+            && rest[1].token == Token::LBracket
+            && rest[2].token == Token::RBracket
+        {
+            warnings.push(EmptyAccessGrant {
+                annotation: annotation.into(),
+                direction: token.text.clone(),
+                span: Span::new(token.span.start, rest[2].span.end),
+            });
         }
     }
     warnings
@@ -67,6 +81,9 @@ mod tests {
         assert_eq!(warnings.len(), 2);
         assert_eq!(warnings[0].direction, "write");
         assert_eq!(warnings[1].annotation, "field_access");
-        assert_eq!(&source[warnings[0].span.start..warnings[0].span.end], "write: []");
+        assert_eq!(
+            &source[warnings[0].span.start..warnings[0].span.end],
+            "write: []"
+        );
     }
 }
