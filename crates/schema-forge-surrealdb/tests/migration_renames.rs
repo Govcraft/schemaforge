@@ -57,3 +57,31 @@ async fn metadata_failure_rolls_back_destructive_schema_steps() {
     );
     assert_eq!(backend.get(&original.name, &row.id).await.unwrap(), row);
 }
+
+#[tokio::test]
+async fn fresh_metadata_reads_are_empty_without_creating_tables() {
+    use schema_forge_backend::SchemaBackend;
+    use schema_forge_core::types::SchemaName;
+    let backend = schema_forge_surrealdb::SurrealBackend::connect_memory("fresh", "fresh")
+        .await
+        .unwrap();
+    assert!(backend.list_schema_metadata().await.unwrap().is_empty());
+    assert!(backend
+        .load_schema_metadata(&SchemaName::new("Missing").unwrap())
+        .await
+        .unwrap()
+        .is_none());
+    for table in ["_schema_metadata", "Missing"] {
+        let error = backend
+            .client()
+            .query(format!("SELECT * FROM {table};"))
+            .await
+            .unwrap()
+            .check()
+            .unwrap_err();
+        assert!(matches!(
+            error.not_found_details(),
+            Some(surrealdb::types::NotFoundError::Table { name }) if name == table
+        ));
+    }
+}

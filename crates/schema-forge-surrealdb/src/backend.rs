@@ -511,10 +511,7 @@ impl SchemaBackend for SurrealBackend {
         let sql = format!("SELECT definition FROM {SCHEMA_META_TABLE}:`{name_str}`;");
         let mut response = self.execute_raw(&sql).await?;
 
-        let rows: Vec<serde_json::Value> =
-            response.take(0).map_err(|e| BackendError::QueryError {
-                message: e.to_string(),
-            })?;
+        let rows = take_metadata_rows(&mut response)?;
 
         if rows.is_empty() {
             return Ok(None);
@@ -535,10 +532,7 @@ impl SchemaBackend for SurrealBackend {
         let sql = format!("SELECT definition FROM {SCHEMA_META_TABLE};");
         let mut response = self.execute_raw(&sql).await?;
 
-        let rows: Vec<serde_json::Value> =
-            response.take(0).map_err(|e| BackendError::QueryError {
-                message: e.to_string(),
-            })?;
+        let rows = take_metadata_rows(&mut response)?;
 
         let mut definitions = Vec::new();
         for row in &rows {
@@ -553,6 +547,28 @@ impl SchemaBackend for SurrealBackend {
         }
 
         Ok(definitions)
+    }
+}
+
+/// An absent metadata table represents a fresh database. Other missing resources
+/// and malformed metadata remain errors; reads never initialize database state.
+fn take_metadata_rows(
+    response: &mut surrealdb::IndexedResults,
+) -> Result<Vec<serde_json::Value>, BackendError> {
+    match response.take(0) {
+        Ok(rows) => Ok(rows),
+        Err(error)
+            if matches!(
+                error.not_found_details(),
+                Some(surrealdb::types::NotFoundError::Table { name })
+                    if name == SCHEMA_META_TABLE
+            ) =>
+        {
+            Ok(Vec::new())
+        }
+        Err(error) => Err(BackendError::QueryError {
+            message: error.to_string(),
+        }),
     }
 }
 
