@@ -551,6 +551,24 @@ mod tests {
     }
 
     #[test]
+    fn absent_declared_fields_and_tenant_are_bound_as_null() {
+        let schema = schema_forge_dsl::parse(r#"
+            @tenant(root)
+            schema Tenant {
+                optional: text @require("optional == null && _tenant == null", "expected null context")
+                copy: text @default("optional")
+                derived: boolean @compute("optional == null")
+            }
+        "#).unwrap().remove(0);
+        let mut values = BTreeMap::new();
+        apply_defaults(&schema, &mut values, None, fixed_now()).unwrap();
+        apply_computed(&schema, &mut values, None, fixed_now()).unwrap();
+        assert_eq!(check_requires(&schema, &values, None, fixed_now()), Ok(()));
+        assert_eq!(values.get("copy"), Some(&DynamicValue::Null));
+        assert_eq!(values.get("derived"), Some(&DynamicValue::Boolean(true)));
+    }
+
+    #[test]
     fn passing_require_ok() {
         let schema = schema_with(vec![text_field(
             "age",

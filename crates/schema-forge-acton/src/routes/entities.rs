@@ -831,19 +831,7 @@ fn enforce_bytes_max_size(bytes: &[u8], max_size: Option<usize>) -> Result<(), S
     }
 }
 
-/// Check every value in a write against the constraints declared on its
-/// field's type, collecting all violations into a single 422.
-///
-/// Runs at the last seam before the backend, which is what makes it
-/// complete: by this point the field map holds client JSON, `@default` and
-/// `@compute` rule output, server-injected columns, and anything a
-/// `before_*` hook substituted. Checking earlier would leave the later
-/// sources unguarded, and an unguarded violation reaches the database, whose
-/// refusal arrives as an untyped driver error and surfaces as a 502 — a
-/// retryable status for a request that can never succeed. See #133.
-///
-/// Values whose names are not in the schema (`_tenant` and friends) carry no
-/// declared constraints and are skipped.
+/// Reject missing or null required fields after server values have been applied.
 pub(crate) fn validate_required_fields(
     schema: &SchemaDefinition,
     fields: &BTreeMap<String, DynamicValue>,
@@ -872,6 +860,19 @@ pub(crate) fn validate_required_fields(
     }
 }
 
+/// Check every value in a write against the constraints declared on its
+/// field's type, collecting all violations into a single 422.
+///
+/// Runs at the last seam before the backend, which is what makes it
+/// complete: by this point the field map holds client JSON, `@default` and
+/// `@compute` rule output, server-injected columns, and anything a
+/// `before_*` hook substituted. Checking earlier would leave the later
+/// sources unguarded, and an unguarded violation reaches the database, whose
+/// refusal arrives as an untyped driver error and surfaces as a 502 — a
+/// retryable status for a request that can never succeed. See #133.
+///
+/// Values whose names are not in the schema (`_tenant` and friends) carry no
+/// declared constraints and are skipped.
 fn check_field_constraints(
     schema: &SchemaDefinition,
     fields: &BTreeMap<String, DynamicValue>,

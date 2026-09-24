@@ -124,6 +124,15 @@ async fn app_with_backend(
     schema: SchemaDefinition,
     roles: &[&str],
 ) -> Router {
+    app_with_policies(backend, schema, roles, None).await
+}
+
+async fn app_with_policies(
+    backend: Arc<dyn DynForgeBackend>,
+    schema: SchemaDefinition,
+    roles: &[&str],
+    custom_policies_dir: Option<std::path::PathBuf>,
+) -> Router {
     let service = ServiceBuilder::new()
         .with_config(Config::<SchemaForgeConfig>::default())
         .with_actor::<ForgeActor>()
@@ -141,7 +150,7 @@ async fn app_with_backend(
             hook_dispatcher: None,
             storage_registry: StorageRegistry::default(),
             policy_store: None,
-            custom_policies_dir: None,
+            custom_policies_dir,
             reply: ReplyChannel::new(tx),
         })
         .await;
@@ -1104,6 +1113,13 @@ async fn postgres_http_exact_counts_preserve_projection_and_malformed_row_fallba
 }
 
 async fn write_pipeline_fixture() -> Router {
+    write_pipeline_fixture_with_policy(&["editor"], None).await
+}
+
+async fn write_pipeline_fixture_with_policy(
+    roles: &[&str],
+    custom_policies_dir: Option<std::path::PathBuf>,
+) -> Router {
     let backend = Arc::new(
         SurrealBackend::connect_memory("writes", "writes")
             .await
@@ -1128,7 +1144,7 @@ async fn write_pipeline_fixture() -> Router {
         .await
         .unwrap();
     backend.store_schema_metadata(&schema).await.unwrap();
-    app_with_backend(backend, schema, &["editor"]).await
+    app_with_policies(backend, schema, roles, custom_policies_dir).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1155,7 +1171,7 @@ async fn write_rules_observe_only_authorized_input_and_keep_server_values() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["fields"]["stage"], "pending");
     assert_eq!(body["fields"]["literal"], "literal");
-    assert_eq!(body["fields"]["owner"], "user:editor");
+    assert_eq!(body["fields"]["owner"], "editor");
     assert_eq!(body["fields"]["has_number"], false);
     assert!(body["fields"]["number"].is_null());
     let path = format!("{base}/{}", body["id"].as_str().unwrap());
@@ -1232,5 +1248,59 @@ async fn required_fields_reject_null_and_put_does_not_apply_create_defaults() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["fields"]["owner"], "user:editor");
+    assert_eq!(body["fields"]["owner"], "editor");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_field_authorization_accepts_defaults_but_fails_closed_on_missing_policy_attributes()
+{
+    let base = "/schemas/Line/entities";
+    let app = write_pipeline_fixture_with_policy(&["manager"], None).await;
+    let (status, _, body) = request(
+        &app,
+        base,
+        "POST",
+        None,
+        serde_json::json!({"title":"line", "number":"allowed", "status":"live"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["fields"]["number"], "allowed");
+    assert_eq!(body["fields"]["has_number"], true);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("custom.cedar"),
+        r#"
+        forbid(principal, action == Action::"WriteFieldLine_number", resource is Line)
+        when { resource.stage == "blocked" };
+    "#,
+    )
+    .unwrap();
+    let app =
+        write_pipeline_fixture_with_policy(&["manager"], Some(dir.path().to_path_buf())).await;
+    for stage in [None, Some("blocked")] {
+        let mut fields = serde_json::json!({"title":"line", "number":"allowed"});
+        if let Some(stage) = stage {
+            fields["stage"] = stage.into();
+        }
+        let (status, _, body) = request(&app, base, "POST", None, fields).await;
+        if stage.is_none() {
+            // An errored forbid must not be bypassed by the generated role permit.
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        } else {
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            assert!(body["fields"]["number"].is_null());
+            assert_eq!(body["fields"]["has_number"], false);
+        }
+    }
+    let (status, _, body) = request(
+        &app,
+        base,
+        "POST",
+        None,
+        serde_json::json!({"title":"line", "stage":"open", "number":"allowed"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["fields"]["has_number"], true);
 }
