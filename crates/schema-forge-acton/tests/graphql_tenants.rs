@@ -38,7 +38,7 @@ async fn app() -> (Router, String, String) {
     .unwrap();
     for schema in &schemas {
         backend
-            .apply_migration(&schema.name, &DiffEngine::create_new(schema))
+            .apply_migration(&schema.name, &DiffEngine::create_new(schema).steps)
             .await
             .unwrap();
         backend.store_schema_metadata(schema).await.unwrap();
