@@ -45,10 +45,12 @@ pub fn forge_error_to_gql(err: ForgeError) -> async_graphql::Error {
 pub async fn resolve_get_entity<'a>(
     ctx: &ResolverContext<'a>,
     schema_name: &str,
-    schema_def: &SchemaDefinition,
+    _schema_def: &SchemaDefinition,
     type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
+    let live_definition = request_schema(gql_ctx, schema_name).await?;
+    let schema_def = &live_definition;
     let claims = gql_ctx.claims.as_ref();
 
     check_schema_access(
@@ -103,11 +105,13 @@ pub async fn resolve_get_entity<'a>(
 /// Resolve a list of entities with filter/sort/pagination.
 pub async fn resolve_list_entities<'a>(
     ctx: &ResolverContext<'a>,
-    _schema_name: &str,
-    schema_def: &SchemaDefinition,
+    schema_name: &str,
+    _schema_def: &SchemaDefinition,
     type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
+    let live_definition = request_schema(gql_ctx, schema_name).await?;
+    let schema_def = &live_definition;
     let claims = gql_ctx.claims.as_ref();
 
     check_schema_access(
@@ -353,9 +357,11 @@ async fn mutation_response(
 pub async fn resolve_delete_entity(
     ctx: &ResolverContext<'_>,
     schema_name: &str,
-    schema_def: &SchemaDefinition,
+    _schema_def: &SchemaDefinition,
 ) -> async_graphql::Result<GqlValue> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
+    let live_definition = request_schema(gql_ctx, schema_name).await?;
+    let schema_def = &live_definition;
     let claims = gql_ctx.claims.as_ref();
 
     check_schema_access(
@@ -416,7 +422,7 @@ pub async fn resolve_relation_one<'a>(
     parent: &EntityFields,
     field_name: &str,
     target_schema_name: &str,
-    target_schema_def: &SchemaDefinition,
+    _target_schema_def: &SchemaDefinition,
     target_type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
     let ref_id = match parent.fields.get(field_name) {
@@ -426,6 +432,8 @@ pub async fn resolve_relation_one<'a>(
     };
 
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
+    let live_definition = request_schema(gql_ctx, target_schema_name).await?;
+    let target_schema_def = &live_definition;
     let claims = gql_ctx.claims.as_ref();
 
     check_schema_access(
@@ -468,7 +476,7 @@ pub async fn resolve_relation_many<'a>(
     parent: &EntityFields,
     field_name: &str,
     target_schema_name: &str,
-    target_schema_def: &SchemaDefinition,
+    _target_schema_def: &SchemaDefinition,
     target_type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
     let ref_ids = match parent.fields.get(field_name) {
@@ -480,6 +488,8 @@ pub async fn resolve_relation_many<'a>(
     };
 
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
+    let live_definition = request_schema(gql_ctx, target_schema_name).await?;
+    let target_schema_def = &live_definition;
     let claims = gql_ctx.claims.as_ref();
 
     check_schema_access(
@@ -516,6 +526,15 @@ pub async fn resolve_relation_many<'a>(
     }
 
     Ok(Some(FieldValue::list(results)))
+}
+
+async fn request_schema(
+    context: &ForgeGraphqlContext,
+    name: &str,
+) -> async_graphql::Result<SchemaDefinition> {
+    context.state.registry.get(name).await.ok_or_else(|| {
+        forge_error_to_gql(ForgeError::SchemaNotFound { name: name.into() })
+    })
 }
 
 fn require_record_access(

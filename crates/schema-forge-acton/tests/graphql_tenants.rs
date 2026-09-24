@@ -6,7 +6,11 @@ use acton_service::{
     config::Config, middleware::Claims, prelude::ActorHandleInterface,
     service_builder::ServiceBuilder,
 };
-use axum::{body::Body, http::Request, Router};
+use axum::{
+    body::Body,
+    http::{Method, Request},
+    Router,
+};
 use http_body_util::BodyExt;
 use schema_forge_acton::{
     config::SchemaForgeConfig,
@@ -32,7 +36,7 @@ async fn app() -> (Router, String, String) {
         @access(read: ["member"], write: ["member"], delete: ["member"])
         schema Org { name: text required }
         @access(read: ["member"], write: ["member"])
-        schema Catalog { name: text required }
+        schema Catalog { name: text required secret: text hidden_value: text }
         "#,
     )
     .unwrap();
@@ -92,15 +96,15 @@ async fn app() -> (Router, String, String) {
         .unwrap()
         .unwrap();
     let app = extension
-        .register_graphql_routes(Router::new())
+        .register_graphql_routes(schema_forge_acton::routes::forge_routes())
         .with_state(service.state().clone());
     (app, roots.remove(0), roots.remove(0))
 }
 
-async fn query(app: &Router, query: &str, tenant: &str) -> Value {
-    let claims = Claims {
+fn test_claims(tenant: &str, roles: &[&str]) -> Claims {
+    Claims {
         sub: "user:graphql-test".into(),
-        roles: vec!["member".into()],
+        roles: roles.iter().map(|role| (*role).into()).collect(),
         perms: vec![],
         exp: 9_999_999_999,
         iat: None,
@@ -113,7 +117,11 @@ async fn query(app: &Router, query: &str, tenant: &str) -> Value {
             "tenant_chain".into(),
             json!([{"schema":"Org","entity_id":tenant}]),
         )]),
-    };
+    }
+}
+
+async fn query(app: &Router, query: &str, tenant: &str) -> Value {
+    let claims = test_claims(tenant, &["member"]);
     let mut request = Request::post("/forge/graphql")
         .header("content-type", "application/json")
         .body(Body::from(json!({"query": query}).to_string()))
@@ -166,4 +174,85 @@ async fn graphql_scopes_legacy_roots_and_keeps_shared_catalog_usable() {
         catalog["data"]["catalogs"]["items"][0]["name"], "shared",
         "{catalog}"
     );
+}
+
+async fn administer_catalog(app: &Router, method: Method, body: Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri("/schemas/Catalog")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(test_claims("", &["platform_admin"]));
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        status.is_success(),
+        "{status}: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graphql_uses_live_field_security_and_refuses_removed_schemas() {
+    let (app, tenant, _) = app().await;
+    let created = query(&app,
+        "mutation { createCatalog(input: {name: \"visible\", secret: \"restricted\", hidden_value: \"private\"}) { id } }",
+        &tenant).await;
+    let id = created["data"]["createCatalog"]["id"].as_str().unwrap();
+    let get = format!("{{ catalog(id: \"{id}\") {{ name secret hidden_value }} }}");
+    let before = query(&app, &get, &tenant).await;
+    assert_eq!(
+        before["data"]["catalog"]["secret"], "restricted",
+        "{before}"
+    );
+
+    let fields = json!([
+        {"name":"name", "field_type":"Text", "modifiers":["required"]},
+        {"name":"secret", "field_type":"Text", "annotations":[{"annotation":"FieldAccess", "read":["admin"], "write":["admin"]}]},
+        {"name":"hidden_value", "field_type":"Text", "modifiers":["hidden"]}
+    ]);
+    administer_catalog(
+        &app,
+        Method::PUT,
+        json!({"name":"Catalog", "fields":fields}),
+    )
+    .await;
+    let after = query(&app, &get, &tenant).await;
+    assert_eq!(after["data"]["catalog"]["name"], "visible", "{after}");
+    assert!(after["data"]["catalog"]["secret"].is_null(), "{after}");
+    assert!(
+        after["data"]["catalog"]["hidden_value"].is_null(),
+        "{after}"
+    );
+    let list = query(
+        &app,
+        "{ catalogs { items { name secret hidden_value } } }",
+        &tenant,
+    )
+    .await;
+    assert_eq!(
+        list["data"]["catalogs"]["items"][0]["name"], "visible",
+        "{list}"
+    );
+    assert!(
+        list["data"]["catalogs"]["items"][0]["secret"].is_null(),
+        "{list}"
+    );
+    assert!(
+        list["data"]["catalogs"]["items"][0]["hidden_value"].is_null(),
+        "{list}"
+    );
+
+    administer_catalog(&app, Method::PUT, json!({"name":"Catalog", "fields":fields,
+        "annotations":[{"annotation":"Access", "read":["admin"], "write":["admin"], "delete":["admin"], "cross_tenant_read":[]}]
+    })).await;
+    let revoked = query(&app, &get, &tenant).await;
+    assert!(revoked.get("errors").is_some(), "{revoked}");
+    administer_catalog(&app, Method::DELETE, Value::Null).await;
+    let removed = query(&app, &get, &tenant).await;
+    assert!(removed.get("errors").is_some(), "{removed}");
 }

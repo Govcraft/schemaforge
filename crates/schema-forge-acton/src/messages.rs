@@ -127,6 +127,19 @@ pub struct GetPolicyStore {
     pub reply: ReplyChannel<Option<Arc<crate::authz::PolicyStore>>>,
 }
 
+/// Coherent definitions and policies captured under the actor message barrier.
+#[derive(Clone, Debug)]
+pub struct AuthorizationSnapshot {
+    pub registry: HashMap<String, SchemaDefinition>,
+    pub policy: Arc<crate::authz::PolicyStoreSnapshot>,
+}
+
+/// Capture a request's authorization context without mixing registry versions.
+#[derive(Clone, Debug)]
+pub struct GetAuthorizationSnapshot {
+    pub reply: ReplyChannel<Option<AuthorizationSnapshot>>,
+}
+
 /// Retrieve the custom policy source selected when the actor was initialized.
 /// This includes CLI overrides and must be used for schema preflight checks.
 #[derive(Clone, Debug)]

@@ -11,3 +11,10 @@ Mutation responses use the same field projection as REST, including hidden-field
 `SchemaForgeExtension::register_graphql_routes` now accepts and returns `Router<AppState<SchemaForgeConfig>>`. Register GraphQL routes on the service router before supplying the initialized application state. The service must register and initialize `ForgeActor`, as required by the REST routes; register `HookDispatchActor` when lifecycle hooks are enabled. GraphQL no longer writes directly through a separate backend-only state.
 
 The request context carries both the schema/query state and the initialized actor-backed application state. Embedders constructing `ForgeGraphqlContext` directly must supply its new `app_state` field.
+
+GraphQL reads capture the actor's current schema definitions and Cedar policy
+bundle together at request start. Record checks, field permissions, and hidden
+field projection use that immutable request snapshot, including runtime schema
+annotation changes. Removed schemas fail closed even when their names remain in
+the structural GraphQL schema until restart. Create and update mutations still
+use the live actor-backed REST pipeline for each operation.

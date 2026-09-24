@@ -77,6 +77,12 @@ impl PolicyStore {
         }
     }
 
+    /// Pin an existing immutable snapshot for a single request.
+    #[cfg(feature = "graphql")]
+    pub(crate) fn from_snapshot(snapshot: Arc<PolicyStoreSnapshot>) -> Self {
+        Self { inner: ArcSwap::from(snapshot) }
+    }
+
     /// Returns the current snapshot. Cheap pointer-clone.
     pub fn current(&self) -> Arc<PolicyStoreSnapshot> {
         self.inner.load_full()
