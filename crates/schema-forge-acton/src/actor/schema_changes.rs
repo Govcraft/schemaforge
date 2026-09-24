@@ -69,17 +69,15 @@ pub(super) fn configure(actor: &mut ManagedActor<Idle, ForgeActor>) {
                 .insert(name.to_string(), change.definition.clone())
         };
         Reply::try_pending(async move {
-            let result = async {
-                if !change.steps.is_empty() {
-                    backend.apply_migration(&name, &change.steps).await?;
-                }
-                if !change.remove {
-                    backend.store_schema_metadata(&change.definition).await?;
-                    backend.finalize_schema_migrations().await?;
-                }
-                Ok::<(), schema_forge_backend::BackendError>(())
-            }
-            .await;
+            // HTTP DELETE unregisters the schema for this process. Preserve its
+            // existing storage lifecycle: no implicit metadata or table deletion.
+            let result = if change.remove {
+                Ok(())
+            } else {
+                backend
+                    .apply_schema_change(&name, &change.steps, Some(&change.definition))
+                    .await
+            };
             if let Err(error) = result {
                 return Err(SchemaChangeFailure {
                     name,

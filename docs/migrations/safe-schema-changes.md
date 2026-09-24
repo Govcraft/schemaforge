@@ -39,11 +39,12 @@ combined hierarchies are rejected before schema writes.
 
 Runtime schema changes validate the complete Cedar bundle before storage and
 install that exact immutable bundle after storage succeeds. Concurrent changes
-with an outdated preflight return HTTP 409 and must be retried. Storage failures
-preserve the active registry and policy bundle, but DDL, metadata, and final
-constraint reconciliation can use separate backend transactions. A later failure
-does not undo earlier committed database changes. Inspect the reported failure
-and stored schema before retrying; use a maintenance window for migrations.
+with an outdated preflight return HTTP 409 and must be retried. Runtime changes
+commit DDL, metadata, and constraint reconciliation in one backend transaction.
+Storage failures preserve the prior database state, active registry, and policy
+bundle. Backends without atomic schema-change support refuse the operation.
+CLI batches can still commit each schema separately; use a maintenance window
+for migrations.
 
 ## PostgreSQL relation integrity
 

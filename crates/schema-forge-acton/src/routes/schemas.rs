@@ -910,7 +910,8 @@ pub async fn update_schema(
     Ok(Json(schema_to_response(&new_definition)))
 }
 
-/// DELETE /schemas/{name} -- Remove a schema. Requires platform_admin role.
+/// DELETE /schemas/{name} -- Unregister a schema from the running process.
+/// Requires platform_admin. Stored metadata and entity data remain unchanged.
 #[instrument(skip_all)]
 pub async fn delete_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
