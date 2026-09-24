@@ -23,6 +23,9 @@ is pre-1.0; breaking changes bump the **minor** version per
   requests no longer emit invalid SQL. PUT rules and persisted optional values
   now agree: PUT clears omitted writable optional fields and preserves denied
   or server-managed fields. PATCH remains a partial update.
+- SQL Server updates merge supplied fields atomically, preserving omitted fields
+  and explicit nulls. Concurrent updates to different fields no longer replace
+  each other's stored values.
 - GraphQL creates and updates share the REST write pipeline. GraphQL reads,
   relations, and deletes enforce concrete Cedar decisions. Unproven raw
   GraphQL totals are withheld instead of disclosing counts of inaccessible rows.
