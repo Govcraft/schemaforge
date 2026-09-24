@@ -1365,9 +1365,38 @@ mod tests {
             schema.name.clone(),
             BTreeMap::from([("draft".into(), DynamicValue::Text("changed".into()))]),
         );
-        // A malformed full resource must never turn authorization failure
-        // into a successful empty update, even for a permitted role.
+        // Required values may still be supplied by defaults after input
+        // authorization. Absence alone is not a Cedar evaluation error.
         let incomplete = delta.clone();
+        filter_patch_fields(&store, &mut delta, &incomplete, &schema, Some(&claims)).unwrap();
+        assert_eq!(delta.fields, incomplete.fields);
+
+        // A forbid that actually reads the absent attribute must fail closed,
+        // even though the role-based permit would otherwise allow the write.
+        let store = store_for(
+            &schema,
+            Some(
+                r#"
+            forbid (
+                principal,
+                action == Action::"WriteFieldSettings_draft",
+                resource is Settings
+            ) when { resource.key == "locked" };
+        "#,
+            ),
+        );
+        let decision = crate::authz::engine::authorize_input_field(
+            &store,
+            Some(&claims),
+            &schema,
+            &incomplete,
+            "draft",
+        )
+        .unwrap();
+        assert!(
+            !decision.errors.is_empty(),
+            "reading the absent key must be a Cedar evaluation error"
+        );
         let error = filter_patch_fields(&store, &mut delta, &incomplete, &schema, Some(&claims))
             .unwrap_err();
         assert!(matches!(error, ForgeError::Forbidden { .. }));
