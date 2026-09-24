@@ -7,12 +7,10 @@ use schema_forge_core::query::{validate_filter, FieldPath, SortOrder};
 use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaName};
 
 use super::context::ForgeGraphqlContext;
-use super::input_types::{
-    filter_input_to_filter, gql_input_to_entity_fields, gql_input_to_partial_fields,
-};
+use super::input_types::filter_input_to_filter;
 use crate::access::{
-    check_schema_access, filter_entity_fields, inject_tenant_on_create, inject_tenant_scope,
-    AccessAction, FieldFilterDirection,
+    check_schema_access, filter_entity_fields, inject_tenant_scope, AccessAction,
+    FieldFilterDirection,
 };
 use crate::error::ForgeError;
 
@@ -28,6 +26,7 @@ pub struct EntityFields {
 /// Mirrors the REST-side `reject_hidden_fields_in_body` guard so a
 /// password_hash (or any other operator-marked secret) can't be supplied
 /// through the GraphQL mutation surface either.
+#[cfg(test)]
 fn reject_hidden_input(
     schema_def: &SchemaDefinition,
     input: &async_graphql::indexmap::IndexMap<async_graphql::Name, GqlValue>,
@@ -79,8 +78,13 @@ pub async fn resolve_get_entity<'a>(
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
     let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(&gql_ctx.state.policy_store, schema_def, claims, AccessAction::Read)
-        .map_err(forge_error_to_gql)?;
+    check_schema_access(
+        &gql_ctx.state.policy_store,
+        schema_def,
+        claims,
+        AccessAction::Read,
+    )
+    .map_err(forge_error_to_gql)?;
 
     let id_arg = ctx.args.try_get("id")?.string()?.to_string();
 
@@ -132,8 +136,13 @@ pub async fn resolve_list_entities<'a>(
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
     let claims = gql_ctx.claims.as_ref();
 
-    check_schema_access(&gql_ctx.state.policy_store, schema_def, claims, AccessAction::Read)
-        .map_err(forge_error_to_gql)?;
+    check_schema_access(
+        &gql_ctx.state.policy_store,
+        schema_def,
+        claims,
+        AccessAction::Read,
+    )
+    .map_err(forge_error_to_gql)?;
 
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
 
@@ -250,7 +259,8 @@ pub struct ConnectionData {
     pub total_count: Option<usize>,
 }
 
-/// Resolve create entity mutation.
+/// Resolve create through the canonical write pipeline, including authorization,
+/// defaults, rules, hooks, tenant/owner injection, and audit events.
 pub async fn resolve_create_entity<'a>(
     ctx: &ResolverContext<'a>,
     schema_name: &str,
@@ -258,131 +268,101 @@ pub async fn resolve_create_entity<'a>(
     type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let claims = gql_ctx.claims.as_ref();
-
-    check_schema_access(&gql_ctx.state.policy_store, schema_def, claims, AccessAction::Write)
-        .map_err(forge_error_to_gql)?;
-
-    let input_accessor = ctx.args.try_get("input")?;
-    let input_obj = input_accessor.object()?;
-
-    let input_map = input_obj.as_index_map();
-    reject_hidden_input(schema_def, input_map).map_err(forge_error_to_gql)?;
-
-    let mut fields = gql_input_to_entity_fields(input_map, schema_def)
-        .map_err(|errors| forge_error_to_gql(ForgeError::ValidationFailed { details: errors }))?;
-
-    // Inject tenant
-    inject_tenant_on_create(&mut fields, claims, &gql_ctx.state.tenant_config);
-
-    let schema = SchemaName::new(schema_name).map_err(|_| {
-        forge_error_to_gql(ForgeError::InvalidSchemaName {
-            name: schema_name.to_string(),
-        })
-    })?;
-
-    let mut entity = Entity::new(schema, fields);
-    filter_entity_fields(
-        &gql_ctx.state.policy_store,
-        &mut entity,
-        schema_def,
-        claims,
-        FieldFilterDirection::Write,
-    );
-
-    let mut created = gql_ctx
-        .state
-        .backend
-        .create(&entity)
-        .await
-        .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
-
-    created.strip_hidden(schema_def);
-    filter_entity_fields(
-        &gql_ctx.state.policy_store,
-        &mut created,
-        schema_def,
-        claims,
-        FieldFilterDirection::Read,
-    );
-
-    Ok(Some(entity_to_field_value(created, type_name)))
+    let response = crate::routes::entities::create_entity(
+        axum::extract::State(gql_ctx.app_state.clone()),
+        axum::extract::Path(schema_name.to_owned()),
+        crate::access::OptionalClaims(gql_ctx.claims.clone()),
+        axum::http::HeaderMap::new(),
+        axum::Json(mutation_request(ctx)?),
+    )
+    .await
+    .map_err(forge_error_to_gql)?;
+    mutation_response(response, schema_def, type_name).await
 }
 
-/// Resolve update entity mutation.
+/// GraphQL updates have patch semantics and share the REST PATCH pipeline.
 pub async fn resolve_update_entity<'a>(
     ctx: &ResolverContext<'a>,
     schema_name: &str,
     schema_def: &SchemaDefinition,
     type_name: &str,
 ) -> async_graphql::Result<Option<FieldValue<'a>>> {
+    use axum::response::IntoResponse;
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let claims = gql_ctx.claims.as_ref();
+    let id = ctx.args.try_get("id")?.string()?.to_owned();
+    let response = crate::routes::entities::patch_entity(
+        axum::extract::State(gql_ctx.app_state.clone()),
+        axum::extract::Path((schema_name.to_owned(), id)),
+        crate::access::OptionalClaims(gql_ctx.claims.clone()),
+        axum::http::HeaderMap::new(),
+        axum::Json(mutation_request(ctx)?),
+    )
+    .await
+    .map_err(forge_error_to_gql)?
+    .into_response();
+    mutation_response(response, schema_def, type_name).await
+}
 
-    check_schema_access(&gql_ctx.state.policy_store, schema_def, claims, AccessAction::Write)
-        .map_err(forge_error_to_gql)?;
+fn mutation_request(
+    ctx: &ResolverContext<'_>,
+) -> async_graphql::Result<crate::routes::entities::EntityRequest> {
+    let input = ctx.args.try_get("input")?.object()?;
+    Ok(crate::routes::entities::EntityRequest {
+        fields: input
+            .as_index_map()
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.to_string(),
+                    super::type_mapping::gql_value_to_json(value),
+                )
+            })
+            .collect(),
+    })
+}
 
-    let id_arg = ctx.args.try_get("id")?.string()?.to_string();
-
-    let schema = SchemaName::new(schema_name).map_err(|_| {
-        forge_error_to_gql(ForgeError::InvalidSchemaName {
-            name: schema_name.to_string(),
+/// Adapt the authorized REST projection, never reload the unfiltered stored row.
+async fn mutation_response(
+    response: axum::response::Response,
+    schema_def: &SchemaDefinition,
+    type_name: &str,
+) -> async_graphql::Result<Option<FieldValue<'static>>> {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .map_err(|_| {
+            forge_error_to_gql(ForgeError::Internal {
+                message: "failed to read entity mutation response".into(),
+            })
+        })?;
+    #[derive(serde::Deserialize)]
+    struct MutationProjection {
+        id: String,
+        fields: serde_json::Map<String, serde_json::Value>,
+    }
+    let response: MutationProjection = serde_json::from_slice(&bytes).map_err(|_| {
+        forge_error_to_gql(ForgeError::Internal {
+            message: "invalid entity mutation response".into(),
         })
     })?;
-
-    let entity_id = EntityId::parse(&id_arg)
-        .map_err(|_| forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() }))?;
-
-    // Record-level ownership check
-    if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
-        let existing = gql_ctx
-            .state
-            .backend
-            .get(&schema, &entity_id)
-            .await
-            .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
-        if !policy.can_modify(schema_def, c, &existing).await {
-            return Err(forge_error_to_gql(ForgeError::Forbidden {
-                message: format!("not authorized to modify entity '{id_arg}'"),
-            }));
-        }
-    }
-
-    let input_accessor = ctx.args.try_get("input")?;
-    let input_obj = input_accessor.object()?;
-
-    let input_map = input_obj.as_index_map();
-    reject_hidden_input(schema_def, input_map).map_err(forge_error_to_gql)?;
-
-    let fields = gql_input_to_partial_fields(input_map, schema_def)
-        .map_err(|errors| forge_error_to_gql(ForgeError::ValidationFailed { details: errors }))?;
-
-    let mut entity = Entity::with_id(entity_id, schema, fields);
-    filter_entity_fields(
-        &gql_ctx.state.policy_store,
-        &mut entity,
+    let fields = crate::routes::entities::json_to_entity_fields_with_mode(
         schema_def,
-        claims,
-        FieldFilterDirection::Write,
-    );
-
-    let mut updated = gql_ctx
-        .state
-        .backend
-        .update(&entity)
-        .await
-        .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
-
-    updated.strip_hidden(schema_def);
-    filter_entity_fields(
-        &gql_ctx.state.policy_store,
-        &mut updated,
-        schema_def,
-        claims,
-        FieldFilterDirection::Read,
-    );
-
-    Ok(Some(entity_to_field_value(updated, type_name)))
+        &response.fields,
+        crate::routes::entities::ConversionMode::Merge,
+    )
+    .map_err(|_| {
+        forge_error_to_gql(ForgeError::Internal {
+            message: "invalid entity mutation projection".into(),
+        })
+    })?;
+    let id = EntityId::parse(&response.id).map_err(|_| {
+        forge_error_to_gql(ForgeError::Internal {
+            message: "invalid entity mutation identifier".into(),
+        })
+    })?;
+    Ok(Some(entity_to_field_value(
+        Entity::with_id(id, schema_def.name.clone(), fields),
+        type_name,
+    )))
 }
 
 /// Resolve delete entity mutation.

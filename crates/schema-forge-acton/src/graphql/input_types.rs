@@ -24,7 +24,22 @@ pub fn build_create_input(schema: &SchemaDefinition) -> InputObject {
 
     for field in &schema.fields {
         let field_name = field.name.as_str();
-        let required = field.is_required();
+        // The write pipeline materializes defaults, computed values, and ownership.
+        // GraphQL must allow those fields to be omitted just as REST does.
+        let server_supplied = field.annotations.iter().any(|annotation| {
+            matches!(
+                annotation,
+                schema_forge_core::types::FieldAnnotation::Default { .. }
+                    | schema_forge_core::types::FieldAnnotation::Compute { .. }
+                    | schema_forge_core::types::FieldAnnotation::Owner
+            )
+        }) || field.modifiers.iter().any(|modifier| {
+            matches!(
+                modifier,
+                schema_forge_core::types::FieldModifier::Default { .. }
+            )
+        });
+        let required = field.is_required() && !server_supplied;
         let type_ref = input_field_type_ref(
             schema.name.as_str(),
             field_name,

@@ -10,6 +10,7 @@ use async_graphql::http::GraphiQLSource;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::State;
 use axum::response::{Html, IntoResponse};
+use axum::Extension;
 
 use self::context::ForgeGraphqlContext;
 use self::schema_builder::build_graphql_schema;
@@ -18,13 +19,15 @@ use crate::state::ForgeState;
 
 /// GraphQL POST handler.
 pub async fn graphql_handler(
-    State(state): State<ForgeState>,
+    State(app_state): State<acton_service::state::AppState<crate::config::SchemaForgeConfig>>,
+    Extension(state): Extension<ForgeState>,
     OptionalClaims(claims): OptionalClaims,
     req: GraphQLRequest,
 ) -> GraphQLResponse {
     let schema = state.graphql_schema.load();
     let request = req.into_inner().data(ForgeGraphqlContext {
         state: state.clone(),
+        app_state,
         claims,
     });
     schema.execute(request).await.into()
