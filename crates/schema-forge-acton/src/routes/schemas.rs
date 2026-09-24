@@ -49,6 +49,7 @@ async fn pair_with_registry(
     forge: &acton_service::prelude::ActorHandle,
     target: &mut SchemaDefinition,
 ) -> Result<(), ForgeError> {
+    validate_schema_definition(target)?;
     let (tx, rx) = oneshot::channel();
     forge
         .send(ListSchemas {
@@ -145,6 +146,16 @@ async fn precheck_policy_bundle(
         )],
     })?;
 
+    Ok(())
+}
+
+/// Reuse canonical DSL validation for annotations supplied through the JSON schema API.
+fn validate_schema_definition(definition: &SchemaDefinition) -> Result<(), ForgeError> {
+    schema_forge_dsl::parse(&schema_forge_dsl::print(definition)).map_err(|errors| {
+        ForgeError::ValidationFailed {
+            details: errors.iter().map(ToString::to_string).collect(),
+        }
+    })?;
     Ok(())
 }
 
