@@ -340,8 +340,8 @@ pub(crate) fn filter_patch_fields(
 
 /// Inject tenant scoping filter into a query.
 ///
-/// Adds `_tenant = <tenant_id>` filter based on the deepest tenant in the
-/// claims' `tenant_chain` custom claim. No-ops when:
+/// Filters child `_tenant` or root `id` by the effective tenant chain.
+/// Shared schemas are not scoped. No-ops when:
 /// - `tenant_config` is `None` or disabled
 /// - `claims` is `None`
 /// - user is `platform_admin` (bypass)
@@ -404,7 +404,8 @@ pub fn inject_tenant_scope(
 ///
 /// Sets `_tenant` to the deepest tenant entity ID in the claims'
 /// `tenant_chain` custom claim. No-ops when tenancy is disabled,
-/// claims is `None`, or the tenant chain is empty.
+/// claims is `None`, or the tenant chain is empty. Shared schemas and tenant
+/// roots are excluded; roots are stamped by [`stamp_root_tenant`].
 pub fn inject_tenant_on_create(
     fields: &mut BTreeMap<String, DynamicValue>,
     claims: Option<&Claims>,

@@ -43,7 +43,9 @@ pub fn empty_access_grants(source: &str) -> Vec<EmptyAccessGrant> {
         let Some(annotation) = annotation else {
             continue;
         };
-        if !matches!(token.text.as_str(), "read" | "write" | "delete") {
+        if !matches!(token.text.as_str(), "read" | "write" | "delete")
+            || (annotation == "field_access" && token.text == "delete")
+        {
             continue;
         }
         let Some(rest) = tokens.get(index + 1..index + 4) else {
