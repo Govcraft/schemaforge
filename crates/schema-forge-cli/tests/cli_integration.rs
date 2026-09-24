@@ -666,3 +666,44 @@ fn entity_file_clear_requires_yes_in_scripts() {
         .failure()
         .stderr(predicate::str::contains("requires --yes"));
 }
+
+#[test]
+fn help_does_not_disclose_secret_environment_values() {
+    for args in [
+        vec!["--help"],
+        vec!["parse", "--help"],
+        vec!["serve", "--help"],
+        vec!["bootstrap-admin", "--help"],
+        vec!["entity", "list", "--help"],
+    ] {
+        schema_forge()
+            .env(
+                "SCHEMA_FORGE_DB_URL",
+                "postgres://operator:HELP_SECRET_DB@localhost/test",
+            )
+            .env("FORGE_ADMIN_PASSWORD", "HELP_SECRET_SERVE")
+            .env(
+                "SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD",
+                "HELP_SECRET_BOOTSTRAP",
+            )
+            .env(
+                "SCHEMAFORGE_SERVER",
+                "https://operator:HELP_SECRET_SERVER@localhost",
+            )
+            .args(args)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("SCHEMA_FORGE_DB_URL"))
+            .stdout(predicate::str::contains("HELP_SECRET").not())
+            .stderr(predicate::str::contains("HELP_SECRET").not());
+    }
+}
+
+#[test]
+fn serve_rejects_invalid_host_before_connecting() {
+    schema_forge()
+        .args(["serve", "--host", "not-an-ip-address"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid IP address syntax"));
+}

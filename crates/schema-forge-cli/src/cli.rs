@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
@@ -57,7 +58,12 @@ pub struct GlobalOpts {
     pub no_color: bool,
 
     /// Database connection URL (auto-detects backend from scheme) [env: SCHEMA_FORGE_DB_URL]
-    #[arg(long = "db-url", global = true, env = "SCHEMA_FORGE_DB_URL")]
+    #[arg(
+        long = "db-url",
+        global = true,
+        env = "SCHEMA_FORGE_DB_URL",
+        hide_env_values = true
+    )]
     pub db_url: Option<String>,
 
     /// Database namespace (SurrealDB only) [env: SCHEMA_FORGE_DB_NS]
@@ -349,7 +355,11 @@ pub struct BootstrapAdminArgs {
     /// interactively — operators run this command from provisioning
     /// pipelines (init containers, ansible playbooks) where stdin isn't
     /// available.
-    #[arg(long = "password", env = "SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD")]
+    #[arg(
+        long = "password",
+        env = "SCHEMA_FORGE_BOOTSTRAP_ADMIN_PASSWORD",
+        hide_env_values = true
+    )]
     pub password: String,
 
     /// Display name written into the user record. Cosmetic only.
@@ -698,7 +708,7 @@ pub struct MigrateArgs {
 pub struct ServeArgs {
     /// Host address to bind
     #[arg(short = 'H', long = "host", default_value = "127.0.0.1")]
-    pub host: String,
+    pub host: IpAddr,
 
     /// Port to listen on
     #[arg(short = 'p', long = "port", default_value = "3000")]
@@ -721,7 +731,11 @@ pub struct ServeArgs {
     pub admin_user: String,
 
     /// Admin password used to bootstrap the initial user on first run.
-    #[arg(long = "admin-password", env = "FORGE_ADMIN_PASSWORD")]
+    #[arg(
+        long = "admin-password",
+        env = "FORGE_ADMIN_PASSWORD",
+        hide_env_values = true
+    )]
     pub admin_password: Option<String>,
 
     /// Seed the bundled SchemaForge demo personas (alice/bob/charlie/dana/eve)
@@ -896,7 +910,7 @@ pub struct CompletionsArgs {
 pub struct EntityConnectionArgs {
     /// Base URL of the running instance (e.g. https://forge.agency.gov). The
     /// versioned API path is appended automatically. [env: SCHEMAFORGE_SERVER]
-    #[arg(long, env = "SCHEMAFORGE_SERVER")]
+    #[arg(long, env = "SCHEMAFORGE_SERVER", hide_env_values = true)]
     pub server: Option<String>,
 
     /// API version path segment.
@@ -1496,7 +1510,7 @@ mod tests {
         ])
         .unwrap();
         if let Commands::Serve(args) = cli.command {
-            assert_eq!(args.host, "0.0.0.0");
+            assert_eq!(args.host, std::net::Ipv4Addr::UNSPECIFIED);
             assert_eq!(args.port, 8080);
             assert!(args.watch);
         } else {

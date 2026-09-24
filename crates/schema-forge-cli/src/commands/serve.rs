@@ -297,6 +297,7 @@ pub async fn run(
     // fields here. Database/SurrealDB sections are not touched here — they
     // were resolved up-front by `load_svc_config` so acton-service's pool
     // and the schema-forge backend pool see the same URL by construction.
+    svc_config.service.bind = args.host;
     svc_config.service.port = args.port;
     svc_config.service.name = "schemaforge".to_string();
 
@@ -442,7 +443,7 @@ pub async fn run(
     };
     let console_served = cfg!(feature = "embedded-console") && !args.no_console;
 
-    let bind_addr = format!("{}:{}", args.host, args.port);
+    let bind_addr = std::net::SocketAddr::new(svc_config.service.bind, svc_config.service.port);
     output.success(&format!(
         "SchemaForge server listening on http://{bind_addr}"
     ));
