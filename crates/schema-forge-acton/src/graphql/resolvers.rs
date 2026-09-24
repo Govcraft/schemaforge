@@ -546,13 +546,12 @@ fn require_record_access(
 }
 
 /// Convert an Entity to a FieldValue wrapping EntityFields.
-fn entity_to_field_value(entity: Entity, type_name: &str) -> FieldValue<'static> {
+fn entity_to_field_value(entity: Entity, _type_name: &str) -> FieldValue<'static> {
     FieldValue::owned_any(EntityFields {
         id: entity.id.clone(),
         schema: entity.schema.clone(),
         fields: entity.fields,
     })
-    .with_type(type_name.to_string())
 }
 
 #[cfg(test)]

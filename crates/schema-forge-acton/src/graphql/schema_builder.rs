@@ -389,14 +389,11 @@ fn build_output_type(
 
 /// Build a `{Schema}Connection` type.
 fn build_connection_type(connection_name: &str, item_type_name: &str) -> Object {
-    let item_tn = item_type_name.to_string();
-
     Object::new(connection_name)
         .field(Field::new(
             "items",
             TypeRef::named_nn_list(item_type_name),
             move |ctx| {
-                let item_tn = item_tn.clone();
                 FieldFuture::new(async move {
                     let conn = ctx.parent_value.try_downcast_ref::<ConnectionData>()?;
                     let items: Vec<FieldValue> = conn
@@ -408,7 +405,6 @@ fn build_connection_type(connection_name: &str, item_type_name: &str) -> Object 
                                 schema: ef.schema.clone(),
                                 fields: ef.fields.clone(),
                             })
-                            .with_type(item_tn.clone())
                         })
                         .collect();
                     Ok(Some(FieldValue::list(items)))
