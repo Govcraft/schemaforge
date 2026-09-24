@@ -29,7 +29,9 @@ is pre-1.0; breaking changes bump the **minor** version per
   and explicit nulls. Concurrent updates to different fields no longer replace
   each other's stored values.
 - GraphQL creates and updates share the REST write pipeline. GraphQL reads,
-  relations, and deletes enforce concrete Cedar decisions. Unproven raw
+  relations, and deletes enforce concrete Cedar decisions. Each request captures
+  matching live definitions and policies, so runtime field restrictions also
+  govern existing GraphQL fields. Unproven raw
   GraphQL totals are withheld instead of disclosing counts of inaccessible rows.
 - CLI help hides secret environment values, including database and server URLs.
   `serve --host` controls the actual listener and accepts validated IPv4/IPv6
