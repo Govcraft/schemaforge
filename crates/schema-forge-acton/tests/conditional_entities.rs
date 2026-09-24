@@ -18,7 +18,9 @@ use schema_forge_acton::{
     storage::StorageRegistry,
     ForgeActor,
 };
-use schema_forge_backend::{conditional::EntityRevision, entity::Entity, tenant::TenantConfig};
+use schema_forge_backend::{
+    conditional::EntityRevision, entity::Entity, tenant::TenantConfig, SchemaBackend,
+};
 use schema_forge_core::types::{
     Annotation, DynamicValue, EntityId, FieldAnnotation, FieldDefinition, FieldModifier, FieldName,
     FieldType, SchemaDefinition, SchemaId, SchemaName, TenantKind, TextConstraints,
