@@ -123,7 +123,7 @@ async fn query(app: &Router, query: &str, tenant: &str) -> Value {
     serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn graphql_scopes_legacy_roots_and_keeps_shared_catalog_usable() {
     let (app, own, foreign) = app().await;
     let get = query(

@@ -222,7 +222,7 @@ forbid (
 fn tenant_guard_forbid_policy(schema: &SchemaDefinition) -> CedarPolicy {
     let name = schema.name.as_str();
     let condition = if schema.is_tenanted() {
-        format!("resource != {name}::\"_any\" && (!(resource has \"_tenant\") || !(principal in resource[\"_tenant\"]))")
+        format!("resource != {name}::\"_any\" && !(resource has \"_tenant\" && principal in resource[\"_tenant\"])")
     } else {
         "resource has \"_tenant\" && !(principal in resource[\"_tenant\"])".to_string()
     };
