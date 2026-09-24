@@ -47,7 +47,7 @@ const ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
 async fn pair_with_registry(
     forge: &acton_service::prelude::ActorHandle,
     target: &mut SchemaDefinition,
-) -> Result<(), ForgeError> {
+) -> Result<std::collections::HashMap<String, SchemaDefinition>, ForgeError> {
     validate_schema_definition(target)?;
     let (tx, rx) = oneshot::channel();
     forge
@@ -56,6 +56,7 @@ async fn pair_with_registry(
         })
         .await;
     let mut batch = ask_forge(rx).await?;
+    let registry = batch.iter().map(|schema| (schema.name.to_string(), schema.clone())).collect();
 
     // Replace any existing entry with the same name so we pair against
     // the incoming definition — not the stale one.
@@ -88,7 +89,7 @@ async fn pair_with_registry(
     if let Some(paired) = batch.pop() {
         *target = paired;
     }
-    Ok(())
+    Ok(registry)
 }
 
 /// Dry-run the Cedar policy bundle that would result from inserting (or
@@ -104,6 +105,7 @@ async fn precheck_policy_bundle(
     target: &SchemaDefinition,
     removing: bool,
     expected_target: Option<&SchemaDefinition>,
+    paired_registry: Option<&std::collections::HashMap<String, SchemaDefinition>>,
 ) -> Result<PreparedSchemaPolicies, ForgeError> {
     let (tx, rx) = oneshot::channel();
     forge
@@ -114,7 +116,8 @@ async fn precheck_policy_bundle(
     let mut proposed = ask_forge(rx).await?;
     let expected_registry: std::collections::HashMap<_, _> = proposed.iter()
         .map(|schema| (schema.name.to_string(), schema.clone())).collect();
-    if expected_registry.get(target.name.as_str()) != expected_target {
+    if expected_registry.get(target.name.as_str()) != expected_target
+        || paired_registry.is_some_and(|registry| registry != &expected_registry) {
         return Err(ForgeError::Conflict {
             reason: "schema_preflight_stale",
             message: "schema changed while preparing the update; retry the schema change".into(),
@@ -657,12 +660,12 @@ pub async fn create_schema(
     // 4a. Run the inverse-relation pairing pass across the full registry so
     // any `-> X[]` field paired with an FK from an existing schema is marked
     // as derived before the migration plan is generated.
-    pair_with_registry(&forge, &mut definition).await?;
+    let paired_registry = pair_with_registry(&forge, &mut definition).await?;
 
     // 4b. Pre-validate the proposed Cedar bundle BEFORE running any DB
     // migration. The actor commits this immutable bundle with the storage
     // change; no policy files are read after DDL.
-    let prepared = precheck_policy_bundle(&state, &forge, &definition, false, None).await?;
+    let prepared = precheck_policy_bundle(&state, &forge, &definition, false, None, Some(&paired_registry)).await?;
 
     // 5. Generate migration plan
     let plan = DiffEngine::create_new(&definition);
@@ -866,11 +869,11 @@ pub async fn update_schema(
     // 4a. Run the inverse-relation pairing pass before diffing, so newly
     // added `-> X[]` fields are classified as derived (and therefore
     // produce no AddRelation step for a physical column).
-    pair_with_registry(&forge, &mut new_definition).await?;
+    let paired_registry = pair_with_registry(&forge, &mut new_definition).await?;
 
     // 4b. Dry-run the Cedar bundle for the proposed registry state so an
     // invalid schema fails fast — before any DB migration.
-    let prepared = precheck_policy_bundle(&state, &forge, &new_definition, false, Some(&old_schema)).await?;
+    let prepared = precheck_policy_bundle(&state, &forge, &new_definition, false, Some(&old_schema), Some(&paired_registry)).await?;
 
     // 5. Compute diff and generate migration plan
     let plan = DiffEngine::plan_update(&old_schema, &new_definition).map_err(|error| {
@@ -947,7 +950,7 @@ pub async fn delete_schema(
         .await?
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
 
-    let prepared = precheck_policy_bundle(&state, &forge, &schema, true, Some(&schema)).await?;
+    let prepared = precheck_policy_bundle(&state, &forge, &schema, true, Some(&schema), None).await?;
 
     apply_prepared_schema_change(&forge, prepared, schema, true, vec![]).await?;
 
