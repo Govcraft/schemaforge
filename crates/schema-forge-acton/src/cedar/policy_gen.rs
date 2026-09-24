@@ -214,18 +214,11 @@ forbid (
 
 /// Generates the per-schema tenant-isolation forbid.
 ///
-/// Cedar — not the query layer — is the authoritative gate on cross-tenant
-/// access. The policy fires for any per-record action when:
-///
-/// - the resource carries a `_tenant` reference (i.e., it's tenant-scoped), AND
-/// - the principal is not a member of that tenant via parent chain, AND
-/// - the principal is not `platform_admin`.
-///
-/// The `resource has "_tenant"` precondition keeps the rule inert for
-/// non-tenant resources and for the schema-level placeholder (which has no
-/// attributes), so it composes cleanly with the schema-level `@access`
-/// permits and with `inject_tenant_scope` (which stays as defense in depth
-/// at the query layer).
+/// Concrete tenanted records fail closed when `_tenant` is absent, or when
+/// the caller is outside that tenant. Root adapters derive `_tenant` from
+/// the root identity. Platform administrators and schema placeholders are
+/// exempt. Legacy untenanted resources retain their metadata-based guard.
+/// Query filters are defense in depth; Cedar remains authoritative.
 fn tenant_guard_forbid_policy(schema: &SchemaDefinition) -> CedarPolicy {
     let name = schema.name.as_str();
     let condition = if schema.is_tenanted() {

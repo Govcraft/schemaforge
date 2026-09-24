@@ -493,6 +493,9 @@ async fn tenanted_children_exclude_null_and_roots_scope_by_identity() {
             assert_eq!(result.total_count, Some(1));
             assert_eq!(result.entities.len(), 1);
             assert_eq!(result.entities[0].id, own.id);
+            execute(&backend, "ALTER TABLE \"CountProof\" DROP COLUMN _tenant").await;
+            assert!(backend.query_cedar_compatible(&schema, &Query::new(schema.id.clone()), &scope)
+                .await.unwrap().is_none());
         })
         .await;
     }

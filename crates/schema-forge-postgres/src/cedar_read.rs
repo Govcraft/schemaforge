@@ -255,7 +255,8 @@ fn certify_columns(
             )));
         }
     }
-    if !names.contains("id")
+    if (schema.is_tenanted() && !proof.has_tenant)
+        || !names.contains("id")
         || schema
             .fields
             .iter()
