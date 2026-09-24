@@ -202,7 +202,7 @@ pub async fn resolve_list_entities<'a>(
     }
 
     // Inject tenant scope
-    inject_tenant_scope(&mut query, claims, &gql_ctx.state.tenant_config);
+    inject_tenant_scope(&mut query, claims, &gql_ctx.state.tenant_config, schema_def);
 
     let result = gql_ctx
         .state

@@ -260,7 +260,13 @@ pub fn build_resource_entity(
 
     // Resource carries _tenant as a Cedar entity reference when present so
     // tenant policies can do `resource._tenant in principal`.
-    if let Some(DynamicValue::Text(tenant_id)) = entity.fields.get("_tenant") {
+    let root_tenant = DynamicValue::Text(entity.id.to_string());
+    let tenant = if crate::access::is_tenant_root(schema) {
+        Some(&root_tenant)
+    } else {
+        entity.fields.get("_tenant")
+    };
+    if let Some(DynamicValue::Text(tenant_id)) = tenant {
         let raw_uid = format!("{TENANT_TYPE}::\"{tenant_id}\"");
         if let Ok(t_uid) = EntityUid::from_str(&raw_uid) {
             attrs.insert(

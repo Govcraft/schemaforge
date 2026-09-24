@@ -228,6 +228,11 @@ forbid (
 /// at the query layer).
 fn tenant_guard_forbid_policy(schema: &SchemaDefinition) -> CedarPolicy {
     let name = schema.name.as_str();
+    let condition = if schema.is_tenanted() {
+        format!("resource != {name}::\"_any\" && (!(resource has \"_tenant\") || !(principal in resource[\"_tenant\"]))")
+    } else {
+        "resource has \"_tenant\" && !(principal in resource[\"_tenant\"])".to_string()
+    };
     CedarPolicy {
         description: format!(
             "Forbid per-record actions on {name} when the principal is not a member of the resource's tenant"
@@ -244,8 +249,7 @@ forbid (
     ],
     resource is {name}
 ) when {{
-    resource has "_tenant"
-    && !(principal in resource["_tenant"])
+    {condition}
     && !(principal in Forge::Group::"platform_admin")
 }};"#,
             lname = name.to_ascii_lowercase()

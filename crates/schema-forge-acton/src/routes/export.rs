@@ -507,7 +507,7 @@ pub async fn prepare_export(
     query = query.with_limit(probe_limit);
 
     // Same tenant injection as the query path.
-    inject_tenant_scope(&mut query, claims, tenant_config);
+    inject_tenant_scope(&mut query, claims, tenant_config, schema_def);
 
     // Execute.
     let (tx, rx) = oneshot::channel();
@@ -1289,7 +1289,7 @@ async fn resolve_export_displays(
             })
             .without_total_count();
         display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
-        inject_tenant_scope(&mut display_query, claims, tenant_config);
+        inject_tenant_scope(&mut display_query, claims, tenant_config, &target_def);
 
         let (tx, rx) = oneshot::channel();
         forge

@@ -36,6 +36,11 @@ use std::time::Duration;
 use acton_service::audit::AuditSeverity;
 use acton_service::auth::tokens::paseto_generator::PasetoGenerator;
 use acton_service::middleware::paseto::PasetoAuth;
+use acton_service::middleware::Claims;
+use schema_forge_backend::{tenant::TenantConfig, TenantRef};
+use tokio::sync::oneshot;
+use crate::actor::ForgeActor;
+use crate::messages::{GetTenantConfig, ReplyChannel};
 use acton_service::state::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -187,6 +192,33 @@ fn invite_email_subject(project_name: &str) -> String {
     format!("You've been invited to {project_name}")
 }
 
+/// Validate the signed invitation's tenant target before minting or persistence.
+fn validate_invite_tenant(
+    claims: &Claims,
+    config: Option<&TenantConfig>,
+    tenant_type: Option<&str>,
+    tenant_id: Option<&str>,
+) -> Result<(), ForgeError> {
+    let (tenant_type, tenant_id) = match (tenant_type, tenant_id) {
+        (None, None) => return Ok(()),
+        (Some(kind), Some(id)) if !kind.is_empty() && !id.is_empty() => (kind, id),
+        _ => return Err(ForgeError::ValidationFailed {
+            details: vec!["tenant_type and tenant_id must be supplied together and must not be empty".into()],
+        }),
+    };
+    if !config.is_some_and(|config| config.hierarchy.iter().any(|level| level.schema.as_str() == tenant_type)) {
+        return Err(ForgeError::ValidationFailed {
+            details: vec!["tenant_type must name a configured tenant schema".into()],
+        });
+    }
+    let chain = claims.custom_claim_as::<Vec<TenantRef>>("tenant_chain").unwrap_or_default();
+    if claims.has_role("platform_admin") || chain.iter().any(|tenant| tenant.schema == tenant_type && tenant.entity_id == tenant_id) {
+        Ok(())
+    } else {
+        Err(ForgeError::Forbidden { message: "invitation tenant is outside the caller's effective tenant scope".into() })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -216,6 +248,15 @@ pub async fn create_invite(
     check_schema_access(&policy_store, &user_schema, Some(claims), AccessAction::Create)?;
 
     validate_email(&body.email)?;
+    let forge = state.actor::<ForgeActor>().ok_or_else(|| ForgeError::Internal {
+        message: "ForgeActor not registered".into(),
+    })?;
+    let (tx, rx) = oneshot::channel();
+    forge.send(GetTenantConfig { reply: ReplyChannel::new(tx) }).await;
+    let tenant_config = rx.await.map_err(|_| ForgeError::Internal {
+        message: "ForgeActor reply channel dropped while fetching tenant configuration".into(),
+    })?;
+    validate_invite_tenant(claims, tenant_config.as_ref(), body.tenant_type.as_deref(), body.tenant_id.as_deref())?;
 
     // The invite grants a single role (or none). Apply the same role-grant
     // guards `create_user` applies to its `roles` list.
