@@ -174,6 +174,20 @@ async fn graphql_scopes_legacy_roots_and_keeps_shared_catalog_usable() {
         catalog["data"]["catalogs"]["items"][0]["name"], "shared",
         "{catalog}"
     );
+    let deleted = query(
+        &app,
+        &format!("mutation {{ deleteOrg(id: \"{own}\") }}"),
+        &own,
+    )
+    .await;
+    assert_eq!(deleted["data"]["deleteOrg"], true, "{deleted}");
+    let remaining = query(
+        &app,
+        &format!("{{ org(id: \"{foreign}\") {{ id }} }}"),
+        &foreign,
+    )
+    .await;
+    assert_eq!(remaining["data"]["org"]["id"], foreign, "{remaining}");
 }
 
 async fn administer_catalog(app: &Router, method: Method, body: Value) {

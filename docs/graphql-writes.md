@@ -1,6 +1,6 @@
 # GraphQL entity writes
 
-GraphQL `create{Schema}` and `update{Schema}` mutations use the same entity write pipeline as REST POST and PATCH. Field authorization runs before defaults, computed expressions, validation rules, and lifecycle hooks. Updates merge authorized input with stored fields before evaluating rules. A mutation containing only denied fields returns the unchanged entity, unless server-generated values change.
+GraphQL `create{Schema}`, `update{Schema}`, and `delete{Schema}` mutations use the same entity write pipelines as REST POST, PATCH, and DELETE. Field authorization runs before defaults, computed expressions, validation rules, and lifecycle hooks. Updates merge authorized input with stored fields before evaluating rules. A mutation containing only denied fields returns the unchanged entity, unless server-generated values change.
 
 Required fields supplied by a literal default, `@default`, `@compute`, or `@owner` may be omitted from create input. Required fields without a server-supplied value remain mandatory. The completed entity is validated before persistence.
 
@@ -16,5 +16,4 @@ GraphQL reads capture the actor's current schema definitions and Cedar policy
 bundle together at request start. Record checks, field permissions, and hidden
 field projection use that immutable request snapshot, including runtime schema
 annotation changes. Removed schemas fail closed even when their names remain in
-the structural GraphQL schema until restart. Create and update mutations still
-use the live actor-backed REST pipeline for each operation.
+the structural GraphQL schema until restart. All entity mutations use the live actor-backed REST pipeline for each operation.

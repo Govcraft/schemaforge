@@ -351,65 +351,21 @@ async fn mutation_response(
     )))
 }
 
-/// Resolve delete entity mutation.
+/// Resolve deletion through the canonical REST authorization, hooks, and storage pipeline.
 pub async fn resolve_delete_entity(
     ctx: &ResolverContext<'_>,
     schema_name: &str,
 ) -> async_graphql::Result<GqlValue> {
     let gql_ctx = ctx.data::<ForgeGraphqlContext>()?;
-    let live_definition = request_schema(gql_ctx, schema_name).await?;
-    let schema_def = &live_definition;
-    let claims = gql_ctx.claims.as_ref();
-
-    check_schema_access(
-        &gql_ctx.state.policy_store,
-        schema_def,
-        claims,
-        AccessAction::Delete,
+    let id = ctx.args.try_get("id")?.string()?.to_owned();
+    crate::routes::entities::delete_entity(
+        axum::extract::State(gql_ctx.app_state.clone()),
+        axum::extract::Path((schema_name.to_owned(), id)),
+        crate::access::OptionalClaims(gql_ctx.claims.clone()),
+        axum::http::HeaderMap::new(),
     )
+    .await
     .map_err(forge_error_to_gql)?;
-
-    let id_arg = ctx.args.try_get("id")?.string()?.to_string();
-
-    let schema = SchemaName::new(schema_name).map_err(|_| {
-        forge_error_to_gql(ForgeError::InvalidSchemaName {
-            name: schema_name.to_string(),
-        })
-    })?;
-
-    let entity_id = EntityId::parse(&id_arg)
-        .map_err(|_| forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() }))?;
-
-    let entity = gql_ctx
-        .state
-        .backend
-        .get(&schema, &entity_id)
-        .await
-        .map_err(|error| forge_error_to_gql(ForgeError::from(error)))?;
-    require_record_access(gql_ctx, schema_def, &entity, ActionVerb::Delete)?;
-
-    // Record-level ownership check
-    if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
-        let entity = gql_ctx
-            .state
-            .backend
-            .get(&schema, &entity_id)
-            .await
-            .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
-        if !policy.can_delete(schema_def, c, &entity).await {
-            return Err(forge_error_to_gql(ForgeError::Forbidden {
-                message: format!("not authorized to delete entity '{id_arg}'"),
-            }));
-        }
-    }
-
-    gql_ctx
-        .state
-        .backend
-        .delete(&schema, &entity_id)
-        .await
-        .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
-
     Ok(GqlValue::Boolean(true))
 }
 
