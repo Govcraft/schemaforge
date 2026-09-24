@@ -122,6 +122,9 @@ impl std::error::Error for RuleError {}
 /// "undeclared reference" eval error, which [`check_requires`] handles
 /// fail-closed.
 ///
+/// Absent non-derived schema fields and the tenant field on tenanted schemas
+/// are bound as null, allowing explicit null guards in rules.
+///
 /// A `principal` map is always bound (even when `claims` is `None`, in which
 /// case it is an empty map) so that `has(principal.sub)` is a clean `false`
 /// rather than an undeclared-reference error.
@@ -148,6 +151,8 @@ pub fn build_bindings(
     for (name, value) in fields {
         if let Ok(cel) = dynamic_to_cel(value) {
             bindings.insert(name.clone(), cel);
+        } else {
+            bindings.remove(name);
         }
         // On conversion failure we intentionally omit the binding; a predicate
         // referencing it will error and be handled fail-closed downstream.
@@ -333,13 +338,9 @@ pub fn apply_computed(
 /// This is wired into entity **creation only** — never PUT/PATCH. A default
 /// seeds an initial value; it must not silently re-materialize on later writes.
 ///
-/// ## Distinct from the static default
-///
-/// `@default("<expr>")` (this annotation, [`FieldAnnotation::Default`]) is an
-/// *expression-valued* default evaluated by the CEL engine at write time. It is
-/// entirely separate from the literal [`FieldModifier::Default`](schema_forge_core::types::FieldModifier::Default)
-/// (e.g. `default(5)`), which is applied as a storage-layer SQL `DEFAULT`. This
-/// function does not touch the static-default path, whose behavior is unchanged.
+/// Literal `default(...)` modifiers are materialized for absent fields before
+/// their CEL `@default` annotations. This makes storage defaults visible to
+/// required validation, computations, and hooks before persistence.
 ///
 /// ## Absent-vs-null
 ///
@@ -351,13 +352,11 @@ pub fn apply_computed(
 ///
 /// 1. client-supplied non-null value
 /// 2. value stamped by `@owner` / tenant / audit injection (runs before hooks)
-/// 3. value set by a before-hook
+/// 3. literal `default(...)` for an absent field
 /// 4. expression `@default`
 ///
-/// Because `apply_defaults` runs *after* owner/tenant/audit injection and after
-/// the before-hooks, and only fills absent/null fields, any of those earlier
-/// stages "wins" over `@default` for the same field — in particular `@owner`
-/// always beats `@default`.
+/// Owner/tenant/audit injection precedes defaults. Before-hooks run after all
+/// rule phases and can replace their output before final validation.
 ///
 /// ## Order relative to the other rules
 ///
