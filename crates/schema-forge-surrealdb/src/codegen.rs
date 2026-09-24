@@ -291,7 +291,22 @@ pub(crate) fn rename_field_stmts(
     if source.is_indexed() {
         statements.push(format!("REMOVE INDEX idx_{table}_{old_name} ON {table};"));
     }
-    statements.push(format!("REMOVE FIELD {old_name} ON {table};"));
+    // Remove required/default rules before unsetting the old value. Its
+    // definition stays present until the backend finishes all data writes.
+    let original_type = field_type_to_surql(&source.field_type);
+    let optional_type = if original_type == "any" || original_type.starts_with("option<") {
+        original_type
+    } else {
+        format!("option<{original_type}>")
+    };
+    let flexible = if needs_flexible(&source.field_type) {
+        "FLEXIBLE "
+    } else {
+        ""
+    };
+    statements.push(format!(
+        "DEFINE FIELD OVERWRITE {old_name} ON {table} {flexible}TYPE {optional_type};"
+    ));
     statements.push(format!("UPDATE {table} UNSET {old_name};"));
     if source.is_unique() {
         statements.push(add_unique_surql(table, new_name.as_str(), per_tenant));

@@ -11,3 +11,7 @@ Tests: DSL roundtrip and invalid rename hints, repeat apply, tenant add/remove/r
 ## Atomic runtime schema persistence followup
 
 Add apply_schema_change(name, steps, optional definition) to SchemaBackend and dynamic adapter with unsupported default. Each supported backend executes schema DDL, required validation, metadata upsert/delete, and integrity reconciliation in a single transaction. Extract existing statement/connection helpers to preserve rename behavior. PostgreSQL uses transaction-local metadata and strict FK finalization; cache invalidates only after commit. Runtime DELETE keeps its existing registry-only semantics (parent decision). Add focused rollback contracts exercising failure after DDL and metadata-only/deletion paths, run focused nextest and Clippy only; CI owns broad gates.
+
+## SurrealDB transactional rename visibility
+
+Measured SELECT snapshots show REMOVE FIELD followed by UPDATE in the same transaction discards unrelated FLEXIBLE object data. Individual statements in separate transactions do not. Preserve one transaction: copy to fully defined destination, temporarily relax source required/default constraints, unset old values while source definition still exists, defer only rename-source definition removals until all data writes finish. Regression must retain unrelated nested data and verify a later write still works, besides renamed nested data and metadata rollback.

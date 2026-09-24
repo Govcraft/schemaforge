@@ -296,6 +296,7 @@ impl SurrealBackend {
             None
         };
         let mut statements = Vec::new();
+        let mut rename_cleanup = Vec::new();
         for step in steps {
             let mut compiled = if let MigrationStep::RenameField { old_name, new_name } = step {
                 let schema = metadata
@@ -310,6 +311,10 @@ impl SurrealBackend {
                         reason: "rename source missing from stored metadata".into(),
                     }
                 })?;
+                // SurrealDB's transaction-local field refresh after REMOVE FIELD
+                // can strip unrelated object data on a later UPDATE. Complete
+                // every data write before removing renamed source definitions.
+                rename_cleanup.push(format!("REMOVE FIELD {old_name} ON {table};"));
                 crate::codegen::rename_field_stmts(
                     table,
                     field,
@@ -348,6 +353,7 @@ impl SurrealBackend {
             }
             statements.extend(compiled);
         }
+        statements.extend(rename_cleanup);
         Ok(statements)
     }
 }

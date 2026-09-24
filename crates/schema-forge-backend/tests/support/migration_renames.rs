@@ -23,6 +23,7 @@ pub async fn exercise<B: SchemaBackend + EntityStore>(backend: &B) {
                 ],
             ),
             FieldDefinition::new(FieldName::new("payload").unwrap(), FieldType::Json),
+            FieldDefinition::new(FieldName::new("unrelated").unwrap(), FieldType::Json),
         ],
         vec![],
     )
@@ -40,10 +41,12 @@ pub async fn exercise<B: SchemaBackend + EntityStore>(backend: &B) {
             BTreeMap::from([
                 ("number".into(), DynamicValue::Text("555-9999".into())),
                 ("payload".into(), nested.clone()),
+                ("unrelated".into(), nested.clone()),
             ]),
         ))
         .await
         .unwrap();
+    let stored_nested = row.fields.get("payload").cloned().unwrap();
     let mut new = old.clone();
     for (field, target) in new.fields.iter_mut().zip(["business_number", "document"]) {
         field.annotations.push(FieldAnnotation::RenamedFrom {
@@ -62,9 +65,24 @@ pub async fn exercise<B: SchemaBackend + EntityStore>(backend: &B) {
         loaded.fields.get("business_number"),
         Some(&DynamicValue::Text("555-9999".into()))
     );
-    assert_eq!(loaded.fields.get("document"), Some(&nested));
+    assert_eq!(loaded.fields.get("document"), Some(&stored_nested));
+    assert_eq!(loaded.fields.get("unrelated"), row.fields.get("unrelated"));
     assert!(!loaded.fields.contains_key("number"));
     assert!(!loaded.fields.contains_key("payload"));
     assert!(DiffEngine::diff(&new, &new).is_empty());
     backend.store_schema_metadata(&new).await.unwrap();
+    // A later ordinary write must retain both renamed and unrelated objects.
+    let updated = backend
+        .update(&Entity {
+            id: row.id.clone(),
+            schema: new.name.clone(),
+            fields: BTreeMap::from([(
+                "business_number".into(),
+                DynamicValue::Text("555-0000".into()),
+            )]),
+        })
+        .await
+        .unwrap();
+    assert_eq!(updated.fields.get("document"), Some(&stored_nested));
+    assert_eq!(updated.fields.get("unrelated"), row.fields.get("unrelated"));
 }
