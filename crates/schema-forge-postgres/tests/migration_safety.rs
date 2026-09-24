@@ -414,7 +414,7 @@ async fn atomic_schema_failure_preserves_data_and_metadata(backend: &PgBackend) 
     );
     assert_eq!(
         backend.get(&original.name, &row.id).await.unwrap(),
-        Some(row)
+        row
     );
     backend
         .apply_schema_change(&original.name, &[], None)

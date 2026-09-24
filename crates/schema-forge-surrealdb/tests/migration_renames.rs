@@ -57,6 +57,6 @@ async fn metadata_failure_rolls_back_destructive_schema_steps() {
     );
     assert_eq!(
         backend.get(&original.name, &row.id).await.unwrap(),
-        Some(row)
+        row
     );
 }

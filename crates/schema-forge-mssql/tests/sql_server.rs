@@ -315,7 +315,7 @@ async fn atomic_metadata_failure_rolls_back_rename(backend: &MssqlBackend) {
     );
     assert_eq!(
         backend.get(&original.name, &row.id).await.unwrap(),
-        Some(row)
+        row
     );
     {
         let mut connection = backend.pool().get().await.unwrap();
