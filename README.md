@@ -33,7 +33,7 @@ The repo ships a self-contained demo: an in-memory backend with twelve seeded en
 
 | Tool | Why it's needed |
 |---|---|
-| [Rust 1.75+](https://rustup.rs) | The demo builds the CLI from source |
+| [Rust 1.97.1+](https://rustup.rs) | The demo builds the CLI from source |
 | [Task](https://taskfile.dev/installation/) | Runs the bundled demo recipes |
 | [pnpm](https://pnpm.io/installation) + Node 20+ | Builds and serves the React admin |
 
@@ -88,8 +88,8 @@ project, define a schema, and serve it. If you only want to kick the tires, the
 
 ### Prerequisites
 
-- A running SurrealDB 2.x, PostgreSQL 14+, or Microsoft SQL Server instance (SurrealDB embedded mode works for development)
-- Rust 1.75+ only if you intend to build from source
+- A running SurrealDB 3.3+, PostgreSQL 14+, or Microsoft SQL Server instance (SurrealDB embedded mode works for development)
+- Rust 1.97.1+ only if you intend to build from source
 
 ### Install the Prebuilt Binary
 

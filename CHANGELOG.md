@@ -23,6 +23,8 @@ is pre-1.0; breaking changes bump the **minor** version per
   requests no longer emit invalid SQL. PUT rules and persisted optional values
   now agree: PUT clears omitted writable optional fields and preserves denied
   or server-managed fields. PATCH remains a partial update.
+- SurrealDB uses the supported 3.3 storage engine, correcting a concurrency race
+  that could let two conditional writes both succeed.
 - SQL Server updates merge supplied fields atomically, preserving omitted fields
   and explicit nulls. Concurrent updates to different fields no longer replace
   each other's stored values.
@@ -56,6 +58,9 @@ is pre-1.0; breaking changes bump the **minor** version per
   authenticated user.
 
 ### Upgrade notes
+
+Source builds use Rust 1.97.1. SurrealDB deployments require server 3.3 or newer. Upgrade remote servers before
+connecting this release; embedded development databases use the bundled engine.
 
 Review pending schema changes before restarting. Destructive startup migrations
 now require deliberate opt-in. PostgreSQL schema administration repairs missing

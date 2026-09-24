@@ -975,7 +975,7 @@ fn resolve_custom_policies_dir(
 fn build_meta_info(db_params: &DbParams) -> Arc<schema_forge_acton::MetaInfo> {
     let (backend, label) = match db_params {
         #[cfg(feature = "surrealdb")]
-        DbParams::Surrealdb(_) => ("surrealdb", "SurrealDB 2.x"),
+        DbParams::Surrealdb(_) => ("surrealdb", "SurrealDB 3.3+"),
         #[cfg(feature = "postgres")]
         DbParams::Postgres(_) => ("postgres", "PostgreSQL"),
         #[cfg(feature = "mssql")]
@@ -1190,7 +1190,7 @@ mod tests {
 
         let meta = Arc::new(schema_forge_acton::MetaInfo::new(
             "surrealdb",
-            "SurrealDB 2.x",
+            "SurrealDB 3.3+",
             3600,
         ));
         let principal_claims =
