@@ -452,6 +452,16 @@ impl fmt::Display for MigrationPlan {
 pub struct DiffEngine;
 
 impl DiffEngine {
+    /// Plan an existing schema update, rejecting transitions that need manual migration.
+    /// Production callers should use this checked entry point before any DDL or metadata write.
+    pub fn plan_update(
+        old: &crate::types::SchemaDefinition,
+        new: &crate::types::SchemaDefinition,
+    ) -> Result<MigrationPlan, MigrationError> {
+        Self::validate_transition(old, new)?;
+        Ok(Self::diff(old, new))
+    }
+
     /// Validate transitions that cannot safely be inferred from field differences.
     /// Tenant changes require a manual data backfill and constraint migration.
     pub fn validate_transition(
@@ -490,8 +500,10 @@ impl DiffEngine {
         Ok(())
     }
 
-    /// Compare two schema definitions and produce a migration plan.
+    /// Compute an unchecked structural diff of two schema definitions.
     ///
+    /// This compatibility API does not validate tenancy transitions or rename hints.
+    /// Use [`Self::plan_update`] for executable migration plans.
     /// This is a pure function: no I/O, no side effects.
     #[instrument(skip(old, new), fields(old_schema = %old.name.as_str(), new_schema = %new.name.as_str()))]
     pub fn diff(

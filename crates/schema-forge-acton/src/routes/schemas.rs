@@ -798,12 +798,11 @@ pub async fn update_schema(
     precheck_policy_bundle(&state, &forge, &new_definition, false).await?;
 
     // 5. Compute diff and generate migration plan
-    DiffEngine::validate_transition(&old_schema, &new_definition).map_err(|error| {
+    let plan = DiffEngine::plan_update(&old_schema, &new_definition).map_err(|error| {
         ForgeError::ValidationFailed {
             details: vec![error.to_string()],
         }
     })?;
-    let plan = DiffEngine::diff(&old_schema, &new_definition);
     if plan.has_destructive_steps() && !body.allow_destructive_migrations {
         return Err(ForgeError::ValidationFailed { details: vec![format!("destructive schema update refused: {}; set allow_destructive_migrations=true to acknowledge data loss", plan.steps.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))] });
     }

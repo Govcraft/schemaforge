@@ -154,12 +154,9 @@ pub async fn run(
                 .map_err(CliError::Backend)?;
 
             let plan = if let Some(old) = existing {
-                DiffEngine::validate_transition(&old, schema).map_err(|error| {
-                    CliError::Config {
-                        message: error.to_string(),
-                    }
-                })?;
-                DiffEngine::diff(&old, schema)
+                DiffEngine::plan_update(&old, schema).map_err(|error| CliError::Config {
+                    message: error.to_string(),
+                })?
             } else {
                 DiffEngine::create_new(schema)
             };

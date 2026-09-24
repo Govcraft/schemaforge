@@ -22,18 +22,17 @@ impl SchemaUpdate {
     ) -> Result<Self, CliError> {
         let mut schema = desired.clone();
         if let Some(existing) = existing {
-            DiffEngine::validate_transition(existing, desired).map_err(|error| {
-                CliError::Config {
-                    message: error.to_string(),
-                }
-            })?;
             schema.id = existing.id.clone();
         }
         let metadata_changed = existing != Some(&schema);
-        let migration = existing.map_or_else(
-            || DiffEngine::create_new(&schema),
-            |existing| DiffEngine::diff(existing, &schema),
-        );
+        let migration = existing
+            .map_or_else(
+                || Ok(DiffEngine::create_new(&schema)),
+                |existing| DiffEngine::plan_update(existing, &schema),
+            )
+            .map_err(|error| CliError::Config {
+                message: error.to_string(),
+            })?;
         Ok(Self {
             schema,
             migration,
