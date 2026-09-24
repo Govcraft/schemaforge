@@ -18,9 +18,7 @@ use schema_forge_acton::{
     storage::StorageRegistry,
     ForgeActor,
 };
-use schema_forge_backend::{
-    conditional::EntityRevision, entity::Entity, tenant::TenantConfig, SchemaBackend,
-};
+use schema_forge_backend::{conditional::EntityRevision, entity::Entity, tenant::TenantConfig};
 use schema_forge_core::types::{
     Annotation, DynamicValue, EntityId, FieldAnnotation, FieldDefinition, FieldModifier, FieldName,
     FieldType, SchemaDefinition, SchemaId, SchemaName, TenantKind, TextConstraints,
@@ -1122,6 +1120,7 @@ async fn write_pipeline_fixture_with_policy(
     roles: &[&str],
     custom_policies_dir: Option<std::path::PathBuf>,
 ) -> Router {
+    use schema_forge_backend::SchemaBackend;
     let backend = Arc::new(
         SurrealBackend::connect_memory("writes", "writes")
             .await
@@ -1309,6 +1308,7 @@ async fn create_field_authorization_accepts_defaults_but_fails_closed_on_missing
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn put_omission_matches_persisted_values_and_preserves_denied_fields() {
+    use schema_forge_backend::SchemaBackend;
     for role in ["editor", "manager"] {
         let backend = Arc::new(SurrealBackend::connect_memory("put", "put").await.unwrap());
         let schema = schema_forge_dsl::parse(
@@ -1362,6 +1362,7 @@ async fn put_omission_matches_persisted_values_and_preserves_denied_fields() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn denied_inputs_cannot_authorize_other_fields() {
+    use schema_forge_backend::SchemaBackend;
     let backend = Arc::new(
         SurrealBackend::connect_memory("field_auth", "field_auth")
             .await
