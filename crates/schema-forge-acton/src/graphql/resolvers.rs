@@ -12,8 +12,8 @@ use crate::access::{
     check_schema_access, filter_entity_fields, inject_tenant_scope, AccessAction,
     FieldFilterDirection,
 };
-use crate::error::ForgeError;
 use crate::authz::{authorize, namespace::ActionVerb};
+use crate::error::ForgeError;
 
 /// Entity data stored in resolver parent values.
 pub struct EntityFields {
@@ -60,7 +60,11 @@ pub fn forge_error_to_gql(err: ForgeError) -> async_graphql::Error {
         ForgeError::SchemaNotFound { .. } | ForgeError::EntityNotFound { .. } => "NOT_FOUND",
         ForgeError::Forbidden { .. } => "FORBIDDEN",
         ForgeError::Unauthorized { .. } => "UNAUTHORIZED",
-        ForgeError::ValidationFailed { .. } => "VALIDATION_ERROR",
+        ForgeError::ValidationFailed { .. } | ForgeError::HookAborted { .. } => "VALIDATION_ERROR",
+        ForgeError::Conflict { .. }
+        | ForgeError::UniqueViolation { .. }
+        | ForgeError::ForeignKeyViolation { .. }
+        | ForgeError::SchemaAlreadyExists { .. } => "CONFLICT",
         ForgeError::InvalidQuery { .. }
         | ForgeError::InvalidSchemaName { .. }
         | ForgeError::InvalidEntityId { .. } => "BAD_REQUEST",
@@ -214,10 +218,14 @@ pub async fn resolve_list_entities<'a>(
         .map_err(|e| forge_error_to_gql(ForgeError::from(e)))?;
 
     // Canonical Cedar decisions apply even without a custom record policy.
-    let authorized = result.entities.into_iter().filter(|entity| {
-        require_record_access(gql_ctx, schema_def, entity, ActionVerb::Read).is_ok()
-            && require_record_access(gql_ctx, schema_def, entity, ActionVerb::List).is_ok()
-    }).collect();
+    let authorized = result
+        .entities
+        .into_iter()
+        .filter(|entity| {
+            require_record_access(gql_ctx, schema_def, entity, ActionVerb::Read).is_ok()
+                && require_record_access(gql_ctx, schema_def, entity, ActionVerb::List).is_ok()
+        })
+        .collect();
     // Record-level access filtering
     let visible_entities =
         if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
@@ -401,7 +409,11 @@ pub async fn resolve_delete_entity(
     let entity_id = EntityId::parse(&id_arg)
         .map_err(|_| forge_error_to_gql(ForgeError::InvalidEntityId { id: id_arg.clone() }))?;
 
-    let entity = gql_ctx.state.backend.get(&schema, &entity_id).await
+    let entity = gql_ctx
+        .state
+        .backend
+        .get(&schema, &entity_id)
+        .await
         .map_err(|error| forge_error_to_gql(ForgeError::from(error)))?;
     require_record_access(gql_ctx, schema_def, &entity, ActionVerb::Delete)?;
 
@@ -519,7 +531,8 @@ pub async fn resolve_relation_many<'a>(
     let mut results = Vec::new();
     for ref_id in ref_ids {
         if let Ok(mut entity) = gql_ctx.state.backend.get(&target_schema, &ref_id).await {
-            if require_record_access(gql_ctx, target_schema_def, &entity, ActionVerb::Read).is_err() {
+            if require_record_access(gql_ctx, target_schema_def, &entity, ActionVerb::Read).is_err()
+            {
                 continue;
             }
             entity.strip_hidden(target_schema_def);
@@ -543,10 +556,24 @@ fn require_record_access(
     entity: &Entity,
     action: ActionVerb,
 ) -> async_graphql::Result<()> {
-    let decision = authorize(&context.state.policy_store, context.claims.as_ref(), action, schema, Some(entity))
-        .map_err(|_| forge_error_to_gql(ForgeError::Forbidden { message: "could not authorize entity".into() }))?;
-    if decision.is_allow() && decision.errors.is_empty() { Ok(()) } else {
-        Err(forge_error_to_gql(ForgeError::Forbidden { message: "not authorized for this entity".into() }))
+    let decision = authorize(
+        &context.state.policy_store,
+        context.claims.as_ref(),
+        action,
+        schema,
+        Some(entity),
+    )
+    .map_err(|_| {
+        forge_error_to_gql(ForgeError::Forbidden {
+            message: "could not authorize entity".into(),
+        })
+    })?;
+    if decision.is_allow() && decision.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(forge_error_to_gql(ForgeError::Forbidden {
+            message: "not authorized for this entity".into(),
+        }))
     }
 }
 
@@ -563,6 +590,15 @@ fn entity_to_field_value(entity: Entity, type_name: &str) -> FieldValue<'static>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreign_key_conflict_is_not_an_internal_graphql_error() {
+        let error = forge_error_to_gql(ForgeError::ForeignKeyViolation {
+            schema: "Pet".into(),
+            constraint: "Pet_owner_fkey".into(),
+        });
+        assert_eq!(extension_code(&error).as_deref(), Some("CONFLICT"));
+    }
 
     fn extension_code(err: &async_graphql::Error) -> Option<String> {
         err.extensions
