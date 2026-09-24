@@ -255,7 +255,8 @@ async fn custom_policy_field_contract_refuses_mutations_before_storage_changes()
         desired
     );
 
-    // A storage rejection restores the provisional registry before replying.
+    // A later storage rejection rolls back earlier DDL and restores the
+    // provisional registry before replying. Field removal precedes the index.
     std::fs::write(directory.path().join("contract.cedar"),
         r#"forbid (principal is Forge::Principal, action == Action::"ReadThing", resource is Thing) when { resource.code == "secret" };"#).unwrap();
     backend
@@ -263,6 +264,9 @@ async fn custom_policy_field_contract_refuses_mutations_before_storage_changes()
         .await
         .unwrap();
     let mut invalid = desired.clone();
+    invalid
+        .fields
+        .retain(|field| field.name.as_str() != "label");
     invalid
         .fields
         .iter_mut()
@@ -288,6 +292,10 @@ async fn custom_policy_field_contract_refuses_mutations_before_storage_changes()
         .unwrap()
         .is_err());
     assert!(Arc::ptr_eq(&policies.current(), &desired_policy));
+    assert_eq!(
+        backend.get(&schema.name, &entity.id).await.unwrap().fields["label"],
+        DynamicValue::Text("untouched".into())
+    );
     let (tx, rx) = oneshot::channel();
     forge
         .send(GetSchema {
