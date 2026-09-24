@@ -28,7 +28,7 @@ is pre-1.0; breaking changes bump the **minor** version per
 - SQL Server updates merge supplied fields atomically, preserving omitted fields
   and explicit nulls. Concurrent updates to different fields no longer replace
   each other's stored values.
-- GraphQL creates and updates share the REST write pipeline. GraphQL reads,
+- GraphQL creates, updates, and deletes share the REST mutation pipeline. GraphQL reads,
   relations, and deletes enforce concrete Cedar decisions. Each request captures
   matching live definitions and policies, so runtime field restrictions also
   govern existing GraphQL fields. Unproven raw
@@ -61,7 +61,7 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Upgrade notes
 
-Source builds use Rust 1.97.1. SurrealDB deployments require server 3.3 or newer. Upgrade remote servers before
+Source builds use Rust 1.97.1. SurrealDB deployments require a stable 3.x server at version 3.3 or newer. Upgrade remote servers before
 connecting this release; embedded development databases use the bundled engine.
 
 Review pending schema changes before restarting. Destructive startup migrations
