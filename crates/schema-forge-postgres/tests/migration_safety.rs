@@ -249,6 +249,8 @@ async fn exercise(backend: &PgBackend) {
         Some(&DynamicValue::Enum("new".into()))
     );
 
+    exercise_manual_tenancy(backend).await;
+
     // Legacy orphan values must fail repair visibly rather than weakening integrity.
     sqlx::query("ALTER TABLE \"Pet\" DROP CONSTRAINT \"Pet_owner_fkey\"")
         .execute(backend.pool())
@@ -261,5 +263,120 @@ async fn exercise(backend: &PgBackend) {
     assert!(matches!(
         backend.finalize_schema_migrations().await,
         Err(BackendError::MigrationFailed { .. })
+    ));
+}
+
+async fn exercise_manual_tenancy(backend: &PgBackend) {
+    use schema_forge_core::types::{Annotation, FieldModifier, TenantKind};
+    let mut root = definition("TenantOrg", None);
+    root.annotations.push(Annotation::Tenant(TenantKind::Root));
+    apply(backend, &root).await;
+    let tenant = backend
+        .create(&Entity::new(
+            root.name.clone(),
+            BTreeMap::from([("label".into(), DynamicValue::Text("first".into()))]),
+        ))
+        .await
+        .unwrap();
+    let mut old = definition("TenantContact", None);
+    old.fields[0].modifiers.push(FieldModifier::Unique);
+    apply(backend, &old).await;
+    let original = backend
+        .create(&Entity::new(
+            old.name.clone(),
+            BTreeMap::from([("label".into(), DynamicValue::Text("retained".into()))]),
+        ))
+        .await
+        .unwrap();
+    let mut child = old.clone();
+    child
+        .annotations
+        .push(Annotation::Tenant(TenantKind::Child {
+            parent: root.name.clone(),
+        }));
+    assert!(DiffEngine::plan_update(&old, &child).is_err());
+    assert!(backend.store_schema_metadata(&child).await.is_err());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_attribute WHERE attrelid='\"TenantContact\"'::regclass AND attname='_tenant'").fetch_one(backend.pool()).await.unwrap();
+    assert_eq!(count, 0);
+
+    // The documented manual path commits ownership, physical uniqueness and canonical metadata together.
+    let mut tx = backend.pool().begin().await.unwrap();
+    for statement in [
+        "LOCK TABLE \"TenantContact\", \"TenantOrg\", \"_schema_metadata\" IN ACCESS EXCLUSIVE MODE",
+        "ALTER TABLE \"TenantContact\" ADD COLUMN _tenant TEXT",
+        "ALTER TABLE \"TenantContact\" DROP CONSTRAINT \"uq_TenantContact_label\"",
+        "CREATE INDEX \"idx_TenantContact_tenant\" ON \"TenantContact\" (_tenant)",
+        "CREATE UNIQUE INDEX \"uq_TenantContact_label\" ON \"TenantContact\" (_tenant, label)",
+    ] { sqlx::query(statement).execute(&mut *tx).await.unwrap(); }
+    sqlx::query("UPDATE \"TenantContact\" SET _tenant = $1")
+        .bind(tenant.id.as_str())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let invalid: i64 = sqlx::query_scalar("SELECT count(*) FROM \"TenantContact\" c LEFT JOIN \"TenantOrg\" o ON c._tenant=o.id WHERE c._tenant IS NULL OR o.id IS NULL").fetch_one(&mut *tx).await.unwrap();
+    assert_eq!(invalid, 0);
+    let updated = sqlx::query("UPDATE \"_schema_metadata\" SET definition=jsonb_set(definition, '{annotations}', $1) WHERE name='TenantContact'").bind(serde_json::to_value(&child.annotations).unwrap()).execute(&mut *tx).await.unwrap();
+    assert_eq!(updated.rows_affected(), 1);
+    tx.commit().await.unwrap();
+    backend.store_schema_metadata(&child).await.unwrap();
+    let stored = backend
+        .load_schema_metadata(&child.name)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(DiffEngine::plan_update(&stored, &child).unwrap().is_empty());
+    assert_eq!(
+        backend
+            .get(&child.name, &original.id)
+            .await
+            .unwrap()
+            .fields
+            .get("label"),
+        Some(&DynamicValue::Text("retained".into()))
+    );
+    let other = backend
+        .create(&Entity::new(
+            root.name.clone(),
+            BTreeMap::from([("label".into(), DynamicValue::Text("second".into()))]),
+        ))
+        .await
+        .unwrap();
+    backend
+        .create(&Entity::new(
+            child.name.clone(),
+            BTreeMap::from([
+                ("label".into(), DynamicValue::Text("retained".into())),
+                ("_tenant".into(), DynamicValue::Text(other.id.to_string())),
+            ]),
+        ))
+        .await
+        .unwrap();
+    let duplicate = Entity::new(
+        child.name.clone(),
+        BTreeMap::from([
+            ("label".into(), DynamicValue::Text("retained".into())),
+            ("_tenant".into(), DynamicValue::Text(tenant.id.to_string())),
+        ]),
+    );
+    assert!(matches!(
+        backend.create(&duplicate).await,
+        Err(BackendError::UniqueViolation { .. })
+    ));
+    // Disabling tenant scoping cannot silently discard cross-tenant duplicate values.
+    let mut tx = backend.pool().begin().await.unwrap();
+    sqlx::query("DROP INDEX \"uq_TenantContact_label\"")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert!(sqlx::query(
+        "ALTER TABLE \"TenantContact\" ADD CONSTRAINT \"uq_TenantContact_label\" UNIQUE(label)"
+    )
+    .execute(&mut *tx)
+    .await
+    .is_err());
+    tx.rollback().await.unwrap();
+    assert!(matches!(
+        backend.create(&duplicate).await,
+        Err(BackendError::UniqueViolation { .. })
     ));
 }
