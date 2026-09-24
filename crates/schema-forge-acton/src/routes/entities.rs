@@ -831,6 +831,64 @@ fn enforce_bytes_max_size(bytes: &[u8], max_size: Option<usize>) -> Result<(), S
     }
 }
 
+/// Reevaluate retained input against the resource after every denied-field removal.
+/// Each pass removes keys, so authorization reaches a stable result in finite time.
+fn filter_update_input(
+    store: &Arc<crate::authz::PolicyStore>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+    existing: &Entity,
+    supplied: &mut Entity,
+) -> Result<(), ForgeError> {
+    loop {
+        let mut candidate = existing.clone();
+        candidate.fields.extend(supplied.fields.clone());
+        let before = supplied.fields.len();
+        filter_patch_fields(store, supplied, &candidate, schema, claims)?;
+        if supplied.fields.len() == before {
+            return Ok(());
+        }
+    }
+}
+
+fn filter_create_input(
+    store: &Arc<crate::authz::PolicyStore>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+    supplied: &mut Entity,
+) -> Result<(), ForgeError> {
+    loop {
+        let mut denied = Vec::new();
+        for name in supplied.fields.keys() {
+            if schema
+                .field(name)
+                .is_none_or(|field| field.has_owner() || field.field_access().is_none())
+            {
+                continue;
+            }
+            let decision =
+                crate::authz::engine::authorize_create_field(store, claims, schema, supplied, name)
+                    .map_err(|_| ForgeError::Forbidden {
+                        message: "Could not authorize a supplied field.".into(),
+                    })?;
+            if !decision.errors.is_empty() {
+                return Err(ForgeError::Forbidden {
+                    message: "Could not authorize a supplied field.".into(),
+                });
+            }
+            if !decision.is_allow() {
+                denied.push(name.clone());
+            }
+        }
+        if denied.is_empty() {
+            return Ok(());
+        }
+        for name in denied {
+            supplied.fields.remove(&name);
+        }
+    }
+}
+
 /// Reject missing or null required fields after server values have been applied.
 pub(crate) fn validate_required_fields(
     schema: &SchemaDefinition,
@@ -2509,36 +2567,7 @@ pub async fn create_entity(
         &schema_def,
     );
     inject_owner_on_create(&mut supplied.fields, &schema_def, claims.as_ref());
-    let mut denied = Vec::new();
-    for name in body.fields.keys() {
-        if schema_def
-            .field(name)
-            .is_none_or(|field| field.field_access().is_none())
-        {
-            continue;
-        }
-        let decision = crate::authz::engine::authorize_create_field(
-            &policy_store,
-            claims.as_ref(),
-            &schema_def,
-            &supplied,
-            name,
-        )
-        .map_err(|_| ForgeError::Forbidden {
-            message: "Could not authorize a supplied field.".into(),
-        })?;
-        if !decision.errors.is_empty() {
-            return Err(ForgeError::Forbidden {
-                message: "Could not authorize a supplied field.".into(),
-            });
-        }
-        if !decision.is_allow() {
-            denied.push(name.clone());
-        }
-    }
-    for name in denied {
-        supplied.fields.remove(&name);
-    }
+    filter_create_input(&policy_store, &schema_def, claims.as_ref(), &mut supplied)?;
     // Server-owned values are injected again after caller input filtering.
     stamp_root_tenant(&mut supplied, &schema_def);
     fields = supplied.fields;
@@ -3386,15 +3415,13 @@ pub async fn update_entity(
         }
     }
     let proposed_names: Vec<_> = fields.keys().cloned().collect();
-    let mut candidate = existing.clone();
-    candidate.fields.extend(fields.clone());
     let mut supplied = Entity::with_id(entity_id.clone(), schema_name.clone(), fields);
-    filter_patch_fields(
+    filter_update_input(
         &policy_store,
-        &mut supplied,
-        &candidate,
         &schema_def,
         claims.as_ref(),
+        &existing,
+        &mut supplied,
     )?;
     fields = supplied.fields;
     for name in proposed_names {
@@ -3685,15 +3712,13 @@ pub async fn patch_entity(
     strip_owner_on_update(&mut patch_fields, &schema_def);
     strip_tenant_on_update(&mut patch_fields, &schema_def, claims.as_ref());
 
-    let mut candidate = existing.clone();
-    candidate.fields.extend(patch_fields.clone());
     let mut supplied = Entity::with_id(entity_id.clone(), schema_name.clone(), patch_fields);
-    filter_patch_fields(
+    filter_update_input(
         &policy_store,
-        &mut supplied,
-        &candidate,
         &schema_def,
         claims.as_ref(),
+        &existing,
+        &mut supplied,
     )?;
     patch_fields = supplied.fields;
 

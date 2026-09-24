@@ -1357,3 +1357,76 @@ async fn put_omission_matches_persisted_values_and_preserves_denied_fields() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn denied_inputs_cannot_authorize_other_fields() {
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("field_auth", "field_auth")
+            .await
+            .unwrap(),
+    );
+    let schema = schema_forge_dsl::parse(
+        r#"
+        @access(read: ["editor"], write: ["editor"], delete: ["editor"])
+        schema Pair {
+            title: text required
+            value: text @field_access(read: ["editor"], write: ["editor"])
+            gate: text @field_access(read: ["editor"], write: ["manager"])
+        }
+    "#,
+    )
+    .unwrap()
+    .remove(0);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    let seed = Entity::new(
+        schema.name.clone(),
+        BTreeMap::from([
+            ("title".into(), DynamicValue::Text("original".into())),
+            ("value".into(), DynamicValue::Text("original".into())),
+            ("gate".into(), DynamicValue::Text("locked".into())),
+        ]),
+    );
+    DynEntityStore::create(backend.as_ref(), &seed)
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("custom.cedar"),
+        r#"
+        forbid(principal, action == Action::"WriteFieldPair_value", resource is Pair)
+        when { !(resource has gate && resource.gate == "unlocked") };
+    "#,
+    )
+    .unwrap();
+    let app = app_with_policies(backend, schema, &["editor"], Some(dir.path().to_path_buf())).await;
+    let path = format!("/schemas/Pair/entities/{}", seed.id);
+    for method in ["PATCH", "PUT"] {
+        let (status, _, body) = request(
+            &app,
+            &path,
+            method,
+            None,
+            serde_json::json!({"title":"updated", "value":"attacker", "gate":"unlocked"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["fields"]["value"], "original");
+        assert_eq!(body["fields"]["gate"], "locked");
+    }
+    let (status, _, body) = request(
+        &app,
+        "/schemas/Pair/entities",
+        "POST",
+        None,
+        serde_json::json!({"title":"new", "value":"attacker", "gate":"unlocked"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body["fields"]["value"].is_null());
+    assert!(body["fields"]["gate"].is_null());
+}
