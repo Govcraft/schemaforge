@@ -133,6 +133,20 @@ async fn app_with_policies(
     roles: &[&str],
     custom_policies_dir: Option<std::path::PathBuf>,
 ) -> Router {
+    let policy_store = custom_policies_dir.as_ref().map(|directory| {
+        use schema_forge_acton::authz::{
+            PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,
+        };
+        Arc::new(PolicyStore::new(
+            PolicyStoreSnapshot::from_schemas(
+                std::slice::from_ref(&schema),
+                Some(directory),
+                RoleRanks::empty(),
+                PrincipalClaimMappings::default(),
+            )
+            .unwrap(),
+        ))
+    });
     let service = ServiceBuilder::new()
         .with_config(Config::<SchemaForgeConfig>::default())
         .with_actor::<ForgeActor>()
@@ -149,7 +163,7 @@ async fn app_with_policies(
             record_access_policy: None,
             hook_dispatcher: None,
             storage_registry: StorageRegistry::default(),
-            policy_store: None,
+            policy_store,
             custom_policies_dir,
             reply: ReplyChannel::new(tx),
         })

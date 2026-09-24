@@ -867,7 +867,7 @@ fn filter_create_input(
                 continue;
             }
             let decision =
-                crate::authz::engine::authorize_create_field(store, claims, schema, supplied, name)
+                crate::authz::engine::authorize_input_field(store, claims, schema, supplied, name)
                     .map_err(|_| ForgeError::Forbidden {
                         message: "Could not authorize a supplied field.".into(),
                     })?;

@@ -286,9 +286,9 @@ pub fn authorize_field(
     authorize_field_resource(store, claims, schema, entity, field_name, direction, true)
 }
 
-/// Authorize caller input before defaults can complete the new resource.
+/// Authorize provisional caller input before server rules and final validation.
 /// Policies reading unavailable attributes fail closed at the caller.
-pub(crate) fn authorize_create_field(
+pub(crate) fn authorize_input_field(
     store: &Arc<PolicyStore>,
     claims: Option<&Claims>,
     schema: &SchemaDefinition,

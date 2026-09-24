@@ -318,7 +318,7 @@ pub(crate) fn filter_patch_fields(
             continue;
         }
         let decision =
-            authorize_field(store, claims, schema, resource, name, FieldDirection::Write).map_err(
+            crate::authz::engine::authorize_input_field(store, claims, schema, resource, name).map_err(
                 |_| ForgeError::Forbidden {
                     message: "Could not authorize a patched field.".into(),
                 },
