@@ -1147,6 +1147,7 @@ async fn write_pipeline_fixture_with_policy(
             stage: text required @default("'pending'")
             literal: text required default("literal")
             owner: text required @owner
+            guarded: text required @default("'locked'") @field_access(read: ["editor", "manager"], write: ["manager"])
             optional: text @require("optional == null || size(optional) > 2", "optional too short")
             number: text @field_access(read: ["editor", "manager"], write: ["manager"])
             status: text @default("'pending'") @require("status != 'live' || number != null", "live needs number")
@@ -1233,6 +1234,20 @@ async fn required_fields_reject_null_and_put_does_not_apply_create_defaults() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let path = format!("{base}/{}", body["id"].as_str().unwrap());
+    let (status, _, body) = request(
+        &app,
+        &path,
+        "PATCH",
+        None,
+        serde_json::json!({"guarded":null}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "denied null must not be validated as accepted input: {body}"
+    );
+    assert_eq!(body["fields"]["guarded"], "locked");
     for method in ["PATCH", "PUT"] {
         let (status, _, body) = request(
             &app,
