@@ -807,6 +807,19 @@ impl Parser {
         self.expect(&Token::At)?;
         let name_tok = self.expect_ident("field annotation name")?;
         match name_tok.text.as_str() {
+            "renamed_from" => {
+                self.expect(&Token::LParen)?;
+                let value = self.expect_string_literal()?;
+                let name = FieldName::new(unquote_string(&value.text)).map_err(|error| {
+                    DslError::UnexpectedToken {
+                        expected: "valid previous field name".into(),
+                        found: error.to_string(),
+                        span: value.span,
+                    }
+                })?;
+                self.expect(&Token::RParen)?;
+                Ok(FieldAnnotation::RenamedFrom { name })
+            }
             "owner" => Ok(FieldAnnotation::Owner),
             "hidden" => Ok(FieldAnnotation::Hidden),
             "field_access" => {
@@ -915,14 +928,13 @@ impl Parser {
                     }
                     self.expect(&Token::Colon)?;
                     let hint_tok = self.expect_ident("flatten hint (json)")?;
-                    let flatten =
-                        ExportFlatten::from_str(&hint_tok.text).map_err(|()| {
-                            DslError::UnknownExportFlatten {
-                                value: hint_tok.text.clone(),
-                                valid: VALID_EXPORT_FLATTEN,
-                                span: hint_tok.span.clone(),
-                            }
-                        })?;
+                    let flatten = ExportFlatten::from_str(&hint_tok.text).map_err(|()| {
+                        DslError::UnknownExportFlatten {
+                            value: hint_tok.text.clone(),
+                            valid: VALID_EXPORT_FLATTEN,
+                            span: hint_tok.span.clone(),
+                        }
+                    })?;
                     self.expect(&Token::RParen)?;
                     Ok(FieldAnnotation::Exportable {
                         flatten: Some(flatten),
@@ -1481,7 +1493,8 @@ impl Parser {
         // type-check pass keys on top-level schema field names).
         let mut composite_rule_sites: Vec<RuleSite> = Vec::new();
         let mut composite_exportable_sites: Vec<ExportableSite> = Vec::new();
-        let fields = self.parse_fields(&mut composite_rule_sites, &mut composite_exportable_sites)?;
+        let fields =
+            self.parse_fields(&mut composite_rule_sites, &mut composite_exportable_sites)?;
 
         // `@exportable` is a top-level field opt-in; a composite sub-field cannot
         // carry it (the whole composite is exported as a single value). Reject it

@@ -389,7 +389,8 @@ fn print_field_annotation(annotation: &FieldAnnotation, output: &mut String) {
             output.push(')');
         }
         FieldAnnotation::Hidden => output.push_str("@hidden"),
-        FieldAnnotation::Require { .. }
+        FieldAnnotation::RenamedFrom { .. }
+        | FieldAnnotation::Require { .. }
         | FieldAnnotation::Compute { .. }
         | FieldAnnotation::Default { .. }
         | FieldAnnotation::Exportable { .. } => {
@@ -1247,8 +1248,7 @@ schema S {
         let reparsed = crate::parser::parse(&printed).unwrap();
         for i in 0..3 {
             assert_eq!(
-                parsed[0].fields[i].annotations,
-                reparsed[0].fields[i].annotations,
+                parsed[0].fields[i].annotations, reparsed[0].fields[i].annotations,
                 "annotation mismatch on field {i}"
             );
         }

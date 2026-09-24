@@ -16,9 +16,17 @@ pub(super) struct SchemaUpdate {
 
 impl SchemaUpdate {
     /// Preserve stored identity when comparing freshly parsed definitions.
-    pub fn plan(existing: Option<&SchemaDefinition>, desired: &SchemaDefinition) -> Self {
+    pub fn plan(
+        existing: Option<&SchemaDefinition>,
+        desired: &SchemaDefinition,
+    ) -> Result<Self, CliError> {
         let mut schema = desired.clone();
         if let Some(existing) = existing {
+            DiffEngine::validate_transition(existing, desired).map_err(|error| {
+                CliError::Config {
+                    message: error.to_string(),
+                }
+            })?;
             schema.id = existing.id.clone();
         }
         let metadata_changed = existing != Some(&schema);
@@ -26,11 +34,11 @@ impl SchemaUpdate {
             || DiffEngine::create_new(&schema),
             |existing| DiffEngine::diff(existing, &schema),
         );
-        Self {
+        Ok(Self {
             schema,
             migration,
             metadata_changed,
-        }
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -218,6 +226,36 @@ mod tests {
                     )
                     .await
                 }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tenancy_changes_never_write_even_with_force() {
+        for force in [false, true] {
+            for dry_run in [false, true] {
+                let original = schema("schema Contact { phone: text unique }");
+                let backend = Backend::seeded(original.clone());
+                let result = super::super::apply::apply_to_backend(
+                    &ApplyArgs {
+                        paths: vec![],
+                        force,
+                        dry_run,
+                        with_policies: false,
+                        prepare_record_revisions: false,
+                    },
+                    &[schema(
+                        r#"@tenant(parent: "Org") schema Contact { phone: text unique }"#,
+                    )],
+                    &backend,
+                    &output(),
+                )
+                .await;
+                assert!(matches!(result, Err(CliError::Config { .. })));
+                let stored = backend.stored.lock().unwrap();
+                assert_eq!(stored.migrations, 0);
+                assert_eq!(stored.writes, 0);
+                assert_eq!(stored.schema.as_ref(), Some(&original));
             }
         }
     }

@@ -16,6 +16,12 @@ use crate::error::BackendError;
 /// Uses RPITIT (return position impl Trait in trait) for async methods,
 /// avoiding the `async-trait` crate.
 pub trait SchemaBackend: Send + Sync {
+    /// Finish cross-schema constraints after applying a batch, including legacy repair.
+    /// Called only during explicit schema administration, never on a read connection.
+    fn finalize_schema_migrations(&self) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Whether explicit preparation of record revisions is available.
     fn supports_record_revisions(&self) -> bool {
         false

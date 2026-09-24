@@ -102,6 +102,38 @@ impl SchemaBackend for MssqlBackend {
         }
         let mut connection = connection(&self.pool).await?;
         for step in steps {
+            if let MigrationStep::RenameField { old_name, new_name } = step {
+                // DynamicValue encodes every value as an object, including arrays and null.
+                // JSON_QUERY preserves that object rather than escaping it into a string.
+                let old_path = format!("$.\"{old_name}\"");
+                let new_path = format!("$.\"{new_name}\"");
+                let sql = format!(
+                    r#"SET XACT_ABORT ON;
+                    BEGIN TRY
+                      BEGIN TRANSACTION;
+                      IF EXISTS (SELECT 1 FROM [dbo].{table} WITH (UPDLOCK, HOLDLOCK)
+                                 WHERE JSON_QUERY([data], @P1) IS NOT NULL AND JSON_QUERY([data], @P2) IS NOT NULL)
+                        THROW 50001, 'rename destination already contains data', 1;
+                      UPDATE [dbo].{table}
+                      SET [data] = JSON_MODIFY(JSON_MODIFY([data], @P2, JSON_QUERY([data], @P1)), @P1, NULL)
+                      WHERE JSON_QUERY([data], @P1) IS NOT NULL;
+                      COMMIT TRANSACTION;
+                    END TRY
+                    BEGIN CATCH
+                      IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                      THROW;
+                    END CATCH;"#,
+                    table = quote(schema_name.as_str())
+                );
+                connection
+                    .execute(&sql, &[&old_path.as_str(), &new_path.as_str()])
+                    .await
+                    .map_err(|error| BackendError::MigrationFailed {
+                        step: step.to_string(),
+                        reason: error.to_string(),
+                    })?;
+                continue;
+            }
             if let MigrationStep::ChangeType {
                 name,
                 transform: ValueTransform::NullRemovedEnumVariants { variants },
@@ -156,6 +188,13 @@ impl SchemaBackend for MssqlBackend {
         &self,
         definition: &SchemaDefinition,
     ) -> Result<(), BackendError> {
+        if let Some(existing) = self.load_schema_metadata(&definition.name).await? {
+            schema_forge_core::migration::DiffEngine::validate_transition(&existing, definition)
+                .map_err(|error| BackendError::MigrationFailed {
+                    step: "validate schema transition".into(),
+                    reason: error.to_string(),
+                })?;
+        }
         let json = serde_json::to_string(definition).map_err(json_error)?;
         let sql = format!(
             "MERGE [dbo].[{METADATA}] AS target \

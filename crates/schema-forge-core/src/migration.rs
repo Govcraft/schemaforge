@@ -452,6 +452,44 @@ impl fmt::Display for MigrationPlan {
 pub struct DiffEngine;
 
 impl DiffEngine {
+    /// Validate transitions that cannot safely be inferred from field differences.
+    /// Tenant changes require a manual data backfill and constraint migration.
+    pub fn validate_transition(
+        old: &crate::types::SchemaDefinition,
+        new: &crate::types::SchemaDefinition,
+    ) -> Result<(), MigrationError> {
+        let tenancy = |schema: &crate::types::SchemaDefinition| {
+            schema.annotations.iter().find_map(|annotation| {
+                if let Annotation::Tenant(kind) = annotation {
+                    Some(kind.clone())
+                } else {
+                    None
+                }
+            })
+        };
+        if tenancy(old) != tenancy(new) {
+            return Err(MigrationError::ManualMigrationRequired { reason: format!("schema '{}': changing @tenant requires a manual migration of _tenant, tenant backfill, unique constraints, and stored schema metadata; automatic migration refused", new.name) });
+        }
+        let mut sources = std::collections::HashSet::new();
+        for field in &new.fields {
+            for annotation in &field.annotations {
+                if let crate::types::FieldAnnotation::RenamedFrom { name } = annotation {
+                    let source_exists = old.field(name.as_str()).is_some();
+                    let target_exists = old.field(field.name.as_str()).is_some();
+                    if name == &field.name
+                        || !sources.insert(name)
+                        || new.field(name.as_str()).is_some()
+                        || (source_exists && target_exists)
+                        || (!source_exists && !target_exists)
+                    {
+                        return Err(MigrationError::ManualMigrationRequired { reason: format!("invalid @renamed_from(\"{name}\") on '{}': source must identify one removed field and target one new field (or an already completed rename)", field.name) });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Compare two schema definitions and produce a migration plan.
     ///
     /// This is a pure function: no I/O, no side effects.
@@ -460,7 +498,25 @@ impl DiffEngine {
         old: &crate::types::SchemaDefinition,
         new: &crate::types::SchemaDefinition,
     ) -> MigrationPlan {
-        Self::diff_with_renames(old, new, &[])
+        let renames: Vec<_> = new
+            .fields
+            .iter()
+            .flat_map(|field| {
+                field
+                    .annotations
+                    .iter()
+                    .filter_map(|annotation| match annotation {
+                        crate::types::FieldAnnotation::RenamedFrom { name }
+                            if old.field(name.as_str()).is_some()
+                                && old.field(field.name.as_str()).is_none() =>
+                        {
+                            Some((name.clone(), field.name.clone()))
+                        }
+                        _ => None,
+                    })
+            })
+            .collect();
+        Self::diff_with_renames(old, new, &renames)
     }
 
     /// Compare two schema definitions with explicit rename hints.
@@ -900,6 +956,8 @@ impl DiffEngine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MigrationError {
+    /// This transition requires an explicit manual migration.
+    ManualMigrationRequired { reason: String },
     /// The migration ID string could not be parsed.
     InvalidMigrationId(String),
     /// Attempted to apply a destructive migration without confirmation.
@@ -921,6 +979,7 @@ pub enum MigrationError {
 impl fmt::Display for MigrationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ManualMigrationRequired { reason } => write!(f, "{reason}"),
             Self::InvalidMigrationId(s) => {
                 write!(f, "invalid migration id: {s}")
             }

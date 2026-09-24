@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "crates/schema-forge-mssql/**"
+      - "crates/schema-forge-core/**"
+      - "crates/schema-forge-backend/tests/support/migration_renames.rs"
       - "crates/schema-forge-cli/Cargo.toml"
       - "crates/schema-forge-acton/Cargo.toml"
       - "Cargo.lock"
@@ -84,9 +86,12 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install nextest
+        run: cargo install cargo-nextest --locked
+
       - name: Run SQL Server integration test
         env:
           TEST_NAME: ${{ matrix.test }}
         run: >-
-          cargo test --package schema-forge-mssql --test sql_server
-          "$TEST_NAME" -- --ignored --exact --nocapture
+          cargo nextest run --package schema-forge-mssql --test sql_server
+          --run-ignored only -E "test(=$TEST_NAME)"

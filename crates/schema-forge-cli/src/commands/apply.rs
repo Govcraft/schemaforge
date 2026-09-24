@@ -45,7 +45,7 @@ pub(super) async fn apply_to_backend(
     for schema in schemas {
         let existing = backend.load_schema_metadata(&schema.name).await?;
 
-        let update = SchemaUpdate::plan(existing.as_ref(), schema);
+        let update = SchemaUpdate::plan(existing.as_ref(), schema)?;
         let plan = &update.migration;
         if update.is_empty() {
             output.status(&format!("  {} .... no changes", schema.name.as_str()));
@@ -137,6 +137,10 @@ pub(super) async fn apply_to_backend(
         }
         total_steps += plan.steps.len();
         applied_schemas += 1;
+    }
+
+    if !args.dry_run {
+        backend.finalize_schema_migrations().await?;
     }
 
     // Generate policies if requested

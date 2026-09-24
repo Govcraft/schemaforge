@@ -1,3 +1,6 @@
+#[path = "../../schema-forge-backend/tests/support/migration_renames.rs"]
+mod migration_renames;
+
 #[path = "../../schema-forge-backend/tests/support/data_correctness.rs"]
 mod data_correctness;
 
@@ -61,6 +64,7 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
 
     exercises_backend_contract(&backend).await;
     data_correctness::exercise(&backend).await;
+    migration_renames::exercise(&backend).await;
 }
 
 async fn exercises_backend_contract(backend: &MssqlBackend) {

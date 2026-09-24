@@ -62,6 +62,22 @@ async fn pair_with_registry(
     batch.retain(|s| s.name.as_str() != target.name.as_str());
     batch.push(target.clone());
 
+    for field in &target.fields {
+        if let FieldType::Relation {
+            target: related, ..
+        } = &field.field_type
+        {
+            if !batch.iter().any(|schema| &schema.name == related) {
+                return Err(ForgeError::ValidationFailed {
+                    details: vec![format!(
+                        "relation '{}.{}' references missing schema '{related}'",
+                        target.name, field.name
+                    )],
+                });
+            }
+        }
+    }
+
     schema_forge_core::inverse_relations::pair_inverse_relations(&mut batch).map_err(|e| {
         ForgeError::ValidationFailed {
             details: vec![e.to_string()],
@@ -113,7 +129,9 @@ async fn precheck_policy_bundle(
         principal_claims,
     )
     .map_err(|e| ForgeError::ValidationFailed {
-        details: vec![format!("Cedar policy validation failed for proposed schema: {e}")],
+        details: vec![format!(
+            "Cedar policy validation failed for proposed schema: {e}"
+        )],
     })?;
 
     Ok(())
@@ -123,9 +141,11 @@ async fn precheck_policy_bundle(
 async fn fetch_policy_store(
     state: &AppState<SchemaForgeConfig>,
 ) -> Result<std::sync::Arc<crate::authz::PolicyStore>, ForgeError> {
-    let forge = state.actor::<ForgeActor>().ok_or_else(|| ForgeError::Internal {
-        message: "ForgeActor not registered".into(),
-    })?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ForgeActor not registered".into(),
+        })?;
     let (tx, rx) = oneshot::channel();
     forge
         .send(crate::messages::GetPolicyStore {
@@ -174,6 +194,9 @@ fn require_admin(claims: &Claims) -> Result<(), ForgeError> {
 /// Request body for creating a schema.
 #[derive(Debug, Deserialize)]
 pub struct CreateSchemaRequest {
+    /// Explicit acknowledgement that an update may drop stored data.
+    #[serde(default)]
+    pub allow_destructive_migrations: bool,
     /// The schema name (must be PascalCase).
     pub name: String,
     /// The field definitions.
@@ -356,11 +379,11 @@ fn parse_map_field_type(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<FieldType, ForgeError> {
     let data = obj.get("data").and_then(|d| d.as_object());
-    let value_json = data
-        .and_then(|d| d.get("value"))
-        .ok_or_else(|| ForgeError::ValidationFailed {
-            details: vec!["Map field type requires a 'value' type in 'data'".to_string()],
-        })?;
+    let value_json =
+        data.and_then(|d| d.get("value"))
+            .ok_or_else(|| ForgeError::ValidationFailed {
+                details: vec!["Map field type requires a 'value' type in 'data'".to_string()],
+            })?;
     let value = parse_field_type(value_json)?;
 
     if let Some(key_json) = data.and_then(|d| d.get("key")) {
@@ -577,11 +600,9 @@ pub async fn create_schema(
             reply: ReplyChannel::new(tx),
         })
         .await;
-    ask_forge(rx)
-        .await?
-        .map_err(|err| ForgeError::Internal {
-            message: format!("Cedar policy recompile failed during schema insertion: {err}"),
-        })?;
+    ask_forge(rx).await?.map_err(|err| ForgeError::Internal {
+        message: format!("Cedar policy recompile failed during schema insertion: {err}"),
+    })?;
 
     // 9. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -761,7 +782,7 @@ pub async fn update_schema(
         old_schema.id.clone(),
         schema_name.clone(),
         fields,
-        Vec::<Annotation>::new(),
+        old_schema.annotations.clone(),
     )
     .map_err(|e| ForgeError::ValidationFailed {
         details: vec![e.to_string()],
@@ -777,7 +798,15 @@ pub async fn update_schema(
     precheck_policy_bundle(&state, &forge, &new_definition, false).await?;
 
     // 5. Compute diff and generate migration plan
+    DiffEngine::validate_transition(&old_schema, &new_definition).map_err(|error| {
+        ForgeError::ValidationFailed {
+            details: vec![error.to_string()],
+        }
+    })?;
     let plan = DiffEngine::diff(&old_schema, &new_definition);
+    if plan.has_destructive_steps() && !body.allow_destructive_migrations {
+        return Err(ForgeError::ValidationFailed { details: vec![format!("destructive schema update refused: {}; set allow_destructive_migrations=true to acknowledge data loss", plan.steps.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))] });
+    }
 
     // 6. Apply migration steps via actor
     let step_count = plan.steps.len();
@@ -812,11 +841,9 @@ pub async fn update_schema(
             reply: ReplyChannel::new(tx),
         })
         .await;
-    ask_forge(rx)
-        .await?
-        .map_err(|err| ForgeError::Internal {
-            message: format!("Cedar policy recompile failed during schema update: {err}"),
-        })?;
+    ask_forge(rx).await?.map_err(|err| ForgeError::Internal {
+        message: format!("Cedar policy recompile failed during schema update: {err}"),
+    })?;
 
     // 9. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -890,11 +917,9 @@ pub async fn delete_schema(
             reply: ReplyChannel::new(tx),
         })
         .await;
-    ask_forge(rx)
-        .await?
-        .map_err(|err| ForgeError::Internal {
-            message: format!("Cedar policy recompile failed during schema deletion: {err}"),
-        })?;
+    ask_forge(rx).await?.map_err(|err| ForgeError::Internal {
+        message: format!("Cedar policy recompile failed during schema deletion: {err}"),
+    })?;
 
     // 3. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module

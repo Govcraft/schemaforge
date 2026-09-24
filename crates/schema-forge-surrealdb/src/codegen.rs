@@ -274,6 +274,35 @@ pub fn field_assertions(field_type: &FieldType) -> Vec<String> {
     }
 }
 
+/// Preserve the field's physical type and constraints while copying its values.
+pub(crate) fn rename_field_stmts(
+    table: &str,
+    source: &FieldDefinition,
+    new_name: &schema_forge_core::types::FieldName,
+    per_tenant: bool,
+) -> Vec<String> {
+    let old_name = &source.name;
+    let mut destination = source.clone();
+    destination.name = new_name.clone();
+    let mut statements = define_field_stmts(table, &destination);
+    statements.push(format!("UPDATE {table} SET {new_name} = {old_name};"));
+    if source.is_unique() {
+        statements.push(format!(
+            "REMOVE INDEX {} ON {table};",
+            unique_index_name(table, old_name.as_str())
+        ));
+    }
+    if source.is_indexed() {
+        statements.push(format!("REMOVE INDEX idx_{table}_{old_name} ON {table};"));
+    }
+    statements.push(format!("REMOVE FIELD {old_name} ON {table};"));
+    statements.push(format!("UPDATE {table} UNSET {old_name};"));
+    if source.is_unique() {
+        statements.push(add_unique_surql(table, new_name.as_str(), per_tenant));
+    }
+    statements
+}
+
 /// Generate a complete DEFINE FIELD statement (possibly multiple for composites).
 pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
     let name = &field.name;

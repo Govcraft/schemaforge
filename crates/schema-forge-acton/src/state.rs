@@ -27,6 +27,13 @@ use tokio::sync::RwLock;
 /// RPITIT traits cannot be used as `dyn Trait`. This wrapper uses boxed futures
 /// to enable dynamic dispatch for HTTP handler state.
 pub trait DynSchemaBackend: Send + Sync {
+    /// Finish cross-schema constraints after explicit schema administration.
+    fn finalize_schema_migrations(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Whether this adapter can explicitly prepare record revisions.
     fn supports_record_revisions(&self) -> bool {
         false
@@ -73,6 +80,14 @@ pub trait DynSchemaBackend: Send + Sync {
 
 /// Blanket impl: any concrete `SchemaBackend` automatically implements `DynSchemaBackend`.
 impl<T: SchemaBackend + 'static> DynSchemaBackend for T {
+    fn finalize_schema_migrations(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + '_>> {
+        Box::pin(SyncFuture::new(SchemaBackend::finalize_schema_migrations(
+            self,
+        )))
+    }
+
     fn supports_record_revisions(&self) -> bool {
         SchemaBackend::supports_record_revisions(self)
     }

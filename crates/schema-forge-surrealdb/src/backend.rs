@@ -277,16 +277,19 @@ impl SchemaBackend for SurrealBackend {
         steps: &[MigrationStep],
     ) -> Result<(), BackendError> {
         let table = schema_name.as_str();
-        let needs_enum_metadata = steps.iter().any(|step| {
-            matches!(
-                step,
-                MigrationStep::ChangeType {
-                    old_type: FieldType::Enum(_),
-                    new_type: FieldType::Enum(_),
-                    ..
-                }
-            )
-        });
+        let needs_enum_metadata = steps
+            .iter()
+            .any(|step| matches!(step, MigrationStep::RenameField { .. }))
+            || steps.iter().any(|step| {
+                matches!(
+                    step,
+                    MigrationStep::ChangeType {
+                        old_type: FieldType::Enum(_),
+                        new_type: FieldType::Enum(_),
+                        ..
+                    }
+                )
+            });
         let metadata = if needs_enum_metadata {
             self.load_schema_metadata(schema_name).await?
         } else {
@@ -294,7 +297,28 @@ impl SchemaBackend for SurrealBackend {
         };
         let mut statements = Vec::new();
         for step in steps {
-            let mut compiled = migration_step_to_surql(table, step);
+            let mut compiled = if let MigrationStep::RenameField { old_name, new_name } = step {
+                let schema = metadata
+                    .as_ref()
+                    .ok_or_else(|| BackendError::MigrationFailed {
+                        step: step.to_string(),
+                        reason: "rename requires stored schema metadata".into(),
+                    })?;
+                let field = schema.field(old_name.as_str()).ok_or_else(|| {
+                    BackendError::MigrationFailed {
+                        step: step.to_string(),
+                        reason: "rename source missing from stored metadata".into(),
+                    }
+                })?;
+                crate::codegen::rename_field_stmts(
+                    table,
+                    field,
+                    new_name,
+                    schema.unique_scoped_by_tenant(),
+                )
+            } else {
+                migration_step_to_surql(table, step)
+            };
             if let MigrationStep::ChangeType {
                 name,
                 old_type: FieldType::Enum(_),
@@ -343,6 +367,13 @@ impl SchemaBackend for SurrealBackend {
         &self,
         definition: &SchemaDefinition,
     ) -> Result<(), BackendError> {
+        if let Some(existing) = self.load_schema_metadata(&definition.name).await? {
+            schema_forge_core::migration::DiffEngine::validate_transition(&existing, definition)
+                .map_err(|error| BackendError::MigrationFailed {
+                    step: "validate schema transition".into(),
+                    reason: error.to_string(),
+                })?;
+        }
         let json = serde_json::to_string(definition).map_err(|e| BackendError::Internal {
             message: format!("failed to serialize schema metadata: {e}"),
         })?;

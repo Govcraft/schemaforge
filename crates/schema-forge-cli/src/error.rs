@@ -81,7 +81,7 @@ pub enum CliError {
     DirectoryExists { path: PathBuf },
 
     /// Non-TTY requires --force for destructive operations.
-    #[error("destructive changes require --force in non-interactive mode")]
+    #[error("destructive changes require --force in non-interactive mode; for field renames declare @renamed_from(\"old_name\") to preserve data")]
     RequiresForce,
 
     /// HTTP server errors.

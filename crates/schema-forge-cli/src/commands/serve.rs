@@ -146,6 +146,7 @@ pub async fn run(
     let mut registry = init_data.registry;
     if !schemas.is_empty() {
         output.status("Applying schemas...");
+        let mut plans = Vec::new();
         for schema in &schemas {
             let existing = backend_arc
                 .load_schema_metadata(&schema.name)
@@ -153,11 +154,22 @@ pub async fn run(
                 .map_err(CliError::Backend)?;
 
             let plan = if let Some(old) = existing {
+                DiffEngine::validate_transition(&old, schema).map_err(|error| {
+                    CliError::Config {
+                        message: error.to_string(),
+                    }
+                })?;
                 DiffEngine::diff(&old, schema)
             } else {
                 DiffEngine::create_new(schema)
             };
 
+            if plan.has_destructive_steps() && !args.allow_destructive_migrations {
+                return Err(CliError::Config { message: format!("schema '{}': destructive startup migration refused: {}. Declare field renames with @renamed_from(\"old_name\") or explicitly pass --allow-destructive-migrations", schema.name, plan.steps.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")) });
+            }
+            plans.push(plan);
+        }
+        for (schema, plan) in schemas.iter().zip(plans) {
             if !plan.is_empty() {
                 backend_arc
                     .apply_migration(&schema.name, &plan.steps)
@@ -177,6 +189,11 @@ pub async fn run(
             registry.insert(schema.name.as_str().to_string(), schema.clone());
         }
     }
+
+    backend_arc
+        .finalize_schema_migrations()
+        .await
+        .map_err(CliError::Backend)?;
 
     // Rebuild tenant config after applying parsed schemas
     let all_schemas: Vec<_> = registry.values().cloned().collect();

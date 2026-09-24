@@ -706,6 +706,10 @@ pub struct MigrateArgs {
 /// Arguments for `schema-forge serve`.
 #[derive(Args)]
 pub struct ServeArgs {
+    /// Allow startup migrations that drop fields or data; use @renamed_from for renames.
+    #[arg(long)]
+    pub allow_destructive_migrations: bool,
+
     /// Host address to bind
     #[arg(short = 'H', long = "host", default_value = "127.0.0.1")]
     pub host: IpAddr,

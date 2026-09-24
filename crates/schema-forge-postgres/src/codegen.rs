@@ -97,9 +97,11 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
             )]
         }
         MigrationStep::RenameField { old_name, new_name } => {
-            vec![format!(
-                "ALTER TABLE \"{table}\" RENAME COLUMN \"{old_name}\" TO \"{new_name}\";"
-            )]
+            vec![
+                format!("ALTER TABLE \"{table}\" RENAME COLUMN \"{old_name}\" TO \"{new_name}\";"),
+                format!("ALTER INDEX IF EXISTS \"uq_{table}_{old_name}\" RENAME TO \"uq_{table}_{new_name}\";"),
+                format!("ALTER INDEX IF EXISTS \"idx_{table}_{old_name}\" RENAME TO \"idx_{table}_{new_name}\";"),
+            ]
         }
         MigrationStep::ChangeType {
             name,
@@ -162,12 +164,12 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
         }
         MigrationStep::AddRelation {
             name,
-            target,
+            target: _,
             cardinality,
         } => match cardinality {
             Cardinality::One => {
                 vec![format!(
-                    "ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS \"{name}\" TEXT REFERENCES \"{target}\"(\"id\");"
+                    "ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS \"{name}\" TEXT;"
                 )]
             }
             Cardinality::Many => {
@@ -177,7 +179,7 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
             }
             _ => {
                 vec![format!(
-                    "ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS \"{name}\" TEXT REFERENCES \"{target}\"(\"id\");"
+                    "ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS \"{name}\" TEXT;"
                 )]
             }
         },
@@ -641,7 +643,7 @@ mod tests {
             new_name: FieldName::new("full_name").unwrap(),
         };
         let stmts = migration_step_to_sql("Contact", &step);
-        assert_eq!(stmts.len(), 1);
+        assert_eq!(stmts.len(), 3);
         assert_eq!(
             stmts[0],
             "ALTER TABLE \"Contact\" RENAME COLUMN \"name\" TO \"full_name\";"
@@ -678,7 +680,8 @@ mod tests {
         };
         let stmts = migration_step_to_sql("Contact", &step);
         assert_eq!(stmts.len(), 1);
-        assert!(stmts[0].contains("\"company\" TEXT REFERENCES \"Company\"(\"id\")"));
+        assert!(stmts[0].contains("\"company\" TEXT;"));
+        assert!(!stmts[0].contains("REFERENCES"));
     }
 
     #[test]

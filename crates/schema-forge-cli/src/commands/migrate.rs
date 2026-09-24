@@ -45,7 +45,7 @@ pub(super) async fn migrate_on_backend(
         }
 
         let existing = backend.load_schema_metadata(&schema.name).await?;
-        let update = SchemaUpdate::plan(existing.as_ref(), schema);
+        let update = SchemaUpdate::plan(existing.as_ref(), schema)?;
         let plan = &update.migration;
 
         if update.is_empty() {
@@ -177,6 +177,8 @@ pub(super) async fn migrate_on_backend(
 
             update.persist(backend).await?;
         }
+
+        backend.finalize_schema_migrations().await?;
 
         output.success(&format!(
             "Executed {total_steps} migration steps across {schemas_affected} schemas."
