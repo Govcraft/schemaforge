@@ -34,7 +34,17 @@ async fn app() -> Router {
                 @require("status != 'live' || number != null", "live needs number")
             has_number: boolean required @compute("number != null")
             enabled: boolean required default(true)
+            created_at: datetime required
+            updated_at: datetime required
+            created_by: text required
+            updated_by: text required
         }
+        @tenant(root)
+        @access(read: ["staff"], write: ["staff"])
+        schema Org { name: text required }
+        @tenant(parent: "Org")
+        @access(read: ["staff"], write: ["staff"])
+        schema Ticket { title: text required }
     "#,
     )
     .unwrap();
@@ -89,6 +99,10 @@ async fn app() -> Router {
 }
 
 async fn query(app: &Router, query: &str, role: &str) -> Value {
+    query_with_tenant(app, query, role, None).await
+}
+
+async fn query_with_tenant(app: &Router, query: &str, role: &str, tenant: Option<&str>) -> Value {
     let claims = Claims {
         sub: "user:graphql-test".into(),
         roles: vec![role.into()],
@@ -100,7 +114,14 @@ async fn query(app: &Router, query: &str, role: &str) -> Value {
         aud: None,
         email: None,
         username: None,
-        custom: HashMap::new(),
+        custom: tenant
+            .map(|tenant| {
+                HashMap::from([(
+                    "tenant_chain".into(),
+                    json!([{"schema":"Org", "entity_id":tenant}]),
+                )])
+            })
+            .unwrap_or_default(),
     };
     let mut request = Request::post("/forge/graphql")
         .header("content-type", "application/json")
@@ -111,15 +132,19 @@ async fn query(app: &Router, query: &str, role: &str) -> Value {
     serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn graphql_writes_share_defaults_authorization_rules_and_noop_semantics() {
     let app = app().await;
-    let created = query(&app, r#"mutation { createLine(input: {label: "test", number: "denied"}) { id status has_number enabled number } }"#, "staff").await;
+    let created = query(&app, r#"mutation { createLine(input: {label: "test", number: "denied"}) { id status has_number enabled number created_at updated_at created_by updated_by } }"#, "staff").await;
     assert!(created.get("errors").is_none(), "{created}");
     let row = &created["data"]["createLine"];
     assert_eq!(row["status"], "pending");
     assert_eq!(row["has_number"], false);
     assert_eq!(row["enabled"], true);
+    assert_eq!(row["created_by"], "graphql-test");
+    assert_eq!(row["updated_by"], "graphql-test");
+    assert!(row["created_at"].as_str().is_some());
+    assert!(row["updated_at"].as_str().is_some());
     assert!(row["number"].is_null());
     let id = row["id"].as_str().unwrap();
 
@@ -135,4 +160,75 @@ async fn graphql_writes_share_defaults_authorization_rules_and_noop_semantics() 
     assert!(authorized.get("errors").is_none(), "{authorized}");
     assert_eq!(authorized["data"]["updateLine"]["has_number"], true);
     assert_eq!(authorized["data"]["updateLine"]["number"], "allowed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graphql_tenant_inputs_use_canonical_admin_and_member_rules() {
+    let app = app().await;
+    let mut roots = Vec::new();
+    for name in ["one", "two"] {
+        let created = query(
+            &app,
+            &format!(r#"mutation {{ createOrg(input: {{name: "{name}"}}) {{ id }} }}"#),
+            "platform_admin",
+        )
+        .await;
+        assert!(created.get("errors").is_none(), "{created}");
+        roots.push(
+            created["data"]["createOrg"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    let missing = query(
+        &app,
+        r#"mutation { createTicket(input: {title:"missing tenant"}) { id } }"#,
+        "platform_admin",
+    )
+    .await;
+    assert_eq!(
+        missing["errors"][0]["extensions"]["code"], "VALIDATION_ERROR",
+        "{missing}"
+    );
+    let created = query(
+        &app,
+        &format!(
+            r#"mutation {{ createTicket(input: {{title: "ticket", _tenant: "{}"}}) {{ id }} }}"#,
+            roots[0]
+        ),
+        "platform_admin",
+    )
+    .await;
+    assert!(created.get("errors").is_none(), "{created}");
+    let id = created["data"]["createTicket"]["id"].as_str().unwrap();
+    let spoof = query_with_tenant(&app, &format!(r#"mutation {{ updateTicket(id: "{id}", input: {{title:"changed", _tenant:"{}"}}) {{ id }} }}"#, roots[1]), "staff", Some(&roots[0])).await;
+    assert!(spoof.get("errors").is_none(), "{spoof}");
+    let lookup = format!(r#"{{ ticket(id:"{id}") {{ title }} }}"#);
+    let own = query_with_tenant(&app, &lookup, "staff", Some(&roots[0])).await;
+    assert!(own.get("errors").is_none(), "{own}");
+    let foreign = query_with_tenant(&app, &lookup, "staff", Some(&roots[1])).await;
+    assert!(foreign.get("errors").is_some(), "{foreign}");
+    let moved = query(
+        &app,
+        &format!(
+            r#"mutation {{ updateTicket(id: "{id}", input: {{_tenant:"{}"}}) {{ id }} }}"#,
+            roots[1]
+        ),
+        "platform_admin",
+    )
+    .await;
+    assert!(moved.get("errors").is_none(), "{moved}");
+    let own = query_with_tenant(&app, &lookup, "staff", Some(&roots[1])).await;
+    assert!(own.get("errors").is_none(), "{own}");
+    let missing_required = query(
+        &app,
+        "mutation { createLine(input: {}) { id } }",
+        "platform_admin",
+    )
+    .await;
+    assert!(
+        missing_required.get("errors").is_some(),
+        "{missing_required}"
+    );
 }

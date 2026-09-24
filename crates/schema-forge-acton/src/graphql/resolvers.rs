@@ -22,38 +22,6 @@ pub struct EntityFields {
     pub fields: BTreeMap<String, DynamicValue>,
 }
 
-/// Reject any GraphQL input that names a `@hidden` schema field.
-///
-/// Mirrors the REST-side `reject_hidden_fields_in_body` guard so a
-/// password_hash (or any other operator-marked secret) can't be supplied
-/// through the GraphQL mutation surface either.
-#[cfg(test)]
-fn reject_hidden_input(
-    schema_def: &SchemaDefinition,
-    input: &async_graphql::indexmap::IndexMap<async_graphql::Name, GqlValue>,
-) -> Result<(), ForgeError> {
-    let offenders: Vec<String> = input
-        .keys()
-        .filter_map(|key| {
-            let name = key.as_str();
-            schema_def
-                .field(name)
-                .filter(|f| f.is_hidden())
-                .map(|_| name.to_string())
-        })
-        .collect();
-    if offenders.is_empty() {
-        Ok(())
-    } else {
-        Err(ForgeError::ValidationFailed {
-            details: vec![format!(
-                "fields cannot be set via the GraphQL API (marked @hidden): {}",
-                offenders.join(", ")
-            )],
-        })
-    }
-}
-
 /// Convert ForgeError to async_graphql::Error with extension codes.
 pub fn forge_error_to_gql(err: ForgeError) -> async_graphql::Error {
     let code = match &err {
