@@ -37,7 +37,9 @@ is pre-1.0; breaking changes bump the **minor** version per
   and remain valid after the rename completes.
 - `serve` preflights startup plans and refuses destructive changes unless
   `--allow-destructive-migrations` is supplied. Runtime schema PUT requires
-  `allow_destructive_migrations: true` for destructive plans.
+  `allow_destructive_migrations: true` for destructive plans, including lossy
+  type conversions. Proposed tenant hierarchies and custom Cedar policies are
+  validated before application schema changes.
 - PostgreSQL to-one relation foreign keys are installed consistently for fresh,
   altered, and legacy schemas. Missing targets or orphan references fail schema
   administration clearly. Integrity violations return HTTP 409
@@ -56,6 +58,8 @@ Review pending schema changes before restarting. Destructive startup migrations
 now require deliberate opt-in. PostgreSQL schema administration repairs missing
 foreign keys and can require cleanup of existing orphan references. Tenanted
 children created by a platform administrator require an explicit tenant.
+Runtime changes to tenant topology require offline schema application and a
+restart so the actor and HTTP middleware activate the same configuration.
 
 Rust embedders must update the schema-aware tenant helper and rule-binding call
 signatures. GraphQL registration now requires initialized
