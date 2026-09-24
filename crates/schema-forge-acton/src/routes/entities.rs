@@ -3425,9 +3425,9 @@ pub async fn update_entity(
     )?;
     fields = supplied.fields;
     for name in proposed_names {
-        if !fields.contains_key(&name) {
-            if let Some(value) = existing.fields.get(&name) {
-                fields.insert(name, value.clone());
+        if let std::collections::btree_map::Entry::Vacant(entry) = fields.entry(name) {
+            if let Some(value) = existing.fields.get(entry.key()) {
+                entry.insert(value.clone());
             }
         }
     }
