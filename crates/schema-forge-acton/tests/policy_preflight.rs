@@ -19,12 +19,15 @@ use http_body_util::BodyExt;
 use schema_forge_acton::{
     authz::{PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks},
     config::SchemaForgeConfig,
-    messages::{InitForge, ReplyChannel},
+    messages::{ApplyPreparedSchemaChange, GetSchema, InitForge, ReplyChannel},
     routes::forge_routes,
     ForgeActor,
 };
 use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
-use schema_forge_core::{migration::DiffEngine, types::DynamicValue};
+use schema_forge_core::{
+    migration::DiffEngine,
+    types::{DynamicValue, FieldDefinition, FieldModifier, FieldName, FieldType, TextConstraints},
+};
 use schema_forge_surrealdb::SurrealBackend;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -161,4 +164,151 @@ async fn custom_policy_field_contract_refuses_mutations_before_storage_changes()
             .iter()
             .any(|field| field["name"] == "code"));
     }
+    // Prepare two competing changes from the same immutable registry/bundle.
+    let mut desired = schema.clone();
+    desired.fields.push(FieldDefinition::new(
+        FieldName::new("extra").unwrap(),
+        FieldType::Text(TextConstraints::default()),
+    ));
+    let mut competing = schema.clone();
+    competing
+        .fields
+        .retain(|field| field.name.as_str() != "label");
+    let compile = |definition: &schema_forge_core::types::SchemaDefinition| {
+        Arc::new(
+            PolicyStoreSnapshot::from_schemas(
+                std::slice::from_ref(definition),
+                Some(directory.path()),
+                RoleRanks::empty(),
+                PrincipalClaimMappings::default(),
+            )
+            .unwrap(),
+        )
+    };
+    let desired_policy = compile(&desired);
+    let competing_policy = compile(&competing);
+    let expected_policy = policies.current();
+    let expected_registry = HashMap::from([("Thing".into(), schema.clone())]);
+    // If commit rereads the source, this would fail after already changing DDL.
+    std::fs::write(directory.path().join("contract.cedar"), "invalid policy").unwrap();
+    let forge = service.state().actor::<ForgeActor>().unwrap();
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(ApplyPreparedSchemaChange {
+            expected_registry: expected_registry.clone(),
+            expected_policy: expected_policy.clone(),
+            next_policy: desired_policy.clone(),
+            definition: desired.clone(),
+            remove: false,
+            steps: DiffEngine::plan_update(&schema, &desired).unwrap().steps,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(Arc::ptr_eq(&policies.current(), &desired_policy));
+    assert_eq!(
+        backend
+            .load_schema_metadata(&schema.name)
+            .await
+            .unwrap()
+            .unwrap(),
+        desired
+    );
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(ApplyPreparedSchemaChange {
+            expected_registry,
+            expected_policy,
+            next_policy: competing_policy,
+            definition: competing.clone(),
+            remove: false,
+            steps: DiffEngine::plan_update(&schema, &competing).unwrap().steps,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let error = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        schema_forge_acton::error::ForgeError::Conflict {
+            reason: "schema_preflight_stale",
+            ..
+        }
+    ));
+    assert_eq!(
+        backend.get(&schema.name, &entity.id).await.unwrap().fields["label"],
+        DynamicValue::Text("untouched".into())
+    );
+    assert_eq!(
+        backend
+            .load_schema_metadata(&schema.name)
+            .await
+            .unwrap()
+            .unwrap(),
+        desired
+    );
+
+    // A storage rejection restores the provisional registry before replying.
+    std::fs::write(directory.path().join("contract.cedar"),
+        r#"forbid (principal is Forge::Principal, action == Action::"ReadThing", resource is Thing) when { resource.code == "secret" };"#).unwrap();
+    backend
+        .create(&Entity::new(schema.name.clone(), entity.fields.clone()))
+        .await
+        .unwrap();
+    let mut invalid = desired.clone();
+    invalid
+        .fields
+        .iter_mut()
+        .find(|field| field.name.as_str() == "code")
+        .unwrap()
+        .modifiers
+        .push(FieldModifier::Unique);
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(ApplyPreparedSchemaChange {
+            expected_registry: HashMap::from([("Thing".into(), desired.clone())]),
+            expected_policy: policies.current(),
+            next_policy: compile(&invalid),
+            definition: invalid.clone(),
+            remove: false,
+            steps: DiffEngine::plan_update(&desired, &invalid).unwrap().steps,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    assert!(tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_err());
+    assert!(Arc::ptr_eq(&policies.current(), &desired_policy));
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetSchema {
+            name: "Thing".into(),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        desired
+    );
+    assert_eq!(
+        backend
+            .load_schema_metadata(&schema.name)
+            .await
+            .unwrap()
+            .unwrap(),
+        desired
+    );
 }

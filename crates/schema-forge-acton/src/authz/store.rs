@@ -87,6 +87,11 @@ impl PolicyStore {
         self.inner.store(Arc::new(next));
     }
 
+    /// Install an immutable, already-validated snapshot without recompilation.
+    pub fn swap_prepared(&self, next: Arc<PolicyStoreSnapshot>) {
+        self.inner.store(next);
+    }
+
     /// Compiles a fresh snapshot from `schemas` (reusing the current
     /// snapshot's [`RoleRanks`]) and atomically installs it.
     ///

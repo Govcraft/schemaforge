@@ -138,6 +138,19 @@ pub struct GetCustomPoliciesDir {
 // Registry mutations
 // ---------------------------------------------------------------------------
 
+/// Commit a prevalidated schema change under the actor's mutation barrier.
+/// The expected registry and policy identity guard against stale preflight plans.
+#[derive(Clone, Debug)]
+pub struct ApplyPreparedSchemaChange {
+    pub expected_registry: HashMap<String, SchemaDefinition>,
+    pub expected_policy: Arc<crate::authz::PolicyStoreSnapshot>,
+    pub next_policy: Arc<crate::authz::PolicyStoreSnapshot>,
+    pub definition: SchemaDefinition,
+    pub remove: bool,
+    pub steps: Vec<MigrationStep>,
+    pub reply: ReplyChannel<Result<(), crate::error::ForgeError>>,
+}
+
 /// Insert or update a schema definition in the in-memory registry.
 ///
 /// On success, the actor recompiles the Cedar policy bundle from the new

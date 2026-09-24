@@ -24,8 +24,7 @@ use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
 use crate::messages::{
-    ApplyMigration, GetSchema, InsertSchema, ListSchemas, RemoveSchema, ReplyChannel,
-    StoreSchemaMetadata,
+    ApplyPreparedSchemaChange, GetSchema, ListSchemas, ReplyChannel,
 };
 
 // ---------------------------------------------------------------------------
@@ -97,14 +96,15 @@ async fn pair_with_registry(
 ///
 /// Surfacing the validation error here turns it into a 400-class response —
 /// the caller's request is rejected before any DB migration runs. The actor
-/// will recompile and atomically swap on the subsequent `InsertSchema` /
-/// `RemoveSchema` regardless; this is purely a fail-closed pre-check.
+/// commits the prepared snapshot under its mutation barrier, guarded by the
+/// exact registry and policy identities this preflight observed.
 async fn precheck_policy_bundle(
     state: &AppState<SchemaForgeConfig>,
     forge: &acton_service::prelude::ActorHandle,
     target: &SchemaDefinition,
     removing: bool,
-) -> Result<(), ForgeError> {
+    expected_target: Option<&SchemaDefinition>,
+) -> Result<PreparedSchemaPolicies, ForgeError> {
     let (tx, rx) = oneshot::channel();
     forge
         .send(ListSchemas {
@@ -112,6 +112,14 @@ async fn precheck_policy_bundle(
         })
         .await;
     let mut proposed = ask_forge(rx).await?;
+    let expected_registry: std::collections::HashMap<_, _> = proposed.iter()
+        .map(|schema| (schema.name.to_string(), schema.clone())).collect();
+    if expected_registry.get(target.name.as_str()) != expected_target {
+        return Err(ForgeError::Conflict {
+            reason: "schema_preflight_stale",
+            message: "schema changed while preparing the update; retry the schema change".into(),
+        });
+    }
 
     let current_tenant_structure = tenant_structure(&proposed)?;
     proposed.retain(|s| s.name.as_str() != target.name.as_str());
@@ -134,7 +142,7 @@ async fn precheck_policy_bundle(
     }).await;
     let custom_dir = ask_forge(rx).await?;
 
-    crate::authz::store::PolicyStoreSnapshot::from_schemas(
+    let next_policy = crate::authz::store::PolicyStoreSnapshot::from_schemas(
         &proposed,
         custom_dir.as_deref(),
         role_ranks,
@@ -146,7 +154,7 @@ async fn precheck_policy_bundle(
         )],
     })?;
 
-    Ok(())
+    Ok(PreparedSchemaPolicies { expected_registry, expected_policy: snapshot, next_policy: std::sync::Arc::new(next_policy) })
 }
 
 /// Reuse canonical DSL validation for annotations supplied through the JSON schema API.
@@ -197,6 +205,29 @@ fn tenant_structure(schemas: &[SchemaDefinition]) -> Result<TenantStructure, For
             })
             .collect(),
     ))
+}
+
+struct PreparedSchemaPolicies {
+    expected_registry: std::collections::HashMap<String, SchemaDefinition>,
+    expected_policy: std::sync::Arc<crate::authz::PolicyStoreSnapshot>,
+    next_policy: std::sync::Arc<crate::authz::PolicyStoreSnapshot>,
+}
+
+async fn apply_prepared_schema_change(
+    forge: &acton_service::prelude::ActorHandle,
+    prepared: PreparedSchemaPolicies,
+    definition: SchemaDefinition,
+    remove: bool,
+    steps: Vec<schema_forge_core::migration::MigrationStep>,
+) -> Result<(), ForgeError> {
+    let (tx, rx) = oneshot::channel();
+    forge.send(ApplyPreparedSchemaChange {
+        expected_registry: prepared.expected_registry,
+        expected_policy: prepared.expected_policy,
+        next_policy: prepared.next_policy,
+        definition, remove, steps, reply: ReplyChannel::new(tx),
+    }).await;
+    ask_forge(rx).await?
 }
 
 /// Fetch the current Cedar [`PolicyStore`] from the actor.
@@ -629,50 +660,14 @@ pub async fn create_schema(
     pair_with_registry(&forge, &mut definition).await?;
 
     // 4b. Pre-validate the proposed Cedar bundle BEFORE running any DB
-    // migration. The actor will recompile and atomically swap on InsertSchema
-    // anyway, but doing the dry-run here means a malformed schema is rejected
-    // with a 400 instead of leaving the database in a state the running
-    // policy bundle can't reason about.
-    precheck_policy_bundle(&state, &forge, &definition, false).await?;
+    // migration. The actor commits this immutable bundle with the storage
+    // change; no policy files are read after DDL.
+    let prepared = precheck_policy_bundle(&state, &forge, &definition, false, None).await?;
 
     // 5. Generate migration plan
     let plan = DiffEngine::create_new(&definition);
 
-    // 6. Apply migration to backend via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(ApplyMigration {
-            schema_name: schema_name.clone(),
-            steps: plan.steps,
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(ForgeError::from)?;
-
-    // 7. Store schema metadata in backend via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(StoreSchemaMetadata {
-            definition: definition.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(ForgeError::from)?;
-
-    // 8. Update registry cache + recompile Cedar bundle. The actor swap is
-    // the source of truth: if the recompile fails here despite the dry-run
-    // above, the actor reverts the registry mutation and returns the error.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(InsertSchema {
-            name: schema_name.as_str().to_string(),
-            definition: definition.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(|err| ForgeError::Internal {
-        message: format!("Cedar policy recompile failed during schema insertion: {err}"),
-    })?;
+    apply_prepared_schema_change(&forge, prepared, definition.clone(), false, plan.steps).await?;
 
     // 9. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -875,7 +870,7 @@ pub async fn update_schema(
 
     // 4b. Dry-run the Cedar bundle for the proposed registry state so an
     // invalid schema fails fast — before any DB migration.
-    precheck_policy_bundle(&state, &forge, &new_definition, false).await?;
+    let prepared = precheck_policy_bundle(&state, &forge, &new_definition, false, Some(&old_schema)).await?;
 
     // 5. Compute diff and generate migration plan
     let plan = DiffEngine::plan_update(&old_schema, &new_definition).map_err(|error| {
@@ -887,42 +882,8 @@ pub async fn update_schema(
         return Err(ForgeError::ValidationFailed { details: vec![format!("destructive schema update refused: {}; set allow_destructive_migrations=true to acknowledge data loss", plan.steps.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))] });
     }
 
-    // 6. Apply migration steps via actor
     let step_count = plan.steps.len();
-    if !plan.is_empty() {
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(ApplyMigration {
-                schema_name: schema_name.clone(),
-                steps: plan.steps,
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        ask_forge(rx).await?.map_err(ForgeError::from)?;
-    }
-
-    // 7. Store updated metadata via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(StoreSchemaMetadata {
-            definition: new_definition.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(ForgeError::from)?;
-
-    // 8. Update registry cache + recompile Cedar bundle.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(InsertSchema {
-            name: schema_name.as_str().to_string(),
-            definition: new_definition.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(|err| ForgeError::Internal {
-        message: format!("Cedar policy recompile failed during schema update: {err}"),
-    })?;
+    apply_prepared_schema_change(&forge, prepared, new_definition.clone(), false, plan.steps).await?;
 
     // 9. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -986,21 +947,9 @@ pub async fn delete_schema(
         .await?
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
 
-    precheck_policy_bundle(&state, &forge, &schema, true).await?;
+    let prepared = precheck_policy_bundle(&state, &forge, &schema, true, Some(&schema)).await?;
 
-    // 2. Remove from registry cache + recompile Cedar bundle. The actor
-    // reverts the registry mutation if the recompile fails so the running
-    // bundle and registry never drift.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(RemoveSchema {
-            name: name.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(|err| ForgeError::Internal {
-        message: format!("Cedar policy recompile failed during schema deletion: {err}"),
-    })?;
+    apply_prepared_schema_change(&forge, prepared, schema, true, vec![]).await?;
 
     // 3. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module

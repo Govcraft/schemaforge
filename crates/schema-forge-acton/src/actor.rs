@@ -28,6 +28,8 @@ use crate::messages::{
 use crate::state::DynForgeBackend;
 use crate::storage::StorageRegistry;
 
+mod schema_changes;
+
 // ---------------------------------------------------------------------------
 // ForgeActor
 // ---------------------------------------------------------------------------
@@ -286,6 +288,7 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
 // ---------------------------------------------------------------------------
 
 fn configure_registry_mutations(actor: &mut ManagedActor<Idle, ForgeActor>) {
+    schema_changes::configure(actor);
     actor.mutate_on::<InsertSchema>(|actor, ctx| {
         let msg = ctx.message();
         let name = msg.name.clone();
