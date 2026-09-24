@@ -319,24 +319,43 @@ impl EntityStore for MssqlBackend {
     }
 
     async fn update(&self, entity: &Entity) -> Result<Entity, BackendError> {
-        let data = serde_json::to_string(&entity.fields).map_err(json_error)?;
+        if entity.fields.is_empty() {
+            return self.get(&entity.schema, &entity.id).await;
+        }
+        let mut parameters = vec![entity.id.to_string()];
+        let mut expression = "[data]".to_string();
+        for (field, value) in &entity.fields {
+            let path_parameter = parameters.len() + 1;
+            let value_parameter = path_parameter + 1;
+            parameters.push(format!("$.\"{field}\""));
+            parameters.push(serde_json::to_string(value).map_err(json_error)?);
+            expression = format!(
+                "JSON_MODIFY({expression}, @P{path_parameter}, JSON_QUERY(@P{value_parameter}))"
+            );
+        }
         let sql = format!(
-            "UPDATE {} SET [data] = @P2 WHERE [id] = @P1;",
+            "UPDATE {} SET [data] = {expression} OUTPUT INSERTED.[id], INSERTED.[data] WHERE [id] = @P1;",
             quote(entity.schema.as_str())
         );
+        let bindings: Vec<&dyn tiberius::ToSql> = parameters
+            .iter()
+            .map(|value| value as &dyn tiberius::ToSql)
+            .collect();
         let mut connection = connection(&self.pool).await?;
-        let affected = connection
-            .execute(sql, &[&entity.id.as_str(), &data.as_str()])
+        let rows = connection
+            .query(sql, &bindings)
             .await
             .map_err(query_error)?
-            .total();
-        if affected == 0 {
-            return Err(BackendError::EntityNotFound {
+            .into_first_result()
+            .await
+            .map_err(query_error)?;
+        rows.first()
+            .map(|row| entity_from_row(row, &entity.schema))
+            .transpose()?
+            .ok_or_else(|| BackendError::EntityNotFound {
                 schema: entity.schema.to_string(),
                 entity_id: entity.id.to_string(),
-            });
-        }
-        Ok(entity.clone())
+            })
     }
 
     async fn update_field_if_matches(

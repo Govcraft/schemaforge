@@ -167,7 +167,8 @@ pub trait EntityStore: Send + Sync {
     /// Update an existing entity.
     ///
     /// The entity's `id` and `schema` determine which record to update.
-    /// All fields in `entity.fields` replace the existing fields.
+    /// Supplied fields replace their corresponding values; omitted fields remain unchanged.
+    /// An explicit `DynamicValue::Null` writes null rather than omitting the field.
     /// Returns the updated entity.
     fn update(&self, entity: &Entity) -> impl Future<Output = Result<Entity, BackendError>> + Send;
 

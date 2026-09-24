@@ -15,3 +15,7 @@ Add apply_schema_change(name, steps, optional definition) to SchemaBackend and d
 ## SurrealDB transactional rename visibility
 
 Measured SELECT snapshots show REMOVE FIELD followed by UPDATE in the same transaction discards unrelated FLEXIBLE object data. Individual statements in separate transactions do not. Preserve one transaction: copy to fully defined destination, temporarily relax source required/default constraints, unset old values while source definition still exists, defer only rename-source definition removals until all data writes finish. Regression must retain unrelated nested data and verify a later write still works, besides renamed nested data and metadata rollback.
+
+## SQL Server sparse update parity
+
+CI exposed that SQL Server replaces its entire JSON payload on EntityStore::update, unlike PostgreSQL/SurrealDB and the runtime's field-filtered partial update path. Implement one bound JSON_MODIFY UPDATE with OUTPUT inserted row, preserving omitted values and explicit tagged nulls without a read/modify/write race. Clarify trait semantics, retain rename regression, and add SQL Server direct null/empty-update checks. Run focused SQL Server integration tests only.
