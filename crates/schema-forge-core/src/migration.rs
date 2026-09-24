@@ -1908,7 +1908,7 @@ mod tests {
         for transform in [
             ValueTransform::SetNull,
             ValueTransform::SetDefault {
-                value: DefaultValue::Text("replacement".into()),
+                value: DefaultValue::String("replacement".into()),
             },
             ValueTransform::NullRemovedEnumVariants {
                 variants: vec!["old".into()],
