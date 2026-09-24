@@ -65,12 +65,18 @@ jobs:
       - name: Check CLI preparation and security behavior
         if: ${{ !cancelled() }}
         run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres --no-fail-fast
+      - name: Check SurrealDB CLI integration
+        if: ${{ !cancelled() }}
+        run: cargo nextest run -p schema-forge-cli --no-fail-fast
       - name: Deny runtime and backend lints
         if: ${{ !cancelled() }}
         run: cargo clippy -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl -p schema-forge-backend -p schema-forge-postgres --features schema-forge-acton/postgres,schema-forge-acton/graphql --all-targets -- -D warnings
       - name: Deny CLI lints
         if: ${{ !cancelled() }}
         run: cargo clippy -p schema-forge-cli --no-default-features --features postgres --all-targets -- -D warnings
+      - name: Deny SurrealDB CLI lints
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p schema-forge-cli --all-targets -- -D warnings
       - name: Clean disposable HTTP namespace
         if: always()
         run: psql -X -v ON_ERROR_STOP=1 -c 'DROP SCHEMA IF EXISTS conditional_http CASCADE'
