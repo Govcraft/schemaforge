@@ -8,6 +8,41 @@ use schema_forge_core::{
 
 use crate::error::CliError;
 
+/// Construct the complete desired registry before performing any migration.
+pub(super) fn merge_schema_definitions(
+    existing: impl IntoIterator<Item = SchemaDefinition>,
+    desired: &[SchemaDefinition],
+) -> Vec<SchemaDefinition> {
+    let mut registry: std::collections::BTreeMap<_, _> = existing
+        .into_iter()
+        .map(|schema| (schema.name.clone(), schema))
+        .collect();
+    registry.extend(
+        desired
+            .iter()
+            .cloned()
+            .map(|schema| (schema.name.clone(), schema)),
+    );
+    registry.into_values().collect()
+}
+
+pub(super) fn validate_tenant_hierarchy(proposed: &[SchemaDefinition]) -> Result<(), CliError> {
+    schema_forge_backend::tenant::TenantConfig::from_schemas(proposed).map_err(|error| {
+        CliError::Config {
+            message: format!("invalid proposed tenant hierarchy: {error}"),
+        }
+    })?;
+    Ok(())
+}
+
+pub(super) async fn preflight_schema_batch(
+    backend: &dyn DynSchemaBackend,
+    desired: &[SchemaDefinition],
+) -> Result<(), CliError> {
+    let existing = backend.list_schema_metadata().await?;
+    validate_tenant_hierarchy(&merge_schema_definitions(existing, desired))
+}
+
 pub(super) struct SchemaUpdate {
     pub schema: SchemaDefinition,
     pub migration: MigrationPlan,
@@ -257,6 +292,41 @@ mod tests {
                 assert_eq!(stored.schema.as_ref(), Some(&original));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_combined_hierarchy_is_rejected_before_all_writes() {
+        for command in [Command::Apply, Command::Migrate] {
+            let original = schema("@tenant(root) schema Org { name: text }");
+            for source in [
+                "@tenant(root) schema Other { name: text }",
+                r#"@tenant(parent: "Missing") schema Child { name: text }"#,
+            ] {
+                let backend = Backend::seeded(original.clone());
+                assert!(command.run(&backend, schema(source), true).await.is_err());
+                let stored = backend.stored.lock().unwrap();
+                assert_eq!(stored.migrations, 0);
+                assert_eq!(stored.writes, 0);
+                assert_eq!(stored.schema.as_ref(), Some(&original));
+            }
+        }
+    }
+
+    #[test]
+    fn proposed_hierarchy_replaces_old_definitions_and_accepts_valid_batches() {
+        let old = schema("schema Contact { phone: text }");
+        let desired = [
+            schema("@tenant(root) schema Org { name: text }"),
+            schema(r#"@tenant(parent: "Org") schema Contact { phone: text }"#),
+        ];
+        let proposed = merge_schema_definitions([old], &desired);
+        assert_eq!(proposed.len(), 2);
+        validate_tenant_hierarchy(&proposed).unwrap();
+        assert!(validate_tenant_hierarchy(&[
+            schema(r#"@tenant(parent: "Other") schema Org { name: text }"#),
+            schema(r#"@tenant(parent: "Org") schema Other { name: text }"#)
+        ])
+        .is_err());
     }
 
     const ORIGINAL: &str = "@version(1) schema Person { age: integer }";

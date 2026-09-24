@@ -116,10 +116,11 @@ async fn exercise(backend: &PgBackend) {
         ))
         .await
         .unwrap();
-    assert!(matches!(
-        backend.delete(&owner.name, &owner_row.id).await,
-        Err(BackendError::ForeignKeyViolation { .. })
-    ));
+    let deletion = backend.delete(&owner.name, &owner_row.id).await;
+    assert!(
+        matches!(deletion, Err(BackendError::ForeignKeyViolation { .. })),
+        "unexpected deletion outcome: {deletion:?}"
+    );
     let missing = Entity::new(
         pet.name.clone(),
         BTreeMap::from([("owner".into(), DynamicValue::Ref(EntityId::new("owner")))]),

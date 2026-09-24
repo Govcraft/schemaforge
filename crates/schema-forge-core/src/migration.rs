@@ -243,6 +243,15 @@ impl MigrationStep {
     pub fn safety(&self) -> MigrationSafety {
         match self {
             Self::ChangeType {
+                transform:
+                    ValueTransform::SetNull
+                    | ValueTransform::SetDefault { .. }
+                    | ValueTransform::NullRemovedEnumVariants { .. }
+                    | ValueTransform::FloatToInteger
+                    | ValueTransform::IntegerToFloat,
+                ..
+            } => MigrationSafety::Destructive,
+            Self::ChangeType {
                 transform: ValueTransform::Identity,
                 ..
             } => MigrationSafety::Safe,
@@ -1229,8 +1238,8 @@ mod tests {
             MigrationStep::ChangeType {
                 name: FieldName::new("score").unwrap(),
                 old_type: FieldType::Integer(IntegerConstraints::unconstrained()),
-                new_type: FieldType::Float(FloatConstraints::unconstrained()),
-                transform: ValueTransform::IntegerToFloat,
+                new_type: FieldType::Text(TextConstraints::unconstrained()),
+                transform: ValueTransform::ToString,
             },
             MigrationStep::AddRequired {
                 field: FieldName::new("email").unwrap(),
@@ -1892,6 +1901,35 @@ mod tests {
             .steps
             .iter()
             .any(|s| matches!(s, MigrationStep::RenameField { .. })));
+    }
+
+    #[test]
+    fn lossy_transforms_are_destructive() {
+        for transform in [
+            ValueTransform::SetNull,
+            ValueTransform::SetDefault {
+                value: DefaultValue::Text("replacement".into()),
+            },
+            ValueTransform::NullRemovedEnumVariants {
+                variants: vec!["old".into()],
+            },
+            ValueTransform::FloatToInteger,
+            ValueTransform::IntegerToFloat,
+        ] {
+            let step = MigrationStep::ChangeType {
+                name: FieldName::new("value").unwrap(),
+                old_type: FieldType::Float(FloatConstraints::unconstrained()),
+                new_type: FieldType::Integer(IntegerConstraints::unconstrained()),
+                transform,
+            };
+            assert_eq!(step.safety(), MigrationSafety::Destructive);
+            let plan = MigrationPlan::new(
+                SchemaId::new(),
+                SchemaName::new("Sample").unwrap(),
+                vec![step],
+            );
+            assert!(plan.has_destructive_steps());
+        }
     }
 
     // -- MigrationError tests --

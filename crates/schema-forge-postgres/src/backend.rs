@@ -38,7 +38,7 @@ const PG_UNIQUE_VIOLATION: &str = "23505";
 /// client still has *something* actionable to display.
 pub(crate) fn map_write_error(err: sqlx::Error, schema: &str, context: &str) -> BackendError {
     if let sqlx::Error::Database(ref db_err) = err {
-        if db_err.code().as_deref() == Some("23503") {
+        if matches!(db_err.code().as_deref(), Some("23503" | "23001")) {
             return BackendError::ForeignKeyViolation {
                 schema: db_err.table().unwrap_or(schema).to_owned(),
                 constraint: db_err.constraint().unwrap_or("").to_owned(),

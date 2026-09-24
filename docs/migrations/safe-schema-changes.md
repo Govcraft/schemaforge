@@ -27,7 +27,15 @@ operation. `serve` refuses destructive startup plans before applying any of the
 user's schema plans. After reviewing the plan, use
 `serve --allow-destructive-migrations` to explicitly accept data loss.
 Admin schema PUT requests must include `"allow_destructive_migrations": true`
-for destructive changes. Omitted or false values refuse the operation.
+for destructive changes. Omitted or false values refuse the operation. Lossy
+type conversions and enum variant removal also count as destructive.
+
+Runtime requests preserve omitted schema and field annotations. Explicit
+annotation arrays replace them; declared tenancy transitions are rejected.
+Creating or deleting tenanted schemas and changing their parent-reference
+structure require offline apply and restart, because the actor and HTTP
+middleware must activate the same tenant configuration together. Invalid
+combined hierarchies are rejected before schema writes.
 
 ## PostgreSQL relation integrity
 

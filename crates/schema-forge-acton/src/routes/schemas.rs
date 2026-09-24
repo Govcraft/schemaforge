@@ -9,8 +9,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::types::{
-    Annotation, BytesConstraints, FieldDefinition, FieldModifier, FieldName, FieldType,
-    SchemaDefinition, SchemaId, SchemaName, TextConstraints,
+    Annotation, BytesConstraints, FieldAnnotation, FieldDefinition, FieldModifier, FieldName,
+    FieldType, SchemaDefinition, SchemaId, SchemaName, TextConstraints,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -112,9 +112,14 @@ async fn precheck_policy_bundle(
         .await;
     let mut proposed = ask_forge(rx).await?;
 
+    let current_tenant_structure = tenant_structure(&proposed)?;
     proposed.retain(|s| s.name.as_str() != target.name.as_str());
     if !removing {
         proposed.push(target.clone());
+    }
+
+    if tenant_structure(&proposed)? != current_tenant_structure {
+        return Err(ForgeError::ValidationFailed { details: vec!["tenant hierarchy changes require applying schema files and restarting serve so actor and middleware configuration change together".into()] });
     }
 
     let policy_store = fetch_policy_store(state).await?;
@@ -135,6 +140,26 @@ async fn precheck_policy_bundle(
     })?;
 
     Ok(())
+}
+
+/// Compare the effective tenant topology independently of registry iteration order.
+fn tenant_structure(
+    schemas: &[SchemaDefinition],
+) -> Result<
+    std::collections::BTreeMap<SchemaName, (Option<SchemaName>, Option<FieldName>)>,
+    ForgeError,
+> {
+    let config =
+        schema_forge_backend::tenant::TenantConfig::from_schemas(schemas).map_err(|error| {
+            ForgeError::ValidationFailed {
+                details: vec![format!("invalid proposed tenant hierarchy: {error}")],
+            }
+        })?;
+    Ok(config
+        .hierarchy
+        .into_iter()
+        .map(|level| (level.schema, (level.parent, level.parent_field)))
+        .collect())
 }
 
 /// Fetch the current Cedar [`PolicyStore`] from the actor.
@@ -203,12 +228,15 @@ pub struct CreateSchemaRequest {
     pub fields: Vec<FieldDefinitionRequest>,
     /// Optional annotations.
     #[serde(default)]
-    pub annotations: Vec<serde_json::Value>,
+    pub annotations: Option<Vec<Annotation>>,
 }
 
 /// A field in a create/update schema request.
 #[derive(Debug, Deserialize)]
 pub struct FieldDefinitionRequest {
+    /// Optional field annotations; omitted annotations are preserved on existing fields.
+    #[serde(default)]
+    pub annotations: Option<Vec<FieldAnnotation>>,
     /// The field name.
     pub name: String,
     /// The field type specification as a JSON value.
@@ -293,11 +321,12 @@ fn request_field_to_definition(
         }
     }
 
-    if modifiers.is_empty() {
-        Ok(FieldDefinition::new(name, field_type))
-    } else {
-        Ok(FieldDefinition::with_modifiers(name, field_type, modifiers))
-    }
+    Ok(FieldDefinition::with_annotations(
+        name,
+        field_type,
+        modifiers,
+        req.annotations.clone().unwrap_or_default(),
+    ))
 }
 
 /// Parse a JSON value into a `FieldType`.
@@ -547,11 +576,15 @@ pub async fn create_schema(
         schema_id,
         schema_name.clone(),
         fields,
-        Vec::<Annotation>::new(),
+        body.annotations.clone().unwrap_or_default(),
     )
     .map_err(|e| ForgeError::ValidationFailed {
         details: vec![e.to_string()],
     })?;
+
+    if definition.is_tenanted() {
+        return Err(ForgeError::ValidationFailed { details: vec!["creating a tenanted schema at runtime requires applying the schema files and restarting serve so actor and middleware tenant configuration change together".into()] });
+    }
 
     // 4a. Run the inverse-relation pairing pass across the full registry so
     // any `-> X[]` field paired with an FK from an existing schema is marked
@@ -771,18 +804,28 @@ pub async fn update_schema(
         });
     }
 
-    let fields: Vec<FieldDefinition> = body
+    let mut fields: Vec<FieldDefinition> = body
         .fields
         .iter()
         .map(request_field_to_definition)
         .collect::<Result<Vec<_>, _>>()?;
+
+    for (field, request) in fields.iter_mut().zip(&body.fields) {
+        if request.annotations.is_none() {
+            if let Some(existing) = old_schema.field(field.name.as_str()) {
+                field.annotations = existing.annotations.clone();
+            }
+        }
+    }
 
     // 4. Build new SchemaDefinition (preserving the original ID)
     let mut new_definition = SchemaDefinition::new(
         old_schema.id.clone(),
         schema_name.clone(),
         fields,
-        old_schema.annotations.clone(),
+        body.annotations
+            .clone()
+            .unwrap_or_else(|| old_schema.annotations.clone()),
     )
     .map_err(|e| ForgeError::ValidationFailed {
         details: vec![e.to_string()],
@@ -1040,6 +1083,7 @@ mod tests {
     #[test]
     fn request_field_to_definition_simple() {
         let req = FieldDefinitionRequest {
+            annotations: None,
             name: "email".into(),
             field_type: serde_json::json!("Text"),
             modifiers: vec![],
@@ -1052,6 +1096,7 @@ mod tests {
     #[test]
     fn request_field_to_definition_with_modifiers() {
         let req = FieldDefinitionRequest {
+            annotations: None,
             name: "email".into(),
             field_type: serde_json::json!("Text"),
             modifiers: vec!["required".into(), "indexed".into()],
@@ -1064,6 +1109,7 @@ mod tests {
     #[test]
     fn request_field_to_definition_unknown_modifier() {
         let req = FieldDefinitionRequest {
+            annotations: None,
             name: "email".into(),
             field_type: serde_json::json!("Text"),
             modifiers: vec!["unknown".into()],

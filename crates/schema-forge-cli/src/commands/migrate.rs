@@ -32,6 +32,16 @@ pub(super) async fn migrate_on_backend(
     backend: &dyn DynSchemaBackend,
     output: &OutputContext,
 ) -> Result<(), CliError> {
+    let desired: Vec<_> = schemas
+        .iter()
+        .filter(|schema| {
+            args.schema
+                .as_ref()
+                .is_none_or(|filter| schema.name.as_str() == filter)
+        })
+        .cloned()
+        .collect();
+    super::schema_update::preflight_schema_batch(backend, &desired).await?;
     let mut plans = Vec::new();
     let mut total_steps = 0usize;
     let mut schemas_affected = 0usize;

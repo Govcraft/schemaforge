@@ -144,6 +144,9 @@ pub async fn run(
 
     // 5. Apply parsed schemas (using the backend directly, before actor spawning)
     let mut registry = init_data.registry;
+    let proposed_schemas =
+        super::schema_update::merge_schema_definitions(registry.values().cloned(), &schemas);
+    super::schema_update::validate_tenant_hierarchy(&proposed_schemas)?;
     if !schemas.is_empty() {
         output.status("Applying schemas...");
         let mut plans = Vec::new();

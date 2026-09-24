@@ -34,6 +34,7 @@ pub(super) async fn apply_to_backend(
     backend: &dyn DynSchemaBackend,
     output: &OutputContext,
 ) -> Result<(), CliError> {
+    super::schema_update::preflight_schema_batch(backend, schemas).await?;
     if args.prepare_record_revisions && !backend.supports_record_revisions() {
         return Err(CliError::Config { message: "--prepare-record-revisions requires a PostgreSQL backend with record revision support".into() });
     }
