@@ -65,6 +65,56 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
     exercises_backend_contract(&backend).await;
     data_correctness::exercise(&backend).await;
     migration_renames::exercise(&backend).await;
+    rename_collision_rolls_back_entire_plan(&backend).await;
+}
+
+async fn rename_collision_rolls_back_entire_plan(backend: &MssqlBackend) {
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("RenameRollback").unwrap(),
+        ["first", "second"]
+            .map(|name| {
+                FieldDefinition::new(
+                    FieldName::new(name).unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                )
+            })
+            .to_vec(),
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_migration(&schema.name, &DiffEngine::create_new(&schema).steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    let row = backend
+        .create(&Entity::new(
+            schema.name.clone(),
+            BTreeMap::from([
+                ("first".into(), DynamicValue::Text("keep".into())),
+                ("second".into(), DynamicValue::Text("other".into())),
+                ("destination".into(), DynamicValue::Text("occupied".into())),
+            ]),
+        ))
+        .await
+        .unwrap();
+    let steps = [
+        MigrationStep::RenameField {
+            old_name: FieldName::new("first").unwrap(),
+            new_name: FieldName::new("third").unwrap(),
+        },
+        MigrationStep::RenameField {
+            old_name: FieldName::new("second").unwrap(),
+            new_name: FieldName::new("destination").unwrap(),
+        },
+    ];
+    assert!(backend.apply_migration(&schema.name, &steps).await.is_err());
+    assert_eq!(backend.get(&schema.name, &row.id).await.unwrap(), row);
+    assert_eq!(
+        backend.load_schema_metadata(&schema.name).await.unwrap(),
+        Some(schema)
+    );
 }
 
 async fn exercises_backend_contract(backend: &MssqlBackend) {

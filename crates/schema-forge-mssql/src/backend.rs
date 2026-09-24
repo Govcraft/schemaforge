@@ -67,6 +67,45 @@ impl MssqlBackend {
     }
 }
 
+/// Compile one atomic batch while keeping arbitrary variant text in bound parameters.
+fn migration_batch(schema_name: &SchemaName, steps: &[MigrationStep]) -> (String, Vec<String>) {
+    let table = quote(schema_name.as_str());
+    let mut statements = Vec::new();
+    let mut parameters = Vec::new();
+    for step in steps {
+        match step {
+            MigrationStep::RenameField { old_name, new_name } => {
+                let old_parameter = parameters.len() + 1;
+                let new_parameter = old_parameter + 1;
+                parameters.extend([format!("$.\"{old_name}\""), format!("$.\"{new_name}\"")]);
+                statements.push(format!(r#"IF EXISTS (SELECT 1 FROM [dbo].{table} WITH (UPDLOCK, HOLDLOCK)
+                  WHERE JSON_QUERY([data], @P{old_parameter}) IS NOT NULL AND JSON_QUERY([data], @P{new_parameter}) IS NOT NULL)
+                    THROW 50001, 'rename destination already contains data', 1;
+                  UPDATE [dbo].{table}
+                  SET [data] = JSON_MODIFY(JSON_MODIFY([data], @P{new_parameter}, JSON_QUERY([data], @P{old_parameter})), @P{old_parameter}, NULL)
+                  WHERE JSON_QUERY([data], @P{old_parameter}) IS NOT NULL;"#));
+            }
+            MigrationStep::ChangeType { name, transform: ValueTransform::NullRemovedEnumVariants { variants }, .. } => {
+                for variant in variants {
+                    let path_parameter = parameters.len() + 1;
+                    let value_parameter = path_parameter + 1;
+                    let variant_parameter = path_parameter + 2;
+                    parameters.extend([format!("$.\"{name}\""), format!("$.\"{name}\".value"), variant.clone()]);
+                    statements.push(format!("UPDATE [dbo].{table} SET [data] = JSON_MODIFY([data], @P{path_parameter}, JSON_QUERY(N'{{\"type\":\"Null\"}}')) WHERE JSON_VALUE([data], @P{value_parameter}) COLLATE Latin1_General_100_BIN2 = @P{variant_parameter};"));
+                }
+            }
+            MigrationStep::CreateSchema { name, .. } => statements.push(format!("IF OBJECT_ID(N'[dbo].{table}', N'U') IS NULL CREATE TABLE [dbo].{table} ([id] NVARCHAR(255) NOT NULL PRIMARY KEY, [data] NVARCHAR(MAX) NOT NULL CHECK (ISJSON([data]) = 1));", table = quote(name.as_str()))),
+            MigrationStep::DropSchema { name } => statements.push(format!("IF OBJECT_ID(N'[dbo].{table}', N'U') IS NOT NULL DROP TABLE [dbo].{table};", table = quote(name.as_str()))),
+            _ => {}
+        }
+    }
+    if statements.is_empty() {
+        return (String::new(), parameters);
+    }
+    let sql = format!("SET XACT_ABORT ON; BEGIN TRY BEGIN TRANSACTION; {} COMMIT TRANSACTION; END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; THROW; END CATCH;", statements.join("\n"));
+    (sql, parameters)
+}
+
 impl SchemaBackend for MssqlBackend {
     async fn apply_migration(
         &self,
@@ -100,87 +139,21 @@ impl SchemaBackend for MssqlBackend {
                 }
             }
         }
-        let mut connection = connection(&self.pool).await?;
-        for step in steps {
-            if let MigrationStep::RenameField { old_name, new_name } = step {
-                // DynamicValue encodes every value as an object, including arrays and null.
-                // JSON_QUERY preserves that object rather than escaping it into a string.
-                let old_path = format!("$.\"{old_name}\"");
-                let new_path = format!("$.\"{new_name}\"");
-                let sql = format!(
-                    r#"SET XACT_ABORT ON;
-                    BEGIN TRY
-                      BEGIN TRANSACTION;
-                      IF EXISTS (SELECT 1 FROM [dbo].{table} WITH (UPDLOCK, HOLDLOCK)
-                                 WHERE JSON_QUERY([data], @P1) IS NOT NULL AND JSON_QUERY([data], @P2) IS NOT NULL)
-                        THROW 50001, 'rename destination already contains data', 1;
-                      UPDATE [dbo].{table}
-                      SET [data] = JSON_MODIFY(JSON_MODIFY([data], @P2, JSON_QUERY([data], @P1)), @P1, NULL)
-                      WHERE JSON_QUERY([data], @P1) IS NOT NULL;
-                      COMMIT TRANSACTION;
-                    END TRY
-                    BEGIN CATCH
-                      IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-                      THROW;
-                    END CATCH;"#,
-                    table = quote(schema_name.as_str())
-                );
-                connection
-                    .execute(&sql, &[&old_path.as_str(), &new_path.as_str()])
-                    .await
-                    .map_err(|error| BackendError::MigrationFailed {
-                        step: step.to_string(),
-                        reason: error.to_string(),
-                    })?;
-                continue;
-            }
-            if let MigrationStep::ChangeType {
-                name,
-                transform: ValueTransform::NullRemovedEnumVariants { variants },
-                ..
-            } = step
-            {
-                // JSON payloads store tagged DynamicValue objects. Bind both the
-                // path and variant so enum strings cannot become SQL syntax.
-                let path = format!("$.\"{}\"", name.as_str());
-                let value_path = format!("{path}.value");
-                let sql = format!("UPDATE [dbo].{} SET [data] = JSON_MODIFY([data], @P1, JSON_QUERY(N'{{\"type\":\"Null\"}}')) WHERE JSON_VALUE([data], @P2) COLLATE Latin1_General_100_BIN2 = @P3;", quote(schema_name.as_str()));
-                for variant in variants {
-                    connection
-                        .execute(
-                            &sql,
-                            &[&path.as_str(), &value_path.as_str(), &variant.as_str()],
-                        )
-                        .await
-                        .map_err(query_error)?;
-                }
-                continue;
-            }
-            let sql = match step {
-                MigrationStep::CreateSchema { name, .. } => Some(format!(
-                    "IF OBJECT_ID(N'[dbo].{}', N'U') IS NULL CREATE TABLE [dbo].{} \
-                     ([id] NVARCHAR(255) NOT NULL PRIMARY KEY, \
-                     [data] NVARCHAR(MAX) NOT NULL CHECK (ISJSON([data]) = 1));",
-                    quote(name.as_str()),
-                    quote(name.as_str())
-                )),
-                MigrationStep::DropSchema { name } => Some(format!(
-                    "IF OBJECT_ID(N'[dbo].{}', N'U') IS NOT NULL DROP TABLE [dbo].{};",
-                    quote(name.as_str()),
-                    quote(name.as_str())
-                )),
-                _ => None,
-            };
-            if let Some(sql) = sql {
-                connection.execute(sql, &[]).await.map_err(|error| {
-                    BackendError::MigrationFailed {
-                        step: step.to_string(),
-                        reason: error.to_string(),
-                    }
-                })?;
-            }
+        let (sql, parameters) = migration_batch(schema_name, steps);
+        if sql.is_empty() {
+            return Ok(());
         }
-        let _ = schema_name;
+        let bindings: Vec<&dyn tiberius::ToSql> = parameters
+            .iter()
+            .map(|value| value as &dyn tiberius::ToSql)
+            .collect();
+        let mut connection = connection(&self.pool).await?;
+        connection.execute(sql, &bindings).await.map_err(|error| {
+            BackendError::MigrationFailed {
+                step: "apply migration transaction".into(),
+                reason: error.to_string(),
+            }
+        })?;
         Ok(())
     }
 

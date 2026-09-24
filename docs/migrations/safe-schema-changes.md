@@ -14,8 +14,12 @@ schema Line {
 It remains valid after the rename and can stay in signed schema artifacts.
 The old name must identify exactly one removed field. A source and destination
 that both already exist, a missing source and destination, duplicate sources,
-and self-renames are rejected before migration. PostgreSQL also renames the
-associated generated unique/index objects, allowing later modifier changes.
+and self-renames are rejected before migration. PostgreSQL also renames generated indexes and CHECK/foreign-key constraints,
+allowing later modifier and enum changes. SurrealDB preserves the full field
+definition during its transactional copy. SQL Server renames keys in its tagged
+JSON payloads; all steps execute in one transaction and destination collisions
+roll back the whole plan. Context-free SurrealDB SQL generation refuses renames
+because preserving constraints requires stored schema metadata.
 
 Without this declaration, changing a field name means removing one field and
 adding another. `apply` and `migrate --execute` require confirmation for that
@@ -62,8 +66,8 @@ If a systemd restart policy is configured, mask the service for the maintenance
 window. Take a database backup and test the procedure against a restored copy.
 Perform tenancy changes separately from field changes.
 
-1. Apply the complete desired schema set to an empty staging database. This
-   validates the desired hierarchy and provides canonical metadata and DDL.
+1. Apply the complete desired schema set to an empty staging database. Start the staging server once to validate the desired hierarchy. The staging
+   database provides canonical metadata and DDL.
    Compare the staging table's columns, indexes, and constraints with production.
 2. Prepare an explicit mapping from every affected row ID to a valid tenant ID
    in the desired hierarchy. Verify completeness and tenant existence. `_tenant`

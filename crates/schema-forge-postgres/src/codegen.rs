@@ -97,11 +97,24 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
             )]
         }
         MigrationStep::RenameField { old_name, new_name } => {
-            vec![
+            let mut statements = vec![
                 format!("ALTER TABLE \"{table}\" RENAME COLUMN \"{old_name}\" TO \"{new_name}\";"),
                 format!("ALTER INDEX IF EXISTS \"uq_{table}_{old_name}\" RENAME TO \"uq_{table}_{new_name}\";"),
                 format!("ALTER INDEX IF EXISTS \"idx_{table}_{old_name}\" RENAME TO \"idx_{table}_{new_name}\";"),
-            ]
+            ];
+            for suffix in ["enum", "range", "size", "file"] {
+                statements.push(rename_constraint_sql(
+                    table,
+                    &format!("chk_{table}_{old_name}_{suffix}"),
+                    &format!("chk_{table}_{new_name}_{suffix}"),
+                ));
+            }
+            statements.push(rename_constraint_sql(
+                table,
+                &format!("{table}_{old_name}_fkey"),
+                &format!("{table}_{new_name}_fkey"),
+            ));
+            statements
         }
         MigrationStep::ChangeType {
             name,
@@ -447,6 +460,17 @@ pub fn tenant_ddl_statements(table: &str) -> Vec<String> {
     ]
 }
 
+/// Rename generated constraints only when the source object exists on this table.
+fn rename_constraint_sql(table: &str, old_name: &str, new_name: &str) -> String {
+    format!(
+        r#"DO $forge_rename$ BEGIN
+      IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('"{table}"') AND conname = left('{old_name}', 63)) THEN
+        ALTER TABLE "{table}" RENAME CONSTRAINT "{old_name}" TO "{new_name}";
+      END IF;
+    END $forge_rename$;"#
+    )
+}
+
 /// Escape single quotes in strings for PostgreSQL string literals.
 fn escape_sql_string(s: &str) -> String {
     s.replace('\'', "''")
@@ -643,7 +667,7 @@ mod tests {
             new_name: FieldName::new("full_name").unwrap(),
         };
         let stmts = migration_step_to_sql("Contact", &step);
-        assert_eq!(stmts.len(), 3);
+        assert_eq!(stmts.len(), 8);
         assert_eq!(
             stmts[0],
             "ALTER TABLE \"Contact\" RENAME COLUMN \"name\" TO \"full_name\";"

@@ -43,14 +43,10 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         MigrationStep::RemoveField { name } => {
             vec![format!("REMOVE FIELD {name} ON {table};")]
         }
-        MigrationStep::RenameField { old_name, new_name } => {
-            // SurrealDB does not have a native RENAME FIELD command.
-            // We define the new field, copy data, then remove the old one.
-            vec![
-                format!("DEFINE FIELD {new_name} ON {table} TYPE any;"),
-                format!("UPDATE {table} SET {new_name} = {old_name};"),
-                format!("REMOVE FIELD {old_name} ON {table};"),
-            ]
+        MigrationStep::RenameField { .. } => {
+            // A context-free generator cannot preserve type/modifier/index metadata.
+            // The backend compiles renames with rename_field_stmts and stored schema context.
+            vec!["THROW 'field rename requires stored schema metadata; execute through SchemaBackend';".into()]
         }
         MigrationStep::ChangeType {
             name,
@@ -845,16 +841,15 @@ mod tests {
     }
 
     #[test]
-    fn rename_field_produces_three_statements() {
+    fn rename_field() {
         let step = MigrationStep::RenameField {
             old_name: FieldName::new("name").unwrap(),
             new_name: FieldName::new("full_name").unwrap(),
         };
-        let stmts = migration_step_to_surql("Contact", &step);
-        assert_eq!(stmts.len(), 3);
-        assert!(stmts[0].contains("DEFINE FIELD full_name"));
-        assert!(stmts[1].contains("UPDATE Contact SET full_name = name"));
-        assert!(stmts[2].contains("REMOVE FIELD name"));
+        let statements = migration_step_to_surql("Contact", &step);
+        assert_eq!(statements.len(), 1);
+        assert!(statements[0].starts_with("THROW"));
+        assert!(!statements[0].contains("TYPE any"));
     }
 
     #[test]

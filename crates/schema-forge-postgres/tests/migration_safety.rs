@@ -207,6 +207,43 @@ async fn exercise(backend: &PgBackend) {
     .unwrap();
     assert_eq!(count, 0);
 
+    // A renamed enum must also rename its CHECK, so widening removes the old restriction.
+    let mut enum_schema = definition("EnumProbe", None);
+    enum_schema.fields[0].field_type =
+        FieldType::Enum(schema_forge_core::types::EnumVariants::new(vec!["old".into()]).unwrap());
+    apply(backend, &enum_schema).await;
+    let enum_row = backend
+        .create(&Entity::new(
+            enum_schema.name.clone(),
+            BTreeMap::from([("label".into(), DynamicValue::Enum("old".into()))]),
+        ))
+        .await
+        .unwrap();
+    let mut renamed_enum = enum_schema.clone();
+    renamed_enum.fields[0].name = FieldName::new("status").unwrap();
+    renamed_enum.fields[0].annotations.push(
+        schema_forge_core::types::FieldAnnotation::RenamedFrom {
+            name: FieldName::new("label").unwrap(),
+        },
+    );
+    apply(backend, &renamed_enum).await;
+    renamed_enum.fields[0].field_type = FieldType::Enum(
+        schema_forge_core::types::EnumVariants::new(vec!["old".into(), "new".into()]).unwrap(),
+    );
+    apply(backend, &renamed_enum).await;
+    let updated = backend
+        .update(&Entity::with_id(
+            enum_row.id,
+            renamed_enum.name,
+            BTreeMap::from([("status".into(), DynamicValue::Enum("new".into()))]),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        updated.fields.get("status"),
+        Some(&DynamicValue::Enum("new".into()))
+    );
+
     // Legacy orphan values must fail repair visibly rather than weakening integrity.
     sqlx::query("ALTER TABLE \"Pet\" DROP CONSTRAINT \"Pet_owner_fkey\"")
         .execute(backend.pool())
