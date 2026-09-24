@@ -529,6 +529,16 @@ Export is gated by a **distinct Cedar `Export{Entity}` action**, not `Read` — 
 
 Field-level annotations appear after modifiers on the field line.
 
+### @renamed_from("old_name")
+
+Declare a field rename during migration:
+
+```schema
+business_number: text required @renamed_from("number")
+```
+
+The old field must be removed from the desired schema. A source may name only one replacement, and a rename cannot overwrite another declared field. The hint becomes a no-op after migration and may remain in a signed schema file. Removing it is necessary before reusing the old name for a different field. PostgreSQL renames its column and generated constraints; SurrealDB and SQL Server preserve the stored values through their backend migration implementations. See [safe schema changes](../../docs/migrations/safe-schema-changes.md).
+
 ### @owner
 
 Marks a field as the record ownership tracker.
