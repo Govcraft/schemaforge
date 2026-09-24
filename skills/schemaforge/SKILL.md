@@ -9,7 +9,7 @@ description: Use when writing, creating, editing, or reviewing SchemaForge .sche
 
 SchemaForge is an Adaptive Object Model runtime with a human-readable DSL. One `.schema` file produces database tables, REST API endpoints, migrations, Cedar authorization policies, and OpenAPI specs — no recompilation required.
 
-**Version:** 0.39.1
+**Version:** 0.45.0
 
 **Core principle:** Schemas are the single source of truth for the entire entity lifecycle. Authorization is **Cedar-canonical**: every read/write/delete decision flows through the embedded Cedar engine — there are no parallel custom guards.
 
@@ -25,15 +25,15 @@ integrated SSPI/Kerberos authentication.
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `schema-forge-core` | 0.17.0 | Core types: schemas, fields (incl. `FieldType::File`, `Duration`, `Bytes`, `Map`), annotations (incl. `@hidden` and the CEL rule annotations `@require`/`@compute`/`@default`), modifiers (incl. `unique`), migrations (incl. `AddUnique`/`RemoveUnique` with per-tenant scope), queries, hook events |
-| `schema-forge-cel` | 0.10.0 | First-party CEL evaluator over `DynamicValue` (ADR-0002): lexer/parser, tree-walking evaluator, stdlib (incl. `base64.encode`/`decode`), apply-time type-checker, and the `related_paths` cross-entity-read AST walker. No upstream `cel` dependency; verified against the cel-spec conformance corpus. |
-| `schema-forge-dsl` | 0.13.0 | Lexer/parser for `.schema` DSL (logos-based) incl. `file(...)` syntax, size literals, `duration`/`bytes(max)`/`map<text, V>` types, the `@hidden` field annotation, the `unique` modifier with parse-time type-guard, and `@require`/`@compute`/`@default` rule annotations (CEL syntax-validated at parse, type-checked at apply) |
-| `schema-forge-backend` | 0.17.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant, `EntityAuthStore` (the user-mgmt impl over the system `User` schema), and the typed `BackendError::UniqueViolation` discriminator |
-| `schema-forge-surrealdb` | 0.12.0 | SurrealDB backend implementation (incl. `DEFINE INDEX ... UNIQUE` codegen, unique-violation reclassification, native `duration`/`bytes` storage, and fail-closed rejection of negative durations) |
-| `schema-forge-postgres` | 0.12.0 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file/map columns, `BIGINT`-nanosecond durations, `BYTEA` bytes with octet-length CHECK, and SQLSTATE 23505 → typed `UniqueViolation` mapping |
-| `schema-forge-mssql` | 0.4.0 | Microsoft SQL Server backend via Tiberius and acton-service pools, including integrated SSPI/Kerberos authentication, JSON document storage, CRUD, filtering, sorting, pagination, and aggregates |
-| `schema-forge-acton` | 0.41.0 | Axum/acton-service integration: REST API, unified bearer/mTLS/Windows claims, the write-time rule phases (`@default`→`@compute`→`@require`, incl. tenant-scoped cross-entity reads), Cedar policy store, auth, hook dispatch, S3 storage, and typed HTTP errors |
-| `schema-forge-cli` | 0.42.0 | CLI binary (`schemaforge`) with SurrealDB, PostgreSQL, and SQL Server release flavors; routes configuration through `acton_service::Config<SchemaForgeConfig>` and supports trusted-proxy Windows authentication |
+| `schema-forge-core` | 0.18.0 | Core types: schemas, fields (incl. `FieldType::File`, `Duration`, `Bytes`, `Map`), annotations (incl. `@hidden` and the CEL rule annotations `@require`/`@compute`/`@default`), modifiers (incl. `unique`), migrations (incl. `AddUnique`/`RemoveUnique` with per-tenant scope), queries, hook events |
+| `schema-forge-cel` | 0.11.0 | First-party CEL evaluator over `DynamicValue` (ADR-0002): lexer/parser, tree-walking evaluator, stdlib (incl. `base64.encode`/`decode`), apply-time type-checker, and the `related_paths` cross-entity-read AST walker. No upstream `cel` dependency; verified against the cel-spec conformance corpus. |
+| `schema-forge-dsl` | 0.14.0 | Lexer/parser for `.schema` DSL (logos-based) incl. `file(...)` syntax, size literals, `duration`/`bytes(max)`/`map<text, V>` types, the `@hidden` field annotation, the `unique` modifier with parse-time type-guard, and `@require`/`@compute`/`@default` rule annotations (CEL syntax-validated at parse, type-checked at apply) |
+| `schema-forge-backend` | 0.18.0 | Backend trait abstraction (depends on acton-service); owns the `PLATFORM_ADMIN_ROLE` constant, `EntityAuthStore` (the user-mgmt impl over the system `User` schema), and the typed `BackendError::UniqueViolation` discriminator |
+| `schema-forge-surrealdb` | 0.13.0 | SurrealDB backend implementation (incl. `DEFINE INDEX ... UNIQUE` codegen, unique-violation reclassification, native `duration`/`bytes` storage, and fail-closed rejection of negative durations) |
+| `schema-forge-postgres` | 0.13.0 | PostgreSQL backend implementation (via sqlx), incl. JSONB-backed file/map columns, `BIGINT`-nanosecond durations, `BYTEA` bytes with octet-length CHECK, and SQLSTATE 23505 → typed `UniqueViolation` mapping |
+| `schema-forge-mssql` | 0.5.0 | Microsoft SQL Server backend via Tiberius and acton-service pools, including integrated SSPI/Kerberos authentication, JSON document storage, CRUD, filtering, sorting, pagination, and aggregates |
+| `schema-forge-acton` | 0.44.0 | Axum/acton-service integration: REST API, unified bearer/mTLS/Windows claims, the write-time rule phases (`@default`→`@compute`→`@require`, incl. tenant-scoped cross-entity reads), Cedar policy store, auth, hook dispatch, S3 storage, and typed HTTP errors |
+| `schema-forge-cli` | 0.45.0 | CLI binary (`schemaforge`) with SurrealDB, PostgreSQL, and SQL Server release flavors; routes configuration through `acton_service::Config<SchemaForgeConfig>` and supports trusted-proxy Windows authentication |
 
 ## Before You Build: acton-service Owns the Platform Layer
 
@@ -883,3 +883,10 @@ For complete details, load these supporting files:
 ### Audit access (v0.42.0)
 
 Platform administrators can use `/api/v1/forge/audit/status`, `/audit/events` and `/audit/verify` for deployment-wide audit browsing and bounded chain checks. Reuses acton-service 0.42.0 storage, including the 0.40.1 suffix-verification fix. Tenant administrators cannot access these routes. See [audit API reference](../../docs/audit-api-reference.md) for the field projection, fixed upper sequence pagination, limits, permission flags and verification trust boundaries.
+
+
+### Safe schema changes (v0.45.0)
+
+Use `@renamed_from("old_name")` on a replacement field to preserve values across a rename. Startup refuses destructive migration plans unless `serve --allow-destructive-migrations` is explicit; runtime schema PUT requires `allow_destructive_migrations: true`. Existing tenancy annotations cannot change through automatic migration because ownership and unique constraints need an explicit data migration. PostgreSQL schema administration reconciles legacy missing relation foreign keys and refuses orphaned references. See [safe schema changes](../../docs/migrations/safe-schema-changes.md).
+
+Field write authorization precedes defaults, computed expressions, rules, and hooks. Required fields are validated after server-supplied values; omitted optional fields bind to null in rules. PUT clears omitted writable optional fields, while PATCH retains partial-update semantics. GraphQL mutations share the same write pipeline. See [rule ordering](../../docs/rule-ordering-reference.md) and [GraphQL writes](../../docs/graphql-writes.md).
