@@ -75,6 +75,7 @@ pub(super) fn configure(actor: &mut ManagedActor<Idle, ForgeActor>) {
                 }
                 if !change.remove {
                     backend.store_schema_metadata(&change.definition).await?;
+                    backend.finalize_schema_migrations().await?;
                 }
                 Ok::<(), schema_forge_backend::BackendError>(())
             }

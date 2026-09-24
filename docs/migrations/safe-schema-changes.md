@@ -37,6 +37,14 @@ structure require offline apply and restart, because the actor and HTTP
 middleware must activate the same tenant configuration together. Invalid
 combined hierarchies are rejected before schema writes.
 
+Runtime schema changes validate the complete Cedar bundle before storage and
+install that exact immutable bundle after storage succeeds. Concurrent changes
+with an outdated preflight return HTTP 409 and must be retried. Storage failures
+preserve the active registry and policy bundle, but DDL, metadata, and final
+constraint reconciliation can use separate backend transactions. A later failure
+does not undo earlier committed database changes. Inspect the reported failure
+and stored schema before retrying; use a maintenance window for migrations.
+
 ## PostgreSQL relation integrity
 
 To-one relations use foreign keys to the target table's `id`, with restrictive
