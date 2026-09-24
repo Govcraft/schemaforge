@@ -1175,6 +1175,67 @@ mod tests {
     }
 
     #[test]
+    fn shared_schema_never_receives_tenant_filter_or_stamp() {
+        let schema = schema_without_owner("Catalog");
+        let claims = make_claims_with_tenant(&["member"], "organization_a");
+        let config = make_enabled_tenant_config();
+        let mut query = Query::new(schema.id.clone());
+        inject_tenant_scope(&mut query, Some(&claims), &config, &schema);
+        assert!(query.filter.is_none());
+        let mut fields = BTreeMap::new();
+        inject_tenant_on_create(&mut fields, Some(&claims), &config, &schema);
+        assert!(!fields.contains_key("_tenant"));
+    }
+
+    #[test]
+    fn tenant_updates_preserve_member_boundaries_and_root_identity() {
+        let child = tenant_child_schema();
+        let mut root = child.clone();
+        root.annotations = vec![Annotation::Tenant(TenantKind::Root)];
+        for (schema, role, retained) in [(&child, "member", false), (&child, "platform_admin", true), (&root, "platform_admin", false)] {
+            let claims = make_claims(&[role]);
+            let mut fields = BTreeMap::from([("_tenant".into(), DynamicValue::Text("other".into()))]);
+            strip_tenant_on_update(&mut fields, schema, Some(&claims));
+            assert_eq!(fields.contains_key("_tenant"), retained);
+        }
+    }
+
+    #[test]
+    fn tenant_root_stamp_and_query_use_own_identity() {
+        let mut schema = tenant_child_schema();
+        schema.annotations = vec![Annotation::Tenant(TenantKind::Root)];
+        let mut entity = Entity::new(schema.name.clone(), BTreeMap::new());
+        stamp_root_tenant(&mut entity, &schema);
+        assert_eq!(entity.fields["_tenant"], DynamicValue::Text(entity.id.to_string()));
+        let claims = make_claims_with_tenant(&["member"], entity.id.as_str());
+        let mut query = Query::new(schema.id.clone());
+        inject_tenant_scope(&mut query, Some(&claims), &make_enabled_tenant_config(), &schema);
+        assert!(matches!(query.filter, Some(Filter::Eq { path, .. }) if path.root() == "id"));
+    }
+
+    #[test]
+    fn cedar_tenant_guard_denies_null_children_and_cross_tenant_legacy_roots() {
+        for annotation in ["@tenant(root)", "@tenant(parent: \"Organization\")"] {
+            let source = format!("{annotation}\n@access(read: [\"member\"], write: [\"member\"], delete: [\"member\"])\nschema Note {{ body: text }}");
+            let schema = schema_forge_dsl::parse(&source).unwrap().remove(0);
+            let store = store_for(&schema, None);
+            let mut entity = Entity::new(schema.name.clone(), BTreeMap::from([("body".into(), DynamicValue::Text("secret".into()))]));
+            let outsider = make_claims_with_tenant(&["member"], "organization_other");
+            let member = make_claims_with_tenant(&["member"], entity.id.as_str());
+            let admin = make_claims(&["platform_admin"]);
+            for tenant in [None, Some(DynamicValue::Null)] {
+                if let Some(value) = tenant { entity.fields.insert("_tenant".into(), value); }
+                for action in [ActionVerb::Read, ActionVerb::List, ActionVerb::Update, ActionVerb::Delete] {
+                    assert!(!authorize(&store, Some(&outsider), action, &schema, Some(&entity)).unwrap().is_allow());
+                    assert!(authorize(&store, Some(&admin), action, &schema, Some(&entity)).unwrap().is_allow());
+                    assert_eq!(authorize(&store, Some(&member), action, &schema, Some(&entity)).unwrap().is_allow(), is_tenant_root(&schema));
+                }
+            }
+            assert!(check_schema_access(&store, &schema, Some(&member), AccessAction::Read).is_ok());
+        }
+    }
+
+    #[test]
     fn patch_authorization_errors_abort_without_filtering_the_delta() {
         let schema = schema_forge_dsl::parse(
             r#"

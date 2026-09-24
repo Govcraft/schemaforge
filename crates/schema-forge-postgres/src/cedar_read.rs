@@ -300,6 +300,13 @@ fn scoped_query(query: &Query, scope: &CedarReadScope, has_tenant: bool, schema:
                 FieldPath::single(if root { "id" } else { "_tenant" }),
                 members.iter().cloned().map(DynamicValue::Text).collect(),
             );
+            let tenant = if schema.is_tenanted() {
+                tenant
+            } else {
+                // Legacy unannotated resources may carry tenant metadata. Their
+                // generated guard permits missing metadata, so retain exact parity.
+                Filter::Or { filters: vec![Filter::eq(FieldPath::single("_tenant"), DynamicValue::Null), tenant] }
+            };
             query.filter = Some(match query.filter.take() {
                 Some(filter) => Filter::And {
                     filters: vec![filter, tenant],

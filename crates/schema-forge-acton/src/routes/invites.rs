@@ -37,6 +37,7 @@ use acton_service::audit::AuditSeverity;
 use acton_service::auth::tokens::paseto_generator::PasetoGenerator;
 use acton_service::middleware::paseto::PasetoAuth;
 use acton_service::middleware::Claims;
+use acton_service::prelude::ActorHandleInterface;
 use schema_forge_backend::{tenant::TenantConfig, TenantRef};
 use tokio::sync::oneshot;
 use crate::actor::ForgeActor;
@@ -519,6 +520,27 @@ pub async fn accept_invite(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invitation_target_requires_configured_type_and_effective_membership() {
+        use schema_forge_core::types::{SchemaName, EntityId};
+        use schema_forge_backend::tenant::TenantLevel;
+        let mut claims: Claims = serde_json::from_value(serde_json::json!({
+            "sub": "user_inviter", "roles": ["owner"], "perms": [], "exp": 9999999999_u64,
+            "tenant_chain": [{"schema": "Org", "entity_id": "org_a"}]
+        })).unwrap();
+        // Claims custom fields are explicitly populated to match middleware output.
+        claims.custom.insert("tenant_chain".into(), serde_json::json!([{"schema": "Org", "entity_id": "org_a"}]));
+        let config = TenantConfig { root_schema: Some(SchemaName::new("Org").unwrap()), hierarchy: vec![TenantLevel {schema: SchemaName::new("Org").unwrap(), parent: None, parent_field: None}] };
+        assert!(validate_invite_tenant(&claims, Some(&config), Some("Org"), Some("org_a")).is_ok());
+        assert!(matches!(validate_invite_tenant(&claims, Some(&config), Some("Org"), Some(EntityId::new("org").as_str())), Err(ForgeError::Forbidden { .. })));
+        assert!(matches!(validate_invite_tenant(&claims, Some(&config), Some("Other"), Some("org_a")), Err(ForgeError::ValidationFailed { .. })));
+        assert!(validate_invite_tenant(&claims, Some(&config), Some("Org"), None).is_err());
+        assert!(validate_invite_tenant(&claims, Some(&config), None, None).is_ok());
+        claims.roles = vec!["platform_admin".into()];
+        assert!(validate_invite_tenant(&claims, Some(&config), Some("Org"), Some("org_b")).is_ok());
+        assert!(validate_invite_tenant(&claims, Some(&config), Some("Unknown"), Some("org_b")).is_err());
+    }
 
     #[test]
     fn validate_email_accepts_plausible_addresses() {

@@ -18,3 +18,7 @@ Public schema access does not override record ownership, tenant isolation, expli
 Custom `RecordAccessPolicy` implementations deny anonymous reads by default. To support public reads, override `filter_visible_optional` and explicitly handle absent claims. Authenticated requests continue through the existing `filter_visible` implementation. The built-in Cedar policy supports both callers without inventing authenticated claims.
 
 Embedding applications must opt selected GET/HEAD entity routes into acton-service's optional token authentication and retain schema authorization. Marking an entity prefix as `public_paths` skips token verification and is not an equivalent configuration.
+
+## Empty role lists
+
+For `@access` read/write/delete and `@field_access` read/write, explicit `[]` has the same meaning as omission: any authenticated principal, subject to the remaining Cedar policies. It does not deny access. Use a nonempty role list to restrict an action, for example `write: ["platform_admin"]`. `schemaforge parse` reports explicit empty grants as warnings while preserving existing schema semantics.

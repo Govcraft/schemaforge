@@ -34,6 +34,12 @@ pub async fn run(
 
         match schema_forge_dsl::parse(&source_text) {
             Ok(schemas) => {
+                let warnings = schema_forge_dsl::empty_access_grants(&source_text);
+                if output.mode != OutputMode::Json {
+                    for warning in &warnings {
+                        output.warn(&format!("{filename}: {warning}"));
+                    }
+                }
                 let count = schemas.len();
                 total_schemas += count;
 
@@ -47,6 +53,7 @@ pub async fn run(
                         "file": filename,
                         "schemas": count,
                         "errors": [],
+                        "warnings": warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
                     }));
                 } else {
                     output.status(&format!("  {filename} .... {count} schemas"));
