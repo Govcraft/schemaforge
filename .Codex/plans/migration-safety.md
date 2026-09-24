@@ -19,3 +19,7 @@ Measured SELECT snapshots show REMOVE FIELD followed by UPDATE in the same trans
 ## SQL Server sparse update parity
 
 CI exposed that SQL Server replaces its entire JSON payload on EntityStore::update, unlike PostgreSQL/SurrealDB and the runtime's field-filtered partial update path. Implement one bound JSON_MODIFY UPDATE with OUTPUT inserted row, preserving omitted values and explicit tagged nulls without a read/modify/write race. Clarify trait semantics, retain rename regression, and add SQL Server direct null/empty-update checks. Run focused SQL Server integration tests only.
+
+## Supported SurrealDB engine correction
+
+Reproduced simultaneous successful attachment clears on the 2.6 Mem engine even with explicit transactions. SurrealKV0.9.3 advances commit oracle before index publication; snapshots can mix old data with the newer conflict watermark. Latest2.6.4 uses identical engine; no compatible SurrealKV0.9 patch exists. Upgrade the backend SDK to stable3.3.0, whose Mem engine uses SurrealMX0.27 completed-commit watermark. Adapt native value/error APIs without changing entity semantics, add multi-thread competing clear/replace regression, run focused CAS and migration tests. Root approved supported upgrade over local mutex or vendored engine fork.

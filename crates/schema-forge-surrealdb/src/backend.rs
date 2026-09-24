@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::value::record_key_string;
 use schema_forge_backend::entity::{Entity, QueryResult};
 use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
@@ -12,6 +13,7 @@ use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
 use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName};
 use surrealdb::engine::any::Any;
+use surrealdb::types::ToSql;
 use surrealdb::Surreal;
 
 use crate::codegen::migration_step_to_surql;
@@ -19,6 +21,10 @@ use crate::query::{count_to_surql_with_schema, query_to_surql_with_schema};
 use crate::value::{
     entity_to_surreal_map, first_negative_duration, first_oversized_bytes, surreal_to_dynamic,
 };
+
+fn supported_server_version(major: u64, minor: u64, stable: bool) -> bool {
+    major == 3 && minor >= 3 && stable
+}
 
 /// The schema metadata table name used to store `SchemaDefinition` records.
 const SCHEMA_META_TABLE: &str = "_schema_metadata";
@@ -63,6 +69,7 @@ fn reclassify_unique_violation(err: BackendError, table: &str) -> BackendError {
 /// `SchemaBackend` (DDL/metadata) and `EntityStore` (CRUD/query).
 pub struct SurrealBackend {
     db: Surreal<Any>,
+    version_checked: std::sync::OnceLock<()>,
 }
 
 impl SurrealBackend {
@@ -72,7 +79,10 @@ impl SurrealBackend {
     /// connection pooling). The caller is responsible for ensuring the client
     /// has the correct namespace and database selected.
     pub fn from_client(db: Surreal<Any>) -> Self {
-        Self { db }
+        Self {
+            db,
+            version_checked: std::sync::OnceLock::new(),
+        }
     }
 
     /// Get a reference to the underlying SurrealDB client.
@@ -101,7 +111,9 @@ impl SurrealBackend {
                 message: e.to_string(),
             })?;
 
-        Ok(Self { db })
+        let backend = Self::from_client(db);
+        backend.ensure_supported_version().await?;
+        Ok(backend)
     }
 
     /// Connect to a remote SurrealDB instance.
@@ -132,8 +144,8 @@ impl SurrealBackend {
 
         if let (Some(user), Some(pass)) = (username, password) {
             db.signin(surrealdb::opt::auth::Root {
-                username: user,
-                password: pass,
+                username: user.to_owned(),
+                password: pass.to_owned(),
             })
             .await
             .map_err(|e| BackendError::ConnectionError {
@@ -148,11 +160,32 @@ impl SurrealBackend {
                 message: format!("failed to select namespace/database: {e}"),
             })?;
 
-        Ok(Self { db })
+        let backend = Self::from_client(db);
+        backend.ensure_supported_version().await?;
+        Ok(backend)
+    }
+
+    async fn ensure_supported_version(&self) -> Result<(), BackendError> {
+        if self.version_checked.get().is_some() {
+            return Ok(());
+        }
+        let version = self
+            .db
+            .version()
+            .await
+            .map_err(|error| BackendError::ConnectionError {
+                message: format!("cannot verify SurrealDB server version: {error}"),
+            })?;
+        if !supported_server_version(version.major, version.minor, version.pre.is_empty()) {
+            return Err(BackendError::ConnectionError { message: format!("SurrealDB {version} is unsupported; upgrade the server to stable 3.3 or newer within the 3.x series before using SchemaForge. Older embedded engines can lose concurrent conditional updates.") });
+        }
+        let _ = self.version_checked.set(());
+        Ok(())
     }
 
     /// Execute a raw SurrealQL statement, returning the response.
-    async fn execute_raw(&self, sql: &str) -> Result<surrealdb::Response, BackendError> {
+    async fn execute_raw(&self, sql: &str) -> Result<surrealdb::IndexedResults, BackendError> {
+        self.ensure_supported_version().await?;
         self.db
             .query(sql)
             .await
@@ -162,24 +195,25 @@ impl SurrealBackend {
     }
 
     /// Execute a raw SurrealQL statement and extract the result as a list of
-    /// `surrealdb::sql::Value` objects.
+    /// `surrealdb::types::Value` objects.
     ///
-    /// Uses `response.take::<surrealdb::Value>(0)` which bypasses serde
+    /// Uses `response.take::<surrealdb::types::Value>(0)` which bypasses serde
     /// deserialization (the SDK has a special `QueryResult<Value>` impl that
     /// wraps the core value directly). We then unwrap the `Array` variant
     /// manually to get individual row values.
     async fn execute_and_take_rows(
         &self,
         sql: &str,
-    ) -> Result<Vec<surrealdb::sql::Value>, BackendError> {
+    ) -> Result<Vec<surrealdb::types::Value>, BackendError> {
         let mut response = self.execute_raw(sql).await?;
-        let value: surrealdb::Value = response.take(0).map_err(|e| BackendError::QueryError {
-            message: e.to_string(),
-        })?;
-        let core_val = value.into_inner();
+        let value: surrealdb::types::Value =
+            response.take(0).map_err(|e| BackendError::QueryError {
+                message: e.to_string(),
+            })?;
+        let core_val = value;
         match core_val {
-            surrealdb::sql::Value::Array(arr) => Ok(arr.0),
-            surrealdb::sql::Value::None | surrealdb::sql::Value::Null => Ok(Vec::new()),
+            surrealdb::types::Value::Array(arr) => Ok(arr.into_inner()),
+            surrealdb::types::Value::None | surrealdb::types::Value::Null => Ok(Vec::new()),
             // Single object result (e.g. from CREATE)
             other => Ok(vec![other]),
         }
@@ -365,6 +399,7 @@ impl SchemaBackend for SurrealBackend {
         steps: &[MigrationStep],
         definition: Option<&SchemaDefinition>,
     ) -> Result<(), BackendError> {
+        self.ensure_supported_version().await?;
         if let Some(definition) = definition {
             if &definition.name != name {
                 return Err(BackendError::MigrationFailed {
@@ -636,15 +671,15 @@ impl EntityStore for SurrealBackend {
             "UPDATE `{schema}`:`{id}` SET `{field}` = {new_value} WHERE `{field}` = {literal} RETURN AFTER;"
         );
         let mut response = self.execute_raw(&sql).await?;
-        match response.take::<surrealdb::Value>(0) {
-            Ok(value) => Ok(match value.into_inner() {
-                surrealdb::sql::Value::Array(rows) => !rows.0.is_empty(),
-                surrealdb::sql::Value::None | surrealdb::sql::Value::Null => false,
+        match response.take::<surrealdb::types::Value>(0) {
+            Ok(value) => Ok(match value {
+                surrealdb::types::Value::Array(rows) => !rows.is_empty(),
+                surrealdb::types::Value::None | surrealdb::types::Value::Null => false,
                 _ => true,
             }),
-            Err(surrealdb::Error::Db(surrealdb::error::Db::TxRetryable)) => Ok(false),
-            Err(surrealdb::Error::Db(surrealdb::error::Db::QueryNotExecutedDetail { message }))
-                if message == surrealdb::error::Db::TxRetryable.to_string() =>
+            Err(error)
+                if error.query_details()
+                    == Some(&surrealdb::types::QueryError::TransactionConflict) =>
             {
                 Ok(false)
             }
@@ -719,9 +754,12 @@ impl EntityStore for SurrealBackend {
         let rows = self.execute_and_take_rows(&sql).await?;
 
         // SurrealDB returns [{ "count": N }] for GROUP ALL, or [] if no rows.
-        if let Some(surrealdb::sql::Value::Object(obj)) = rows.first() {
-            if let Some(surrealdb::sql::Value::Number(n)) = obj.get("count") {
-                return Ok(n.as_usize());
+        if let Some(surrealdb::types::Value::Object(obj)) = rows.first() {
+            if let Some(surrealdb::types::Value::Number(n)) = obj.get("count") {
+                return Ok(n
+                    .to_int()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .unwrap_or(0));
             }
         }
         Ok(0)
@@ -745,12 +783,12 @@ impl EntityStore for SurrealBackend {
 
         let mut results = Vec::with_capacity(query.ops.len());
         if let Some(row) = rows.first() {
-            if let surrealdb::sql::Value::Object(obj) = row {
+            if let surrealdb::types::Value::Object(obj) = row {
                 for (i, op) in query.ops.iter().enumerate() {
                     let key = format!("agg_{i}");
                     let value = match obj.get(&key) {
-                        Some(surrealdb::sql::Value::Number(n)) => {
-                            let v = n.as_float();
+                        Some(surrealdb::types::Value::Number(n)) => {
+                            let v = n.to_f64().unwrap_or(f64::NAN);
                             if v.is_nan() {
                                 0.0
                             } else {
@@ -779,18 +817,18 @@ impl EntityStore for SurrealBackend {
     }
 }
 
-/// Convert a `surrealdb::sql::Value` response row to an `Entity`.
+/// Convert a `surrealdb::types::Value` response row to an `Entity`.
 ///
 /// This is the primary deserialization path. It works directly with
-/// `surrealdb::sql::Value` (the core value type) which handles `Thing`
+/// `surrealdb::types::Value` (the core value type) which handles `Thing`
 /// record IDs natively, avoiding the serialization errors that occur
 /// when trying to deserialize SurrealDB internal types through serde.
 fn surreal_row_to_entity(
     schema: &SchemaName,
-    row: &surrealdb::sql::Value,
+    row: &surrealdb::types::Value,
 ) -> Result<Entity, BackendError> {
     match row {
-        surrealdb::sql::Value::Object(obj) => {
+        surrealdb::types::Value::Object(obj) => {
             // Extract ID
             let id_value = obj.get("id").ok_or_else(|| BackendError::Internal {
                 message: "SurrealDB record missing 'id' field".to_string(),
@@ -813,69 +851,81 @@ fn surreal_row_to_entity(
             Ok(Entity::with_id(entity_id, schema.clone(), fields))
         }
         other => Err(BackendError::Internal {
-            message: format!("expected Object in query result, got: {other}"),
+            message: format!("expected Object in query result, got: {other:?}"),
         }),
     }
 }
 
-/// Extract entity ID string from a `surrealdb::sql::Value`.
+/// Extract entity ID string from a `surrealdb::types::Value`.
 ///
-/// SurrealDB returns IDs as `Thing` (table:id), `Strand` (string), or other formats.
-fn extract_id_from_surreal(value: &surrealdb::sql::Value) -> String {
+/// SurrealDB returns IDs as native record identifiers or strings.
+fn extract_id_from_surreal(value: &surrealdb::types::Value) -> String {
     match value {
-        surrealdb::sql::Value::Thing(thing) => {
-            // thing.id is the record's unique part
-            thing.id.to_raw()
+        surrealdb::types::Value::RecordId(thing) => {
+            // Preserve the raw record key without SQL quoting.
+            record_key_string(&thing.key)
         }
-        surrealdb::sql::Value::Strand(s) => s.0.clone(),
-        other => other.to_string(),
+        surrealdb::types::Value::String(s) => s.clone(),
+        other => other.to_sql(),
     }
 }
 
-/// Convert a surrealdb::sql::Value to a SurrealQL literal string for use in SET clauses.
-fn field_surreal_value_to_literal(value: &surrealdb::sql::Value) -> String {
+/// Convert a surrealdb::types::Value to a SurrealQL literal string for use in SET clauses.
+fn field_surreal_value_to_literal(value: &surrealdb::types::Value) -> String {
     match value {
-        surrealdb::sql::Value::None | surrealdb::sql::Value::Null => "NONE".to_string(),
-        surrealdb::sql::Value::Bool(b) => b.to_string(),
-        surrealdb::sql::Value::Number(n) => n.to_string(),
-        surrealdb::sql::Value::Strand(s) => {
+        surrealdb::types::Value::None | surrealdb::types::Value::Null => "NONE".to_string(),
+        surrealdb::types::Value::Bool(b) => b.to_string(),
+        surrealdb::types::Value::Number(n) => n.to_sql(),
+        surrealdb::types::Value::String(s) => {
             // Detect ISO 8601 datetime strings and use SurrealQL d'...' literal
             if chrono::DateTime::parse_from_rfc3339(s.as_str()).is_ok() {
                 format!("d'{}'", s.as_str())
             } else {
-                value.to_string()
+                value.to_sql()
             }
         }
-        surrealdb::sql::Value::Datetime(dt) => format!("d'{}'", dt.0.to_rfc3339()),
+        surrealdb::types::Value::Datetime(dt) => {
+            format!("d'{}'", dt.clone().into_inner().to_rfc3339())
+        }
         // Duration literals are bare in SurrealQL (e.g. `2w3d`); the Display impl
         // produces a parseable form.
-        surrealdb::sql::Value::Duration(dur) => dur.to_string(),
+        surrealdb::types::Value::Duration(dur) => dur.to_sql(),
         // The `Bytes` Display impl emits a parseable SurrealQL literal of the form
         // `encoding::base64::decode("...")`, round-tripping to native bytes.
-        surrealdb::sql::Value::Bytes(b) => b.to_string(),
-        surrealdb::sql::Value::Array(arr) => {
+        surrealdb::types::Value::Bytes(b) => b.to_sql(),
+        surrealdb::types::Value::Array(arr) => {
             let items: Vec<String> = arr.iter().map(field_surreal_value_to_literal).collect();
             format!("[{}]", items.join(", "))
         }
-        surrealdb::sql::Value::Object(obj) => {
+        surrealdb::types::Value::Object(obj) => {
             let entries: Vec<String> = obj
                 .iter()
                 .map(|(k, v)| {
                     format!(
                         "{}: {}",
-                        surrealdb::sql::Value::from(k.as_str()),
+                        surrealdb::types::Value::String(k.clone()).to_sql(),
                         field_surreal_value_to_literal(v)
                     )
                 })
                 .collect();
             format!("{{ {} }}", entries.join(", "))
         }
-        other => format!("'{}'", other.to_string().replace('\'', "\\'")),
+        other => format!("'{}'", other.to_sql().replace('\'', "\\'")),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rejects_engines_without_supported_transaction_guarantees() {
+        assert!(!super::supported_server_version(2, 6, true));
+        assert!(!super::supported_server_version(3, 2, true));
+        assert!(!super::supported_server_version(3, 3, false));
+        assert!(super::supported_server_version(3, 3, true));
+        assert!(super::supported_server_version(3, 4, true));
+        assert!(!super::supported_server_version(4, 0, true));
+    }
+
     use super::*;
 
     #[tokio::test]
@@ -900,16 +950,16 @@ mod tests {
 
     #[test]
     fn extract_id_from_thing() {
-        use surrealdb::sql::{Id, Thing};
-        let thing = Thing::from(("Contact", Id::String("entity_abc123".into())));
-        let thing_val = surrealdb::sql::Value::Thing(thing);
+        use surrealdb::types::{RecordId, RecordIdKey};
+        let thing = RecordId::new("Contact", RecordIdKey::String("entity_abc123".into()));
+        let thing_val = surrealdb::types::Value::RecordId(thing);
         assert_eq!(extract_id_from_surreal(&thing_val), "entity_abc123");
     }
 
     #[test]
     fn extract_id_from_strand() {
-        let strand = surrealdb::sql::Strand::from("entity_abc123");
-        let strand_val = surrealdb::sql::Value::Strand(strand);
+        let strand = String::from("entity_abc123");
+        let strand_val = surrealdb::types::Value::String(strand);
         assert_eq!(extract_id_from_surreal(&strand_val), "entity_abc123");
     }
 
@@ -943,15 +993,15 @@ mod tests {
 
     #[test]
     fn duration_literal_is_bare() {
-        let dur = surrealdb::sql::Duration::from(std::time::Duration::from_secs(3600));
-        let val = surrealdb::sql::Value::Duration(dur);
+        let dur = surrealdb::types::Duration::from(std::time::Duration::from_secs(3600));
+        let val = surrealdb::types::Value::Duration(dur);
         // Bare SurrealQL duration literal, no quotes.
         assert_eq!(field_surreal_value_to_literal(&val), "1h");
     }
 
     #[test]
     fn bytes_literal_is_base64_decode_call() {
-        let val = surrealdb::sql::Value::Bytes(surrealdb::sql::Bytes::from(b"hello".to_vec()));
+        let val = surrealdb::types::Value::Bytes(surrealdb::types::Bytes::from(b"hello".to_vec()));
         // Parseable SurrealQL: decodes back to the same bytes.
         assert_eq!(
             field_surreal_value_to_literal(&val),
