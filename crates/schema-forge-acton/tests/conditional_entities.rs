@@ -1304,3 +1304,56 @@ async fn create_field_authorization_accepts_defaults_but_fails_closed_on_missing
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["fields"]["has_number"], true);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_omission_matches_persisted_values_and_preserves_denied_fields() {
+    for role in ["editor", "manager"] {
+        let backend = Arc::new(SurrealBackend::connect_memory("put", "put").await.unwrap());
+        let schema = schema_forge_dsl::parse(
+            r#"
+            @access(read: ["editor", "manager"], write: ["editor", "manager"], delete: ["manager"])
+            schema Contact {
+                title: text required
+                number: text @field_access(read: ["editor", "manager"], write: ["manager"])
+                has_number: boolean @compute("number != null")
+            }
+        "#,
+        )
+        .unwrap()
+        .remove(0);
+        let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+        backend
+            .apply_migration(&schema.name, &plan.steps)
+            .await
+            .unwrap();
+        backend.store_schema_metadata(&schema).await.unwrap();
+        let seed = Entity::new(
+            schema.name.clone(),
+            BTreeMap::from([
+                ("title".into(), DynamicValue::Text("original".into())),
+                ("number".into(), DynamicValue::Text("stored".into())),
+                ("has_number".into(), DynamicValue::Boolean(true)),
+            ]),
+        );
+        DynEntityStore::create(backend.as_ref(), &seed)
+            .await
+            .unwrap();
+        let app = app_with_backend(backend, schema, &[role]).await;
+        let path = format!("/schemas/Contact/entities/{}", seed.id);
+        let (status, _, body) = request(
+            &app,
+            &path,
+            "PUT",
+            None,
+            serde_json::json!({"title":"updated"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{role}: {body}");
+        assert_eq!(body["fields"]["has_number"], role == "editor", "{body}");
+        if role == "editor" {
+            assert_eq!(body["fields"]["number"], "stored");
+        } else {
+            assert!(body["fields"]["number"].is_null());
+        }
+    }
+}

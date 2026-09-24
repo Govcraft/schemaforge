@@ -12,8 +12,8 @@ use schema_forge_backend::conditional::{ConditionalMutationError, EntityRevision
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::query::{validate_filter, FieldPath, Filter, SortOrder};
 use schema_forge_core::types::{
-    Cardinality, ConstraintViolation, DynamicValue, EntityId, FieldType, SchemaDefinition,
-    SchemaName,
+    Cardinality, ConstraintViolation, DynamicValue, EntityId, FieldAnnotation, FieldType,
+    SchemaDefinition, SchemaName,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -3352,6 +3352,40 @@ pub async fn update_entity(
         json_to_entity_fields_with_mode(&schema_def, &body.fields, ConversionMode::Merge)
             .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
+    // Immutable input cannot influence field authorization.
+    strip_owner_on_update(&mut fields, &schema_def);
+    strip_tenant_on_update(&mut fields, &schema_def, claims.as_ref());
+    if let Some(tenant) = existing.fields.get("_tenant") {
+        fields
+            .entry("_tenant".into())
+            .or_insert_with(|| tenant.clone());
+    }
+    // PUT removes omitted writable optional values. Hidden/server-owned
+    // fields remain present, and denied removals are restored below.
+    for field in &schema_def.fields {
+        let name = field.name.as_str();
+        if field.is_derived() || fields.contains_key(name) {
+            continue;
+        }
+        let server_owned = field.is_hidden()
+            || field.has_owner()
+            || field
+                .annotations
+                .iter()
+                .any(|annotation| matches!(annotation, FieldAnnotation::Compute { .. }))
+            || matches!(
+                name,
+                "created_at" | "created_by" | "updated_at" | "updated_by"
+            );
+        if server_owned {
+            if let Some(value) = existing.fields.get(name) {
+                fields.insert(name.into(), value.clone());
+            }
+        } else if !field.is_required() || field.field_access().is_some() {
+            fields.insert(name.into(), DynamicValue::Null);
+        }
+    }
+    let proposed_names: Vec<_> = fields.keys().cloned().collect();
     let mut candidate = existing.clone();
     candidate.fields.extend(fields.clone());
     let mut supplied = Entity::with_id(entity_id.clone(), schema_name.clone(), fields);
@@ -3363,26 +3397,11 @@ pub async fn update_entity(
         claims.as_ref(),
     )?;
     fields = supplied.fields;
-    for name in body.fields.keys() {
-        if !fields.contains_key(name) {
-            if let Some(value) = existing.fields.get(name) {
-                fields.insert(name.clone(), value.clone());
+    for name in proposed_names {
+        if !fields.contains_key(&name) {
+            if let Some(value) = existing.fields.get(&name) {
+                fields.insert(name, value.clone());
             }
-        }
-    }
-
-    strip_owner_on_update(&mut fields, &schema_def);
-    strip_tenant_on_update(&mut fields, &schema_def, claims.as_ref());
-    if let Some(tenant) = existing.fields.get("_tenant") {
-        fields
-            .entry("_tenant".into())
-            .or_insert_with(|| tenant.clone());
-    }
-    // PUT replaces supplied fields, but immutable ownership remains part of
-    // the post-update rule context, even when an administrator is the caller.
-    if let Some(owner_field) = schema_def.fields.iter().find(|field| field.has_owner()) {
-        if let Some(owner) = existing.fields.get(owner_field.name.as_str()) {
-            fields.insert(owner_field.name.as_str().to_string(), owner.clone());
         }
     }
     // Single request-time instant reused for audit columns and the `now` CEL binding.
@@ -3661,6 +3680,11 @@ pub async fn patch_entity(
         json_to_entity_fields_with_mode(&schema_def, &body.fields, ConversionMode::Merge)
             .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
+    // Owner field is immutable post-create; refuse to transfer ownership
+    // via PATCH the same way we refuse via PUT.
+    strip_owner_on_update(&mut patch_fields, &schema_def);
+    strip_tenant_on_update(&mut patch_fields, &schema_def, claims.as_ref());
+
     let mut candidate = existing.clone();
     candidate.fields.extend(patch_fields.clone());
     let mut supplied = Entity::with_id(entity_id.clone(), schema_name.clone(), patch_fields);
@@ -3673,10 +3697,6 @@ pub async fn patch_entity(
     )?;
     patch_fields = supplied.fields;
 
-    // Owner field is immutable post-create; refuse to transfer ownership
-    // via PATCH the same way we refuse via PUT.
-    strip_owner_on_update(&mut patch_fields, &schema_def);
-    strip_tenant_on_update(&mut patch_fields, &schema_def, claims.as_ref());
     // Single request-time instant reused for audit columns and the `now` CEL binding.
     let rules_now = chrono::Utc::now();
     inject_audit_columns_on_update(&mut patch_fields, &schema_def, claims.as_ref(), rules_now);
