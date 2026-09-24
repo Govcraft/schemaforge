@@ -98,6 +98,10 @@ async fn exercise(backend: &PgBackend) {
         .push(schema_forge_core::types::FieldModifier::Unique);
     let owner = definition("Owner", Some(("pet", "Pet")));
     apply(backend, &pet).await;
+    assert!(matches!(
+        backend.finalize_schema_migrations().await,
+        Err(BackendError::MigrationFailed { .. })
+    ));
     apply(backend, &owner).await;
     let owner_row = backend
         .create(&Entity::new(

@@ -10,7 +10,7 @@ fn declared_rename_preserves_data_plan_and_becomes_noop() {
     let new =
         schema(r#"schema Line { business_number: text required unique @renamed_from("number") }"#);
     DiffEngine::validate_transition(&old, &new).unwrap();
-    let plan = DiffEngine::diff(&old, &new);
+    let plan = DiffEngine::plan_update(&old, &new).unwrap();
     assert!(matches!(
         plan.steps.as_slice(),
         [MigrationStep::RenameField { .. }]
@@ -31,7 +31,7 @@ fn invalid_rename_hints_fail_before_migration() {
         r#"schema Line { first: text @renamed_from("number") second: text @renamed_from("number") }"#,
     ] {
         assert!(
-            DiffEngine::validate_transition(&old, &schema(source)).is_err(),
+            DiffEngine::plan_update(&old, &schema(source)).is_err(),
             "{source}"
         );
     }
@@ -50,7 +50,7 @@ fn all_tenant_transitions_require_explicit_manual_migration() {
             let old_schema = schema(&format!("{old} schema Contact {{ phone: text unique }}"));
             let new_schema = schema(&format!("{new} schema Contact {{ phone: text unique }}"));
             assert_eq!(
-                DiffEngine::validate_transition(&old_schema, &new_schema).is_ok(),
+                DiffEngine::plan_update(&old_schema, &new_schema).is_ok(),
                 old == new
             );
         }

@@ -329,6 +329,42 @@ mod tests {
         .is_err());
     }
 
+    #[tokio::test]
+    async fn lossy_transforms_require_force_before_any_writes() {
+        for command in [Command::Apply, Command::Migrate] {
+            for (old, new) in [
+                (
+                    "schema Sample { value: float }",
+                    "schema Sample { value: integer }",
+                ),
+                (
+                    "schema Sample { value: integer }",
+                    "schema Sample { value: float }",
+                ),
+                (
+                    r#"schema Sample { value: enum("old", "stay") }"#,
+                    r#"schema Sample { value: enum("stay") }"#,
+                ),
+                (
+                    "schema Sample { value: boolean }",
+                    "schema Sample { value: datetime }",
+                ),
+            ] {
+                let original = schema(old);
+                let backend = Backend::seeded(original.clone());
+                let result = command.run(&backend, schema(new), true).await;
+                assert!(
+                    matches!(result, Err(CliError::RequiresForce)),
+                    "{command:?}: {result:?}"
+                );
+                let stored = backend.stored.lock().unwrap();
+                assert_eq!(stored.migrations, 0);
+                assert_eq!(stored.writes, 0);
+                assert_eq!(stored.schema.as_ref(), Some(&original));
+            }
+        }
+    }
+
     const ORIGINAL: &str = "@version(1) schema Person { age: integer }";
     const METADATA_CHANGES: [&str; 3] = [
         "@version(2) schema Person { age: integer }",
