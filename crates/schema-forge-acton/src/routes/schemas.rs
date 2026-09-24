@@ -164,24 +164,39 @@ fn validate_schema_definition(definition: &SchemaDefinition) -> Result<(), Forge
     Ok(())
 }
 
-/// Compare the effective tenant topology independently of registry iteration order.
-fn tenant_structure(
-    schemas: &[SchemaDefinition],
-) -> Result<
-    std::collections::BTreeMap<SchemaName, (Option<SchemaName>, Option<FieldName>)>,
-    ForgeError,
-> {
+/// One schema's place in the effective runtime tenant hierarchy.
+#[derive(PartialEq, Eq)]
+struct TenantParent {
+    schema: Option<SchemaName>,
+    field: Option<FieldName>,
+}
+
+/// Tenant topology normalized independently of registry iteration order.
+#[derive(PartialEq, Eq)]
+struct TenantStructure(std::collections::BTreeMap<SchemaName, TenantParent>);
+
+fn tenant_structure(schemas: &[SchemaDefinition]) -> Result<TenantStructure, ForgeError> {
     let config =
         schema_forge_backend::tenant::TenantConfig::from_schemas(schemas).map_err(|error| {
             ForgeError::ValidationFailed {
                 details: vec![format!("invalid proposed tenant hierarchy: {error}")],
             }
         })?;
-    Ok(config
-        .hierarchy
-        .into_iter()
-        .map(|level| (level.schema, (level.parent, level.parent_field)))
-        .collect())
+    Ok(TenantStructure(
+        config
+            .hierarchy
+            .into_iter()
+            .map(|level| {
+                (
+                    level.schema,
+                    TenantParent {
+                        schema: level.parent,
+                        field: level.parent_field,
+                    },
+                )
+            })
+            .collect(),
+    ))
 }
 
 /// Fetch the current Cedar [`PolicyStore`] from the actor.
