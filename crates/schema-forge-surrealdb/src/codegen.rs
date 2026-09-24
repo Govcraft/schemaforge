@@ -56,13 +56,13 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         } => {
             let surql_type = field_type_to_surql(new_type);
             let assertions = field_assertions(new_type);
-            let flex_prefix = if needs_flexible(new_type) {
-                "FLEXIBLE "
+            let flex_suffix = if needs_flexible(new_type) {
+                " FLEXIBLE"
             } else {
                 ""
             };
             let mut stmt =
-                format!("DEFINE FIELD OVERWRITE {name} ON {table} {flex_prefix}TYPE {surql_type}");
+                format!("DEFINE FIELD OVERWRITE {name} ON {table} TYPE {surql_type}{flex_suffix}");
             if !assertions.is_empty() {
                 stmt.push_str(&format!(" ASSERT {}", assertions.join(" AND ")));
             }
@@ -300,12 +300,12 @@ pub(crate) fn rename_field_stmts(
         format!("option<{original_type}>")
     };
     let flexible = if needs_flexible(&source.field_type) {
-        "FLEXIBLE "
+        " FLEXIBLE"
     } else {
         ""
     };
     statements.push(format!(
-        "DEFINE FIELD OVERWRITE {old_name} ON {table} {flexible}TYPE {optional_type};"
+        "DEFINE FIELD OVERWRITE {old_name} ON {table} TYPE {optional_type}{flexible};"
     ));
     statements.push(format!("UPDATE {table} UNSET {old_name};"));
     if source.is_unique() {
@@ -329,8 +329,8 @@ pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<St
     // FLEXIBLE is required for SCHEMAFULL `object` fields that need to accept
     // arbitrary keys. Without it, SurrealDB silently drops unknown sub-fields,
     // reducing a `json` column to an empty object on read-back.
-    let flex_prefix = if needs_flexible(&field.field_type) {
-        "FLEXIBLE "
+    let flex_suffix = if needs_flexible(&field.field_type) {
+        " FLEXIBLE"
     } else {
         ""
     };
@@ -338,7 +338,7 @@ pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<St
     let mut parts = Vec::new();
 
     // Build base DEFINE FIELD
-    let mut stmt = format!("DEFINE FIELD {name} ON {table} {flex_prefix}TYPE {surql_type}");
+    let mut stmt = format!("DEFINE FIELD {name} ON {table} TYPE {surql_type}{flex_suffix}");
 
     // Gather assertions from type constraints
     let mut assertions = field_assertions(&field.field_type);
@@ -387,12 +387,12 @@ pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<St
                 nested_base
             };
             let nested_flex = if needs_flexible(&sub.field_type) {
-                "FLEXIBLE "
+                " FLEXIBLE"
             } else {
                 ""
             };
             let mut nested_stmt =
-                format!("DEFINE FIELD {nested_name} ON {table} {nested_flex}TYPE {nested_type}");
+                format!("DEFINE FIELD {nested_name} ON {table} TYPE {nested_type}{nested_flex}");
 
             let mut nested_assertions = field_assertions(&sub.field_type);
             if sub.is_required() {
@@ -876,7 +876,7 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         assert_eq!(
             stmts[0],
-            "DEFINE FIELD metadata ON Employee FLEXIBLE TYPE option<object>;"
+            "DEFINE FIELD metadata ON Employee TYPE option<object> FLEXIBLE;"
         );
     }
 
@@ -893,7 +893,7 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         assert_eq!(
             stmts[0],
-            "DEFINE FIELD config ON Workflow FLEXIBLE TYPE object ASSERT $value != NONE;"
+            "DEFINE FIELD config ON Workflow TYPE object FLEXIBLE ASSERT $value != NONE;"
         );
     }
 
@@ -922,7 +922,7 @@ mod tests {
         // object (and any extra keys — though only declared sub-fields
         // are enforced).
         assert!(
-            stmts[0].contains("FLEXIBLE TYPE option<object>"),
+            stmts[0].contains("TYPE option<object> FLEXIBLE"),
             "parent: {}",
             stmts[0]
         );
@@ -958,7 +958,7 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         assert_eq!(
             stmts[0],
-            "DEFINE FIELD OVERWRITE metadata ON Employee FLEXIBLE TYPE object;"
+            "DEFINE FIELD OVERWRITE metadata ON Employee TYPE object FLEXIBLE;"
         );
     }
 
