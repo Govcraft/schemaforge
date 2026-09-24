@@ -65,12 +65,14 @@ jobs:
           cargo nextest run -p schema-forge-acton --features postgres --test auth_demo -E 'test(readable_paging)'
       - name: Run GraphQL write and tenant regressions
         run: cargo nextest run -p schema-forge-acton --features postgres,graphql --test graphql_writes --test graphql_tenants
+      - name: Run runtime schema and custom policy preflight regressions
+        run: cargo nextest run -p schema-forge-acton --features postgres --test integration --test policy_preflight
       - name: Run schema planning and rename regressions
         run: |
           cargo nextest run -p schema-forge-core -p schema-forge-dsl
           cargo nextest run -p schema-forge-surrealdb --test migration_renames
       - name: Check CLI preparation and security behavior
-        run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres -E 'test(explicit_revision_preparation) | test(help_does_not_disclose_secret_environment_values) | test(serve_rejects_invalid_host_before_connecting)'
+        run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres
       - name: Clean disposable HTTP namespace
         if: always()
         run: psql -X -v ON_ERROR_STOP=1 -c 'DROP SCHEMA IF EXISTS conditional_http CASCADE'
