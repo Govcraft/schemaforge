@@ -127,9 +127,15 @@ async fn precheck_policy_bundle(
     let role_ranks = snapshot.role_ranks.clone();
     let principal_claims = snapshot.principal_claims.clone();
 
+    let (tx, rx) = oneshot::channel();
+    forge.send(crate::messages::GetCustomPoliciesDir {
+        reply: ReplyChannel::new(tx),
+    }).await;
+    let custom_dir = ask_forge(rx).await?;
+
     crate::authz::store::PolicyStoreSnapshot::from_schemas(
         &proposed,
-        None,
+        custom_dir.as_deref(),
         role_ranks,
         principal_claims,
     )
@@ -945,9 +951,11 @@ pub async fn delete_schema(
             reply: ReplyChannel::new(tx),
         })
         .await;
-    let _schema = ask_forge(rx)
+    let schema = ask_forge(rx)
         .await?
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
+
+    precheck_policy_bundle(&state, &forge, &schema, true).await?;
 
     // 2. Remove from registry cache + recompile Cedar bundle. The actor
     // reverts the registry mutation if the recompile fails so the running

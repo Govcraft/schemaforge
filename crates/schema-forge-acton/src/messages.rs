@@ -127,6 +127,13 @@ pub struct GetPolicyStore {
     pub reply: ReplyChannel<Option<Arc<crate::authz::PolicyStore>>>,
 }
 
+/// Retrieve the custom policy source selected when the actor was initialized.
+/// This includes CLI overrides and must be used for schema preflight checks.
+#[derive(Clone, Debug)]
+pub struct GetCustomPoliciesDir {
+    pub reply: ReplyChannel<Option<std::path::PathBuf>>,
+}
+
 // ---------------------------------------------------------------------------
 // Registry mutations
 // ---------------------------------------------------------------------------

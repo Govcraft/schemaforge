@@ -135,7 +135,9 @@ pub async fn run(
         &storage_config,
         role_ranks,
         principal_claims,
-        custom_dir.as_deref(),
+        // Validate custom policies against the proposed registry below, not the
+        // old registry: a coordinated field/policy rename must be deployable.
+        None,
     )
     .await
     .map_err(|e| CliError::Server {
@@ -147,6 +149,9 @@ pub async fn run(
     let proposed_schemas =
         super::schema_update::merge_schema_definitions(registry.values().cloned(), &schemas);
     super::schema_update::validate_tenant_hierarchy(&proposed_schemas)?;
+    let prepared_policy = init_data.policy_store.as_ref().map(|store| {
+        super::policy_preflight::compile(&proposed_schemas, &store.current(), custom_dir.as_deref())
+    }).transpose()?;
     if !schemas.is_empty() {
         output.status("Applying schemas...");
         let mut plans = Vec::new();
@@ -207,17 +212,10 @@ pub async fn run(
         None
     };
 
-    // Recompile the Cedar policy bundle now that --schemas have been merged
-    // into the registry. `build_init` ran before the parsed schemas were
-    // applied, so its initial PolicyStore covers only the system schemas;
-    // without this step the runtime would reject every authz check against
-    // an app schema with "type X is not declared in the schema".
-    if let Some(policy_store) = &init_data.policy_store {
-        policy_store
-            .recompile_from_schemas(&all_schemas, custom_dir.as_deref())
-            .map_err(|e| CliError::Server {
-                message: format!("Cedar policy recompile failed after schema apply: {e}"),
-            })?;
+    // Install exactly the bundle validated before DDL. Do not reread policy
+    // files after storage changes and risk discovering a late compile failure.
+    if let (Some(policy_store), Some(prepared_policy)) = (&init_data.policy_store, prepared_policy) {
+        policy_store.swap(prepared_policy);
 
         // Log the final bundle posture so misconfiguration (missing custom
         // policies, wrong directory) is obvious at startup. Mirrors the

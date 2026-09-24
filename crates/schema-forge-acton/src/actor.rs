@@ -264,6 +264,14 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
         })
     });
 
+    actor.act_on::<crate::messages::GetCustomPoliciesDir>(|actor, ctx| {
+        let directory = actor.model.custom_policies_dir.clone();
+        let reply = ctx.message().reply.clone();
+        Reply::pending(async move {
+            reply.send(directory).await;
+        })
+    });
+
     actor.act_on::<GetStorageRegistry>(|actor, ctx| {
         let registry = actor.model.storage_registry.clone();
         let reply = ctx.message().reply.clone();

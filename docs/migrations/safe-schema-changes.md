@@ -85,7 +85,8 @@ Perform tenancy changes separately from field changes.
    columns/constraints, backfill ownership, verify all invariants, and copy only
    the desired annotation array into the existing metadata row. Preserve the
    production schema ID and fields. Roll back on any failed check.
-4. Restart using the matching desired schema files, verify tenant-isolated reads
+4. Unmask any service masked for maintenance, then restart using the matching
+   desired schema files. Verify tenant-isolated reads
    and writes with real tenant principals, and only then restore normal service.
 
 The following example converts a global `Contact.phone unique` schema to
@@ -133,7 +134,8 @@ Repeat the unique-constraint conversion for every unique field.
 
 Other transitions have different requirements:
 
-- **Adding a root:** add `_tenant` and its index. Root unique fields stay global.
+- **Adding a root:** add `_tenant` and its index, then set `_tenant = id` on
+  every root row. Root unique fields stay global.
   Establish a valid single-root hierarchy and reviewed ownership values; root
   rows represent tenant boundaries and must not be assigned to arbitrary roots.
 - **Removing tenancy from a child:** verify and resolve duplicate values across
@@ -146,8 +148,9 @@ Other transitions have different requirements:
   descendants and principal tenant chains together.
 - **Root to child:** establish a different valid root, backfill parent ownership,
   and replace global unique constraints with composite indexes.
-- **Child to root:** establish a valid single-root hierarchy, resolve cross-tenant
-  duplicates, and replace composite indexes with global unique constraints.
+- **Child to root:** establish a valid single-root hierarchy, set `_tenant = id`
+  on every root row, resolve cross-tenant duplicates, and replace composite
+  indexes with global unique constraints.
 
 For every case, commit physical changes, validated ownership, and the canonical
 annotation update together. Other database backends require equivalent native
