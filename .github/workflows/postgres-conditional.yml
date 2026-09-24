@@ -46,24 +46,30 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev postgresql-client
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Install nextest
         run: cargo install cargo-nextest --locked
       - name: Run storage concurrency cases
-        run: cargo nextest run -p schema-forge-backend -p schema-forge-postgres --run-ignored all
+        run: cargo nextest run -p schema-forge-backend -p schema-forge-postgres --run-ignored all --no-fail-fast
       - name: Prepare disposable HTTP namespace
         run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA conditional_http'
       - name: Run complete runtime and schema suites
-        run: cargo nextest run -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl --features schema-forge-acton/postgres,schema-forge-acton/graphql
+        run: cargo nextest run -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl --features schema-forge-acton/postgres,schema-forge-acton/graphql --no-fail-fast
       - name: Run HTTP authorization and concurrency cases
+        if: ${{ !cancelled() }}
         env:
           SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE: "1"
           SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dconditional_http
-        run: cargo nextest run -p schema-forge-acton --features postgres,graphql --test conditional_entities --run-ignored only
+        run: cargo nextest run -p schema-forge-acton --features postgres,graphql --test conditional_entities --run-ignored only --no-fail-fast
       - name: Check CLI preparation and security behavior
-        run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres
+        if: ${{ !cancelled() }}
+        run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres --no-fail-fast
       - name: Deny runtime and backend lints
+        if: ${{ !cancelled() }}
         run: cargo clippy -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl -p schema-forge-backend -p schema-forge-postgres --features schema-forge-acton/postgres,schema-forge-acton/graphql --all-targets -- -D warnings
       - name: Deny CLI lints
+        if: ${{ !cancelled() }}
         run: cargo clippy -p schema-forge-cli --no-default-features --features postgres --all-targets -- -D warnings
       - name: Clean disposable HTTP namespace
         if: always()
