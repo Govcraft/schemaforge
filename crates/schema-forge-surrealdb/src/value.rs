@@ -28,14 +28,14 @@ pub(crate) fn record_key_string(key: &surrealdb::types::RecordIdKey) -> String {
 pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
     match value {
         DynamicValue::Null => SurrealValue::None,
-        DynamicValue::Text(s) => (s.as_str()).into_value(),
+        DynamicValue::Text(s) => s.as_str().into_value(),
         DynamicValue::Integer(i) => (*i).into_value(),
         DynamicValue::Float(f) => (*f).into_value(),
         DynamicValue::Boolean(b) => (*b).into_value(),
         DynamicValue::DateTime(dt) => {
             // Store as ISO 8601 string — the literal serializer in backend.rs
             // will wrap it with d'...' for SurrealQL datetime fields.
-            (dt.to_rfc3339()).into_value()
+            dt.to_rfc3339().into_value()
         }
         DynamicValue::Duration(d) => {
             timedelta_to_surreal_duration(d).map_or(SurrealValue::None, SurrealValue::Duration)
@@ -45,11 +45,11 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
             // bytes verbatim.
             SurrealValue::Bytes(surrealdb::types::Bytes::from(b.clone()))
         }
-        DynamicValue::Enum(s) => (s.as_str()).into_value(),
+        DynamicValue::Enum(s) => s.as_str().into_value(),
         DynamicValue::Json(v) => json_to_surreal(v),
         DynamicValue::Array(arr) => {
             let items: Vec<SurrealValue> = arr.iter().map(dynamic_to_surreal).collect();
-            (items).into_value()
+            items.into_value()
         }
         DynamicValue::Composite(map) | DynamicValue::Map(map) => {
             // A fixed-field `Composite` and a typed open-key `Map` are both
@@ -60,15 +60,14 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
             }
             SurrealValue::Object(obj)
         }
-        DynamicValue::Ref(id) => (id.as_str()).into_value(),
+        DynamicValue::Ref(id) => id.as_str().into_value(),
         DynamicValue::RefArray(ids) => {
-            let items: Vec<SurrealValue> =
-                ids.iter().map(|id| (id.as_str()).into_value()).collect();
-            (items).into_value()
+            let items: Vec<SurrealValue> = ids.iter().map(|id| id.as_str().into_value()).collect();
+            items.into_value()
         }
         _ => {
             // Future DynamicValue variants -- store as string fallback.
-            (format!("{value:?}").as_str()).into_value()
+            format!("{value:?}").into_value()
         }
     }
 }
@@ -94,7 +93,7 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
         }
         SurrealValue::String(s) => Ok(DynamicValue::Text(s.clone())),
         SurrealValue::Datetime(dt) => {
-            let chrono_dt: chrono::DateTime<chrono::Utc> = dt.clone().into_inner();
+            let chrono_dt: chrono::DateTime<chrono::Utc> = (*dt).into_inner();
             Ok(DynamicValue::DateTime(chrono_dt))
         }
         SurrealValue::Duration(dur) => {
@@ -143,7 +142,7 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
 /// The entity ID is stored under the `"id"` key as a plain string.
 pub fn entity_to_surreal_map(entity: &Entity) -> BTreeMap<String, SurrealValue> {
     let mut map = BTreeMap::new();
-    map.insert("id".to_string(), (entity.id.as_str()).into_value());
+    map.insert("id".to_string(), entity.id.as_str().into_value());
     for (k, v) in &entity.fields {
         map.insert(k.clone(), dynamic_to_surreal(v));
     }
@@ -275,13 +274,13 @@ fn json_to_surreal(json: &serde_json::Value) -> SurrealValue {
             } else if let Some(f) = n.as_f64() {
                 (f).into_value()
             } else {
-                (n.to_string().as_str()).into_value()
+                n.to_string().into_value()
             }
         }
-        serde_json::Value::String(s) => (s.as_str()).into_value(),
+        serde_json::Value::String(s) => s.as_str().into_value(),
         serde_json::Value::Array(arr) => {
             let items: Vec<SurrealValue> = arr.iter().map(json_to_surreal).collect();
-            (items).into_value()
+            items.into_value()
         }
         serde_json::Value::Object(map) => {
             let mut obj = surrealdb::types::Object::new();

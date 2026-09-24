@@ -885,7 +885,7 @@ fn field_surreal_value_to_literal(value: &surrealdb::types::Value) -> String {
             }
         }
         surrealdb::types::Value::Datetime(dt) => {
-            format!("d'{}'", dt.clone().into_inner().to_rfc3339())
+            format!("d'{}'", (*dt).into_inner().to_rfc3339())
         }
         // Duration literals are bare in SurrealQL (e.g. `2w3d`); the Display impl
         // produces a parseable form.
