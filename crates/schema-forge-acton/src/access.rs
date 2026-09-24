@@ -318,11 +318,10 @@ pub(crate) fn filter_patch_fields(
             continue;
         }
         let decision =
-            crate::authz::engine::authorize_input_field(store, claims, schema, resource, name).map_err(
-                |_| ForgeError::Forbidden {
+            crate::authz::engine::authorize_input_field(store, claims, schema, resource, name)
+                .map_err(|_| ForgeError::Forbidden {
                     message: "Could not authorize a patched field.".into(),
-                },
-            )?;
+                })?;
         if !decision.errors.is_empty() {
             return Err(ForgeError::Forbidden {
                 message: "Could not authorize a patched field.".into(),

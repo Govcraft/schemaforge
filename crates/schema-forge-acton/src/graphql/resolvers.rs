@@ -197,12 +197,13 @@ pub async fn resolve_list_entities<'a>(
         })
         .collect();
     // Record-level access filtering
-    let visible_entities =
-        if let Some(policy) = &gql_ctx.state.record_access_policy {
-            policy.filter_visible_optional(schema_def, claims, authorized).await
-        } else {
-            authorized
-        };
+    let visible_entities = if let Some(policy) = &gql_ctx.state.record_access_policy {
+        policy
+            .filter_visible_optional(schema_def, claims, authorized)
+            .await
+    } else {
+        authorized
+    };
 
     let count = visible_entities.len();
     // The raw storage count precedes authorization and could disclose hidden rows.
@@ -491,9 +492,10 @@ async fn operator_visible(
     entity: &Entity,
 ) -> bool {
     match &context.state.record_access_policy {
-        Some(policy) => !policy.filter_visible_optional(
-            schema, context.claims.as_ref(), vec![entity.clone()],
-        ).await.is_empty(),
+        Some(policy) => !policy
+            .filter_visible_optional(schema, context.claims.as_ref(), vec![entity.clone()])
+            .await
+            .is_empty(),
         None => true,
     }
 }
@@ -502,9 +504,12 @@ async fn request_schema(
     context: &ForgeGraphqlContext,
     name: &str,
 ) -> async_graphql::Result<SchemaDefinition> {
-    context.state.registry.get(name).await.ok_or_else(|| {
-        forge_error_to_gql(ForgeError::SchemaNotFound { name: name.into() })
-    })
+    context
+        .state
+        .registry
+        .get(name)
+        .await
+        .ok_or_else(|| forge_error_to_gql(ForgeError::SchemaNotFound { name: name.into() }))
 }
 
 fn require_record_access(

@@ -11,8 +11,8 @@ pub mod login;
 pub mod migrate;
 pub mod parse;
 pub mod policies;
-mod schema_update;
 mod policy_preflight;
+mod schema_update;
 pub mod serve;
 #[cfg(feature = "embedded-console")]
 pub mod serve_console;

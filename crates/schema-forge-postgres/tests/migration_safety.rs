@@ -412,10 +412,7 @@ async fn atomic_schema_failure_preserves_data_and_metadata(backend: &PgBackend) 
         backend.load_schema_metadata(&original.name).await.unwrap(),
         Some(original.clone())
     );
-    assert_eq!(
-        backend.get(&original.name, &row.id).await.unwrap(),
-        row
-    );
+    assert_eq!(backend.get(&original.name, &row.id).await.unwrap(), row);
     backend
         .apply_schema_change(&original.name, &[], None)
         .await

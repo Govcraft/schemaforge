@@ -242,8 +242,7 @@ fn manifest_root_for(input_paths: &[PathBuf], files: &[PathBuf]) -> Result<PathB
         Ok(first)
     } else {
         Err(CliError::Other(
-            "all schema inputs must share a single parent directory containing the manifest"
-                .into(),
+            "all schema inputs must share a single parent directory containing the manifest".into(),
         ))
     }
 }

@@ -149,9 +149,17 @@ pub async fn run(
     let proposed_schemas =
         super::schema_update::merge_schema_definitions(registry.values().cloned(), &schemas);
     super::schema_update::validate_tenant_hierarchy(&proposed_schemas)?;
-    let prepared_policy = init_data.policy_store.as_ref().map(|store| {
-        super::policy_preflight::compile(&proposed_schemas, &store.current(), custom_dir.as_deref())
-    }).transpose()?;
+    let prepared_policy = init_data
+        .policy_store
+        .as_ref()
+        .map(|store| {
+            super::policy_preflight::compile(
+                &proposed_schemas,
+                &store.current(),
+                custom_dir.as_deref(),
+            )
+        })
+        .transpose()?;
     if !schemas.is_empty() {
         output.status("Applying schemas...");
         let mut plans = Vec::new();
@@ -214,7 +222,8 @@ pub async fn run(
 
     // Install exactly the bundle validated before DDL. Do not reread policy
     // files after storage changes and risk discovering a late compile failure.
-    if let (Some(policy_store), Some(prepared_policy)) = (&init_data.policy_store, prepared_policy) {
+    if let (Some(policy_store), Some(prepared_policy)) = (&init_data.policy_store, prepared_policy)
+    {
         policy_store.swap(prepared_policy);
 
         // Log the final bundle posture so misconfiguration (missing custom

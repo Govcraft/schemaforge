@@ -23,9 +23,7 @@ use crate::access::{
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
-use crate::messages::{
-    ApplyPreparedSchemaChange, GetSchema, ListSchemas, ReplyChannel,
-};
+use crate::messages::{ApplyPreparedSchemaChange, GetSchema, ListSchemas, ReplyChannel};
 
 // ---------------------------------------------------------------------------
 // Actor request helper
@@ -56,7 +54,10 @@ async fn pair_with_registry(
         })
         .await;
     let mut batch = ask_forge(rx).await?;
-    let registry = batch.iter().map(|schema| (schema.name.to_string(), schema.clone())).collect();
+    let registry = batch
+        .iter()
+        .map(|schema| (schema.name.to_string(), schema.clone()))
+        .collect();
 
     // Replace any existing entry with the same name so we pair against
     // the incoming definition — not the stale one.
@@ -114,10 +115,13 @@ async fn precheck_policy_bundle(
         })
         .await;
     let mut proposed = ask_forge(rx).await?;
-    let expected_registry: std::collections::HashMap<_, _> = proposed.iter()
-        .map(|schema| (schema.name.to_string(), schema.clone())).collect();
+    let expected_registry: std::collections::HashMap<_, _> = proposed
+        .iter()
+        .map(|schema| (schema.name.to_string(), schema.clone()))
+        .collect();
     if expected_registry.get(target.name.as_str()) != expected_target
-        || paired_registry.is_some_and(|registry| registry != &expected_registry) {
+        || paired_registry.is_some_and(|registry| registry != &expected_registry)
+    {
         return Err(ForgeError::Conflict {
             reason: "schema_preflight_stale",
             message: "schema changed while preparing the update; retry the schema change".into(),
@@ -140,9 +144,11 @@ async fn precheck_policy_bundle(
     let principal_claims = snapshot.principal_claims.clone();
 
     let (tx, rx) = oneshot::channel();
-    forge.send(crate::messages::GetCustomPoliciesDir {
-        reply: ReplyChannel::new(tx),
-    }).await;
+    forge
+        .send(crate::messages::GetCustomPoliciesDir {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
     let custom_dir = ask_forge(rx).await?;
 
     let next_policy = crate::authz::store::PolicyStoreSnapshot::from_schemas(
@@ -157,7 +163,11 @@ async fn precheck_policy_bundle(
         )],
     })?;
 
-    Ok(PreparedSchemaPolicies { expected_registry, expected_policy: snapshot, next_policy: std::sync::Arc::new(next_policy) })
+    Ok(PreparedSchemaPolicies {
+        expected_registry,
+        expected_policy: snapshot,
+        next_policy: std::sync::Arc::new(next_policy),
+    })
 }
 
 /// Reuse canonical DSL validation for annotations supplied through the JSON schema API.
@@ -224,12 +234,17 @@ async fn apply_prepared_schema_change(
     steps: Vec<schema_forge_core::migration::MigrationStep>,
 ) -> Result<(), ForgeError> {
     let (tx, rx) = oneshot::channel();
-    forge.send(ApplyPreparedSchemaChange {
-        expected_registry: prepared.expected_registry,
-        expected_policy: prepared.expected_policy,
-        next_policy: prepared.next_policy,
-        definition, remove, steps, reply: ReplyChannel::new(tx),
-    }).await;
+    forge
+        .send(ApplyPreparedSchemaChange {
+            expected_registry: prepared.expected_registry,
+            expected_policy: prepared.expected_policy,
+            next_policy: prepared.next_policy,
+            definition,
+            remove,
+            steps,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
     ask_forge(rx).await?
 }
 
@@ -665,7 +680,15 @@ pub async fn create_schema(
     // 4b. Pre-validate the proposed Cedar bundle BEFORE running any DB
     // migration. The actor commits this immutable bundle with the storage
     // change; no policy files are read after DDL.
-    let prepared = precheck_policy_bundle(&state, &forge, &definition, false, None, Some(&paired_registry)).await?;
+    let prepared = precheck_policy_bundle(
+        &state,
+        &forge,
+        &definition,
+        false,
+        None,
+        Some(&paired_registry),
+    )
+    .await?;
 
     // 5. Generate migration plan
     let plan = DiffEngine::create_new(&definition);
@@ -873,7 +896,15 @@ pub async fn update_schema(
 
     // 4b. Dry-run the Cedar bundle for the proposed registry state so an
     // invalid schema fails fast — before any DB migration.
-    let prepared = precheck_policy_bundle(&state, &forge, &new_definition, false, Some(&old_schema), Some(&paired_registry)).await?;
+    let prepared = precheck_policy_bundle(
+        &state,
+        &forge,
+        &new_definition,
+        false,
+        Some(&old_schema),
+        Some(&paired_registry),
+    )
+    .await?;
 
     // 5. Compute diff and generate migration plan
     let plan = DiffEngine::plan_update(&old_schema, &new_definition).map_err(|error| {
@@ -886,7 +917,8 @@ pub async fn update_schema(
     }
 
     let step_count = plan.steps.len();
-    apply_prepared_schema_change(&forge, prepared, new_definition.clone(), false, plan.steps).await?;
+    apply_prepared_schema_change(&forge, prepared, new_definition.clone(), false, plan.steps)
+        .await?;
 
     // 9. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -951,7 +983,8 @@ pub async fn delete_schema(
         .await?
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
 
-    let prepared = precheck_policy_bundle(&state, &forge, &schema, true, Some(&schema), None).await?;
+    let prepared =
+        precheck_policy_bundle(&state, &forge, &schema, true, Some(&schema), None).await?;
 
     apply_prepared_schema_change(&forge, prepared, schema, true, vec![]).await?;
 

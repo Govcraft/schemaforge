@@ -80,7 +80,9 @@ impl PolicyStore {
     /// Pin an existing immutable snapshot for a single request.
     #[cfg(feature = "graphql")]
     pub(crate) fn from_snapshot(snapshot: Arc<PolicyStoreSnapshot>) -> Self {
-        Self { inner: ArcSwap::from(snapshot) }
+        Self {
+            inner: ArcSwap::from(snapshot),
+        }
     }
 
     /// Returns the current snapshot. Cheap pointer-clone.
@@ -114,12 +116,8 @@ impl PolicyStore {
         let current = self.current();
         let role_ranks = current.role_ranks.clone();
         let principal_claims = current.principal_claims.clone();
-        let next = PolicyStoreSnapshot::from_schemas(
-            schemas,
-            custom_dir,
-            role_ranks,
-            principal_claims,
-        )?;
+        let next =
+            PolicyStoreSnapshot::from_schemas(schemas, custom_dir, role_ranks, principal_claims)?;
         self.swap(next);
         Ok(())
     }
@@ -196,7 +194,10 @@ impl PolicyStoreSnapshot {
         let result = validator.validate(&policy_set, ValidationMode::Strict);
         if !result.validation_passed() {
             let errors: Vec<String> = result.validation_errors().map(|e| e.to_string()).collect();
-            let warns: Vec<String> = result.validation_warnings().map(|w| w.to_string()).collect();
+            let warns: Vec<String> = result
+                .validation_warnings()
+                .map(|w| w.to_string())
+                .collect();
             let mut combined = errors;
             combined.extend(warns);
             return Err(PolicyStoreError::Validation(combined.join("\n")));
@@ -256,14 +257,13 @@ mod tests {
 
     #[test]
     fn compile_succeeds_for_validated_bundle() {
-        let snap =
-            PolicyStoreSnapshot::compile(
-                MINIMAL_SCHEMA,
-                MINIMAL_POLICY,
-                RoleRanks::empty(),
-                PrincipalClaimMappings::default(),
-            )
-                .unwrap();
+        let snap = PolicyStoreSnapshot::compile(
+            MINIMAL_SCHEMA,
+            MINIMAL_POLICY,
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap();
         assert_eq!(snap.policy_count, 1);
         assert_eq!(snap.policy_hash.len(), 64);
     }
@@ -283,24 +283,22 @@ mod tests {
 
     #[test]
     fn store_swap_makes_new_snapshot_visible() {
-        let s1 =
-            PolicyStoreSnapshot::compile(
-                MINIMAL_SCHEMA,
-                MINIMAL_POLICY,
-                RoleRanks::empty(),
-                PrincipalClaimMappings::default(),
-            )
-                .unwrap();
+        let s1 = PolicyStoreSnapshot::compile(
+            MINIMAL_SCHEMA,
+            MINIMAL_POLICY,
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap();
         let store = PolicyStore::new(s1);
         let h1 = store.current().policy_hash.clone();
-        let s2 =
-            PolicyStoreSnapshot::compile(
-                MINIMAL_SCHEMA,
-                MINIMAL_POLICY,
-                RoleRanks::empty(),
-                PrincipalClaimMappings::default(),
-            )
-                .unwrap();
+        let s2 = PolicyStoreSnapshot::compile(
+            MINIMAL_SCHEMA,
+            MINIMAL_POLICY,
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap();
         store.swap(s2);
         assert_eq!(store.current().policy_hash, h1);
     }
@@ -493,7 +491,10 @@ when {
             principal_claims_with_org(),
         )
         .expect("strict-mode validation should accept guarded reads of mapped attributes");
-        assert!(snap.principal_claims.iter().any(|m| m.attribute_name == "client_org_id"));
+        assert!(snap
+            .principal_claims
+            .iter()
+            .any(|m| m.attribute_name == "client_org_id"));
     }
 
     #[test]

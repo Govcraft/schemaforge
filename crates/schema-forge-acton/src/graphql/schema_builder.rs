@@ -97,7 +97,7 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                     nested_obj =
                         nested_obj.field(Field::new(&inner_field_name, inner_tr, move |ctx| {
                             let field_name = field_name_owned.clone();
-                        FieldFuture::new(async move {
+                            FieldFuture::new(async move {
                                 let parent = ctx
                                     .parent_value
                                     .try_downcast_ref::<async_graphql::Value>()
@@ -147,9 +147,7 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                     move |ctx| {
                         let sn = sn.clone();
                         let tn = tn.clone();
-                        FieldFuture::new(
-                            async move { resolve_list_entities(&ctx, &sn, &tn).await },
-                        )
+                        FieldFuture::new(async move { resolve_list_entities(&ctx, &sn, &tn).await })
                     },
                 )
                 .argument(InputValue::new("filter", TypeRef::named(&filter_type_name)))
@@ -269,10 +267,7 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
 }
 
 /// Build the output Object type for a schema, with field resolvers.
-fn build_output_type(
-    schema_def: &SchemaDefinition,
-    type_name: &str,
-) -> Result<Object, String> {
+fn build_output_type(schema_def: &SchemaDefinition, type_name: &str) -> Result<Object, String> {
     let schema_name = schema_def.name.as_str().to_string();
     let mut obj = Object::new(type_name);
 
