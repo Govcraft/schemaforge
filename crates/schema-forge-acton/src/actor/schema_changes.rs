@@ -11,7 +11,7 @@ use crate::{error::ForgeError, messages::ApplyPreparedSchemaChange};
 #[derive(Debug)]
 struct SchemaChangeFailure {
     name: SchemaName,
-    previous: Option<SchemaDefinition>,
+    previous: Option<Box<SchemaDefinition>>,
     cause: ForgeError,
 }
 
@@ -81,7 +81,7 @@ pub(super) fn configure(actor: &mut ManagedActor<Idle, ForgeActor>) {
             if let Err(error) = result {
                 return Err(SchemaChangeFailure {
                     name,
-                    previous,
+                    previous: previous.map(Box::new),
                     cause: error.into(),
                 });
             }
@@ -95,7 +95,7 @@ pub(super) fn configure(actor: &mut ManagedActor<Idle, ForgeActor>) {
             actor
                 .model
                 .registry
-                .insert(failure.name.to_string(), previous.clone());
+                .insert(failure.name.to_string(), previous.as_ref().clone());
         } else {
             actor.model.registry.remove(failure.name.as_str());
         }
