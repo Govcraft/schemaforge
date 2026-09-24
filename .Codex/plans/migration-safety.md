@@ -7,3 +7,7 @@
 5. Reject empty PostgreSQL UPDATE fields before emitting SQL.
 
 Tests: DSL roundtrip and invalid rename hints, repeat apply, tenant add/remove/root-parent refusal, startup/runtime destructive refusals, PostgreSQL fresh/add/backfill/cyclic FK behavior and deletion/write error mapping; nextest and clippy, cross-backend compilation. No dependencies required. Public annotation and error variants warrant minor release; root owns version bump.
+
+## Atomic runtime schema persistence followup
+
+Add apply_schema_change(name, steps, optional definition) to SchemaBackend and dynamic adapter with unsupported default. Each supported backend executes schema DDL, required validation, metadata upsert/delete, and integrity reconciliation in a single transaction. Extract existing statement/connection helpers to preserve rename behavior. PostgreSQL uses transaction-local metadata and strict FK finalization; cache invalidates only after commit. Runtime DELETE keeps its existing registry-only semantics (parent decision). Add focused rollback contracts exercising failure after DDL and metadata-only/deletion paths, run focused nextest and Clippy only; CI owns broad gates.

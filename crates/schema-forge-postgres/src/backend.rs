@@ -185,7 +185,21 @@ impl PgBackend {
             .map_err(|error| BackendError::ConnectionError {
                 message: error.to_string(),
             })?;
-        for definition in &definitions {
+        Self::reconcile_constraints_on(&mut tx, &definitions, finalizing).await?;
+        tx.commit()
+            .await
+            .map_err(|error| BackendError::MigrationFailed {
+                step: "commit relation constraints".into(),
+                reason: error.to_string(),
+            })
+    }
+
+    async fn reconcile_constraints_on(
+        connection: &mut sqlx::PgConnection,
+        definitions: &[SchemaDefinition],
+        finalizing: bool,
+    ) -> Result<(), BackendError> {
+        for definition in definitions {
             for field in &definition.fields {
                 if let FieldType::Relation {
                     target,
@@ -219,19 +233,14 @@ impl PgBackend {
                       END IF;
                     END $forge_fk$;"#
                     );
-                    sqlx::query(&statement).execute(&mut *tx).await.map_err(|error| BackendError::MigrationFailed {
+                    sqlx::query(&statement).execute(&mut *connection).await.map_err(|error| BackendError::MigrationFailed {
                         step: format!("ensure relation constraint {table}.{column} -> {target}"),
                         reason: format!("{error}; repair orphaned relation values before retrying the migration"),
                     })?;
                 }
             }
         }
-        tx.commit()
-            .await
-            .map_err(|error| BackendError::MigrationFailed {
-                step: "commit relation constraints".into(),
-                reason: error.to_string(),
-            })
+        Ok(())
     }
 
     /// Drop the cached schema metadata so the next read refetches from
@@ -396,10 +405,23 @@ impl PgBackend {
     }
 
     async fn fetch_schema_metadata_from_db(&self) -> Result<Vec<SchemaDefinition>, BackendError> {
+        let mut connection =
+            self.pool
+                .acquire()
+                .await
+                .map_err(|e| BackendError::ConnectionError {
+                    message: e.to_string(),
+                })?;
+        Self::fetch_metadata_on(&mut connection).await
+    }
+
+    async fn fetch_metadata_on(
+        connection: &mut sqlx::PgConnection,
+    ) -> Result<Vec<SchemaDefinition>, BackendError> {
         let rows: Vec<PgRow> = sqlx::query(&format!(
             "SELECT \"definition\" FROM \"{SCHEMA_META_TABLE}\";"
         ))
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(|e| BackendError::QueryError {
             message: format!("failed to list schema metadata: {e}"),
@@ -452,6 +474,21 @@ impl PgBackend {
         &self,
         definition: &SchemaDefinition,
     ) -> Result<(), BackendError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| map_write_error(e, definition.name.as_str(), "begin float repair"))?;
+        Self::repair_float_columns_on(&mut tx, definition).await?;
+        tx.commit()
+            .await
+            .map_err(|e| map_write_error(e, definition.name.as_str(), "commit float repair"))
+    }
+
+    async fn repair_float_columns_on(
+        connection: &mut sqlx::PgConnection,
+        definition: &SchemaDefinition,
+    ) -> Result<(), BackendError> {
         let float_columns: Vec<&str> = definition
             .fields
             .iter()
@@ -472,7 +509,7 @@ impl PgBackend {
              WHERE table_schema = current_schema() AND table_name = $1;",
         )
         .bind(table)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *connection)
         .await
         .map_err(|e| BackendError::QueryError {
             message: format!("failed to introspect columns for '{table}': {e}"),
@@ -503,21 +540,14 @@ impl PgBackend {
             let alter = format!(
                 "ALTER TABLE \"{table}\" ALTER COLUMN \"{col}\" TYPE DOUBLE PRECISION USING \"{col}\"::double precision;"
             );
-            let mut tx = self
-                .pool
-                .begin()
+            sqlx::query(&alter)
+                .execute(&mut *connection)
                 .await
-                .map_err(|e| map_write_error(e, table, "begin float repair"))?;
-            sqlx::query(&alter).execute(&mut *tx).await.map_err(|e| {
-                BackendError::MigrationFailed {
+                .map_err(|e| BackendError::MigrationFailed {
                     step: format!("repair_float_column({table}.{col})"),
                     reason: e.to_string(),
-                }
-            })?;
-            Self::invalidate_schema_revisions(&mut tx, &definition.name).await?;
-            tx.commit()
-                .await
-                .map_err(|e| map_write_error(e, table, "commit float repair"))?;
+                })?;
+            Self::invalidate_schema_revisions(connection, &definition.name).await?;
         }
 
         Ok(())
@@ -533,6 +563,76 @@ impl PgBackend {
 }
 
 impl SchemaBackend for PgBackend {
+    async fn apply_schema_change(
+        &self,
+        name: &SchemaName,
+        steps: &[MigrationStep],
+        definition: Option<&SchemaDefinition>,
+    ) -> Result<(), BackendError> {
+        let fail = |error: sqlx::Error| BackendError::MigrationFailed {
+            step: "atomic schema change".into(),
+            reason: error.to_string(),
+        };
+        let mut tx = self.pool.begin().await.map_err(fail)?;
+        // Serialize administrative metadata changes while retaining transactional DDL visibility.
+        sqlx::query(&format!(
+            "LOCK TABLE \"{SCHEMA_META_TABLE}\" IN SHARE ROW EXCLUSIVE MODE"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(fail)?;
+        let mut definitions = Self::fetch_metadata_on(&mut tx).await?;
+        if let Some(definition) = definition {
+            if &definition.name != name {
+                return Err(BackendError::MigrationFailed {
+                    step: "atomic schema change".into(),
+                    reason: "schema name does not match metadata".into(),
+                });
+            }
+            if let Some(existing) = definitions.iter().find(|schema| &schema.name == name) {
+                schema_forge_core::migration::DiffEngine::validate_transition(existing, definition)
+                    .map_err(|error| BackendError::MigrationFailed {
+                        step: "validate schema transition".into(),
+                        reason: error.to_string(),
+                    })?;
+            }
+        }
+        for step in steps {
+            for statement in migration_step_to_sql(name.as_str(), step) {
+                sqlx::query(&statement)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(fail)?;
+            }
+        }
+        if !steps.is_empty() {
+            Self::invalidate_schema_revisions(&mut tx, name).await?;
+        }
+        definitions.retain(|schema| &schema.name != name);
+        if let Some(definition) = definition {
+            Self::repair_float_columns_on(&mut tx, definition).await?;
+            let json =
+                serde_json::to_value(definition).map_err(|error| BackendError::Internal {
+                    message: error.to_string(),
+                })?;
+            sqlx::query(&format!("INSERT INTO \"{SCHEMA_META_TABLE}\" (name, definition) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET definition = $2"))
+                .bind(name.as_str()).bind(json).execute(&mut *tx).await.map_err(fail)?;
+            definitions.push(definition.clone());
+        } else {
+            sqlx::query(&format!(
+                "DELETE FROM \"{SCHEMA_META_TABLE}\" WHERE name = $1"
+            ))
+            .bind(name.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(fail)?;
+        }
+        Self::reconcile_constraints_on(&mut tx, &definitions, true).await?;
+        tx.commit().await.map_err(fail)?;
+        self.invalidate_schema_cache();
+        Ok(())
+    }
+
     async fn finalize_schema_migrations(&self) -> Result<(), BackendError> {
         self.reconcile_relation_constraints(None).await
     }

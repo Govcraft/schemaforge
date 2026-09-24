@@ -62,6 +62,7 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
         .expect("list initialized metadata")
         .is_empty());
 
+    atomic_metadata_failure_rolls_back_rename(&backend).await;
     exercises_backend_contract(&backend).await;
     data_correctness::exercise(&backend).await;
     migration_renames::exercise(&backend).await;
@@ -265,4 +266,73 @@ fn product(schema: &SchemaName, name: &str, price: i64, active: bool) -> Entity 
             ("active".into(), DynamicValue::Boolean(active)),
         ]),
     )
+}
+
+async fn atomic_metadata_failure_rolls_back_rename(backend: &MssqlBackend) {
+    let original = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("AtomicSchema").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("label").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_schema_change(
+            &original.name,
+            &DiffEngine::create_new(&original).steps,
+            Some(&original),
+        )
+        .await
+        .unwrap();
+    let row = Entity {
+        id: schema_forge_core::types::EntityId::new("atomic"),
+        schema: original.name.clone(),
+        fields: BTreeMap::from([("label".into(), DynamicValue::Text("retained".into()))]),
+    };
+    backend.create(&row).await.unwrap();
+    let mut proposed = original.clone();
+    proposed.fields[0].name = FieldName::new("replacement").unwrap();
+    proposed.fields[0]
+        .annotations
+        .push(schema_forge_core::types::FieldAnnotation::RenamedFrom {
+            name: FieldName::new("label").unwrap(),
+        });
+    {
+        let mut connection = backend.pool().get().await.unwrap();
+        connection.simple_query("CREATE TRIGGER [reject_atomic_metadata] ON [dbo].[_schema_metadata] AFTER UPDATE AS BEGIN THROW 50001, 'test metadata failure', 1; END;").await.unwrap().into_results().await.unwrap();
+    }
+    let plan = DiffEngine::plan_update(&original, &proposed).unwrap();
+    assert!(backend
+        .apply_schema_change(&original.name, &plan.steps, Some(&proposed))
+        .await
+        .is_err());
+    assert_eq!(
+        backend.load_schema_metadata(&original.name).await.unwrap(),
+        Some(original.clone())
+    );
+    assert_eq!(
+        backend.get(&original.name, &row.id).await.unwrap(),
+        Some(row)
+    );
+    {
+        let mut connection = backend.pool().get().await.unwrap();
+        connection
+            .simple_query("DROP TRIGGER [reject_atomic_metadata]")
+            .await
+            .unwrap()
+            .into_results()
+            .await
+            .unwrap();
+    }
+    backend
+        .apply_schema_change(&original.name, &plan.steps, Some(&proposed))
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.load_schema_metadata(&original.name).await.unwrap(),
+        Some(proposed)
+    );
 }

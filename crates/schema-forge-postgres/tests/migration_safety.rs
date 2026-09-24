@@ -91,6 +91,7 @@ async fn relations_have_consistent_integrity_and_legacy_constraints_are_repaired
 }
 
 async fn exercise(backend: &PgBackend) {
+    atomic_schema_failure_preserves_data_and_metadata(backend).await;
     // Pet precedes Owner, and both reference each other.
     let mut pet = definition("Pet", Some(("owner", "Owner")));
     pet.fields[0]
@@ -379,4 +380,49 @@ async fn exercise_manual_tenancy(backend: &PgBackend) {
         backend.create(&duplicate).await,
         Err(BackendError::UniqueViolation { .. })
     ));
+}
+
+async fn atomic_schema_failure_preserves_data_and_metadata(backend: &PgBackend) {
+    let original = definition("AtomicSchema", None);
+    backend
+        .apply_schema_change(
+            &original.name,
+            &DiffEngine::create_new(&original).steps,
+            Some(&original),
+        )
+        .await
+        .unwrap();
+    let row = Entity {
+        id: EntityId::new("atomic"),
+        schema: original.name.clone(),
+        fields: BTreeMap::from([("label".into(), DynamicValue::Text("retained".into()))]),
+    };
+    backend.create(&row).await.unwrap();
+    // Dropping label succeeds, then strict FK finalization fails. Every earlier
+    // DDL, metadata write, and revision invalidation must be rolled back.
+    let mut proposed = definition("AtomicSchema", Some(("owner", "AbsentAtomicOwner")));
+    proposed.id = original.id.clone();
+    proposed.fields.remove(0);
+    let plan = DiffEngine::plan_update(&original, &proposed).unwrap();
+    assert!(backend
+        .apply_schema_change(&original.name, &plan.steps, Some(&proposed))
+        .await
+        .is_err());
+    assert_eq!(
+        backend.load_schema_metadata(&original.name).await.unwrap(),
+        Some(original.clone())
+    );
+    assert_eq!(
+        backend.get(&original.name, &row.id).await.unwrap(),
+        Some(row)
+    );
+    backend
+        .apply_schema_change(&original.name, &[], None)
+        .await
+        .unwrap();
+    assert!(backend
+        .load_schema_metadata(&original.name)
+        .await
+        .unwrap()
+        .is_none());
 }

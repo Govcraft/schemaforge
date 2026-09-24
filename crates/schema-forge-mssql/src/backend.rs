@@ -68,7 +68,10 @@ impl MssqlBackend {
 }
 
 /// Compile one atomic batch while keeping arbitrary variant text in bound parameters.
-fn migration_batch(schema_name: &SchemaName, steps: &[MigrationStep]) -> (String, Vec<String>) {
+fn migration_statements(
+    schema_name: &SchemaName,
+    steps: &[MigrationStep],
+) -> (String, Vec<String>) {
     let table = quote(schema_name.as_str());
     let mut statements = Vec::new();
     let mut parameters = Vec::new();
@@ -99,15 +102,15 @@ fn migration_batch(schema_name: &SchemaName, steps: &[MigrationStep]) -> (String
             _ => {}
         }
     }
-    if statements.is_empty() {
-        return (String::new(), parameters);
-    }
-    let sql = format!("SET XACT_ABORT ON; BEGIN TRY BEGIN TRANSACTION; {} COMMIT TRANSACTION; END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; THROW; END CATCH;", statements.join("\n"));
-    (sql, parameters)
+    (statements.join("\n"), parameters)
 }
 
-impl SchemaBackend for MssqlBackend {
-    async fn apply_migration(
+fn transaction_batch(statements: &str) -> String {
+    format!("SET XACT_ABORT ON; BEGIN TRY BEGIN TRANSACTION; {statements} COMMIT TRANSACTION; END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; THROW; END CATCH;")
+}
+
+impl MssqlBackend {
+    async fn validate_migration(
         &self,
         schema_name: &SchemaName,
         steps: &[MigrationStep],
@@ -139,7 +142,69 @@ impl SchemaBackend for MssqlBackend {
                 }
             }
         }
-        let (sql, parameters) = migration_batch(schema_name, steps);
+        Ok(())
+    }
+}
+
+impl SchemaBackend for MssqlBackend {
+    async fn apply_schema_change(
+        &self,
+        name: &SchemaName,
+        steps: &[MigrationStep],
+        definition: Option<&SchemaDefinition>,
+    ) -> Result<(), BackendError> {
+        if let Some(definition) = definition {
+            if &definition.name != name {
+                return Err(BackendError::MigrationFailed {
+                    step: "atomic schema change".into(),
+                    reason: "schema name does not match metadata".into(),
+                });
+            }
+            if let Some(existing) = self.load_schema_metadata(name).await? {
+                schema_forge_core::migration::DiffEngine::validate_transition(
+                    &existing, definition,
+                )
+                .map_err(|error| BackendError::MigrationFailed {
+                    step: "validate schema transition".into(),
+                    reason: error.to_string(),
+                })?;
+            }
+        }
+        self.validate_migration(name, steps).await?;
+        let (mut sql, mut parameters) = migration_statements(name, steps);
+        let name_parameter = parameters.len() + 1;
+        parameters.push(name.to_string());
+        if let Some(definition) = definition {
+            let definition_parameter = parameters.len() + 1;
+            parameters.push(serde_json::to_string(definition).map_err(json_error)?);
+            sql.push_str(&format!(" MERGE [dbo].[{METADATA}] AS target USING (SELECT @P{name_parameter} AS [name], @P{definition_parameter} AS [definition]) source ON target.[name] = source.[name] WHEN MATCHED THEN UPDATE SET [definition] = source.[definition] WHEN NOT MATCHED THEN INSERT ([name], [definition]) VALUES (source.[name], source.[definition]);"));
+        } else {
+            sql.push_str(&format!(
+                " DELETE FROM [dbo].[{METADATA}] WHERE [name] = @P{name_parameter};"
+            ));
+        }
+        let bindings: Vec<&dyn tiberius::ToSql> = parameters
+            .iter()
+            .map(|value| value as &dyn tiberius::ToSql)
+            .collect();
+        let mut connection = connection(&self.pool).await?;
+        connection
+            .execute(transaction_batch(&sql), &bindings)
+            .await
+            .map_err(|error| BackendError::MigrationFailed {
+                step: "atomic schema change".into(),
+                reason: error.to_string(),
+            })?;
+        Ok(())
+    }
+
+    async fn apply_migration(
+        &self,
+        schema_name: &SchemaName,
+        steps: &[MigrationStep],
+    ) -> Result<(), BackendError> {
+        self.validate_migration(schema_name, steps).await?;
+        let (sql, parameters) = migration_statements(schema_name, steps);
         if sql.is_empty() {
             return Ok(());
         }
@@ -148,12 +213,13 @@ impl SchemaBackend for MssqlBackend {
             .map(|value| value as &dyn tiberius::ToSql)
             .collect();
         let mut connection = connection(&self.pool).await?;
-        connection.execute(sql, &bindings).await.map_err(|error| {
-            BackendError::MigrationFailed {
+        connection
+            .execute(transaction_batch(&sql), &bindings)
+            .await
+            .map_err(|error| BackendError::MigrationFailed {
                 step: "apply migration transaction".into(),
                 reason: error.to_string(),
-            }
-        })?;
+            })?;
         Ok(())
     }
 

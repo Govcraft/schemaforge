@@ -270,12 +270,12 @@ impl SurrealBackend {
     }
 }
 
-impl SchemaBackend for SurrealBackend {
-    async fn apply_migration(
+impl SurrealBackend {
+    async fn compile_migration(
         &self,
         schema_name: &SchemaName,
         steps: &[MigrationStep],
-    ) -> Result<(), BackendError> {
+    ) -> Result<Vec<String>, BackendError> {
         let table = schema_name.as_str();
         let needs_enum_metadata = steps
             .iter()
@@ -348,6 +348,79 @@ impl SchemaBackend for SurrealBackend {
             }
             statements.extend(compiled);
         }
+        Ok(statements)
+    }
+}
+
+impl SchemaBackend for SurrealBackend {
+    async fn apply_schema_change(
+        &self,
+        name: &SchemaName,
+        steps: &[MigrationStep],
+        definition: Option<&SchemaDefinition>,
+    ) -> Result<(), BackendError> {
+        if let Some(definition) = definition {
+            if &definition.name != name {
+                return Err(BackendError::MigrationFailed {
+                    step: "atomic schema change".into(),
+                    reason: "schema name does not match metadata".into(),
+                });
+            }
+            if let Some(existing) = self.load_schema_metadata(name).await? {
+                schema_forge_core::migration::DiffEngine::validate_transition(
+                    &existing, definition,
+                )
+                .map_err(|error| BackendError::MigrationFailed {
+                    step: "validate schema transition".into(),
+                    reason: error.to_string(),
+                })?;
+            }
+        }
+        let mut statements = self.compile_migration(name, steps).await?;
+        if let Some(definition) = definition {
+            let json =
+                serde_json::to_string(definition).map_err(|error| BackendError::Internal {
+                    message: error.to_string(),
+                })?;
+            statements.push(format!("UPSERT {SCHEMA_META_TABLE}:`{name}` CONTENT {{ name: '{name}', definition: $schema_definition }};"));
+            self.db
+                .query(format!(
+                    "BEGIN TRANSACTION;\n{}\nCOMMIT TRANSACTION;",
+                    statements.join("\n")
+                ))
+                .bind(("schema_definition", json))
+                .await
+                .map_err(|error| BackendError::MigrationFailed {
+                    step: "atomic schema change".into(),
+                    reason: error.to_string(),
+                })?
+                .check()
+                .map_err(|error| BackendError::MigrationFailed {
+                    step: "atomic schema change".into(),
+                    reason: error.to_string(),
+                })?;
+        } else {
+            statements.push(format!("DELETE {SCHEMA_META_TABLE}:`{name}`;"));
+            self.execute_raw(&format!(
+                "BEGIN TRANSACTION;\n{}\nCOMMIT TRANSACTION;",
+                statements.join("\n")
+            ))
+            .await?
+            .check()
+            .map_err(|error| BackendError::MigrationFailed {
+                step: "atomic schema change".into(),
+                reason: error.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+
+    async fn apply_migration(
+        &self,
+        schema_name: &SchemaName,
+        steps: &[MigrationStep],
+    ) -> Result<(), BackendError> {
+        let statements = self.compile_migration(schema_name, steps).await?;
         if !statements.is_empty() {
             let sql = format!(
                 "BEGIN TRANSACTION;\n{}\nCOMMIT TRANSACTION;",
