@@ -5,7 +5,7 @@ on:
     paths:
       - "crates/schema-forge-mssql/**"
       - "crates/schema-forge-core/**"
-      - "crates/schema-forge-backend/tests/support/migration_renames.rs"
+      - "crates/schema-forge-backend/**"
       - "crates/schema-forge-cli/Cargo.toml"
       - "crates/schema-forge-acton/Cargo.toml"
       - "Cargo.lock"
@@ -95,3 +95,6 @@ jobs:
         run: >-
           cargo nextest run --package schema-forge-mssql --test sql_server
           --run-ignored only -E "test(=$TEST_NAME)"
+      - name: Deny SQL Server lints
+        if: matrix.version == 2019
+        run: cargo clippy -p schema-forge-mssql --all-targets -- -D warnings

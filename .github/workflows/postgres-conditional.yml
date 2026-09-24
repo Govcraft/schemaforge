@@ -20,7 +20,7 @@ permissions:
 jobs:
   conditional:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16
@@ -52,27 +52,19 @@ jobs:
         run: cargo nextest run -p schema-forge-backend -p schema-forge-postgres --run-ignored all
       - name: Prepare disposable HTTP namespace
         run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA conditional_http'
+      - name: Run complete runtime and schema suites
+        run: cargo nextest run -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl --features schema-forge-acton/postgres,schema-forge-acton/graphql
       - name: Run HTTP authorization and concurrency cases
         env:
           SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE: "1"
           SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dconditional_http
-        run: cargo nextest run -p schema-forge-acton --features postgres --test conditional_entities --run-ignored all
-      - name: Run audit authorization and bounded verification regressions
-        run: cargo nextest run -p schema-forge-acton --features postgres --test audit_api
-      - name: Run exact authorized count policy and paging regressions
-        run: |
-          cargo nextest run -p schema-forge-acton --features postgres --lib --test authorization_context -E 'test(authz::read_scope) | binary(authorization_context)'
-          cargo nextest run -p schema-forge-acton --features postgres --test auth_demo -E 'test(readable_paging)'
-      - name: Run GraphQL write and tenant regressions
-        run: cargo nextest run -p schema-forge-acton --features postgres,graphql --test graphql_writes --test graphql_tenants
-      - name: Run runtime schema and custom policy preflight regressions
-        run: cargo nextest run -p schema-forge-acton --features postgres --test integration --test policy_preflight
-      - name: Run schema planning and rename regressions
-        run: |
-          cargo nextest run -p schema-forge-core -p schema-forge-dsl
-          cargo nextest run -p schema-forge-surrealdb --test migration_renames
+        run: cargo nextest run -p schema-forge-acton --features postgres,graphql --test conditional_entities --run-ignored only
       - name: Check CLI preparation and security behavior
         run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres
+      - name: Deny runtime and backend lints
+        run: cargo clippy -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl -p schema-forge-backend -p schema-forge-postgres --features schema-forge-acton/postgres,schema-forge-acton/graphql --all-targets -- -D warnings
+      - name: Deny CLI lints
+        run: cargo clippy -p schema-forge-cli --no-default-features --features postgres --all-targets -- -D warnings
       - name: Clean disposable HTTP namespace
         if: always()
         run: psql -X -v ON_ERROR_STOP=1 -c 'DROP SCHEMA IF EXISTS conditional_http CASCADE'
