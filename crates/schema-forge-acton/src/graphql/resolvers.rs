@@ -78,9 +78,9 @@ pub async fn resolve_get_entity<'a>(
 
     require_record_access(gql_ctx, schema_def, &entity, ActionVerb::Read)?;
     // Record-level visibility check
-    if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
+    if let Some(policy) = &gql_ctx.state.record_access_policy {
         let visible = policy
-            .filter_visible(schema_def, c, vec![entity.clone()])
+            .filter_visible_optional(schema_def, claims, vec![entity.clone()])
             .await;
         if visible.is_empty() {
             return Err(forge_error_to_gql(ForgeError::Forbidden {
@@ -198,8 +198,8 @@ pub async fn resolve_list_entities<'a>(
         .collect();
     // Record-level access filtering
     let visible_entities =
-        if let (Some(ref policy), Some(c)) = (&gql_ctx.state.record_access_policy, claims) {
-            policy.filter_visible(schema_def, c, authorized).await
+        if let Some(policy) = &gql_ctx.state.record_access_policy {
+            policy.filter_visible_optional(schema_def, claims, authorized).await
         } else {
             authorized
         };
@@ -410,6 +410,9 @@ pub async fn resolve_relation_one<'a>(
     if require_record_access(gql_ctx, target_schema_def, &entity, ActionVerb::Read).is_err() {
         return Ok(None);
     }
+    if !operator_visible(gql_ctx, target_schema_def, &entity).await {
+        return Ok(None);
+    }
     entity.strip_hidden(target_schema_def);
     filter_entity_fields(
         &gql_ctx.state.policy_store,
@@ -464,6 +467,9 @@ pub async fn resolve_relation_many<'a>(
             {
                 continue;
             }
+            if !operator_visible(gql_ctx, target_schema_def, &entity).await {
+                continue;
+            }
             entity.strip_hidden(target_schema_def);
             filter_entity_fields(
                 &gql_ctx.state.policy_store,
@@ -477,6 +483,19 @@ pub async fn resolve_relation_many<'a>(
     }
 
     Ok(Some(FieldValue::list(results)))
+}
+
+async fn operator_visible(
+    context: &ForgeGraphqlContext,
+    schema: &SchemaDefinition,
+    entity: &Entity,
+) -> bool {
+    match &context.state.record_access_policy {
+        Some(policy) => !policy.filter_visible_optional(
+            schema, context.claims.as_ref(), vec![entity.clone()],
+        ).await.is_empty(),
+        None => true,
+    }
 }
 
 async fn request_schema(

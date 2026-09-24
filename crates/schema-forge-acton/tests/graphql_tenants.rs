@@ -27,10 +27,14 @@ use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 async fn app() -> (Router, String, String) {
+    app_with_relations(false).await
+}
+
+async fn app_with_relations(relations: bool) -> (Router, String, String) {
     let backend = SurrealBackend::connect_with_auth("mem://", "graphql", "tenants", None, None)
         .await
         .unwrap();
-    let schemas = schema_forge_dsl::parse(
+    let mut schemas = schema_forge_dsl::parse(
         r#"
         @tenant(root)
         @access(read: ["member"], write: ["member"], delete: ["member"])
@@ -40,6 +44,17 @@ async fn app() -> (Router, String, String) {
         "#,
     )
     .unwrap();
+    if relations {
+        schemas.extend(
+            schema_forge_dsl::parse(
+                r#"
+            @access(read: ["member"], write: ["member"])
+            schema Link { one: -> Catalog many: -> Catalog[] }
+        "#,
+            )
+            .unwrap(),
+        );
+    }
     for schema in &schemas {
         backend
             .apply_migration(&schema.name, &DiffEngine::create_new(schema).steps)
@@ -59,6 +74,7 @@ async fn app() -> (Router, String, String) {
     }
     let extension = SchemaForgeExtension::builder()
         .with_backend(backend)
+        .with_record_access_policy(OperatorVisibility)
         .build()
         .await
         .unwrap();
@@ -269,4 +285,86 @@ async fn graphql_uses_live_field_security_and_refuses_removed_schemas() {
     administer_catalog(&app, Method::DELETE, Value::Null).await;
     let removed = query(&app, &get, &tenant).await;
     assert!(removed.get("errors").is_some(), "{removed}");
+}
+
+struct OperatorVisibility;
+impl schema_forge_backend::auth::RecordAccessPolicy for OperatorVisibility {
+    fn filter_visible<'a>(
+        &'a self,
+        _schema: &'a schema_forge_core::types::SchemaDefinition,
+        _claims: &'a Claims,
+        entities: Vec<Entity>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<Entity>> + Send + 'a>> {
+        Box::pin(async move {
+            entities
+                .into_iter()
+                .filter(|entity| {
+                    entity.fields.get("name") != Some(&DynamicValue::Text("operator-denied".into()))
+                })
+                .collect()
+        })
+    }
+    fn can_modify<'a>(
+        &'a self,
+        _schema: &'a schema_forge_core::types::SchemaDefinition,
+        _claims: &'a Claims,
+        _entity: &'a Entity,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async { true })
+    }
+    fn can_delete<'a>(
+        &'a self,
+        _schema: &'a schema_forge_core::types::SchemaDefinition,
+        _claims: &'a Claims,
+        _entity: &'a Entity,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async { true })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graphql_relation_reads_honor_operator_visibility_veto() {
+    let (app, tenant, _) = app_with_relations(true).await;
+    let denied = query(
+        &app,
+        "mutation { createCatalog(input: {name: \"operator-denied\"}) { id } }",
+        &tenant,
+    )
+    .await;
+    let allowed = query(
+        &app,
+        "mutation { createCatalog(input: {name: \"operator-visible\"}) { id } }",
+        &tenant,
+    )
+    .await;
+    let denied_id = denied["data"]["createCatalog"]["id"].as_str().unwrap();
+    let allowed_id = allowed["data"]["createCatalog"]["id"].as_str().unwrap();
+    let direct = query(
+        &app,
+        &format!("{{ catalog(id: \"{denied_id}\") {{ id name }} }}"),
+        &tenant,
+    )
+    .await;
+    assert!(direct.get("errors").is_some(), "{direct}");
+    let list = query(&app, "{ catalogs { items { id } } }", &tenant).await;
+    assert_eq!(
+        list["data"]["catalogs"]["items"],
+        json!([{"id":allowed_id}]),
+        "{list}"
+    );
+    let link = query(&app, &format!("mutation {{ createLink(input: {{one: \"{denied_id}\", many: [\"{denied_id}\", \"{allowed_id}\"]}}) {{ id }} }}"), &tenant).await;
+    let id = link["data"]["createLink"]["id"].as_str().unwrap();
+    let nested = query(
+        &app,
+        &format!("{{ link(id: \"{id}\") {{ id one {{ id name }} many {{ id name }} }} }}"),
+        &tenant,
+    )
+    .await;
+    assert_eq!(nested["data"]["link"]["id"], id, "{nested}");
+    assert!(nested["data"]["link"]["one"].is_null(), "{nested}");
+    assert_eq!(
+        nested["data"]["link"]["many"],
+        json!([{"id":allowed_id, "name":"operator-visible"}]),
+        "{nested}"
+    );
 }
