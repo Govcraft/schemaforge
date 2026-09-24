@@ -65,7 +65,10 @@ Rust embedders must update the schema-aware tenant helper and rule-binding call
 signatures. GraphQL registration now requires initialized
 `AppState<SchemaForgeConfig>`; see [GraphQL writes](docs/graphql-writes.md).
 The backend trait adds a defaulted `finalize_schema_migrations` operation for
-completing batch migration integrity checks.
+completing batch migration integrity checks. Custom backends must implement
+the atomic `apply_schema_change` operation to support runtime schema creation
+and updates; the default refuses these operations rather than applying a
+partial migration.
 
 ## [0.44.2] - 2026-09-10
 
