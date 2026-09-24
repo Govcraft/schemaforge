@@ -23,8 +23,9 @@ use super::query_params::{parse_fields_param, parse_filter_params, parse_sort_pa
 use crate::access::{
     check_schema_access, entity_permissions, filter_entity_fields, filter_patch_fields,
     inject_audit_columns_on_create, inject_audit_columns_on_update, inject_owner_on_create,
-    inject_tenant_on_create, inject_tenant_scope, schema_permissions, strip_owner_on_update,
-    AccessAction, EntityPermissions, FieldFilterDirection, OptionalClaims, SchemaPermissions,
+    inject_tenant_on_create, inject_tenant_scope, schema_permissions, stamp_root_tenant,
+    strip_owner_on_update, strip_tenant_on_update, AccessAction, EntityPermissions,
+    FieldFilterDirection, OptionalClaims, SchemaPermissions,
 };
 use crate::actor::ForgeActor;
 use crate::authz::{authorize, namespace::ActionVerb};
@@ -51,13 +52,15 @@ use std::sync::Arc;
 /// Map a [`RuleError`] from CEL `@require` validation onto a [`ForgeError`].
 ///
 /// A definite rejection becomes a 422 `ValidationFailed`; a predicate that
-/// could not be evaluated (errored or non-bool) becomes a 500 `Internal`,
+/// could not be evaluated (errored or non-bool) becomes a 422 `ValidationFailed`,
 /// preserving the fail-closed contract documented on [`crate::rules`].
 fn rule_error_to_forge(err: RuleError) -> ForgeError {
     match err {
         RuleError::Rejected(details) => ForgeError::ValidationFailed { details },
-        RuleError::Eval { field, detail } => ForgeError::Internal {
-            message: format!("@require on field '{field}' could not be evaluated: {detail}"),
+        RuleError::Eval { field, detail } => ForgeError::ValidationFailed {
+            details: vec![format!(
+                "rule on field '{field}' could not be evaluated: {detail}"
+            )],
         },
     }
 }
@@ -841,6 +844,34 @@ fn enforce_bytes_max_size(bytes: &[u8], max_size: Option<usize>) -> Result<(), S
 ///
 /// Values whose names are not in the schema (`_tenant` and friends) carry no
 /// declared constraints and are skipped.
+pub(crate) fn validate_required_fields(
+    schema: &SchemaDefinition,
+    fields: &BTreeMap<String, DynamicValue>,
+) -> Result<(), ForgeError> {
+    let details: Vec<_> = schema
+        .fields
+        .iter()
+        .filter(|field| !field.is_derived() && field.is_required())
+        .filter(|field| {
+            matches!(
+                fields.get(field.name.as_str()),
+                None | Some(DynamicValue::Null)
+            )
+        })
+        .map(|field| {
+            format!(
+                "required field '{}' is missing or null",
+                field.name.as_str()
+            )
+        })
+        .collect();
+    if details.is_empty() {
+        Ok(())
+    } else {
+        Err(ForgeError::ValidationFailed { details })
+    }
+}
+
 fn check_field_constraints(
     schema: &SchemaDefinition,
     fields: &BTreeMap<String, DynamicValue>,
@@ -1467,7 +1498,7 @@ async fn execute_entity_query(
         })
         .await;
     let tenant_config = ask_forge(rx).await?;
-    inject_tenant_scope(query, claims, &tenant_config);
+    inject_tenant_scope(query, claims, &tenant_config, schema_def);
 
     // NOTE: the client `fields` projection is deliberately NOT pushed into the
     // DB query as a column selection. Record-level authorization
@@ -1707,7 +1738,7 @@ async fn resolve_relation_displays(
         }
         // Apply tenant scope so we never leak rows the caller couldn't
         // otherwise see through a direct list call.
-        inject_tenant_scope(&mut display_query, claims, tenant_config);
+        inject_tenant_scope(&mut display_query, claims, tenant_config, target_def);
 
         let source_fields: Vec<String> = fields_pointing_at_target
             .iter()
@@ -1860,7 +1891,7 @@ async fn check_requires_with_related(
     now: chrono::DateTime<chrono::Utc>,
     tenant_config: &Option<schema_forge_backend::tenant::TenantConfig>,
 ) -> Result<(), ForgeError> {
-    let mut bindings = build_bindings(fields, claims, now);
+    let mut bindings = build_bindings(schema, fields, claims, now);
 
     let related_map =
         resolve_related_bindings(forge, schema, fields, claims, tenant_config).await?;
@@ -2055,7 +2086,7 @@ async fn load_related_row(
             values: vec![DynamicValue::Text(fk_id.to_string())],
         })
         .without_total_count();
-    inject_tenant_scope(&mut query, claims, tenant_config);
+    inject_tenant_scope(&mut query, claims, tenant_config, target_def);
 
     let (tx, rx) = oneshot::channel();
     forge
@@ -2189,7 +2220,7 @@ async fn populate_derived_collections(
         if claims.is_some() {
             child_query.projection = Some(vec!["id".to_string(), fk_field_name.clone()]);
         }
-        inject_tenant_scope(&mut child_query, claims, tenant_config);
+        inject_tenant_scope(&mut child_query, claims, tenant_config, target_def);
 
         jobs.push((target_def, parent_field_name, fk_field_name, child_query));
     }
@@ -2457,10 +2488,10 @@ pub async fn create_entity(
     reject_hidden_fields_in_body(&schema_def, &body.fields)?;
 
     // Convert JSON fields to DynamicValue fields
-    let mut fields = json_to_entity_fields(&schema_def, &body.fields)
-        .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
+    let mut fields =
+        json_to_entity_fields_with_mode(&schema_def, &body.fields, ConversionMode::Merge)
+            .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
-    // Get tenant config via actor
     let (tx, rx) = oneshot::channel();
     forge
         .send(GetTenantConfig {
@@ -2468,7 +2499,59 @@ pub async fn create_entity(
         })
         .await;
     let tenant_config = ask_forge(rx).await?;
-    inject_tenant_on_create(&mut fields, claims.as_ref(), &tenant_config);
+    let mut supplied = Entity::new(schema_name.clone(), fields);
+    stamp_root_tenant(&mut supplied, &schema_def);
+    inject_tenant_on_create(
+        &mut supplied.fields,
+        claims.as_ref(),
+        &tenant_config,
+        &schema_def,
+    );
+    inject_owner_on_create(&mut supplied.fields, &schema_def, claims.as_ref());
+    let mut denied = Vec::new();
+    for name in body.fields.keys() {
+        if schema_def
+            .field(name)
+            .is_none_or(|field| field.field_access().is_none())
+        {
+            continue;
+        }
+        let decision = crate::authz::engine::authorize_create_field(
+            &policy_store,
+            claims.as_ref(),
+            &schema_def,
+            &supplied,
+            name,
+        )
+        .map_err(|_| ForgeError::Forbidden {
+            message: "Could not authorize a supplied field.".into(),
+        })?;
+        if !decision.errors.is_empty() {
+            return Err(ForgeError::Forbidden {
+                message: "Could not authorize a supplied field.".into(),
+            });
+        }
+        if !decision.is_allow() {
+            denied.push(name.clone());
+        }
+    }
+    for name in denied {
+        supplied.fields.remove(&name);
+    }
+    // Server-owned values are injected again after caller input filtering.
+    stamp_root_tenant(&mut supplied, &schema_def);
+    fields = supplied.fields;
+    inject_tenant_on_create(&mut fields, claims.as_ref(), &tenant_config, &schema_def);
+    if schema_def.unique_scoped_by_tenant()
+        && !matches!(fields.get("_tenant"), Some(DynamicValue::Text(tenant)) if !tenant.is_empty())
+    {
+        return Err(ForgeError::ValidationFailed {
+            details: vec![format!(
+                "tenanted schema '{}' requires _tenant; platform_admin must supply a tenant",
+                schema_def.name
+            )],
+        });
+    }
     inject_owner_on_create(&mut fields, &schema_def, claims.as_ref());
     // Single request-time instant: reused for audit columns and as the `now`
     // CEL binding so all rules in this write observe the same clock.
@@ -2488,6 +2571,7 @@ pub async fn create_entity(
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
     apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now)
         .map_err(rule_error_to_forge)?;
+    validate_required_fields(&schema_def, &fields)?;
 
     // CEL @require validation rules (#92) — fail-closed, in-transaction,
     // pre-persistence. Cross-entity reads (#95) are resolved here: any
@@ -2544,14 +2628,8 @@ pub async fn create_entity(
     }
 
     // Create the entity, filtering write-restricted fields
-    let mut entity = Entity::new(schema_name, fields);
-    filter_entity_fields(
-        &policy_store,
-        &mut entity,
-        &schema_def,
-        claims.as_ref(),
-        FieldFilterDirection::Write,
-    );
+    let entity = Entity::with_id(supplied.id, schema_name, fields);
+    validate_required_fields(&schema_def, &entity.fields)?;
     check_field_constraints(&schema_def, &entity.fields)?;
 
     if let Some(intent) = intent {
@@ -3269,10 +3347,36 @@ pub async fn update_entity(
     reject_hidden_fields_in_body(&schema_def, &body.fields)?;
 
     // Convert JSON fields
-    let mut fields = json_to_entity_fields(&schema_def, &body.fields)
-        .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
+    let mut fields =
+        json_to_entity_fields_with_mode(&schema_def, &body.fields, ConversionMode::Merge)
+            .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
+
+    let mut candidate = existing.clone();
+    candidate.fields.extend(fields.clone());
+    let mut supplied = Entity::with_id(entity_id.clone(), schema_name.clone(), fields);
+    filter_patch_fields(
+        &policy_store,
+        &mut supplied,
+        &candidate,
+        &schema_def,
+        claims.as_ref(),
+    )?;
+    fields = supplied.fields;
+    for name in body.fields.keys() {
+        if !fields.contains_key(name) {
+            if let Some(value) = existing.fields.get(name) {
+                fields.insert(name.clone(), value.clone());
+            }
+        }
+    }
 
     strip_owner_on_update(&mut fields, &schema_def);
+    strip_tenant_on_update(&mut fields, &schema_def, claims.as_ref());
+    if let Some(tenant) = existing.fields.get("_tenant") {
+        fields
+            .entry("_tenant".into())
+            .or_insert_with(|| tenant.clone());
+    }
     // PUT replaces supplied fields, but immutable ownership remains part of
     // the post-update rule context, even when an administrator is the caller.
     if let Some(owner_field) = schema_def.fields.iter().find(|field| field.has_owner()) {
@@ -3293,6 +3397,14 @@ pub async fn update_entity(
     // CEL @compute derived fields (#93) — evaluated before @require, stored.
     apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now)
         .map_err(rule_error_to_forge)?;
+
+    validate_required_fields(&schema_def, &fields).map_err(|error| match error {
+        ForgeError::ValidationFailed { mut details } => {
+            details.push("PUT requires a complete entity; use PATCH for partial updates".into());
+            ForgeError::ValidationFailed { details }
+        }
+        error => error,
+    })?;
 
     // Tenant config for cross-entity-read tenant scoping (#95). Fetched here so
     // a `related.<F>` prefetch honors the caller's tenant boundary.
@@ -3356,14 +3468,8 @@ pub async fn update_entity(
     }
 
     // Build entity with specific ID, filtering write-restricted fields
-    let mut entity = Entity::with_id(entity_id, schema_name, fields);
-    filter_entity_fields(
-        &policy_store,
-        &mut entity,
-        &schema_def,
-        claims.as_ref(),
-        FieldFilterDirection::Write,
-    );
+    let entity = Entity::with_id(entity_id, schema_name, fields);
+    validate_required_fields(&schema_def, &entity.fields)?;
     check_field_constraints(&schema_def, &entity.fields)?;
 
     let (mut updated, revision) = persist_entity_update(&forge, entity, expected).await?;
@@ -3554,9 +3660,22 @@ pub async fn patch_entity(
         json_to_entity_fields_with_mode(&schema_def, &body.fields, ConversionMode::Merge)
             .map_err(|errors| ForgeError::ValidationFailed { details: errors })?;
 
+    let mut candidate = existing.clone();
+    candidate.fields.extend(patch_fields.clone());
+    let mut supplied = Entity::with_id(entity_id.clone(), schema_name.clone(), patch_fields);
+    filter_patch_fields(
+        &policy_store,
+        &mut supplied,
+        &candidate,
+        &schema_def,
+        claims.as_ref(),
+    )?;
+    patch_fields = supplied.fields;
+
     // Owner field is immutable post-create; refuse to transfer ownership
     // via PATCH the same way we refuse via PUT.
     strip_owner_on_update(&mut patch_fields, &schema_def);
+    strip_tenant_on_update(&mut patch_fields, &schema_def, claims.as_ref());
     // Single request-time instant reused for audit columns and the `now` CEL binding.
     let rules_now = chrono::Utc::now();
     inject_audit_columns_on_update(&mut patch_fields, &schema_def, claims.as_ref(), rules_now);
@@ -3583,6 +3702,8 @@ pub async fn patch_entity(
     // changes and @require predicates see them.
     apply_computed(&schema_def, &mut merged, claims.as_ref(), rules_now)
         .map_err(rule_error_to_forge)?;
+
+    validate_required_fields(&schema_def, &merged)?;
 
     // Tenant config for cross-entity-read tenant scoping (#95).
     let (tx, rx) = oneshot::channel();
@@ -3645,6 +3766,9 @@ pub async fn patch_entity(
         .await?;
     }
 
+    validate_required_fields(&schema_def, &merged)?;
+    check_field_constraints(&schema_def, &merged)?;
+
     // Compute the delta: only keys whose final value differs from the
     // loaded baseline go to the backend. This keeps PATCH's SQL UPDATE
     // actually partial, which makes the whole class of "null column
@@ -3667,15 +3791,7 @@ pub async fn patch_entity(
     let (mut updated, revision) = if delta.is_empty() && expected.is_none() {
         (existing, None)
     } else {
-        let resource = Entity::with_id(entity_id.clone(), schema_name.clone(), merged);
-        let mut entity = Entity::with_id(entity_id, schema_name, delta);
-        filter_patch_fields(
-            &policy_store,
-            &mut entity,
-            &resource,
-            &schema_def,
-            claims.as_ref(),
-        )?;
+        let entity = Entity::with_id(entity_id, schema_name, delta);
         check_field_constraints(&schema_def, &entity.fields)?;
         persist_entity_update(&forge, entity, expected).await?
     };
