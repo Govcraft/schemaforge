@@ -170,7 +170,7 @@ fn scenario_change_field_type() {
     let plan = DiffEngine::diff(&v1, &v2);
 
     assert_eq!(plan.len(), 1);
-    assert_eq!(plan.overall_safety(), MigrationSafety::RequiresConfirmation);
+    assert_eq!(plan.overall_safety(), MigrationSafety::Destructive);
     assert!(matches!(
         &plan.steps[0],
         MigrationStep::ChangeType {

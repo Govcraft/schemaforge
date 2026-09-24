@@ -151,11 +151,16 @@ async fn precheck_policy_bundle(
 
 /// Reuse canonical DSL validation for annotations supplied through the JSON schema API.
 fn validate_schema_definition(definition: &SchemaDefinition) -> Result<(), ForgeError> {
-    schema_forge_dsl::parse(&schema_forge_dsl::print(definition)).map_err(|errors| {
-        ForgeError::ValidationFailed {
-            details: errors.iter().map(ToString::to_string).collect(),
-        }
-    })?;
+    let parsed =
+        schema_forge_dsl::parse(&schema_forge_dsl::print(definition)).map_err(|errors| {
+            ForgeError::ValidationFailed {
+                details: errors.iter().map(ToString::to_string).collect(),
+            }
+        })?;
+    if !matches!(parsed.as_slice(), [validated] if validated.fields == definition.fields && validated.annotations == definition.annotations)
+    {
+        return Err(ForgeError::ValidationFailed { details: vec!["schema annotations and fields must roundtrip through the canonical DSL without semantic changes".into()] });
+    }
     Ok(())
 }
 
