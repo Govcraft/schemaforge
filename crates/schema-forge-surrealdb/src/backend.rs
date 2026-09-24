@@ -142,6 +142,10 @@ impl SurrealBackend {
             }
         })?;
 
+        let backend = Self::from_client(db);
+        backend.ensure_supported_version().await?;
+        let db = backend.client();
+
         if let (Some(user), Some(pass)) = (username, password) {
             db.signin(surrealdb::opt::auth::Root {
                 username: user.to_owned(),
@@ -160,8 +164,6 @@ impl SurrealBackend {
                 message: format!("failed to select namespace/database: {e}"),
             })?;
 
-        let backend = Self::from_client(db);
-        backend.ensure_supported_version().await?;
         Ok(backend)
     }
 
