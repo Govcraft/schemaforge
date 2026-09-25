@@ -28,10 +28,15 @@ is pre-1.0; breaking changes bump the **minor** version per
 - SQL Server updates merge supplied fields atomically, preserving omitted fields
   and explicit nulls. Concurrent updates to different fields no longer replace
   each other's stored values.
+- Canonical mutation handlers enforce concrete Cedar authorization before
+  operator policies and hooks. An operator policy can further restrict access
+  but cannot bypass tenant or Cedar checks.
 - GraphQL creates, updates, and deletes share the REST mutation pipeline. GraphQL reads,
   relations, and deletes enforce concrete Cedar decisions. Each request captures
   matching live definitions and policies, so runtime field restrictions also
-  govern existing GraphQL fields. Unproven raw
+  govern existing GraphQL fields. Nested relations honor operator visibility
+  restrictions, and SurrealDB to-many relations retain their record references.
+  Unproven raw
   GraphQL totals are withheld instead of disclosing counts of inaccessible rows.
 - CLI help hides secret environment values, including database and server URLs.
   `serve --host` controls the actual listener and accepts validated IPv4/IPv6
