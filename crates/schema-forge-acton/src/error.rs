@@ -311,6 +311,29 @@ impl From<BackendError> for ForgeError {
     }
 }
 
+/// JSON request extractor using the SchemaForge validation error envelope.
+pub struct JsonBody<T>(pub T);
+
+impl<S, T> axum::extract::FromRequest<S> for JsonBody<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = ForgeError;
+
+    async fn from_request(
+        request: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        <axum::Json<T> as axum::extract::FromRequest<S>>::from_request(request, state)
+            .await
+            .map(|axum::Json(value)| Self(value))
+            .map_err(|error| ForgeError::ValidationFailed {
+                details: vec![error.body_text()],
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,28 +759,5 @@ mod tests {
             }
             other => panic!("expected UniqueViolation, got {other:?}"),
         }
-    }
-}
-
-/// JSON request extractor using the SchemaForge validation error envelope.
-pub struct JsonBody<T>(pub T);
-
-impl<S, T> axum::extract::FromRequest<S> for JsonBody<T>
-where
-    S: Send + Sync,
-    T: serde::de::DeserializeOwned,
-{
-    type Rejection = ForgeError;
-
-    async fn from_request(
-        request: axum::extract::Request,
-        state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        <axum::Json<T> as axum::extract::FromRequest<S>>::from_request(request, state)
-            .await
-            .map(|axum::Json(value)| Self(value))
-            .map_err(|error| ForgeError::ValidationFailed {
-                details: vec![error.body_text()],
-            })
     }
 }

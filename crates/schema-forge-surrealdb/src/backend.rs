@@ -962,14 +962,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_invalid_url() {
-        let result = SurrealBackend::connect("badscheme://x", "a", "b").await;
-        assert!(result.is_err(), "connect with invalid scheme should fail");
+    async fn connect_invalid_url_does_not_expose_credentials() {
+        let url =
+            "badscheme://private-user:private-password@example.invalid/db?token=private-token";
+        let result = SurrealBackend::connect(url, "a", "b").await;
         if let Err(BackendError::ConnectionError { message }) = result {
-            assert!(
-                message.contains("badscheme"),
-                "error should mention the bad scheme"
-            );
+            assert!(message.contains("failed to connect to SurrealDB"));
+            for secret in [url, "private-user", "private-password", "private-token"] {
+                assert!(
+                    !message.contains(secret),
+                    "connection error exposed credentials"
+                );
+            }
         } else {
             panic!("expected ConnectionError");
         }
