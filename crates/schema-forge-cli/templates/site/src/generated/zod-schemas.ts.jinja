@@ -33,8 +33,8 @@ export function canWriteFormField(read: readonly string[], write: readonly strin
   return roles.includes("platform_admin") || (hasAnyRole(read, roles) && hasAnyRole(write, roles))
 }
 // Resolve roles at validation time, including after login or refresh.
-export function formFieldSchema<T extends z.ZodTypeAny>(schema: T, read: readonly string[], write: readonly string[], children: FormFieldSpec[] = []) {
-  return z.lazy(() => canWriteFormField(read, write) && canWriteFormChildren(children)
+export function formFieldSchema<T extends z.ZodTypeAny>(schema: T, read: readonly string[], write: readonly string[], children: FormFieldSpec[] = [], hasHiddenChildren = false) {
+  return z.lazy(() => !hasHiddenChildren && canWriteFormField(read, write) && canWriteFormChildren(children)
     ? schema
     : z.unknown().optional().transform(() => undefined))
 }
@@ -46,6 +46,7 @@ export type FormFieldSpec = {
   item_kind: string | null
   required: boolean
   computed: boolean
+  has_hidden_children: boolean
   derived: boolean
   read_roles: string[]
   write_roles: string[]
@@ -55,7 +56,7 @@ export type FormFieldSpec = {
 // PATCH replaces composite values wholesale. Never submit a partial composite
 // which could erase protected children that the caller cannot safely preserve.
 export function canWriteFormChildren(fields: FormFieldSpec[]): boolean {
-  return fields.every(field => !field.computed && !field.derived && field.kind !== "file"
+  return fields.every(field => !field.has_hidden_children && !field.computed && !field.derived && field.kind !== "file"
     && canWriteFormField(field.read_roles, field.write_roles) && canWriteFormChildren(field.sub_fields))
 }
 
@@ -89,7 +90,7 @@ export function normalizeFormPayload(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {}
   for (const field of fields) {
-    if (field.computed || field.derived || field.kind === "file" || !canWriteFormField(field.read_roles, field.write_roles) || !canWriteFormChildren(field.sub_fields)) continue
+    if (field.has_hidden_children || field.computed || field.derived || field.kind === "file" || !canWriteFormField(field.read_roles, field.write_roles) || !canWriteFormChildren(field.sub_fields)) continue
     let value = data[field.leaf]
     if (value === undefined || (!field.required && (value === "" || value === null))) continue
     if (field.kind === "composite" && value && typeof value === "object" && !Array.isArray(value)) {
@@ -119,7 +120,7 @@ export function normalizeFormPayload(
 export const {{ entity.snake }}Schema = z.object({
 {%- for f in entity.fields %}
 {%- if not f.derived and not f.computed %}
-  {{ f.leaf }}: formFieldSchema({{ f.zod }}, {{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}, {{ f.sub_fields | tojson }} as FormFieldSpec[]),
+  {{ f.leaf }}: formFieldSchema({{ f.zod }}, {{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}, {{ f.sub_fields | tojson }} as FormFieldSpec[], {{ f.has_hidden_children | tojson }}),
 {%- endif %}
 {%- endfor %}
 })

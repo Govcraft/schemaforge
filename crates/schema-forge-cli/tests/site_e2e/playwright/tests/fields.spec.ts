@@ -99,3 +99,22 @@ test("typed form validation rejects invalid durations, maps and base64", async (
   await expect(page.getByText("Use standard padded base64", { exact: true })).toBeVisible()
   await expect(page).toHaveURL(/\/app\/job\/new$/)
 })
+
+
+test("hidden composite children make the whole replacement read-only", async ({ page }) => {
+  await login(page)
+  await page.goto("/app/job/new")
+  await expect(page.getByRole("note", { name: "Hidden Group (read only)" })).toBeVisible()
+  await expect(page.locator('input[name="hidden_group.visible"]')).toHaveCount(0)
+  const payload = await page.evaluate(async () => {
+    const source = "/src/generated/zod-schemas.ts"
+    const { normalizeFormPayload } = await import(source)
+    const field = {
+      leaf: "hidden_group", name: "hidden_group", kind: "composite", item_kind: null,
+      required: true, computed: false, derived: false, has_hidden_children: true,
+      read_roles: [], write_roles: [], sub_fields: [],
+    }
+    return normalizeFormPayload({ hidden_group: { visible: "changed" } }, [field], () => {})
+  })
+  expect(payload).not.toHaveProperty("hidden_group")
+})

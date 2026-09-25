@@ -29,6 +29,7 @@ schema Job {
         public_note: text
         private_note: text @field_access(write: ["finance"])
     }
+    hidden_group: composite { visible: text secret_storage: text @hidden }
     computed_label: text @compute("name + '-computed'")
     finance_only: text @field_access(read: ["finance"], write: ["finance"])
     review_note: text required default("server") @field_access(write: ["finance"])

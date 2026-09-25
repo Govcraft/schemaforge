@@ -338,12 +338,13 @@ fn field_to_view_with_prefix(
                 ts_parts.push(format!("{}{}: {}", sv.leaf, opt, sv.ts_type));
                 if !sv.derived && !sv.computed {
                     zod_parts.push(format!(
-                        "{}: formFieldSchema({}, {}, {}, {} as FormFieldSpec[])",
+                        "{}: formFieldSchema({}, {}, {}, {} as FormFieldSpec[], {})",
                         sv.leaf,
                         sv.zod,
                         serde_json::to_string(&sv.read_roles).unwrap_or_default(),
                         serde_json::to_string(&sv.write_roles).unwrap_or_default(),
-                        serde_json::to_string(&sv.sub_fields).unwrap_or_default()
+                        serde_json::to_string(&sv.sub_fields).unwrap_or_default(),
+                        sv.has_hidden_children
                     ));
                 }
             }
@@ -528,7 +529,7 @@ fn ts_type_for_field_type(ft: &FieldType) -> String {
         }
         FieldType::Composite(sub_defs) => {
             let mut parts = Vec::with_capacity(sub_defs.len());
-            for sub in sub_defs {
+            for sub in sub_defs.iter().filter(|field| !field.is_hidden()) {
                 let opt = if sub.is_required() { "" } else { "?" };
                 parts.push(format!(
                     "{}{opt}: {}",
@@ -607,6 +608,24 @@ mod tests {
     // every existing test.
     fn project(field: &FieldDefinition) -> Result<FieldView, FieldMapError> {
         field_to_view(field, &empty_catalog())
+    }
+
+    #[test]
+    fn hidden_descendants_protect_ancestors_without_exposing_hidden_metadata() {
+        let schemas = schema_forge_dsl::parse(r#"schema Job {
+            settings: composite { visible: text nested: composite { secret_storage: text @hidden public_note: text } }
+        }"#).unwrap();
+        let settings = project(&schemas[0].fields[0]).unwrap();
+        assert!(settings.has_hidden_children);
+        let nested = settings
+            .sub_fields
+            .iter()
+            .find(|field| field.leaf == "nested")
+            .unwrap();
+        assert!(nested.has_hidden_children);
+        let serialized = serde_json::to_string(&settings).unwrap();
+        assert!(!serialized.contains("secret_storage"));
+        assert!(serialized.contains("public_note"));
     }
 
     #[test]

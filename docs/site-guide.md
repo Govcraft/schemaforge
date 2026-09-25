@@ -152,7 +152,7 @@ read-only required field does not prevent submission. Initial form state omits
 computed and unreadable fields. Payload construction whitelists declared fields
 and removes computed, derived, read-denied and write-denied keys recursively,
 including nested composite fields. Because PATCH replaces a composite as a
-whole, a composite containing any computed, derived, upload-only, or denied
+whole, a composite containing any hidden, computed, derived, upload-only, or denied
 child is read-only as a whole and omitted from both submission and required-field
 validation. This prevents a partial update from erasing protected siblings.
 Custom Cedar policies remain authoritative

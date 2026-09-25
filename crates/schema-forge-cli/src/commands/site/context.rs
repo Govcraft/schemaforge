@@ -334,6 +334,8 @@ pub struct FieldView {
     pub derived: bool,
     /// Server-computed values are read-only and excluded from forms.
     pub computed: bool,
+    /// A partial replacement would erase a descendant hidden by the schema.
+    pub has_hidden_children: bool,
     /// Declarative role hints; Cedar remains authoritative.
     pub read_roles: Vec<String>,
     pub write_roles: Vec<String>,
@@ -423,6 +425,7 @@ pub fn make_field_view(
             None => default_list_placement(kind).to_string(),
         },
         derived: field.is_derived(),
+        has_hidden_children: has_hidden_descendants(&field.field_type),
         computed: field.annotations.iter().any(|annotation| {
             matches!(
                 annotation,
@@ -441,6 +444,20 @@ pub fn make_field_view(
             }
             _ => Vec::new(),
         },
+    }
+}
+
+/// Inspect original definitions before hidden fields are removed from the view.
+fn has_hidden_descendants(field_type: &schema_forge_core::types::FieldType) -> bool {
+    use schema_forge_core::types::FieldType;
+    match field_type {
+        FieldType::Composite(fields) => fields
+            .iter()
+            .any(|field| field.is_hidden() || has_hidden_descendants(&field.field_type)),
+        FieldType::Array(inner) | FieldType::Map { value: inner, .. } => {
+            has_hidden_descendants(inner)
+        }
+        _ => false,
     }
 }
 

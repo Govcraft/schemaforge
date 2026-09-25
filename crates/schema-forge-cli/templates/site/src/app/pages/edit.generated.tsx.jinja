@@ -48,7 +48,7 @@ import {
 {%- endif %}
             </label>
             <div className="form-field">
-              {canWriteFormField({{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}) && canWriteFormChildren({{ f.sub_fields | tojson }} as FormFieldSpec[]) ? (
+              {!{{ f.has_hidden_children | tojson }} && canWriteFormField({{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}) && canWriteFormChildren({{ f.sub_fields | tojson }} as FormFieldSpec[]) ? (
               <>
 {%- if f.kind == "boolean" %}
               <label style={ { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13 }}>
@@ -184,7 +184,7 @@ import {
       <div className="form-row">
         <div className="form-label" id="{{ f.name }}-label">{{ f.label }}</div>
         <div className="form-field">
-          {canWriteFormField({{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}) && canWriteFormChildren({{ f.sub_fields | tojson }} as FormFieldSpec[]) ? (
+          {!{{ f.has_hidden_children | tojson }} && canWriteFormField({{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}) && canWriteFormChildren({{ f.sub_fields | tojson }} as FormFieldSpec[]) ? (
           <fieldset aria-labelledby="{{ f.name }}-label">
             <legend className="sr-only">{{ f.label }}</legend>
 {%- for sub in f.sub_fields %}
