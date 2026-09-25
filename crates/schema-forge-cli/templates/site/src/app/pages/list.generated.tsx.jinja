@@ -8,7 +8,9 @@
 import { Link } from "react-router-dom"
 import type { ColumnDef } from "@tanstack/react-table"
 import type { {{ entity.pascal }} } from "@/generated/entity-types"
+{%- if entity.list_uses_formatter %}
 import { formatFieldValue } from "@/generated/formatters"
+{%- endif %}
 
 // Semantic color tokens from `@enum_colors(...)` mapped to Tailwind badge
 // classes. Kept inline so every referenced class is picked up by the JIT
@@ -86,6 +88,10 @@ export const columns: ColumnDef<{{ entity.pascal }}>[] = [
       >
 {%- if f.kind == "enum" %}
         <EnumBadge field="{{ f.leaf }}" value={row.original.{{ f.leaf }}} />
+{%- elif f.kind == "relation_one" and f.relation_display_field %}
+        {row.original.{{ f.leaf }}__display ?? row.original.{{ f.leaf }} ?? "—"}
+{%- elif f.kind == "relation_many" and f.relation_display_field %}
+        {(row.original.{{ f.leaf }} ?? []).map((id, index) => row.original.{{ f.leaf }}__display?.[index] ?? id).join(", ") || "—"}
 {%- else %}
         {formatFieldValue(row.original.{{ f.leaf }}, {
           kind: "{{ f.kind }}",

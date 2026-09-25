@@ -760,3 +760,37 @@ fn generated_extended_fields_and_authority_survive_regeneration() {
         "// user-owned edit shell\n"
     );
 }
+
+#[test]
+fn relation_and_file_only_pages_emit_only_used_formatters() {
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let fixtures = format!(
+        "{}\n{}",
+        include_str!("site_e2e/demo.schema"),
+        include_str!("site_e2e/rendering.schema")
+    );
+    write_schemas(&schema_dir, &fixtures);
+    for (name, path) in [
+        ("PrimaryJoin", "primary-join"),
+        ("HiddenJoin", "hidden-join"),
+        ("ExplicitJoin", "explicit-join"),
+        ("ManyJoin", "many-join"),
+        ("FileOnly", "file-only"),
+    ] {
+        let out_dir = tmp.path().join(path);
+        run_generate(&schema_dir, &out_dir, name, &[]).assert().success();
+        let detail = fs::read_to_string(out_dir.join(format!("src/app/pages/{path}/detail.generated.tsx"))).unwrap();
+        let list = fs::read_to_string(out_dir.join(format!("src/app/pages/{path}/list.generated.tsx"))).unwrap();
+        assert!(!detail.contains("formatFieldValue"), "{name}: {detail}");
+        assert!(!detail.contains("function isEmpty"), "{name}: {detail}");
+        assert!(!list.contains("formatFieldValue"), "{name}: {list}");
+        if matches!(name, "PrimaryJoin" | "ExplicitJoin") {
+            assert!(list.contains("row.original.company__display ?? row.original.company"));
+            assert!(list.contains(&format!("/app/{path}/${{row.original.id}}")));
+        }
+        if name == "ManyJoin" {
+            assert!(list.contains("row.original.companies__display?.[index] ?? id"));
+        }
+    }
+}
