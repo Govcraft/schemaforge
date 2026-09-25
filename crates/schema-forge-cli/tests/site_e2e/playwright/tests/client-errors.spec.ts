@@ -2,8 +2,9 @@ import { expect, test, type Page, type Route } from "@playwright/test"
 
 async function session(page: Page, entityResponse?: (route: Route) => Promise<void>) {
   await page.addInitScript(() => {
+    // Stay below the browser timer limit so background refresh does not fire during setup.
     sessionStorage.setItem("schemaforge.token", "test-token")
-    sessionStorage.setItem("schemaforge.token_expires_at", "2099-01-01T00:00:00Z")
+    sessionStorage.setItem("schemaforge.token_expires_at", new Date(Date.now() + 60 * 60 * 1000).toISOString())
     sessionStorage.setItem("schemaforge.roles", JSON.stringify(["member"]))
     if (!sessionStorage.getItem("schemaforge.active_tenant")) {
       sessionStorage.setItem("schemaforge.active_tenant", "Org:org-a")
@@ -44,7 +45,7 @@ test("request headers preserve explicit tenant overrides and refresh retries", a
   await page.goto("/login")
   let retries = 0
   await page.route("**/api/v1/forge/auth/refresh", route => route.fulfill({ json: {
-    token: "new-token", expires_at: "2099-01-01T00:00:00Z", roles: ["member"],
+    token: "new-token", expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), roles: ["member"],
   } }))
   await page.route("**/api/v1/forge/header-test**", async route => {
     if (route.request().url().endsWith("/retry") && retries++ === 0) {
@@ -57,7 +58,7 @@ test("request headers preserve explicit tenant overrides and refresh retries", a
     const apiPath = "/src/generated/api-client.ts"
     const auth = await import(authPath)
     const api = await import(apiPath)
-    auth.tokenStore.set("old-token", "2099-01-01T00:00:00Z", ["member"])
+    auth.tokenStore.set("old-token", new Date(Date.now() + 60 * 60 * 1000).toISOString(), ["member"])
     auth.activeTenantStore.set("Org", "org-a")
     const result = []
     for (const method of ["GET", "POST", "PATCH", "DELETE"]) {
