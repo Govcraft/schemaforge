@@ -139,7 +139,10 @@ test("list load errors render recovery inline without a global toast", async ({ 
 
 
 test("customizable global handlers honor query and mutation opt-outs", async ({ page }) => {
-  await page.goto("/login")
+  // The notification host lives in the authenticated application shell.
+  await session(page)
+  await page.goto("/app/company")
+  await expect(page.getByText("Company for Org:org-a", { exact: true })).toBeVisible()
   await page.evaluate(async () => {
     const path = "/src/lib/error-toast.ts"
     const handlers = await import(path)
