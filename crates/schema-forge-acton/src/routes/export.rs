@@ -544,9 +544,7 @@ pub async fn prepare_export(
 
     // Resolve relation displays, then strip read-restricted fields per row
     // (dynamic half of the intersection).
-    let display_map =
-        resolve_export_displays(forge, schema_def, &visible, &columns, claims, tenant_config)
-            .await?;
+    let display_map = resolve_export_displays(ctx, schema_def, &visible, &columns).await?;
     for entity in &mut visible {
         filter_entity_fields(
             policy_store,
@@ -1233,15 +1231,14 @@ fn may_read_export_job(owner: Option<&str>, caller: Option<&str>) -> bool {
 /// `@exportable` (present in `columns`) and relations get resolved; everything
 /// else is absent (the serializer then falls back to the raw id).
 async fn resolve_export_displays(
-    forge: &acton_service::prelude::ActorHandle,
+    ctx: &ExportContext<'_>,
     schema: &SchemaDefinition,
     visible: &[Entity],
     columns: &[(String, Option<schema_forge_core::types::ExportFlatten>)],
-    claims: Option<&Claims>,
-    tenant_config: &Option<schema_forge_backend::tenant::TenantConfig>,
 ) -> Result<HashMap<String, HashMap<String, String>>, ForgeError> {
     use std::collections::HashSet;
 
+    let forge = ctx.forge;
     let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
     if visible.is_empty() {
         return Ok(out);
@@ -1288,8 +1285,8 @@ async fn resolve_export_displays(
                 values: id_values,
             })
             .without_total_count();
-        display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
-        inject_tenant_scope(&mut display_query, claims, tenant_config, &target_def);
+        // Authorization needs the complete row, including owner and policy fields.
+        inject_tenant_scope(&mut display_query, ctx.claims, ctx.tenant_config, &target_def);
 
         let (tx, rx) = oneshot::channel();
         forge
@@ -1299,9 +1296,17 @@ async fn resolve_export_displays(
             })
             .await;
         let display_result = ask_forge(rx).await?.map_err(ForgeError::from)?;
+        let targets = super::entities::filter_relation_entities_with_policy(
+            ctx.record_access_policy.as_deref(),
+            ctx.policy_store,
+            &target_def,
+            ctx.claims,
+            display_result.entities,
+        )
+        .await;
 
         let mut id_to_display: HashMap<String, String> = HashMap::new();
-        for target_entity in display_result.entities {
+        for target_entity in targets {
             if let Some(value) = target_entity.field(&display_field) {
                 id_to_display.insert(target_entity.id.to_string(), display_scalar(value));
             }

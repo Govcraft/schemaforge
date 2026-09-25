@@ -710,3 +710,254 @@ async fn empty_result_streams_header_only_csv() {
     assert_eq!(text.lines().count(), 1);
     assert_eq!(text.lines().next().unwrap(), "name,notes");
 }
+
+struct ExportTargetPolicy;
+
+impl schema_forge_backend::auth::RecordAccessPolicy for ExportTargetPolicy {
+    fn filter_visible<'a>(
+        &'a self,
+        _schema: &'a SchemaDefinition,
+        claims: &'a Claims,
+        entities: Vec<schema_forge_backend::entity::Entity>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Vec<schema_forge_backend::entity::Entity>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            assert_eq!(claims.sub, "user:test-user");
+            entities
+                .into_iter()
+                .filter(|entity| {
+                    entity.field("label")
+                        != Some(&schema_forge_core::types::DynamicValue::Text(
+                            "operator-secret".into(),
+                        ))
+                })
+                .collect()
+        })
+    }
+
+    fn can_modify<'a>(
+        &'a self,
+        _schema: &'a SchemaDefinition,
+        _claims: &'a Claims,
+        _entity: &'a schema_forge_backend::entity::Entity,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async { false })
+    }
+
+    fn can_delete<'a>(
+        &'a self,
+        _schema: &'a SchemaDefinition,
+        _claims: &'a Claims,
+        _entity: &'a schema_forge_backend::entity::Entity,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async { false })
+    }
+}
+
+#[tokio::test]
+async fn export_relation_labels_respect_target_schema_row_field_and_operator_access() {
+    use schema_forge_acton::authz::{
+        PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,
+    };
+    use schema_forge_acton::routes::export::{materialize_export, prepare_export, ExportContext};
+
+    let schemas = schema_forge_dsl::parse(
+        r#"
+        @access(read: ["manager"])
+        @display("label")
+        schema RestrictedTarget { label: text }
+        @access(read: ["viewer"])
+        @display("label")
+        schema FieldTarget { label: text @field_access(read: ["manager"]) }
+        @access(read: ["viewer"])
+        @display("label")
+        schema HiddenTarget { label: text @hidden }
+        @access(read: ["viewer"])
+        @display("label")
+        schema RowTarget { label: text blocked: boolean }
+        @access(read: ["viewer"])
+        @display("label")
+        schema VisibleTarget { label: text }
+        @access(read: ["viewer"])
+        schema ExportLinks {
+            denied: -> RestrictedTarget @exportable
+            field_denied: -> FieldTarget @exportable
+            hidden: -> HiddenTarget @exportable
+            row_denied: -> RowTarget @exportable
+            allowed: -> RowTarget @exportable
+            many: -> RowTarget[] @exportable
+            operator_denied: -> VisibleTarget @exportable
+        }
+    "#,
+    )
+    .unwrap();
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("test", "export-targets")
+            .await
+            .unwrap(),
+    );
+    for schema in &schemas {
+        provision(&backend, schema).await;
+    }
+    let registry = schemas
+        .iter()
+        .map(|schema| (schema.name.to_string(), schema.clone()))
+        .collect();
+    let state = build_state_with_config(backend, registry, SchemaForgeConfig::default()).await;
+    let admin = app_with_claims(state.clone(), make_claims(&["platform_admin"]));
+    let mut ids = HashMap::new();
+    for (key, schema, fields) in [
+        (
+            "denied",
+            "RestrictedTarget",
+            serde_json::json!({"label": "schema-secret"}),
+        ),
+        (
+            "field_denied",
+            "FieldTarget",
+            serde_json::json!({"label": "field-secret"}),
+        ),
+        (
+            "hidden",
+            "HiddenTarget",
+            serde_json::json!({"label": "hidden-secret"}),
+        ),
+        (
+            "row_denied",
+            "RowTarget",
+            serde_json::json!({"label": "row-secret", "blocked": true}),
+        ),
+        (
+            "allowed",
+            "RowTarget",
+            serde_json::json!({"label": "readable-label", "blocked": false}),
+        ),
+        (
+            "operator_denied",
+            "VisibleTarget",
+            serde_json::json!({"label": "operator-secret"}),
+        ),
+    ] {
+        let (status, result) = json_request(
+            &admin,
+            Method::POST,
+            &format!("/schemas/{schema}/entities"),
+            Some(serde_json::json!({"fields": fields})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{result}");
+        ids.insert(key, result["id"].as_str().unwrap().to_string());
+    }
+    let mut fields = serde_json::Map::new();
+    for (key, id) in &ids {
+        fields.insert((*key).into(), serde_json::json!(id));
+    }
+    fields.insert(
+        "many".into(),
+        serde_json::json!([ids["row_denied"], ids["allowed"]]),
+    );
+    let (status, result) = json_request(
+        &admin,
+        Method::POST,
+        "/schemas/ExportLinks/entities",
+        Some(serde_json::json!({"fields": fields})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{result}");
+
+    let policies = tempfile::tempdir().unwrap();
+    std::fs::write(
+        policies.path().join("rows.cedar"),
+        r#"
+        forbid(principal, action == Action::"ReadRowTarget", resource is RowTarget)
+        when { !context.resource_is_placeholder && resource has blocked && resource.blocked };
+    "#,
+    )
+    .unwrap();
+    let policy_store = Arc::new(PolicyStore::new(
+        PolicyStoreSnapshot::from_schemas(
+            &schemas,
+            Some(policies.path()),
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap(),
+    ));
+    let record_policy: Option<Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>> =
+        Some(Arc::new(ExportTargetPolicy));
+    let forge = state.actor::<ForgeActor>().unwrap();
+    let claims = make_claims(&["viewer"]);
+    let tenant_config = None;
+    let context = ExportContext {
+        forge: &forge,
+        claims: Some(&claims),
+        tenant_config: &tenant_config,
+        policy_store: &policy_store,
+        record_access_policy: &record_policy,
+    };
+    let schema = schemas
+        .iter()
+        .find(|schema| schema.name.as_str() == "ExportLinks")
+        .unwrap();
+    let prepared = prepare_export(&context, schema, None, None, 100)
+        .await
+        .unwrap();
+    assert_eq!(prepared.entities.len(), 1);
+    for field in [
+        "denied",
+        "field_denied",
+        "hidden",
+        "row_denied",
+        "operator_denied",
+    ] {
+        assert!(
+            !prepared.display_map.contains_key(field),
+            "unauthorized label for {field}"
+        );
+    }
+    assert_eq!(
+        prepared.display_map["allowed"][&ids["allowed"]],
+        "readable-label"
+    );
+    assert_eq!(prepared.display_map["many"].len(), 1);
+    assert_eq!(
+        prepared.display_map["many"][&ids["allowed"]],
+        "readable-label"
+    );
+
+    for format in [ExportFormat::Csv, ExportFormat::Ndjson, ExportFormat::Xlsx] {
+        let artifact = materialize_export(&context, schema, format, None, None, 100)
+            .await
+            .unwrap();
+        let text = if format == ExportFormat::Xlsx {
+            use std::io::Read;
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(artifact.bytes)).unwrap();
+            let mut text = String::new();
+            for index in 0..archive.len() {
+                let mut entry = archive.by_index(index).unwrap();
+                if entry.name().ends_with(".xml") {
+                    entry.read_to_string(&mut text).unwrap();
+                }
+            }
+            text
+        } else {
+            String::from_utf8(artifact.bytes).unwrap()
+        };
+        assert!(text.contains("readable-label"));
+        for secret in [
+            "schema-secret",
+            "field-secret",
+            "hidden-secret",
+            "row-secret",
+            "operator-secret",
+        ] {
+            assert!(
+                !text.contains(secret),
+                "unauthorized label in {format:?}: {secret}"
+            );
+        }
+    }
+}
