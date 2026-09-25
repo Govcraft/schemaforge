@@ -39,7 +39,19 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         MigrationStep::DropSchema { name: _ } => {
             vec![format!("REMOVE TABLE {table};")]
         }
-        MigrationStep::AddField { field } => define_field_stmts(table, field),
+        MigrationStep::AddField { field } => {
+            let mut statements = define_field_stmts(table, field);
+            for modifier in &field.modifiers {
+                if let FieldModifier::Default { value } = modifier {
+                    let literal = default_value_to_surql(value);
+                    statements.push(format!(
+                        "UPDATE {table} SET {name} = {literal} WHERE {name} = NONE OR {name} = NULL;",
+                        name = field.name,
+                    ));
+                }
+            }
+            statements
+        }
         MigrationStep::RemoveField { name } => {
             vec![format!("REMOVE FIELD {name} ON {table};")]
         }
@@ -117,7 +129,7 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
             }
         },
         MigrationStep::RemoveRelation { name } => {
-            vec![format!("REMOVE FIELD {name} ON {table};")]
+            vec![format!("REMOVE FIELD IF EXISTS {name} ON {table};")]
         }
         MigrationStep::BackfillRequired {
             field,
@@ -125,33 +137,15 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         } => {
             let literal = crate::query::dynamic_value_to_surql_literal(default_value);
             vec![format!(
-                "UPDATE {table} SET {field} = {literal} WHERE {field} = NONE;"
+                "UPDATE {table} SET {field} = {literal} WHERE {field} = NONE OR {field} = NULL;"
             )]
         }
-        MigrationStep::AddRequired { field } => {
-            // Re-define the field with a NOT NONE assertion.
-            // Since we do not have the full field type here, use a flexible assertion.
-            vec![format!(
-                "DEFINE FIELD OVERWRITE {field} ON {table} ASSERT $value != NONE;"
-            )]
-        }
-        MigrationStep::RemoveRequired { field } => {
-            // Re-define the field without the assertion. Use `any` type to be permissive.
-            vec![format!(
-                "DEFINE FIELD OVERWRITE {field} ON {table} TYPE any;"
-            )]
-        }
-        MigrationStep::SetDefault { field, value } => {
-            let literal = default_value_to_surql(value);
-            vec![format!(
-                "DEFINE FIELD OVERWRITE {field} ON {table} DEFAULT {literal};"
-            )]
-        }
-        MigrationStep::RemoveDefault { field } => {
-            // Re-define without VALUE clause.
-            vec![format!(
-                "DEFINE FIELD OVERWRITE {field} ON {table} TYPE any;"
-            )]
+        MigrationStep::AddRequired { .. }
+        | MigrationStep::RemoveRequired { .. }
+        | MigrationStep::SetDefault { .. }
+        | MigrationStep::RemoveDefault { .. } => {
+            // Retain type, constraints and other modifiers through stored metadata.
+            vec!["THROW 'field modifier migration requires stored field metadata; execute through SchemaBackend';".into()]
         }
         MigrationStep::AddUnique { field, per_tenant } => {
             vec![add_unique_surql(table, field.as_ref(), *per_tenant)]
@@ -731,7 +725,10 @@ mod tests {
         let stmts = migration_step_to_surql("Contact", &step);
         assert_eq!(
             stmts,
-            vec!["DEFINE FIELD status ON Contact TYPE option<string> DEFAULT 'active';"]
+            vec![
+                "DEFINE FIELD status ON Contact TYPE option<string> DEFAULT 'active';",
+                "UPDATE Contact SET status = 'active' WHERE status = NONE OR status = NULL;",
+            ]
         );
     }
 
