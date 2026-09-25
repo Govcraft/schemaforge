@@ -97,6 +97,11 @@ if [[ ! -d node_modules ]]; then
   pnpm install --frozen-lockfile 2>&1 | tail -5 || pnpm install 2>&1 | tail -5
 fi
 
+# Vite's development server transpiles without type checking. Validate the
+# generated application before browser tests so broken form types cannot pass.
+pnpm build
+pnpm lint
+
 VITE_LOG="$TMP_ROOT/vite.log"
 VITE_FORGE_UPSTREAM="http://127.0.0.1:$BACKEND_PORT" \
   pnpm exec vite --host 127.0.0.1 --port "$VITE_PORT" >"$VITE_LOG" 2>&1 &
