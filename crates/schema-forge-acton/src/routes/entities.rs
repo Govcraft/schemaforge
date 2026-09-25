@@ -1730,34 +1730,46 @@ async fn execute_entity_query(
 }
 
 /// Apply an operator's record policy before Cedar checks on related rows.
-async fn filter_public_relation_entities_with_policy(
+pub(super) async fn filter_relation_entities_with_policy(
     record_policy: Option<&dyn schema_forge_backend::auth::RecordAccessPolicy>,
     policy_store: &Arc<crate::authz::PolicyStore>,
     schema: &SchemaDefinition,
+    claims: Option<&Claims>,
     entities: Vec<Entity>,
 ) -> Vec<Entity> {
     let entities = match record_policy {
-        Some(policy) => policy.filter_visible_optional(schema, None, entities).await,
+        Some(policy) => {
+            policy
+                .filter_visible_optional(schema, claims, entities)
+                .await
+        }
         None => entities,
     };
-    filter_public_relation_entities(policy_store, schema, entities)
+    filter_relation_entities(policy_store, schema, claims, entities)
 }
 
-/// Apply public read authorization to complete related rows before enrichment.
+/// Apply caller read authorization to complete related rows before enrichment.
 /// Both display text and inverse child IDs must respect the target's policies.
-fn filter_public_relation_entities(
+fn filter_relation_entities(
     policy_store: &Arc<crate::authz::PolicyStore>,
     schema: &SchemaDefinition,
+    claims: Option<&Claims>,
     entities: Vec<Entity>,
 ) -> Vec<Entity> {
-    if check_schema_access(policy_store, schema, None, AccessAction::Read).is_err() {
+    if check_schema_access(policy_store, schema, claims, AccessAction::Read).is_err() {
         return Vec::new();
     }
     entities
         .into_iter()
         .filter_map(|mut entity| {
-            if !authorize(policy_store, None, ActionVerb::Read, schema, Some(&entity))
-                .is_ok_and(|decision| decision.is_allow())
+            if !authorize(
+                policy_store,
+                claims,
+                ActionVerb::Read,
+                schema,
+                Some(&entity),
+            )
+            .is_ok_and(|decision| decision.is_allow() && decision.errors.is_empty())
             {
                 return None;
             }
@@ -1765,7 +1777,7 @@ fn filter_public_relation_entities(
                 policy_store,
                 &mut entity,
                 schema,
-                None,
+                claims,
                 FieldFilterDirection::Read,
             );
             entity
@@ -1847,8 +1859,8 @@ async fn resolve_relation_displays(
             continue;
         }
 
-        // Batched IN query for just the display field. No total_count —
-        // internal lookup, never paginated.
+        // Fetch complete rows so record policies and Cedar can inspect all
+        // attributes before display-field filtering. No count is needed.
         let id_values: Vec<DynamicValue> =
             distinct_ids.into_iter().map(DynamicValue::Text).collect();
         let mut display_query = schema_forge_core::query::Query::new(target_def.id.clone())
@@ -1857,9 +1869,6 @@ async fn resolve_relation_displays(
                 values: id_values,
             })
             .without_total_count();
-        if claims.is_some() {
-            display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
-        }
         // Apply tenant scope so we never leak rows the caller couldn't
         // otherwise see through a direct list call.
         inject_tenant_scope(&mut display_query, claims, tenant_config, target_def);
@@ -1875,7 +1884,7 @@ async fn resolve_relation_displays(
         return Ok(HashMap::new());
     }
 
-    let record_access_policy = if claims.is_none() {
+    let record_access_policy = {
         let (tx, rx) = oneshot::channel();
         forge
             .send(GetRecordAccessPolicy {
@@ -1883,8 +1892,6 @@ async fn resolve_relation_displays(
             })
             .await;
         ask_forge(rx).await?
-    } else {
-        None
     };
     let record_access_policy = record_access_policy.as_deref();
 
@@ -1905,17 +1912,14 @@ async fn resolve_relation_displays(
                 _ => return (source_fields, HashMap::new()),
             };
             let mut id_to_display: HashMap<String, String> = HashMap::new();
-            let targets = if claims.is_none() {
-                filter_public_relation_entities_with_policy(
-                    record_access_policy,
-                    policy_store,
-                    target_def,
-                    target_result.entities,
-                )
-                .await
-            } else {
-                target_result.entities
-            };
+            let targets = filter_relation_entities_with_policy(
+                record_access_policy,
+                policy_store,
+                target_def,
+                claims,
+                target_result.entities,
+            )
+            .await;
             for target_entity in targets {
                 if let Some(display_value) = target_entity.field(&display_field) {
                     let rendered = display_value_to_string(display_value);
@@ -2413,17 +2417,14 @@ async fn populate_derived_collections(
             continue;
         };
 
-        // Query: SELECT id, <fk_field> FROM <target> WHERE <fk_field> IN
-        // (parent_ids). Internal lookup — no total_count needed.
+        // Fetch complete matching child rows for authorization before extracting
+        // their IDs and FK. Internal lookup needs no total count.
         let mut child_query = schema_forge_core::query::Query::new(target_def.id.clone())
             .with_filter(Filter::In {
                 path: FieldPath::single(&fk_field_name),
                 values: parent_id_values.clone(),
             })
             .without_total_count();
-        if claims.is_some() {
-            child_query.projection = Some(vec!["id".to_string(), fk_field_name.clone()]);
-        }
         inject_tenant_scope(&mut child_query, claims, tenant_config, target_def);
 
         jobs.push((target_def, parent_field_name, fk_field_name, child_query));
@@ -2433,7 +2434,7 @@ async fn populate_derived_collections(
         return Ok(());
     }
 
-    let record_access_policy = if claims.is_none() {
+    let record_access_policy = {
         let (tx, rx) = oneshot::channel();
         forge
             .send(GetRecordAccessPolicy {
@@ -2441,8 +2442,6 @@ async fn populate_derived_collections(
             })
             .await;
         ask_forge(rx).await?
-    } else {
-        None
     };
     let record_access_policy = record_access_policy.as_deref();
 
@@ -2458,17 +2457,16 @@ async fn populate_derived_collections(
                 })
                 .await;
             let entities_opt = match ask_forge(rx).await {
-                Ok(Ok(r)) => Some(if claims.is_none() {
-                    filter_public_relation_entities_with_policy(
+                Ok(Ok(r)) => Some(
+                    filter_relation_entities_with_policy(
                         record_access_policy,
                         policy_store,
                         target_def,
+                        claims,
                         r.entities,
                     )
-                    .await
-                } else {
-                    r.entities
-                }),
+                    .await,
+                ),
                 _ => None,
             };
             (parent_field_name, fk_field_name, entities_opt)
