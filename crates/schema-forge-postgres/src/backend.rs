@@ -121,21 +121,28 @@ impl PgBackend {
     /// Supports `postgres://` and `postgresql://` URL schemes.
     /// Creates a connection pool with sensible defaults.
     pub async fn connect(url: &str) -> Result<Self, BackendError> {
-        let pool = PgPoolOptions::new()
-            .max_connections(10)
-            .connect(url)
-            .await
-            .map_err(|e| BackendError::ConnectionError {
-                message: format!("failed to connect to PostgreSQL at {url}: {e}"),
-            })?;
+        Self::connect_with_max_connections(url, 10).await
+    }
 
-        let backend = Self::from_parts(pool);
+    /// Connect for inspection or migration planning without creating bookkeeping tables.
+    ///
+    /// An empty database is treated as an empty schema registry. The caller should
+    /// use a database role with read-only privileges when writes must be forbidden.
+    pub async fn connect_read_only(url: &str) -> Result<Self, BackendError> {
+        Self::connect_without_bootstrap(url, 10).await
+    }
+
+    /// Connect with a custom maximum connection count and initialize bookkeeping.
+    pub async fn connect_with_max_connections(
+        url: &str,
+        max_connections: u32,
+    ) -> Result<Self, BackendError> {
+        let backend = Self::connect_without_bootstrap(url, max_connections).await?;
         backend.ensure_metadata_table().await?;
         Ok(backend)
     }
 
-    /// Connect with a custom maximum connection count.
-    pub async fn connect_with_max_connections(
+    async fn connect_without_bootstrap(
         url: &str,
         max_connections: u32,
     ) -> Result<Self, BackendError> {
@@ -143,13 +150,16 @@ impl PgBackend {
             .max_connections(max_connections)
             .connect(url)
             .await
-            .map_err(|e| BackendError::ConnectionError {
-                message: format!("failed to connect to PostgreSQL at {url}: {e}"),
+            .map_err(|_| BackendError::ConnectionError {
+                // Driver errors may themselves repeat credentials from malformed URLs.
+                message: "failed to connect to PostgreSQL; check the database address, credentials, and server availability".into(),
             })?;
+        Ok(Self::from_parts(pool))
+    }
 
-        let backend = Self::from_parts(pool);
-        backend.ensure_metadata_table().await?;
-        Ok(backend)
+    /// Use an existing pool without executing bookkeeping DDL.
+    pub fn from_pool_read_only(pool: PgPool) -> Self {
+        Self::from_parts(pool)
     }
 
     /// Create a backend from an existing connection pool.
@@ -412,6 +422,15 @@ impl PgBackend {
                 .map_err(|e| BackendError::ConnectionError {
                     message: e.to_string(),
                 })?;
+        let exists: bool = sqlx::query_scalar("SELECT to_regclass('_schema_metadata') IS NOT NULL")
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(|error| BackendError::QueryError {
+                message: format!("failed to inspect schema registry: {error}"),
+            })?;
+        if !exists {
+            return Ok(Vec::new());
+        }
         Self::fetch_metadata_on(&mut connection).await
     }
 
@@ -742,15 +761,21 @@ impl SchemaBackend for PgBackend {
         name: &SchemaName,
     ) -> Result<Option<SchemaDefinition>, BackendError> {
         let name_str = name.as_str();
-        let row: Option<PgRow> = sqlx::query(&format!(
+        let row: Option<PgRow> = match sqlx::query(&format!(
             "SELECT \"definition\" FROM \"{SCHEMA_META_TABLE}\" WHERE \"name\" = $1;"
         ))
         .bind(name_str)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| BackendError::QueryError {
-            message: format!("failed to load schema metadata: {e}"),
-        })?;
+        {
+            Ok(row) => row,
+            Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("42P01") => None,
+            Err(error) => {
+                return Err(BackendError::QueryError {
+                    message: format!("failed to load schema metadata: {error}"),
+                })
+            }
+        };
 
         match row {
             None => Ok(None),

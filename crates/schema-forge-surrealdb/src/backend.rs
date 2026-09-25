@@ -136,9 +136,9 @@ impl SurrealBackend {
         username: Option<&str>,
         password: Option<&str>,
     ) -> Result<Self, BackendError> {
-        let db = surrealdb::engine::any::connect(url).await.map_err(|e| {
+        let db = surrealdb::engine::any::connect(url).await.map_err(|_| {
             BackendError::ConnectionError {
-                message: format!("failed to connect to {url}: {e}"),
+                message: "failed to connect to SurrealDB; check the database address, credentials, and server availability".into(),
             }
         })?;
 
