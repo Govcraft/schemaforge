@@ -193,6 +193,19 @@ impl ForgeError {
     }
 }
 
+impl ForgeError {
+    /// Return a client-safe message, retaining backend diagnostics only in server logs.
+    pub(crate) fn client_message(&self) -> String {
+        match self {
+            Self::BackendUnavailable { message } | Self::Internal { message } => {
+                tracing::error!(error = %message, "API backend operation failed");
+                "The server could not complete the operation".into()
+            }
+            _ => self.to_string(),
+        }
+    }
+}
+
 impl IntoResponse for ForgeError {
     fn into_response(self) -> Response {
         let status = self.status_code();
@@ -203,22 +216,22 @@ impl IntoResponse for ForgeError {
                 "message": message,
             }),
             Self::ForeignKeyViolation { schema, constraint } => {
-                serde_json::json!({ "schema": schema, "constraint": constraint })
+                serde_json::json!({ "error": self.error_kind(), "message": self.client_message(), "schema": schema, "constraint": constraint })
             }
             Self::UniqueViolation { schema, field } => serde_json::json!({
                 "error": "unique_violation",
                 "schema": schema,
                 "field": field,
-                "message": self.to_string(),
+                "message": self.client_message(),
             }),
             Self::ExportTooLarge { max_rows, .. } => serde_json::json!({
                 "error": "export_too_large",
                 "max_rows": max_rows,
-                "message": self.to_string(),
+                "message": self.client_message(),
             }),
             _ => serde_json::json!({
                 "error": self.error_kind(),
-                "message": self.to_string(),
+                "message": self.client_message(),
             }),
         };
         (status, axum::Json(body)).into_response()
@@ -625,6 +638,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn foreign_key_response_has_standard_envelope() {
+        let response = ForgeError::ForeignKeyViolation {
+            schema: "Line".into(),
+            constraint: "Line_order_fkey".into(),
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"], "foreign_key_violation");
+        assert_eq!(json["schema"], "Line");
+        assert_eq!(json["constraint"], "Line_order_fkey");
+        assert!(json["message"].as_str().unwrap().contains("Line"));
+    }
+
+    #[tokio::test]
+    async fn backend_responses_do_not_expose_diagnostics() {
+        for error in [
+            ForgeError::from(BackendError::QueryError {
+                message: "private SQL table secret".into(),
+            }),
+            ForgeError::Internal {
+                message: "private configuration".into(),
+            },
+        ] {
+            let response = error.into_response();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                json["message"],
+                "The server could not complete the operation"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn into_response_unique_violation_has_field_in_body() {
         let err = ForgeError::UniqueViolation {
             schema: "Contact".into(),
@@ -687,5 +736,28 @@ mod tests {
             }
             other => panic!("expected UniqueViolation, got {other:?}"),
         }
+    }
+}
+
+/// JSON request extractor using the SchemaForge validation error envelope.
+pub struct JsonBody<T>(pub T);
+
+impl<S, T> axum::extract::FromRequest<S> for JsonBody<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = ForgeError;
+
+    async fn from_request(
+        request: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        <axum::Json<T> as axum::extract::FromRequest<S>>::from_request(request, state)
+            .await
+            .map(|axum::Json(value)| Self(value))
+            .map_err(|error| ForgeError::ValidationFailed {
+                details: vec![error.body_text()],
+            })
     }
 }

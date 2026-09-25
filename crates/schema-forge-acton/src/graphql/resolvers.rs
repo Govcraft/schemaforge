@@ -38,7 +38,7 @@ pub fn forge_error_to_gql(err: ForgeError) -> async_graphql::Error {
         | ForgeError::InvalidEntityId { .. } => "BAD_REQUEST",
         _ => "INTERNAL_ERROR",
     };
-    async_graphql::Error::new(err.to_string()).extend_with(|_, e| e.set("code", code))
+    async_graphql::Error::new(err.client_message()).extend_with(|_, e| e.set("code", code))
 }
 
 /// Resolve a single entity by ID.
@@ -260,7 +260,7 @@ pub async fn resolve_create_entity<'a>(
         axum::extract::Path(schema_name.to_owned()),
         crate::access::OptionalClaims(gql_ctx.claims.clone()),
         axum::http::HeaderMap::new(),
-        axum::Json(mutation_request(ctx)?),
+        crate::error::JsonBody(mutation_request(ctx)?),
     )
     .await
     .map_err(forge_error_to_gql)?;
@@ -282,7 +282,7 @@ pub async fn resolve_update_entity<'a>(
         axum::extract::Path((schema_name.to_owned(), id)),
         crate::access::OptionalClaims(gql_ctx.claims.clone()),
         axum::http::HeaderMap::new(),
-        axum::Json(mutation_request(ctx)?),
+        crate::error::JsonBody(mutation_request(ctx)?),
     )
     .await
     .map_err(forge_error_to_gql)?
@@ -619,5 +619,6 @@ mod tests {
         };
         let gql_err = forge_error_to_gql(err);
         assert_eq!(extension_code(&gql_err).as_deref(), Some("INTERNAL_ERROR"));
+        assert_eq!(gql_err.message, "The server could not complete the operation");
     }
 }

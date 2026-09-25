@@ -30,7 +30,7 @@ use crate::access::{
 use crate::actor::ForgeActor;
 use crate::authz::{authorize, namespace::ActionVerb};
 use crate::config::SchemaForgeConfig;
-use crate::error::ForgeError;
+use crate::error::{ForgeError, JsonBody};
 use crate::hooks::{
     run_before_hook, DispatchHook, HookDispatchActor, HookDispatcher, HookInvocation, HooksConfig,
 };
@@ -776,8 +776,14 @@ pub fn json_to_entity_fields_with_mode(
         let dynamic_value = if let Some(def) = field_def {
             convert_json_with_type_hint(value, &def.field_type)
         } else {
-            // Unknown field -- convert based on JSON type
-            convert_json_untyped(value)
+            if key != "_tenant" || !schema.is_tenanted() {
+                errors.push(format!("unknown field '{key}'"));
+                continue;
+            }
+            convert_json_with_type_hint(
+                value,
+                &FieldType::Text(schema_forge_core::types::TextConstraints::unconstrained()),
+            )
         };
 
         match dynamic_value {
@@ -1754,6 +1760,9 @@ async fn resolve_relation_displays(
     let mut targets: HashMap<String, Vec<&schema_forge_core::types::FieldDefinition>> =
         HashMap::new();
     for field in &parent_schema.fields {
+        if field.is_hidden() {
+            continue;
+        }
         if let FieldType::Relation { target, .. } = &field.field_type {
             targets
                 .entry(target.as_str().to_string())
@@ -1962,6 +1971,86 @@ fn collect_relation_ids(value: &DynamicValue, out: &mut HashSet<String>) {
 ///
 /// Fast path: when no `@require` on the schema references `related.*`, no I/O is
 /// performed and the pure binding set is used directly.
+/// Validate the final relation values before any write reaches storage.
+async fn validate_relation_targets(
+    forge: &acton_service::prelude::ActorHandle,
+    policy_store: &Arc<crate::authz::PolicyStore>,
+    schema: &SchemaDefinition,
+    fields: &BTreeMap<String, DynamicValue>,
+    claims: Option<&Claims>,
+    tenant_config: &Option<schema_forge_backend::tenant::TenantConfig>,
+) -> Result<(), ForgeError> {
+    if !schema.is_tenanted()
+        || !tenant_config
+            .as_ref()
+            .is_some_and(|config| config.is_enabled())
+        || claims.is_some_and(|claims| claims.has_role("platform_admin"))
+    {
+        return Ok(());
+    }
+    for field in &schema.fields {
+        let FieldType::Relation { target, .. } = &field.field_type else {
+            continue;
+        };
+        if field.is_derived() {
+            continue;
+        }
+        let Some(value) = fields.get(field.name.as_str()) else {
+            continue;
+        };
+        let mut ids = HashSet::new();
+        collect_relation_ids(value, &mut ids);
+        if ids.is_empty() {
+            continue;
+        }
+        let definitions = fetch_schemas_batch(forge, vec![target.as_str().to_string()]).await?;
+        let failure = || ForgeError::ValidationFailed {
+            details: vec![format!(
+                "field '{}': relation target is unavailable",
+                field.name.as_str()
+            )],
+        };
+        let target_schema = definitions.get(target.as_str()).ok_or_else(failure)?;
+        if !target_schema.is_tenanted() {
+            continue;
+        }
+        let mut query = schema_forge_core::query::Query::new(target_schema.id.clone())
+            .with_filter(Filter::In {
+                path: FieldPath::single("id"),
+                values: ids.iter().cloned().map(DynamicValue::Text).collect(),
+            })
+            .without_total_count();
+        inject_tenant_scope(&mut query, claims, tenant_config, target_schema);
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(QueryEntities {
+                query,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let result = ask_forge(rx).await?.map_err(ForgeError::from)?;
+        let visible: HashSet<_> = result
+            .entities
+            .iter()
+            .filter(|entity| {
+                require_entity_action(
+                    policy_store,
+                    target_schema,
+                    claims,
+                    entity,
+                    ActionVerb::Read,
+                )
+                .is_ok()
+            })
+            .map(|entity| entity.id.as_str().to_string())
+            .collect();
+        if !ids.is_subset(&visible) {
+            return Err(failure());
+        }
+    }
+    Ok(())
+}
+
 async fn check_requires_with_related(
     forge: &acton_service::prelude::ActorHandle,
     schema: &SchemaDefinition,
@@ -2415,6 +2504,9 @@ fn apply_relation_displays(
     display_map: &HashMap<String, HashMap<String, String>>,
 ) {
     for field in &parent_schema.fields {
+        if field.is_hidden() {
+            continue;
+        }
         let FieldType::Relation { cardinality, .. } = &field.field_type else {
             continue;
         };
@@ -2509,7 +2601,7 @@ pub async fn create_entity(
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
-    Json(body): Json<EntityRequest>,
+    JsonBody(body): JsonBody<EntityRequest>,
 ) -> Result<axum::response::Response, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
     let forge = state
@@ -2684,6 +2776,26 @@ pub async fn create_entity(
         .await?;
     }
 
+    validate_relation_targets(
+        &forge,
+        &policy_store,
+        &schema_def,
+        &fields,
+        claims.as_ref(),
+        &tenant_config,
+    )
+    .await?;
+
+    crate::webhook::validate_subscription_fields(
+        &schema_def,
+        &fields,
+        &state.config().custom.schema_forge.webhooks,
+    )
+    .await
+    .map_err(|error| ForgeError::ValidationFailed {
+        details: vec![error.to_string()],
+    })?;
+
     // Create the entity, filtering write-restricted fields
     let entity = Entity::with_id(supplied.id, schema_name, fields);
     validate_required_fields(&schema_def, &entity.fields)?;
@@ -2762,7 +2874,7 @@ pub async fn create_entity(
 
     // Webhook: fire notifications
     let webhook_event = crate::webhook::WebhookEvent::from_create(
-        &schema,
+        &schema_def,
         &created,
         claims.as_ref().map(|c| c.sub.as_str()),
     );
@@ -2943,7 +3055,7 @@ pub async fn query_entities(
     Path(schema): Path<String>,
     OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
-    Json(body): Json<EntityQueryBody>,
+    JsonBody(body): JsonBody<EntityQueryBody>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
     let forge = state
@@ -3304,7 +3416,7 @@ pub async fn update_entity(
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
-    Json(body): Json<EntityRequest>,
+    JsonBody(body): JsonBody<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
     let forge = state
@@ -3555,6 +3667,26 @@ pub async fn update_entity(
         .await?;
     }
 
+    validate_relation_targets(
+        &forge,
+        &policy_store,
+        &schema_def,
+        &fields,
+        claims.as_ref(),
+        &tenant_config,
+    )
+    .await?;
+
+    crate::webhook::validate_subscription_fields(
+        &schema_def,
+        &fields,
+        &state.config().custom.schema_forge.webhooks,
+    )
+    .await
+    .map_err(|error| ForgeError::ValidationFailed {
+        details: vec![error.to_string()],
+    })?;
+
     // Build entity with specific ID, filtering write-restricted fields
     let entity = Entity::with_id(entity_id, schema_name, fields);
     validate_required_fields(&schema_def, &entity.fields)?;
@@ -3608,7 +3740,7 @@ pub async fn update_entity(
 
     // Webhook: fire notifications
     let webhook_event = crate::webhook::WebhookEvent::from_update(
-        &schema,
+        &schema_def,
         &updated,
         claims.as_ref().map(|c| c.sub.as_str()),
     );
@@ -3636,7 +3768,7 @@ pub async fn patch_entity(
     Path((schema, id)): Path<(String, String)>,
     OptionalClaims(claims): OptionalClaims,
     headers: HeaderMap,
-    Json(body): Json<EntityRequest>,
+    JsonBody(body): JsonBody<EntityRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let schema_name = validate_schema_name(&schema)?;
     let forge = state
@@ -3797,6 +3929,16 @@ pub async fn patch_entity(
     apply_computed(&schema_def, &mut merged, claims.as_ref(), rules_now)
         .map_err(rule_error_to_forge)?;
 
+    validate_relation_targets(
+        &forge,
+        &policy_store,
+        &schema_def,
+        &merged,
+        claims.as_ref(),
+        &tenant_config,
+    )
+    .await?;
+
     validate_required_fields(&schema_def, &merged)?;
 
     // Tenant config for cross-entity-read tenant scoping (#95).
@@ -3862,6 +4004,16 @@ pub async fn patch_entity(
 
     validate_required_fields(&schema_def, &merged)?;
     check_field_constraints(&schema_def, &merged)?;
+
+    crate::webhook::validate_subscription_fields(
+        &schema_def,
+        &merged,
+        &state.config().custom.schema_forge.webhooks,
+    )
+    .await
+    .map_err(|error| ForgeError::ValidationFailed {
+        details: vec![error.to_string()],
+    })?;
 
     // Compute the delta: only keys whose final value differs from the
     // loaded baseline go to the backend. This keeps PATCH's SQL UPDATE
@@ -3936,7 +4088,7 @@ pub async fn patch_entity(
 
     // Webhook: fire notifications
     let webhook_event = crate::webhook::WebhookEvent::from_update(
-        &schema,
+        &schema_def,
         &updated,
         claims.as_ref().map(|c| c.sub.as_str()),
     );
@@ -4442,17 +4594,16 @@ mod tests {
     }
 
     #[test]
-    fn json_to_entity_fields_unknown_field_accepted() {
+    fn json_to_entity_fields_unknown_field_rejected() {
         let schema = make_test_schema();
         let mut json_fields = serde_json::Map::new();
         json_fields.insert("name".into(), serde_json::json!("Alice"));
         json_fields.insert("extra".into(), serde_json::json!("extra value"));
 
-        let result = json_to_entity_fields(&schema, &json_fields).unwrap();
-        assert_eq!(
-            result.get("extra"),
-            Some(&DynamicValue::Text("extra value".into()))
-        );
+        for mode in [ConversionMode::Replace, ConversionMode::Merge] {
+            let errors = json_to_entity_fields_with_mode(&schema, &json_fields, mode).unwrap_err();
+            assert_eq!(errors, vec!["unknown field 'extra'"]);
+        }
     }
 
     #[test]
@@ -4559,6 +4710,50 @@ mod tests {
             response.fields.get("agency__display"),
             Some(&serde_json::json!("Department of Homeland Security"))
         );
+    }
+
+    #[test]
+    fn apply_relation_displays_omits_hidden_relation() {
+        use schema_forge_core::types::{
+            Cardinality, FieldDefinition, FieldName, FieldType, SchemaId, SchemaName,
+        };
+
+        // Schema with one Relation(One) field "agency".
+        let mut schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Opportunity").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("agency").unwrap(),
+                FieldType::Relation {
+                    target: SchemaName::new("Agency").unwrap(),
+                    cardinality: Cardinality::One,
+                },
+            )],
+            Vec::new(),
+        )
+        .unwrap();
+
+        schema.fields[0].annotations.push(FieldAnnotation::Hidden);
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "agency".to_string(),
+            DynamicValue::Text("entity_01abcd".into()),
+        );
+        let entity = Entity::new(schema.name.clone(), fields);
+        let mut response = entity_to_response(&entity, &schema);
+
+        let mut id_to_display = HashMap::new();
+        id_to_display.insert(
+            "entity_01abcd".to_string(),
+            "Department of Homeland Security".to_string(),
+        );
+        let mut display_map = HashMap::new();
+        display_map.insert("agency".to_string(), id_to_display);
+
+        apply_relation_displays(&mut response, &schema, &entity, &display_map);
+
+        assert!(!response.fields.contains_key("agency"));
+        assert!(!response.fields.contains_key("agency__display"));
     }
 
     #[test]

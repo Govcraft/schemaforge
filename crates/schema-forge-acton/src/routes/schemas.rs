@@ -22,7 +22,7 @@ use crate::access::{
 };
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
-use crate::error::ForgeError;
+use crate::error::{ForgeError, JsonBody};
 use crate::messages::{ApplyPreparedSchemaChange, GetSchema, ListSchemas, ReplyChannel};
 
 // ---------------------------------------------------------------------------
@@ -601,7 +601,7 @@ fn schema_to_response(schema: &SchemaDefinition) -> SchemaResponse {
 pub async fn create_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
     OptionalClaims(claims): OptionalClaims,
-    Json(body): Json<CreateSchemaRequest>,
+    JsonBody(body): JsonBody<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
     if let Err(e) = require_admin(claims) {
@@ -814,7 +814,7 @@ pub async fn update_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
     Path(name): Path<String>,
     OptionalClaims(claims): OptionalClaims,
-    Json(body): Json<CreateSchemaRequest>,
+    JsonBody(body): JsonBody<CreateSchemaRequest>,
 ) -> Result<impl IntoResponse, ForgeError> {
     let claims = require_auth(&claims)?;
     if let Err(e) = require_admin(claims) {
