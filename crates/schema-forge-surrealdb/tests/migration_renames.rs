@@ -85,3 +85,46 @@ async fn fresh_metadata_reads_are_empty_without_creating_tables() {
         ));
     }
 }
+
+#[tokio::test]
+async fn metadata_write_checks_statement_failures() {
+    use schema_forge_backend::SchemaBackend;
+    use schema_forge_core::types::*;
+    let backend = schema_forge_surrealdb::SurrealBackend::connect_memory("metadata", "metadata")
+        .await
+        .unwrap();
+    let mut schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("MetadataProbe").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("label").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![],
+    )
+    .unwrap();
+    schema.fields[0].annotations.push(FieldAnnotation::Require {
+        expr: "true".into(),
+        message: "Apostrophe ' and quote \" and backslash \\ and newline\nretained".into(),
+    });
+    backend.store_schema_metadata(&schema).await.unwrap();
+    assert_eq!(
+        backend.load_schema_metadata(&schema.name).await.unwrap(),
+        Some(schema.clone())
+    );
+    backend
+        .client()
+        .query("DEFINE FIELD definition ON _schema_metadata TYPE string ASSERT $value = $original;")
+        .bind(("original", serde_json::to_string(&schema).unwrap()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let mut changed = schema.clone();
+    changed.fields[0].name = FieldName::new("changed").unwrap();
+    assert!(backend.store_schema_metadata(&changed).await.is_err());
+    assert_eq!(
+        backend.load_schema_metadata(&schema.name).await.unwrap(),
+        Some(schema)
+    );
+}

@@ -495,11 +495,20 @@ impl SchemaBackend for SurrealBackend {
         })?;
 
         let name = definition.name.as_str();
-        let sql = format!(
-            "UPSERT {SCHEMA_META_TABLE}:`{name}` CONTENT {{ name: '{name}', definition: '{json_escaped}' }};",
-            json_escaped = json.replace('\'', "\\'")
-        );
-        self.execute_raw(&sql).await?;
+        self.db
+            .query(format!(
+                "UPSERT {SCHEMA_META_TABLE}:`{name}` CONTENT {{ name: $schema_name, definition: $schema_definition }};"
+            ))
+            .bind(("schema_name", name.to_owned()))
+            .bind(("schema_definition", json))
+            .await
+            .map_err(|error| BackendError::QueryError {
+                message: error.to_string(),
+            })?
+            .check()
+            .map_err(|error| BackendError::QueryError {
+                message: error.to_string(),
+            })?;
         Ok(())
     }
 
@@ -1017,14 +1026,21 @@ mod tests {
         assert_eq!(field_surreal_value_to_literal(&val), "1h");
     }
 
-    #[test]
-    fn bytes_literal_is_base64_decode_call() {
-        let val = surrealdb::types::Value::Bytes(surrealdb::types::Bytes::from(b"hello".to_vec()));
-        // Parseable SurrealQL: decodes back to the same bytes.
-        assert_eq!(
-            field_surreal_value_to_literal(&val),
-            "encoding::base64::decode(\"aGVsbG8\")"
-        );
+    #[tokio::test]
+    async fn bytes_literal_round_trips_through_surrealql() {
+        let backend = SurrealBackend::connect_memory("bytes", "bytes")
+            .await
+            .unwrap();
+        for bytes in [vec![], b"hello".to_vec(), vec![0, 255, 128, 34, 39, 92]] {
+            let value = surrealdb::types::Value::Bytes(surrealdb::types::Bytes::from(bytes));
+            let literal = field_surreal_value_to_literal(&value);
+            let mut response = backend
+                .execute_raw(&format!("RETURN {literal};"))
+                .await
+                .unwrap();
+            let decoded: surrealdb::types::Value = response.take(0).unwrap();
+            assert_eq!(decoded, value);
+        }
     }
 
     #[tokio::test]
