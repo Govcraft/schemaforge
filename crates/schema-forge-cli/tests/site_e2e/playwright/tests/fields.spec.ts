@@ -30,12 +30,14 @@ test("duration, map, base64 and nested fields survive create and edit", async ({
   await page.getByLabel(/^review note/i).fill("reviewed")
   await page.getByLabel(/^public note/i).fill("public sibling")
   await page.getByLabel(/^private note/i).fill("protected sibling")
-  const created = page.waitForRequest(request => request.method() === "POST" && request.url().includes("/schemas/Job/entities"))
+  const created = page.waitForResponse(response => response.request().method() === "POST" && response.url().endsWith("/schemas/Job/entities"))
   await page.getByRole("button", { name: /^create$/i }).click()
-  const payload = (await created).postDataJSON().fields
+  const response = await created
+  expect(response.status(), await response.text()).toBe(201)
+  const payload = response.request().postDataJSON().fields
   expect(payload).toMatchObject({ timeout: "1h30m", labels: { attempts: 3 }, checksum: "aGVsbG8=", delays: ["1s", "2m"], settings: { delay: "2m", counters: { success: 2 } } })
   expect(payload).not.toHaveProperty("computed_label")
-  await expect(page).toHaveURL(/\/app\/job\/[^/]+$/)
+  await expect(page).toHaveURL(/\/app\/job\/entity_[a-z0-9]+$/)
   await expect(page.getByText("1h 30m", { exact: true })).toBeVisible()
   await expect(page.getByText("Extended field job-computed", { exact: true })).toBeVisible()
   const detailUrl = page.url()
@@ -69,13 +71,15 @@ test("role hints hide unreadable controls and omit unwritable required values", 
   await expect(page.locator('input[name="review_note"]')).toHaveCount(0)
   await page.getByLabel(/^name/i).fill("Clerk field job")
   await page.getByLabel(/^timeout/i).fill("90s")
-  const created = page.waitForRequest(request => request.method() === "POST" && request.url().includes("/schemas/Job/entities"))
+  const created = page.waitForResponse(response => response.request().method() === "POST" && response.url().endsWith("/schemas/Job/entities"))
   await page.getByRole("button", { name: /^create$/i }).click()
-  const payload = (await created).postDataJSON().fields
+  const response = await created
+  expect(response.status(), await response.text()).toBe(201)
+  const payload = response.request().postDataJSON().fields
   expect(payload).not.toHaveProperty("review_note")
   expect(payload).not.toHaveProperty("finance_only")
   expect(payload).not.toHaveProperty("computed_label")
-  await expect(page).toHaveURL(/\/app\/job\/[^/]+$/)
+  await expect(page).toHaveURL(/\/app\/job\/entity_[a-z0-9]+$/)
   const editUrl = `${page.url()}/edit`
   await page.goto(editUrl)
   await expect(page.getByRole("note", { name: "Review Note (read only)" })).toContainText("server")
