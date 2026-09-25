@@ -28,6 +28,7 @@ is pre-1.0; breaking changes bump the **minor** version per
   GraphQL error messages, and database connection errors omit credentials.
 - Keep authorization resource attributes aligned with the generated Cedar schema,
   so arrays of unsupported policy types do not incorrectly deny valid writes.
+- Convert nested composite values using their declared field types before storage.
 
 ### Database and operator fixes
 
