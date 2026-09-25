@@ -675,6 +675,14 @@ pub async fn create_schema(
     // 4a. Run the inverse-relation pairing pass across the full registry so
     // any `-> X[]` field paired with an FK from an existing schema is marked
     // as derived before the migration plan is generated.
+    crate::webhook::validate_schema_webhooks(
+        &definition,
+        &state.config().custom.schema_forge.webhooks,
+    )
+    .await
+    .map_err(|error| ForgeError::ValidationFailed {
+        details: vec![error.to_string()],
+    })?;
     let paired_registry = pair_with_registry(&forge, &mut definition).await?;
 
     // 4b. Pre-validate the proposed Cedar bundle BEFORE running any DB
@@ -892,6 +900,14 @@ pub async fn update_schema(
     // 4a. Run the inverse-relation pairing pass before diffing, so newly
     // added `-> X[]` fields are classified as derived (and therefore
     // produce no AddRelation step for a physical column).
+    crate::webhook::validate_schema_webhooks(
+        &new_definition,
+        &state.config().custom.schema_forge.webhooks,
+    )
+    .await
+    .map_err(|error| ForgeError::ValidationFailed {
+        details: vec![error.to_string()],
+    })?;
     let paired_registry = pair_with_registry(&forge, &mut new_definition).await?;
 
     // 4b. Dry-run the Cedar bundle for the proposed registry state so an
