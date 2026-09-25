@@ -100,7 +100,13 @@ async fn app() -> Router {
 }
 
 async fn query(app: &Router, query: &str, role: &str) -> Value {
-    query_with_tenant(app, query, role, Some("org_graphql")).await
+    query_with_tenant(
+        app,
+        query,
+        role,
+        (role != "platform_admin").then_some("org_graphql"),
+    )
+    .await
 }
 
 async fn query_with_tenant(app: &Router, query: &str, role: &str, tenant: Option<&str>) -> Value {

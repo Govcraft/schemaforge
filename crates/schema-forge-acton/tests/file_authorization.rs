@@ -28,11 +28,15 @@ use schema_forge_core::types::{
 use schema_forge_surrealdb::SurrealBackend;
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tokio::sync::oneshot;
 use tower::ServiceExt;
+use tracing::instrument::WithSubscriber;
 
 fn claims(tenant: Option<&str>, roles: &[&str]) -> Claims {
     let mut custom = HashMap::new();
@@ -221,6 +225,36 @@ async fn fixture_with_options(
     )
 }
 
+/// Observe the server-side storage diagnostic without exposing it to the client.
+#[derive(Clone, Default)]
+struct StorageLookupObserver(Arc<AtomicBool>);
+
+impl tracing::field::Visit for StorageLookupObserver {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "error"
+            && format!("{value:?}").contains("storage backend 'documents' not configured")
+        {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+impl tracing::Subscriber for StorageLookupObserver {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        event.record(&mut self.clone());
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 async fn status(app: &Router, path: &str, operation: &str) -> StatusCode {
     status_with_tenant(app, path, operation, None).await
 }
@@ -253,18 +287,32 @@ async fn status_with_tenant(
     if let Some(tenant) = tenant {
         request = request.header("x-active-tenant", tenant);
     }
+    let observer = StorageLookupObserver::default();
     let response = app
         .clone()
         .oneshot(request.body(Body::from(body)).unwrap())
+        .with_subscriber(observer.clone())
         .await
         .unwrap();
     let status = response.status();
     if status == StatusCode::INTERNAL_SERVER_ERROR {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "internal_error",
+                "message": "The server could not complete the operation",
+            })
+        );
         assert!(
-            body.contains("storage backend 'documents' not configured"),
-            "unexpected internal error: {body}"
+            observer.0.load(Ordering::Relaxed),
+            "authorized request must reach storage lookup"
+        );
+    } else if status == StatusCode::FORBIDDEN {
+        assert!(
+            !observer.0.load(Ordering::Relaxed),
+            "denied request must stop before storage lookup"
         );
     }
     status
