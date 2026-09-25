@@ -28,7 +28,9 @@ fn fixture_id(prefix: &str) -> EntityId {
     EntityId::parse(&format!("{prefix}_00000000000000000000000000")).unwrap()
 }
 
-struct OperatorPolicy;
+struct OperatorPolicy {
+    redact_authorization_attribute: bool,
+}
 impl RecordAccessPolicy for OperatorPolicy {
     fn filter_visible<'a>(
         &'a self,
@@ -42,6 +44,9 @@ impl RecordAccessPolicy for OperatorPolicy {
                 .into_iter()
                 .filter_map(|mut entity| {
                     if schema.name.as_str() == "Child" {
+                        if self.redact_authorization_attribute {
+                            entity.fields.remove("blocked");
+                        }
                         if entity.field("blocked") == Some(&DynamicValue::Boolean(true)) {
                             return None;
                         }
@@ -179,7 +184,9 @@ async fn fixture(
             backend,
             tenant_config: None,
             record_access_policy: if operator {
-                Some(Arc::new(OperatorPolicy))
+                Some(Arc::new(OperatorPolicy {
+                    redact_authorization_attribute: !custom_policy.is_empty(),
+                }))
             } else {
                 None
             },
@@ -313,5 +320,18 @@ async fn target_field_restrictions_apply_before_labels_and_inverse_ids() {
             assert!(fields.get("linked__display").is_none(), "{fields}");
             assert_eq!(fields["children"], json!([]));
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn operator_redaction_cannot_erase_attributes_before_cedar_read_checks() {
+    let policy = r#"forbid(principal, action == Action::"ReadChild", resource is Child) when { !context.resource_is_placeholder && resource.blocked };"#;
+    let app = fixture("clerk", "", "", policy, true).await;
+    for fields in parent_views(&app).await {
+        assert_eq!(fields["selected__display"], "Visible", "{fields}");
+        assert!(fields.get("denied__display").is_none(), "{fields}");
+        let children = fields["children"].as_array().unwrap();
+        assert_eq!(children.len(), 2, "{fields}");
+        assert!(!children.contains(&json!(fixture_id("child_denied"))));
     }
 }

@@ -1729,28 +1729,10 @@ async fn execute_entity_query(
     })
 }
 
-/// Apply an operator's record policy before Cedar checks on related rows.
+/// Authorize complete related rows before operator and field-level redaction.
+/// Both display text and inverse child IDs must respect the target's policies.
 pub(super) async fn filter_relation_entities_with_policy(
     record_policy: Option<&dyn schema_forge_backend::auth::RecordAccessPolicy>,
-    policy_store: &Arc<crate::authz::PolicyStore>,
-    schema: &SchemaDefinition,
-    claims: Option<&Claims>,
-    entities: Vec<Entity>,
-) -> Vec<Entity> {
-    let entities = match record_policy {
-        Some(policy) => {
-            policy
-                .filter_visible_optional(schema, claims, entities)
-                .await
-        }
-        None => entities,
-    };
-    filter_relation_entities(policy_store, schema, claims, entities)
-}
-
-/// Apply caller read authorization to complete related rows before enrichment.
-/// Both display text and inverse child IDs must respect the target's policies.
-fn filter_relation_entities(
     policy_store: &Arc<crate::authz::PolicyStore>,
     schema: &SchemaDefinition,
     claims: Option<&Claims>,
@@ -1759,20 +1741,26 @@ fn filter_relation_entities(
     if check_schema_access(policy_store, schema, claims, AccessAction::Read).is_err() {
         return Vec::new();
     }
+    // Operator policies may redact fields used by Cedar conditions. Evaluate
+    // the unmodified resource first so redaction cannot change the decision.
+    let entities = entities
+        .into_iter()
+        .filter(|entity| {
+            authorize(policy_store, claims, ActionVerb::Read, schema, Some(entity))
+                .is_ok_and(|decision| decision.is_allow() && decision.errors.is_empty())
+        })
+        .collect();
+    let entities = match record_policy {
+        Some(policy) => {
+            policy
+                .filter_visible_optional(schema, claims, entities)
+                .await
+        }
+        None => entities,
+    };
     entities
         .into_iter()
-        .filter_map(|mut entity| {
-            if !authorize(
-                policy_store,
-                claims,
-                ActionVerb::Read,
-                schema,
-                Some(&entity),
-            )
-            .is_ok_and(|decision| decision.is_allow() && decision.errors.is_empty())
-            {
-                return None;
-            }
+        .map(|mut entity| {
             filter_entity_fields(
                 policy_store,
                 &mut entity,
@@ -1783,7 +1771,7 @@ fn filter_relation_entities(
             entity
                 .fields
                 .retain(|name, _| !schema.field(name).is_some_and(|field| field.is_hidden()));
-            Some(entity)
+            entity
         })
         .collect()
 }
