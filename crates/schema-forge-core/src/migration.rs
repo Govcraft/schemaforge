@@ -556,7 +556,12 @@ impl DiffEngine {
         Ok(())
     }
 
-    fn backfill_value(field: &FieldDefinition) -> Option<DynamicValue> {
+    /// Resolve a type-compatible literal migration default, checking its constraints.
+    ///
+    /// Returns `None` when no supported literal is available. CEL default rules
+    /// are deliberately not evaluated: they belong to the entity-write pipeline.
+    /// Backends use this same conversion when backfilling newly added fields.
+    pub fn backfill_value(field: &FieldDefinition) -> Option<DynamicValue> {
         let default = Self::extract_default(&field.modifiers)?;
         let value = match (&field.field_type, default) {
             (FieldType::Text(_) | FieldType::RichText, DefaultValue::String(value)) => {
