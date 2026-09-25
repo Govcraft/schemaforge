@@ -67,8 +67,50 @@ impl MssqlBackend {
     }
 }
 
-impl SchemaBackend for MssqlBackend {
-    async fn apply_migration(
+/// Compile one atomic batch while keeping arbitrary variant text in bound parameters.
+fn migration_statements(
+    schema_name: &SchemaName,
+    steps: &[MigrationStep],
+) -> (String, Vec<String>) {
+    let table = quote(schema_name.as_str());
+    let mut statements = Vec::new();
+    let mut parameters = Vec::new();
+    for step in steps {
+        match step {
+            MigrationStep::RenameField { old_name, new_name } => {
+                let old_parameter = parameters.len() + 1;
+                let new_parameter = old_parameter + 1;
+                parameters.extend([format!("$.\"{old_name}\""), format!("$.\"{new_name}\"")]);
+                statements.push(format!(r#"IF EXISTS (SELECT 1 FROM [dbo].{table} WITH (UPDLOCK, HOLDLOCK)
+                  WHERE JSON_QUERY([data], @P{old_parameter}) IS NOT NULL AND JSON_QUERY([data], @P{new_parameter}) IS NOT NULL)
+                    THROW 50001, 'rename destination already contains data', 1;
+                  UPDATE [dbo].{table}
+                  SET [data] = JSON_MODIFY(JSON_MODIFY([data], @P{new_parameter}, JSON_QUERY([data], @P{old_parameter})), @P{old_parameter}, NULL)
+                  WHERE JSON_QUERY([data], @P{old_parameter}) IS NOT NULL;"#));
+            }
+            MigrationStep::ChangeType { name, transform: ValueTransform::NullRemovedEnumVariants { variants }, .. } => {
+                for variant in variants {
+                    let path_parameter = parameters.len() + 1;
+                    let value_parameter = path_parameter + 1;
+                    let variant_parameter = path_parameter + 2;
+                    parameters.extend([format!("$.\"{name}\""), format!("$.\"{name}\".value"), variant.clone()]);
+                    statements.push(format!("UPDATE [dbo].{table} SET [data] = JSON_MODIFY([data], @P{path_parameter}, JSON_QUERY(N'{{\"type\":\"Null\"}}')) WHERE JSON_VALUE([data], @P{value_parameter}) COLLATE Latin1_General_100_BIN2 = @P{variant_parameter};"));
+                }
+            }
+            MigrationStep::CreateSchema { name, .. } => statements.push(format!("IF OBJECT_ID(N'[dbo].{table}', N'U') IS NULL CREATE TABLE [dbo].{table} ([id] NVARCHAR(255) NOT NULL PRIMARY KEY, [data] NVARCHAR(MAX) NOT NULL CHECK (ISJSON([data]) = 1));", table = quote(name.as_str()))),
+            MigrationStep::DropSchema { name } => statements.push(format!("IF OBJECT_ID(N'[dbo].{table}', N'U') IS NOT NULL DROP TABLE [dbo].{table};", table = quote(name.as_str()))),
+            _ => {}
+        }
+    }
+    (statements.join("\n"), parameters)
+}
+
+fn transaction_batch(statements: &str) -> String {
+    format!("SET XACT_ABORT ON; BEGIN TRY BEGIN TRANSACTION; {statements} COMMIT TRANSACTION; END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; THROW; END CATCH;")
+}
+
+impl MssqlBackend {
+    async fn validate_migration(
         &self,
         schema_name: &SchemaName,
         steps: &[MigrationStep],
@@ -100,55 +142,84 @@ impl SchemaBackend for MssqlBackend {
                 }
             }
         }
-        let mut connection = connection(&self.pool).await?;
-        for step in steps {
-            if let MigrationStep::ChangeType {
-                name,
-                transform: ValueTransform::NullRemovedEnumVariants { variants },
-                ..
-            } = step
-            {
-                // JSON payloads store tagged DynamicValue objects. Bind both the
-                // path and variant so enum strings cannot become SQL syntax.
-                let path = format!("$.\"{}\"", name.as_str());
-                let value_path = format!("{path}.value");
-                let sql = format!("UPDATE [dbo].{} SET [data] = JSON_MODIFY([data], @P1, JSON_QUERY(N'{{\"type\":\"Null\"}}')) WHERE JSON_VALUE([data], @P2) COLLATE Latin1_General_100_BIN2 = @P3;", quote(schema_name.as_str()));
-                for variant in variants {
-                    connection
-                        .execute(
-                            &sql,
-                            &[&path.as_str(), &value_path.as_str(), &variant.as_str()],
-                        )
-                        .await
-                        .map_err(query_error)?;
-                }
-                continue;
+        Ok(())
+    }
+}
+
+impl SchemaBackend for MssqlBackend {
+    async fn apply_schema_change(
+        &self,
+        name: &SchemaName,
+        steps: &[MigrationStep],
+        definition: Option<&SchemaDefinition>,
+    ) -> Result<(), BackendError> {
+        if let Some(definition) = definition {
+            if &definition.name != name {
+                return Err(BackendError::MigrationFailed {
+                    step: "atomic schema change".into(),
+                    reason: "schema name does not match metadata".into(),
+                });
             }
-            let sql = match step {
-                MigrationStep::CreateSchema { name, .. } => Some(format!(
-                    "IF OBJECT_ID(N'[dbo].{}', N'U') IS NULL CREATE TABLE [dbo].{} \
-                     ([id] NVARCHAR(255) NOT NULL PRIMARY KEY, \
-                     [data] NVARCHAR(MAX) NOT NULL CHECK (ISJSON([data]) = 1));",
-                    quote(name.as_str()),
-                    quote(name.as_str())
-                )),
-                MigrationStep::DropSchema { name } => Some(format!(
-                    "IF OBJECT_ID(N'[dbo].{}', N'U') IS NOT NULL DROP TABLE [dbo].{};",
-                    quote(name.as_str()),
-                    quote(name.as_str())
-                )),
-                _ => None,
-            };
-            if let Some(sql) = sql {
-                connection.execute(sql, &[]).await.map_err(|error| {
-                    BackendError::MigrationFailed {
-                        step: step.to_string(),
-                        reason: error.to_string(),
-                    }
+            if let Some(existing) = self.load_schema_metadata(name).await? {
+                schema_forge_core::migration::DiffEngine::validate_transition(
+                    &existing, definition,
+                )
+                .map_err(|error| BackendError::MigrationFailed {
+                    step: "validate schema transition".into(),
+                    reason: error.to_string(),
                 })?;
             }
         }
-        let _ = schema_name;
+        self.validate_migration(name, steps).await?;
+        let (mut sql, mut parameters) = migration_statements(name, steps);
+        let name_parameter = parameters.len() + 1;
+        parameters.push(name.to_string());
+        if let Some(definition) = definition {
+            let definition_parameter = parameters.len() + 1;
+            parameters.push(serde_json::to_string(definition).map_err(json_error)?);
+            sql.push_str(&format!(" MERGE [dbo].[{METADATA}] AS target USING (SELECT @P{name_parameter} AS [name], @P{definition_parameter} AS [definition]) source ON target.[name] = source.[name] WHEN MATCHED THEN UPDATE SET [definition] = source.[definition] WHEN NOT MATCHED THEN INSERT ([name], [definition]) VALUES (source.[name], source.[definition]);"));
+        } else {
+            sql.push_str(&format!(
+                " DELETE FROM [dbo].[{METADATA}] WHERE [name] = @P{name_parameter};"
+            ));
+        }
+        let bindings: Vec<&dyn tiberius::ToSql> = parameters
+            .iter()
+            .map(|value| value as &dyn tiberius::ToSql)
+            .collect();
+        let mut connection = connection(&self.pool).await?;
+        connection
+            .execute(transaction_batch(&sql), &bindings)
+            .await
+            .map_err(|error| BackendError::MigrationFailed {
+                step: "atomic schema change".into(),
+                reason: error.to_string(),
+            })?;
+        Ok(())
+    }
+
+    async fn apply_migration(
+        &self,
+        schema_name: &SchemaName,
+        steps: &[MigrationStep],
+    ) -> Result<(), BackendError> {
+        self.validate_migration(schema_name, steps).await?;
+        let (sql, parameters) = migration_statements(schema_name, steps);
+        if sql.is_empty() {
+            return Ok(());
+        }
+        let bindings: Vec<&dyn tiberius::ToSql> = parameters
+            .iter()
+            .map(|value| value as &dyn tiberius::ToSql)
+            .collect();
+        let mut connection = connection(&self.pool).await?;
+        connection
+            .execute(transaction_batch(&sql), &bindings)
+            .await
+            .map_err(|error| BackendError::MigrationFailed {
+                step: "apply migration transaction".into(),
+                reason: error.to_string(),
+            })?;
         Ok(())
     }
 
@@ -156,6 +227,13 @@ impl SchemaBackend for MssqlBackend {
         &self,
         definition: &SchemaDefinition,
     ) -> Result<(), BackendError> {
+        if let Some(existing) = self.load_schema_metadata(&definition.name).await? {
+            schema_forge_core::migration::DiffEngine::validate_transition(&existing, definition)
+                .map_err(|error| BackendError::MigrationFailed {
+                    step: "validate schema transition".into(),
+                    reason: error.to_string(),
+                })?;
+        }
         let json = serde_json::to_string(definition).map_err(json_error)?;
         let sql = format!(
             "MERGE [dbo].[{METADATA}] AS target \
@@ -241,24 +319,43 @@ impl EntityStore for MssqlBackend {
     }
 
     async fn update(&self, entity: &Entity) -> Result<Entity, BackendError> {
-        let data = serde_json::to_string(&entity.fields).map_err(json_error)?;
+        if entity.fields.is_empty() {
+            return self.get(&entity.schema, &entity.id).await;
+        }
+        let mut parameters = vec![entity.id.to_string()];
+        let mut expression = "[data]".to_string();
+        for (field, value) in &entity.fields {
+            let path_parameter = parameters.len() + 1;
+            let value_parameter = path_parameter + 1;
+            parameters.push(format!("$.\"{field}\""));
+            parameters.push(serde_json::to_string(value).map_err(json_error)?);
+            expression = format!(
+                "JSON_MODIFY({expression}, @P{path_parameter}, JSON_QUERY(@P{value_parameter}))"
+            );
+        }
         let sql = format!(
-            "UPDATE {} SET [data] = @P2 WHERE [id] = @P1;",
+            "UPDATE {} SET [data] = {expression} OUTPUT INSERTED.[id], INSERTED.[data] WHERE [id] = @P1;",
             quote(entity.schema.as_str())
         );
+        let bindings: Vec<&dyn tiberius::ToSql> = parameters
+            .iter()
+            .map(|value| value as &dyn tiberius::ToSql)
+            .collect();
         let mut connection = connection(&self.pool).await?;
-        let affected = connection
-            .execute(sql, &[&entity.id.as_str(), &data.as_str()])
+        let rows = connection
+            .query(sql, &bindings)
             .await
             .map_err(query_error)?
-            .total();
-        if affected == 0 {
-            return Err(BackendError::EntityNotFound {
+            .into_first_result()
+            .await
+            .map_err(query_error)?;
+        rows.first()
+            .map(|row| entity_from_row(row, &entity.schema))
+            .transpose()?
+            .ok_or_else(|| BackendError::EntityNotFound {
                 schema: entity.schema.to_string(),
                 entity_id: entity.id.to_string(),
-            });
-        }
-        Ok(entity.clone())
+            })
     }
 
     async fn update_field_if_matches(

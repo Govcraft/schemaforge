@@ -33,9 +33,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::actor::ForgeActor;
+use crate::messages::{GetTenantConfig, ReplyChannel};
 use acton_service::audit::AuditSeverity;
 use acton_service::auth::tokens::paseto_generator::PasetoGenerator;
 use acton_service::middleware::paseto::PasetoAuth;
+use acton_service::middleware::Claims;
+use acton_service::prelude::ActorHandleInterface;
 use acton_service::state::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -43,8 +47,10 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use chrono::Utc;
 use schema_forge_backend::user_store::ForgeUser;
+use schema_forge_backend::{tenant::TenantConfig, TenantRef};
 use schema_forge_backend::{InviteStore, NewInvitation};
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 use tracing::instrument;
 
 use crate::access::{check_schema_access, AccessAction, OptionalClaims};
@@ -166,7 +172,10 @@ fn validate_email(email: &str) -> Result<(), ForgeError> {
 /// site-relative path when no public base URL is configured.
 fn build_accept_url(base: Option<&str>, invite_id: &str) -> String {
     match base {
-        Some(b) => format!("{}/invite/accept?invite={invite_id}", b.trim_end_matches('/')),
+        Some(b) => format!(
+            "{}/invite/accept?invite={invite_id}",
+            b.trim_end_matches('/')
+        ),
         None => format!("/invite/accept?invite={invite_id}"),
     }
 }
@@ -185,6 +194,51 @@ fn invite_email_body(project_name: &str, accept_url: &str) -> String {
 /// Subject line for the invitation email, branded with `project_name`.
 fn invite_email_subject(project_name: &str) -> String {
     format!("You've been invited to {project_name}")
+}
+
+/// Validate the signed invitation's tenant target before minting or persistence.
+fn validate_invite_tenant(
+    claims: &Claims,
+    config: Option<&TenantConfig>,
+    tenant_type: Option<&str>,
+    tenant_id: Option<&str>,
+) -> Result<(), ForgeError> {
+    let (tenant_type, tenant_id) = match (tenant_type, tenant_id) {
+        (None, None) => return Ok(()),
+        (Some(kind), Some(id)) if !kind.is_empty() && !id.is_empty() => (kind, id),
+        _ => {
+            return Err(ForgeError::ValidationFailed {
+                details: vec![
+                    "tenant_type and tenant_id must be supplied together and must not be empty"
+                        .into(),
+                ],
+            })
+        }
+    };
+    if !config.is_some_and(|config| {
+        config
+            .hierarchy
+            .iter()
+            .any(|level| level.schema.as_str() == tenant_type)
+    }) {
+        return Err(ForgeError::ValidationFailed {
+            details: vec!["tenant_type must name a configured tenant schema".into()],
+        });
+    }
+    let chain = claims
+        .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
+        .unwrap_or_default();
+    if claims.has_role("platform_admin")
+        || chain
+            .iter()
+            .any(|tenant| tenant.schema == tenant_type && tenant.entity_id == tenant_id)
+    {
+        Ok(())
+    } else {
+        Err(ForgeError::Forbidden {
+            message: "invitation tenant is outside the caller's effective tenant scope".into(),
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,9 +267,34 @@ pub async fn create_invite(
     let user_schema = fetch_user_schema(&state).await?;
     let policy_store = fetch_policy_store(&state).await?;
 
-    check_schema_access(&policy_store, &user_schema, Some(claims), AccessAction::Create)?;
+    check_schema_access(
+        &policy_store,
+        &user_schema,
+        Some(claims),
+        AccessAction::Create,
+    )?;
 
     validate_email(&body.email)?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ForgeActor not registered".into(),
+        })?;
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetTenantConfig {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let tenant_config = rx.await.map_err(|_| ForgeError::Internal {
+        message: "ForgeActor reply channel dropped while fetching tenant configuration".into(),
+    })?;
+    validate_invite_tenant(
+        claims,
+        tenant_config.as_ref(),
+        body.tenant_type.as_deref(),
+        body.tenant_id.as_deref(),
+    )?;
 
     // The invite grants a single role (or none). Apply the same role-grant
     // guards `create_user` applies to its `roles` list.
@@ -403,10 +482,11 @@ pub async fn accept_invite(
 
     // Reconstruct + verify the full token from the stored column. Signed
     // claims are authoritative; the DB columns are a convenience mirror.
-    let verified =
-        verify_invite_token(validator.as_ref(), &invite.token).map_err(|e| ForgeError::Internal {
+    let verified = verify_invite_token(validator.as_ref(), &invite.token).map_err(|e| {
+        ForgeError::Internal {
             message: format!("stored invite token failed verification: {e}"),
-        })?;
+        }
+    })?;
     if verified.invite_id != invite.jti {
         return Err(ForgeError::Internal {
             message: "invite token does not match the invitation it was stored under".to_string(),
@@ -438,8 +518,10 @@ pub async fn accept_invite(
         .create_user(&verified.email, &body.password, &roles, &display_name)
         .await?;
 
-    if let (Some(tt), Some(tid)) = (verified.tenant_type.as_deref(), verified.tenant_id.as_deref())
-    {
+    if let (Some(tt), Some(tid)) = (
+        verified.tenant_type.as_deref(),
+        verified.tenant_id.as_deref(),
+    ) {
         auth_store
             .add_tenant_membership(&verified.email, tt, tid, verified.role.as_deref())
             .await?;
@@ -478,6 +560,51 @@ pub async fn accept_invite(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invitation_target_requires_configured_type_and_effective_membership() {
+        use schema_forge_backend::tenant::TenantLevel;
+        use schema_forge_core::types::{EntityId, SchemaName};
+        let mut claims: Claims = serde_json::from_value(serde_json::json!({
+            "sub": "user_inviter", "roles": ["owner"], "perms": [], "exp": 9999999999_u64,
+            "tenant_chain": [{"schema": "Org", "entity_id": "org_a"}]
+        }))
+        .unwrap();
+        // Claims custom fields are explicitly populated to match middleware output.
+        claims.custom.insert(
+            "tenant_chain".into(),
+            serde_json::json!([{"schema": "Org", "entity_id": "org_a"}]),
+        );
+        let config = TenantConfig {
+            root_schema: Some(SchemaName::new("Org").unwrap()),
+            hierarchy: vec![TenantLevel {
+                schema: SchemaName::new("Org").unwrap(),
+                parent: None,
+                parent_field: None,
+            }],
+        };
+        assert!(validate_invite_tenant(&claims, Some(&config), Some("Org"), Some("org_a")).is_ok());
+        assert!(matches!(
+            validate_invite_tenant(
+                &claims,
+                Some(&config),
+                Some("Org"),
+                Some(EntityId::new("org").as_str())
+            ),
+            Err(ForgeError::Forbidden { .. })
+        ));
+        assert!(matches!(
+            validate_invite_tenant(&claims, Some(&config), Some("Other"), Some("org_a")),
+            Err(ForgeError::ValidationFailed { .. })
+        ));
+        assert!(validate_invite_tenant(&claims, Some(&config), Some("Org"), None).is_err());
+        assert!(validate_invite_tenant(&claims, Some(&config), None, None).is_ok());
+        claims.roles = vec!["platform_admin".into()];
+        assert!(validate_invite_tenant(&claims, Some(&config), Some("Org"), Some("org_b")).is_ok());
+        assert!(
+            validate_invite_tenant(&claims, Some(&config), Some("Unknown"), Some("org_b")).is_err()
+        );
+    }
 
     #[test]
     fn validate_email_accepts_plausible_addresses() {

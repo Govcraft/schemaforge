@@ -34,6 +34,7 @@ pub(super) async fn apply_to_backend(
     backend: &dyn DynSchemaBackend,
     output: &OutputContext,
 ) -> Result<(), CliError> {
+    super::schema_update::preflight_schema_batch(backend, schemas).await?;
     if args.prepare_record_revisions && !backend.supports_record_revisions() {
         return Err(CliError::Config { message: "--prepare-record-revisions requires a PostgreSQL backend with record revision support".into() });
     }
@@ -45,7 +46,7 @@ pub(super) async fn apply_to_backend(
     for schema in schemas {
         let existing = backend.load_schema_metadata(&schema.name).await?;
 
-        let update = SchemaUpdate::plan(existing.as_ref(), schema);
+        let update = SchemaUpdate::plan(existing.as_ref(), schema)?;
         let plan = &update.migration;
         if update.is_empty() {
             output.status(&format!("  {} .... no changes", schema.name.as_str()));
@@ -137,6 +138,10 @@ pub(super) async fn apply_to_backend(
         }
         total_steps += plan.steps.len();
         applied_schemas += 1;
+    }
+
+    if !args.dry_run {
+        backend.finalize_schema_migrations().await?;
     }
 
     // Generate policies if requested

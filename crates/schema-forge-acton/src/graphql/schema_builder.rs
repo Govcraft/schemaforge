@@ -25,12 +25,6 @@ use super::type_mapping::{
 pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, String> {
     let non_system: Vec<&SchemaDefinition> = schemas.iter().filter(|s| !s.is_system()).collect();
 
-    // Build a lookup map for relation resolvers
-    let schema_map: HashMap<String, &SchemaDefinition> = schemas
-        .iter()
-        .map(|s| (s.name.as_str().to_string(), s))
-        .collect();
-
     let mut query = Object::new("Query");
     let mut mutation = Object::new("Mutation");
 
@@ -59,7 +53,7 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
         let update_input_name = format!("Update{schema_name}Input");
 
         // 1. Build output Object type
-        let object_type = build_output_type(schema_def, &schema_map, &type_name)?;
+        let object_type = build_output_type(schema_def, &type_name)?;
         types_to_register.push(dynamic::Type::Object(object_type));
 
         // 2. Build connection type
@@ -131,14 +125,12 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
         // Get by ID
         {
             let sn = schema_name.clone();
-            let sd = Arc::new((*schema_def).clone());
             let tn = type_name.clone();
             query = query.field(
                 Field::new(&get_field_name, TypeRef::named(&type_name), move |ctx| {
                     let sn = sn.clone();
-                    let sd = sd.clone();
                     let tn = tn.clone();
-                    FieldFuture::new(async move { resolve_get_entity(&ctx, &sn, &sd, &tn).await })
+                    FieldFuture::new(async move { resolve_get_entity(&ctx, &sn, &tn).await })
                 })
                 .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID))),
             );
@@ -147,7 +139,6 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
         // List/query
         {
             let sn = schema_name.clone();
-            let sd = Arc::new((*schema_def).clone());
             let tn = type_name.clone();
             query = query.field(
                 Field::new(
@@ -155,11 +146,8 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                     TypeRef::named_nn(&connection_type_name),
                     move |ctx| {
                         let sn = sn.clone();
-                        let sd = sd.clone();
                         let tn = tn.clone();
-                        FieldFuture::new(
-                            async move { resolve_list_entities(&ctx, &sn, &sd, &tn).await },
-                        )
+                        FieldFuture::new(async move { resolve_list_entities(&ctx, &sn, &tn).await })
                     },
                 )
                 .argument(InputValue::new("filter", TypeRef::named(&filter_type_name)))
@@ -222,7 +210,6 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
         // delete
         {
             let sn = schema_name.clone();
-            let sd = Arc::new((*schema_def).clone());
             let mutation_name = format!("delete{schema_name}");
             mutation = mutation.field(
                 Field::new(
@@ -230,9 +217,8 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
                     TypeRef::named_nn(TypeRef::BOOLEAN),
                     move |ctx| {
                         let sn = sn.clone();
-                        let sd = sd.clone();
                         FieldFuture::new(async move {
-                            let result = resolve_delete_entity(&ctx, &sn, &sd).await?;
+                            let result = resolve_delete_entity(&ctx, &sn).await?;
                             Ok(Some(FieldValue::value(result)))
                         })
                     },
@@ -281,11 +267,7 @@ pub fn build_graphql_schema(schemas: &[SchemaDefinition]) -> Result<Schema, Stri
 }
 
 /// Build the output Object type for a schema, with field resolvers.
-fn build_output_type(
-    schema_def: &SchemaDefinition,
-    schema_map: &HashMap<String, &SchemaDefinition>,
-    type_name: &str,
-) -> Result<Object, String> {
+fn build_output_type(schema_def: &SchemaDefinition, type_name: &str) -> Result<Object, String> {
     let schema_name = schema_def.name.as_str().to_string();
     let mut obj = Object::new(type_name);
 
@@ -315,7 +297,6 @@ fn build_output_type(
                 // Relation type ref is always nullable
                 let type_ref = field_type_to_type_ref(&schema_name, &field_name, field_type, false);
 
-                let target_def = schema_map.get(&target_name).map(|s| Arc::new((*s).clone()));
                 let card = *cardinality;
                 let fn_clone = field_name.clone();
 
@@ -323,13 +304,9 @@ fn build_output_type(
                     let fn_clone = fn_clone.clone();
                     let target_name = target_name.clone();
                     let target_type = target_type.clone();
-                    let target_def = target_def.clone();
                     let card = card;
                     FieldFuture::new(async move {
                         let parent = ctx.parent_value.try_downcast_ref::<EntityFields>()?;
-                        let Some(td) = target_def else {
-                            return Ok(None);
-                        };
                         match card {
                             Cardinality::One => {
                                 resolve_relation_one(
@@ -337,7 +314,6 @@ fn build_output_type(
                                     parent,
                                     &fn_clone,
                                     &target_name,
-                                    &td,
                                     &target_type,
                                 )
                                 .await
@@ -348,7 +324,6 @@ fn build_output_type(
                                     parent,
                                     &fn_clone,
                                     &target_name,
-                                    &td,
                                     &target_type,
                                 )
                                 .await
@@ -389,14 +364,11 @@ fn build_output_type(
 
 /// Build a `{Schema}Connection` type.
 fn build_connection_type(connection_name: &str, item_type_name: &str) -> Object {
-    let item_tn = item_type_name.to_string();
-
     Object::new(connection_name)
         .field(Field::new(
             "items",
             TypeRef::named_nn_list(item_type_name),
             move |ctx| {
-                let item_tn = item_tn.clone();
                 FieldFuture::new(async move {
                     let conn = ctx.parent_value.try_downcast_ref::<ConnectionData>()?;
                     let items: Vec<FieldValue> = conn
@@ -408,7 +380,6 @@ fn build_connection_type(connection_name: &str, item_type_name: &str) -> Object 
                                 schema: ef.schema.clone(),
                                 fields: ef.fields.clone(),
                             })
-                            .with_type(item_tn.clone())
                         })
                         .collect();
                     Ok(Some(FieldValue::list(items)))

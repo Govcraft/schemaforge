@@ -526,6 +526,8 @@ impl fmt::Display for ExportFlatten {
 #[serde(tag = "annotation")]
 #[non_exhaustive]
 pub enum FieldAnnotation {
+    /// Previous physical field name, retained as an idempotent migration hint.
+    RenamedFrom { name: super::FieldName },
     /// `@field_access(...)` -- role-based access control on a specific field.
     FieldAccess {
         read: Vec<String>,
@@ -544,9 +546,7 @@ pub enum FieldAnnotation {
     /// responsible for ensuring every key names a valid variant of the
     /// enum field the annotation is attached to. Missing keys render with
     /// the default neutral badge.
-    EnumColors {
-        colors: BTreeMap<String, EnumColor>,
-    },
+    EnumColors { colors: BTreeMap<String, EnumColor> },
     /// `@list(primary|column|hidden)` -- controls whether the field
     /// appears in the generated list view and, for `primary`, marks it
     /// as the headline cell rendered with display styling.
@@ -593,6 +593,7 @@ impl FieldAnnotation {
     /// Returns the annotation kind as a string, for dedup checking.
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::RenamedFrom { .. } => "renamed_from",
             Self::FieldAccess { .. } => "field_access",
             Self::Owner => "owner",
             Self::Widget { .. } => "widget",
@@ -612,6 +613,7 @@ impl FieldAnnotation {
 impl fmt::Display for FieldAnnotation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RenamedFrom { name } => write!(f, "@renamed_from(\"{name}\")"),
             Self::FieldAccess { read, write } => {
                 write!(
                     f,
@@ -1039,7 +1041,10 @@ mod tests {
 
     #[test]
     fn export_flatten_str_roundtrip() {
-        assert_eq!("json".parse::<ExportFlatten>().unwrap(), ExportFlatten::Json);
+        assert_eq!(
+            "json".parse::<ExportFlatten>().unwrap(),
+            ExportFlatten::Json
+        );
         assert_eq!(ExportFlatten::Json.to_string(), "json");
         assert!("xml".parse::<ExportFlatten>().is_err());
     }
@@ -1262,7 +1267,10 @@ mod tests {
             expr: "age >= 18".to_string(),
             message: "must be 18 or older".to_string(),
         };
-        assert_eq!(a.to_string(), "@require(\"age >= 18\", \"must be 18 or older\")");
+        assert_eq!(
+            a.to_string(),
+            "@require(\"age >= 18\", \"must be 18 or older\")"
+        );
     }
 
     #[test]

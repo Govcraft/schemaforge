@@ -9,8 +9,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::types::{
-    Annotation, BytesConstraints, FieldDefinition, FieldModifier, FieldName, FieldType,
-    SchemaDefinition, SchemaId, SchemaName, TextConstraints,
+    Annotation, BytesConstraints, FieldAnnotation, FieldDefinition, FieldModifier, FieldName,
+    FieldType, SchemaDefinition, SchemaId, SchemaName, TextConstraints,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -23,10 +23,7 @@ use crate::access::{
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
 use crate::error::ForgeError;
-use crate::messages::{
-    ApplyMigration, GetSchema, InsertSchema, ListSchemas, RemoveSchema, ReplyChannel,
-    StoreSchemaMetadata,
-};
+use crate::messages::{ApplyPreparedSchemaChange, GetSchema, ListSchemas, ReplyChannel};
 
 // ---------------------------------------------------------------------------
 // Actor request helper
@@ -48,7 +45,8 @@ const ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
 async fn pair_with_registry(
     forge: &acton_service::prelude::ActorHandle,
     target: &mut SchemaDefinition,
-) -> Result<(), ForgeError> {
+) -> Result<std::collections::HashMap<String, SchemaDefinition>, ForgeError> {
+    validate_schema_definition(target)?;
     let (tx, rx) = oneshot::channel();
     forge
         .send(ListSchemas {
@@ -56,11 +54,31 @@ async fn pair_with_registry(
         })
         .await;
     let mut batch = ask_forge(rx).await?;
+    let registry = batch
+        .iter()
+        .map(|schema| (schema.name.to_string(), schema.clone()))
+        .collect();
 
     // Replace any existing entry with the same name so we pair against
     // the incoming definition — not the stale one.
     batch.retain(|s| s.name.as_str() != target.name.as_str());
     batch.push(target.clone());
+
+    for field in &target.fields {
+        if let FieldType::Relation {
+            target: related, ..
+        } = &field.field_type
+        {
+            if !batch.iter().any(|schema| &schema.name == related) {
+                return Err(ForgeError::ValidationFailed {
+                    details: vec![format!(
+                        "relation '{}.{}' references missing schema '{related}'",
+                        target.name, field.name
+                    )],
+                });
+            }
+        }
+    }
 
     schema_forge_core::inverse_relations::pair_inverse_relations(&mut batch).map_err(|e| {
         ForgeError::ValidationFailed {
@@ -72,7 +90,7 @@ async fn pair_with_registry(
     if let Some(paired) = batch.pop() {
         *target = paired;
     }
-    Ok(())
+    Ok(registry)
 }
 
 /// Dry-run the Cedar policy bundle that would result from inserting (or
@@ -80,14 +98,16 @@ async fn pair_with_registry(
 ///
 /// Surfacing the validation error here turns it into a 400-class response —
 /// the caller's request is rejected before any DB migration runs. The actor
-/// will recompile and atomically swap on the subsequent `InsertSchema` /
-/// `RemoveSchema` regardless; this is purely a fail-closed pre-check.
+/// commits the prepared snapshot under its mutation barrier, guarded by the
+/// exact registry and policy identities this preflight observed.
 async fn precheck_policy_bundle(
     state: &AppState<SchemaForgeConfig>,
     forge: &acton_service::prelude::ActorHandle,
     target: &SchemaDefinition,
     removing: bool,
-) -> Result<(), ForgeError> {
+    expected_target: Option<&SchemaDefinition>,
+    paired_registry: Option<&std::collections::HashMap<String, SchemaDefinition>>,
+) -> Result<PreparedSchemaPolicies, ForgeError> {
     let (tx, rx) = oneshot::channel();
     forge
         .send(ListSchemas {
@@ -95,10 +115,27 @@ async fn precheck_policy_bundle(
         })
         .await;
     let mut proposed = ask_forge(rx).await?;
+    let expected_registry: std::collections::HashMap<_, _> = proposed
+        .iter()
+        .map(|schema| (schema.name.to_string(), schema.clone()))
+        .collect();
+    if expected_registry.get(target.name.as_str()) != expected_target
+        || paired_registry.is_some_and(|registry| registry != &expected_registry)
+    {
+        return Err(ForgeError::Conflict {
+            reason: "schema_preflight_stale",
+            message: "schema changed while preparing the update; retry the schema change".into(),
+        });
+    }
 
+    let current_tenant_structure = tenant_structure(&proposed)?;
     proposed.retain(|s| s.name.as_str() != target.name.as_str());
     if !removing {
         proposed.push(target.clone());
+    }
+
+    if tenant_structure(&proposed)? != current_tenant_structure {
+        return Err(ForgeError::ValidationFailed { details: vec!["tenant hierarchy changes require applying schema files and restarting serve so actor and middleware configuration change together".into()] });
     }
 
     let policy_store = fetch_policy_store(state).await?;
@@ -106,26 +143,120 @@ async fn precheck_policy_bundle(
     let role_ranks = snapshot.role_ranks.clone();
     let principal_claims = snapshot.principal_claims.clone();
 
-    crate::authz::store::PolicyStoreSnapshot::from_schemas(
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(crate::messages::GetCustomPoliciesDir {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let custom_dir = ask_forge(rx).await?;
+
+    let next_policy = crate::authz::store::PolicyStoreSnapshot::from_schemas(
         &proposed,
-        None,
+        custom_dir.as_deref(),
         role_ranks,
         principal_claims,
     )
     .map_err(|e| ForgeError::ValidationFailed {
-        details: vec![format!("Cedar policy validation failed for proposed schema: {e}")],
+        details: vec![format!(
+            "Cedar policy validation failed for proposed schema: {e}"
+        )],
     })?;
 
+    Ok(PreparedSchemaPolicies {
+        expected_registry,
+        expected_policy: snapshot,
+        next_policy: std::sync::Arc::new(next_policy),
+    })
+}
+
+/// Reuse canonical DSL validation for annotations supplied through the JSON schema API.
+fn validate_schema_definition(definition: &SchemaDefinition) -> Result<(), ForgeError> {
+    let parsed =
+        schema_forge_dsl::parse(&schema_forge_dsl::print(definition)).map_err(|errors| {
+            ForgeError::ValidationFailed {
+                details: errors.iter().map(ToString::to_string).collect(),
+            }
+        })?;
+    if !matches!(parsed.as_slice(), [validated] if validated.fields == definition.fields && validated.annotations == definition.annotations)
+    {
+        return Err(ForgeError::ValidationFailed { details: vec!["schema annotations and fields must roundtrip through the canonical DSL without semantic changes".into()] });
+    }
     Ok(())
+}
+
+/// One schema's place in the effective runtime tenant hierarchy.
+#[derive(PartialEq, Eq)]
+struct TenantParent {
+    schema: Option<SchemaName>,
+    field: Option<FieldName>,
+}
+
+/// Tenant topology normalized independently of registry iteration order.
+#[derive(PartialEq, Eq)]
+struct TenantStructure(std::collections::BTreeMap<SchemaName, TenantParent>);
+
+fn tenant_structure(schemas: &[SchemaDefinition]) -> Result<TenantStructure, ForgeError> {
+    let config =
+        schema_forge_backend::tenant::TenantConfig::from_schemas(schemas).map_err(|error| {
+            ForgeError::ValidationFailed {
+                details: vec![format!("invalid proposed tenant hierarchy: {error}")],
+            }
+        })?;
+    Ok(TenantStructure(
+        config
+            .hierarchy
+            .into_iter()
+            .map(|level| {
+                (
+                    level.schema,
+                    TenantParent {
+                        schema: level.parent,
+                        field: level.parent_field,
+                    },
+                )
+            })
+            .collect(),
+    ))
+}
+
+struct PreparedSchemaPolicies {
+    expected_registry: std::collections::HashMap<String, SchemaDefinition>,
+    expected_policy: std::sync::Arc<crate::authz::PolicyStoreSnapshot>,
+    next_policy: std::sync::Arc<crate::authz::PolicyStoreSnapshot>,
+}
+
+async fn apply_prepared_schema_change(
+    forge: &acton_service::prelude::ActorHandle,
+    prepared: PreparedSchemaPolicies,
+    definition: SchemaDefinition,
+    remove: bool,
+    steps: Vec<schema_forge_core::migration::MigrationStep>,
+) -> Result<(), ForgeError> {
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(ApplyPreparedSchemaChange {
+            expected_registry: prepared.expected_registry,
+            expected_policy: prepared.expected_policy,
+            next_policy: prepared.next_policy,
+            definition,
+            remove,
+            steps,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await?
 }
 
 /// Fetch the current Cedar [`PolicyStore`] from the actor.
 async fn fetch_policy_store(
     state: &AppState<SchemaForgeConfig>,
 ) -> Result<std::sync::Arc<crate::authz::PolicyStore>, ForgeError> {
-    let forge = state.actor::<ForgeActor>().ok_or_else(|| ForgeError::Internal {
-        message: "ForgeActor not registered".into(),
-    })?;
+    let forge = state
+        .actor::<ForgeActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ForgeActor not registered".into(),
+        })?;
     let (tx, rx) = oneshot::channel();
     forge
         .send(crate::messages::GetPolicyStore {
@@ -174,18 +305,24 @@ fn require_admin(claims: &Claims) -> Result<(), ForgeError> {
 /// Request body for creating a schema.
 #[derive(Debug, Deserialize)]
 pub struct CreateSchemaRequest {
+    /// Explicit acknowledgement that an update may drop stored data.
+    #[serde(default)]
+    pub allow_destructive_migrations: bool,
     /// The schema name (must be PascalCase).
     pub name: String,
     /// The field definitions.
     pub fields: Vec<FieldDefinitionRequest>,
     /// Optional annotations.
     #[serde(default)]
-    pub annotations: Vec<serde_json::Value>,
+    pub annotations: Option<Vec<Annotation>>,
 }
 
 /// A field in a create/update schema request.
 #[derive(Debug, Deserialize)]
 pub struct FieldDefinitionRequest {
+    /// Optional field annotations; omitted annotations are preserved on existing fields.
+    #[serde(default)]
+    pub annotations: Option<Vec<FieldAnnotation>>,
     /// The field name.
     pub name: String,
     /// The field type specification as a JSON value.
@@ -270,11 +407,12 @@ fn request_field_to_definition(
         }
     }
 
-    if modifiers.is_empty() {
-        Ok(FieldDefinition::new(name, field_type))
-    } else {
-        Ok(FieldDefinition::with_modifiers(name, field_type, modifiers))
-    }
+    Ok(FieldDefinition::with_annotations(
+        name,
+        field_type,
+        modifiers,
+        req.annotations.clone().unwrap_or_default(),
+    ))
 }
 
 /// Parse a JSON value into a `FieldType`.
@@ -356,11 +494,11 @@ fn parse_map_field_type(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<FieldType, ForgeError> {
     let data = obj.get("data").and_then(|d| d.as_object());
-    let value_json = data
-        .and_then(|d| d.get("value"))
-        .ok_or_else(|| ForgeError::ValidationFailed {
-            details: vec!["Map field type requires a 'value' type in 'data'".to_string()],
-        })?;
+    let value_json =
+        data.and_then(|d| d.get("value"))
+            .ok_or_else(|| ForgeError::ValidationFailed {
+                details: vec!["Map field type requires a 'value' type in 'data'".to_string()],
+            })?;
     let value = parse_field_type(value_json)?;
 
     if let Some(key_json) = data.and_then(|d| d.get("key")) {
@@ -524,64 +662,38 @@ pub async fn create_schema(
         schema_id,
         schema_name.clone(),
         fields,
-        Vec::<Annotation>::new(),
+        body.annotations.clone().unwrap_or_default(),
     )
     .map_err(|e| ForgeError::ValidationFailed {
         details: vec![e.to_string()],
     })?;
 
+    if definition.is_tenanted() {
+        return Err(ForgeError::ValidationFailed { details: vec!["creating a tenanted schema at runtime requires applying the schema files and restarting serve so actor and middleware tenant configuration change together".into()] });
+    }
+
     // 4a. Run the inverse-relation pairing pass across the full registry so
     // any `-> X[]` field paired with an FK from an existing schema is marked
     // as derived before the migration plan is generated.
-    pair_with_registry(&forge, &mut definition).await?;
+    let paired_registry = pair_with_registry(&forge, &mut definition).await?;
 
     // 4b. Pre-validate the proposed Cedar bundle BEFORE running any DB
-    // migration. The actor will recompile and atomically swap on InsertSchema
-    // anyway, but doing the dry-run here means a malformed schema is rejected
-    // with a 400 instead of leaving the database in a state the running
-    // policy bundle can't reason about.
-    precheck_policy_bundle(&state, &forge, &definition, false).await?;
+    // migration. The actor commits this immutable bundle with the storage
+    // change; no policy files are read after DDL.
+    let prepared = precheck_policy_bundle(
+        &state,
+        &forge,
+        &definition,
+        false,
+        None,
+        Some(&paired_registry),
+    )
+    .await?;
 
     // 5. Generate migration plan
     let plan = DiffEngine::create_new(&definition);
 
-    // 6. Apply migration to backend via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(ApplyMigration {
-            schema_name: schema_name.clone(),
-            steps: plan.steps,
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(ForgeError::from)?;
-
-    // 7. Store schema metadata in backend via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(StoreSchemaMetadata {
-            definition: definition.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(ForgeError::from)?;
-
-    // 8. Update registry cache + recompile Cedar bundle. The actor swap is
-    // the source of truth: if the recompile fails here despite the dry-run
-    // above, the actor reverts the registry mutation and returns the error.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(InsertSchema {
-            name: schema_name.as_str().to_string(),
-            definition: definition.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx)
-        .await?
-        .map_err(|err| ForgeError::Internal {
-            message: format!("Cedar policy recompile failed during schema insertion: {err}"),
-        })?;
+    apply_prepared_schema_change(&forge, prepared, definition.clone(), false, plan.steps).await?;
 
     // 9. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -750,18 +862,28 @@ pub async fn update_schema(
         });
     }
 
-    let fields: Vec<FieldDefinition> = body
+    let mut fields: Vec<FieldDefinition> = body
         .fields
         .iter()
         .map(request_field_to_definition)
         .collect::<Result<Vec<_>, _>>()?;
+
+    for (field, request) in fields.iter_mut().zip(&body.fields) {
+        if request.annotations.is_none() {
+            if let Some(existing) = old_schema.field(field.name.as_str()) {
+                field.annotations = existing.annotations.clone();
+            }
+        }
+    }
 
     // 4. Build new SchemaDefinition (preserving the original ID)
     let mut new_definition = SchemaDefinition::new(
         old_schema.id.clone(),
         schema_name.clone(),
         fields,
-        Vec::<Annotation>::new(),
+        body.annotations
+            .clone()
+            .unwrap_or_else(|| old_schema.annotations.clone()),
     )
     .map_err(|e| ForgeError::ValidationFailed {
         details: vec![e.to_string()],
@@ -770,53 +892,33 @@ pub async fn update_schema(
     // 4a. Run the inverse-relation pairing pass before diffing, so newly
     // added `-> X[]` fields are classified as derived (and therefore
     // produce no AddRelation step for a physical column).
-    pair_with_registry(&forge, &mut new_definition).await?;
+    let paired_registry = pair_with_registry(&forge, &mut new_definition).await?;
 
     // 4b. Dry-run the Cedar bundle for the proposed registry state so an
     // invalid schema fails fast — before any DB migration.
-    precheck_policy_bundle(&state, &forge, &new_definition, false).await?;
+    let prepared = precheck_policy_bundle(
+        &state,
+        &forge,
+        &new_definition,
+        false,
+        Some(&old_schema),
+        Some(&paired_registry),
+    )
+    .await?;
 
     // 5. Compute diff and generate migration plan
-    let plan = DiffEngine::diff(&old_schema, &new_definition);
-
-    // 6. Apply migration steps via actor
-    let step_count = plan.steps.len();
-    if !plan.is_empty() {
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(ApplyMigration {
-                schema_name: schema_name.clone(),
-                steps: plan.steps,
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        ask_forge(rx).await?.map_err(ForgeError::from)?;
+    let plan = DiffEngine::plan_update(&old_schema, &new_definition).map_err(|error| {
+        ForgeError::ValidationFailed {
+            details: vec![error.to_string()],
+        }
+    })?;
+    if plan.has_destructive_steps() && !body.allow_destructive_migrations {
+        return Err(ForgeError::ValidationFailed { details: vec![format!("destructive schema update refused: {}; set allow_destructive_migrations=true to acknowledge data loss", plan.steps.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))] });
     }
 
-    // 7. Store updated metadata via actor
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(StoreSchemaMetadata {
-            definition: new_definition.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx).await?.map_err(ForgeError::from)?;
-
-    // 8. Update registry cache + recompile Cedar bundle.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(InsertSchema {
-            name: schema_name.as_str().to_string(),
-            definition: new_definition.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx)
-        .await?
-        .map_err(|err| ForgeError::Internal {
-            message: format!("Cedar policy recompile failed during schema update: {err}"),
-        })?;
+    let step_count = plan.steps.len();
+    apply_prepared_schema_change(&forge, prepared, new_definition.clone(), false, plan.steps)
+        .await?;
 
     // 9. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -840,7 +942,8 @@ pub async fn update_schema(
     Ok(Json(schema_to_response(&new_definition)))
 }
 
-/// DELETE /schemas/{name} -- Remove a schema. Requires platform_admin role.
+/// DELETE /schemas/{name} -- Unregister a schema from the running process.
+/// Requires platform_admin. Stored metadata and entity data remain unchanged.
 #[instrument(skip_all)]
 pub async fn delete_schema(
     State(state): State<AppState<SchemaForgeConfig>>,
@@ -876,25 +979,14 @@ pub async fn delete_schema(
             reply: ReplyChannel::new(tx),
         })
         .await;
-    let _schema = ask_forge(rx)
+    let schema = ask_forge(rx)
         .await?
         .ok_or(ForgeError::SchemaNotFound { name: name.clone() })?;
 
-    // 2. Remove from registry cache + recompile Cedar bundle. The actor
-    // reverts the registry mutation if the recompile fails so the running
-    // bundle and registry never drift.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(RemoveSchema {
-            name: name.clone(),
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    ask_forge(rx)
-        .await?
-        .map_err(|err| ForgeError::Internal {
-            message: format!("Cedar policy recompile failed during schema deletion: {err}"),
-        })?;
+    let prepared =
+        precheck_policy_bundle(&state, &forge, &schema, true, Some(&schema), None).await?;
+
+    apply_prepared_schema_change(&forge, prepared, schema, true, vec![]).await?;
 
     // 3. Rebuild GraphQL schema
     // NOTE: GraphQL rebuild will be re-integrated when the graphql module
@@ -1016,6 +1108,7 @@ mod tests {
     #[test]
     fn request_field_to_definition_simple() {
         let req = FieldDefinitionRequest {
+            annotations: None,
             name: "email".into(),
             field_type: serde_json::json!("Text"),
             modifiers: vec![],
@@ -1028,6 +1121,7 @@ mod tests {
     #[test]
     fn request_field_to_definition_with_modifiers() {
         let req = FieldDefinitionRequest {
+            annotations: None,
             name: "email".into(),
             field_type: serde_json::json!("Text"),
             modifiers: vec!["required".into(), "indexed".into()],
@@ -1040,6 +1134,7 @@ mod tests {
     #[test]
     fn request_field_to_definition_unknown_modifier() {
         let req = FieldDefinitionRequest {
+            annotations: None,
             name: "email".into(),
             field_type: serde_json::json!("Text"),
             modifiers: vec!["unknown".into()],

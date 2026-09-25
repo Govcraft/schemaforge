@@ -460,6 +460,50 @@ async fn required_and_hidden_json_cannot_change_tenant_visibility() {
     }).await;
 }
 
+#[tokio::test]
+#[ignore = "requires SCHEMAFORGE_TEST_POSTGRES_URL with CREATE SCHEMA privilege"]
+async fn tenanted_children_exclude_null_and_roots_scope_by_identity() {
+    use schema_forge_core::types::{Annotation, TenantKind};
+    for kind in [
+        TenantKind::Root,
+        TenantKind::Child {
+            parent: SchemaName::new("Org").unwrap(),
+        },
+    ] {
+        with_database(|backend| async move {
+            let mut schema = definition();
+            schema.annotations.push(Annotation::Tenant(kind.clone()));
+            install(&backend, &schema).await;
+            let own = insert(&backend, &schema, "own").await;
+            let _foreign = insert(&backend, &schema, "foreign").await;
+            let _unstamped = insert(&backend, &schema, "unstamped").await;
+            let scope = CedarReadScope::TenantMembers(vec![own.id.to_string()]);
+            if matches!(kind, TenantKind::Child { .. }) {
+                sqlx::query("UPDATE \"CountProof\" SET _tenant = id WHERE id = $1")
+                    .bind(own.id.as_str())
+                    .execute(backend.pool())
+                    .await
+                    .unwrap();
+            }
+            let result = backend
+                .query_cedar_compatible(&schema, &Query::new(schema.id.clone()), &scope)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.total_count, Some(1));
+            assert_eq!(result.entities.len(), 1);
+            assert_eq!(result.entities[0].id, own.id);
+            execute(&backend, "ALTER TABLE \"CountProof\" DROP COLUMN _tenant").await;
+            assert!(backend
+                .query_cedar_compatible(&schema, &Query::new(schema.id.clone()), &scope)
+                .await
+                .unwrap()
+                .is_none());
+        })
+        .await;
+    }
+}
+
 async fn with_database<Test, Pending>(test: Test)
 where
     Test: FnOnce(Arc<PgBackend>) -> Pending,

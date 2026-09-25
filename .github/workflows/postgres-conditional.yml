@@ -3,6 +3,9 @@ name: PostgreSQL conditional mutations
 on:
   pull_request:
     paths:
+      - "crates/schema-forge-core/**"
+      - "crates/schema-forge-dsl/**"
+      - "crates/schema-forge-surrealdb/**"
       - "crates/schema-forge-backend/**"
       - "crates/schema-forge-postgres/**"
       - "crates/schema-forge-acton/**"
@@ -17,7 +20,7 @@ permissions:
 jobs:
   conditional:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16
@@ -41,27 +44,39 @@ jobs:
       - uses: actions/checkout@v6
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev postgresql-client
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Install nextest
         run: cargo install cargo-nextest --locked
       - name: Run storage concurrency cases
-        run: cargo nextest run -p schema-forge-backend -p schema-forge-postgres --run-ignored all
+        run: cargo nextest run -p schema-forge-backend -p schema-forge-postgres --run-ignored all --no-fail-fast
       - name: Prepare disposable HTTP namespace
         run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA conditional_http'
+      - name: Run complete runtime and schema suites
+        run: cargo nextest run -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl --features schema-forge-acton/postgres,schema-forge-acton/graphql --no-fail-fast
       - name: Run HTTP authorization and concurrency cases
+        if: ${{ !cancelled() }}
         env:
           SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE: "1"
           SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dconditional_http
-        run: cargo nextest run -p schema-forge-acton --features postgres --test conditional_entities --run-ignored all
-      - name: Run audit authorization and bounded verification regressions
-        run: cargo nextest run -p schema-forge-acton --features postgres --test audit_api
-      - name: Run exact authorized count policy and paging regressions
-        run: |
-          cargo nextest run -p schema-forge-acton --features postgres --lib --test authorization_context -E 'test(authz::read_scope) | binary(authorization_context)'
-          cargo nextest run -p schema-forge-acton --features postgres --test auth_demo -E 'test(readable_paging)'
-      - name: Check CLI preparation behavior
-        run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres -E 'test(explicit_revision_preparation)'
+        run: cargo nextest run -p schema-forge-acton --features postgres,graphql --test conditional_entities --run-ignored only --no-fail-fast
+      - name: Check CLI preparation and security behavior
+        if: ${{ !cancelled() }}
+        run: cargo nextest run -p schema-forge-cli --no-default-features --features postgres --no-fail-fast
+      - name: Check SurrealDB CLI integration
+        if: ${{ !cancelled() }}
+        run: cargo nextest run -p schema-forge-cli --no-fail-fast
+      - name: Deny runtime and backend lints
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl -p schema-forge-backend -p schema-forge-postgres --features schema-forge-acton/postgres,schema-forge-acton/graphql --all-targets -- -D warnings
+      - name: Deny CLI lints
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p schema-forge-cli --no-default-features --features postgres --all-targets -- -D warnings
+      - name: Deny SurrealDB CLI lints
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p schema-forge-cli --all-targets -- -D warnings
       - name: Clean disposable HTTP namespace
         if: always()
         run: psql -X -v ON_ERROR_STOP=1 -c 'DROP SCHEMA IF EXISTS conditional_http CASCADE'

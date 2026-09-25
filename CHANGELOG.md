@@ -7,6 +7,84 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-09-24
+
+### Security and correctness
+
+- Tenant scope applies only to tenanted schemas. Tenant roots are authorized by
+  their own identity, including legacy roots with NULL metadata. Unattributed
+  child records fail closed for tenant users, and PUT/PATCH cannot move a record
+  to another tenant unless the caller is a platform administrator. Invitations
+  validate both the configured tenant type and the caller's effective scope.
+- Field write authorization precedes defaults, computed expressions, validation
+  rules, and hooks. Retained caller input is reauthorized after denied fields
+  are removed. Rules see optional absent fields as null; required fields are
+  checked after server-supplied values are available. Filtered empty PATCH
+  requests no longer emit invalid SQL. PUT rules and persisted optional values
+  now agree: PUT clears omitted writable optional fields and preserves denied
+  or server-managed fields. PATCH remains a partial update.
+- SurrealDB uses the supported 3.3 storage engine, correcting a concurrency race
+  that could let two conditional writes both succeed.
+- SQL Server updates merge supplied fields atomically, preserving omitted fields
+  and explicit nulls. Concurrent updates to different fields no longer replace
+  each other's stored values.
+- Canonical mutation handlers enforce concrete Cedar authorization before
+  operator policies and hooks. An operator policy can further restrict access
+  but cannot bypass tenant or Cedar checks.
+- GraphQL creates, updates, and deletes share the REST mutation pipeline. GraphQL reads,
+  relations, and deletes enforce concrete Cedar decisions. Each request captures
+  matching live definitions and policies, so runtime field restrictions also
+  govern existing GraphQL fields. Nested relations honor operator visibility
+  restrictions, and SurrealDB to-many relations retain their record references.
+  Unproven raw
+  GraphQL totals are withheld instead of disclosing counts of inaccessible rows.
+- CLI help hides secret environment values, including database and server URLs.
+  `serve --host` controls the actual listener and accepts validated IPv4/IPv6
+  addresses. The default listener is now the documented `127.0.0.1`.
+
+### Schema migrations
+
+- Declare field renames with `@renamed_from("old_name")` to preserve data instead
+  of dropping and recreating a field. Rename hints are validated before migration
+  and remain valid after the rename completes.
+- `serve` preflights startup plans and refuses destructive changes unless
+  `--allow-destructive-migrations` is supplied. Runtime schema PUT requires
+  `allow_destructive_migrations: true` for destructive plans, including lossy
+  type conversions. Proposed tenant hierarchies and custom Cedar policies are
+  validated before application schema changes.
+- PostgreSQL to-one relation foreign keys are installed consistently for fresh,
+  altered, and legacy schemas. Missing targets or orphan references fail schema
+  administration clearly. Integrity violations return HTTP 409
+  `foreign_key_violation` rather than 502, without exposing SQL or row values.
+- Automatic changes to an existing schema's tenancy are refused because row
+  ownership cannot be inferred safely. The
+  [migration guide](docs/migrations/safe-schema-changes.md) documents explicit
+  ownership backfill, constraint changes, and metadata updates.
+- Explicit empty access lists produce diagnostics; documentation clarifies that
+  within access annotations, empty and omitted role lists grant access to every
+  authenticated user.
+
+### Upgrade notes
+
+Source builds use Rust 1.97.1. SurrealDB deployments require a stable 3.x server at version 3.3 or newer. Upgrade remote servers before
+connecting this release; embedded development databases use the bundled engine.
+
+Review pending schema changes before restarting. Destructive startup migrations
+now require deliberate opt-in. PostgreSQL schema administration repairs missing
+foreign keys and can require cleanup of existing orphan references. Tenanted
+children created by a platform administrator require an explicit tenant.
+Runtime changes to tenant topology require offline schema application and a
+restart so the actor and HTTP middleware activate the same configuration.
+
+Rust embedders must update the schema-aware tenant helper and rule-binding call
+signatures. GraphQL registration now requires initialized
+`AppState<SchemaForgeConfig>`; see [GraphQL writes](docs/graphql-writes.md).
+The backend trait adds a defaulted `finalize_schema_migrations` operation for
+completing batch migration integrity checks. Custom backends must implement
+the atomic `apply_schema_change` operation to support runtime schema creation
+and updates; the default refuses these operations rather than applying a
+partial migration.
+
 ## [0.44.2] - 2026-09-10
 
 ### Fixed

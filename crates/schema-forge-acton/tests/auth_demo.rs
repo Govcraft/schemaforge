@@ -584,7 +584,6 @@ async fn demo_multi_tenancy_isolation() {
     let surreal = SurrealBackend::connect_memory("test", "demo_tenant")
         .await
         .unwrap();
-    let db_client = surreal.client().clone();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(surreal);
     let mut registry = HashMap::new();
 
@@ -610,7 +609,7 @@ async fn demo_multi_tenancy_isolation() {
     .unwrap();
     register_schema(&org_schema, &backend, &mut registry).await;
 
-    // Create Project schema (regular, will be tenant-scoped)
+    // Declare Project as a tenant child; unannotated schemas are shared.
     // @access with empty lists = all authenticated users permitted (testing tenancy, not schema-level)
     let project_schema = SchemaDefinition::new(
         SchemaId::new(),
@@ -619,21 +618,20 @@ async fn demo_multi_tenancy_isolation() {
             FieldName::new("title").unwrap(),
             FieldType::Text(TextConstraints::unconstrained()),
         )],
-        vec![Annotation::Access {
-            read: vec![],
-            write: vec![],
-            delete: vec![],
-            cross_tenant_read: vec![],
-        }],
+        vec![
+            Annotation::Tenant(TenantKind::Child {
+                parent: SchemaName::new("Organization").unwrap(),
+            }),
+            Annotation::Access {
+                read: vec![],
+                write: vec![],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            },
+        ],
     )
     .unwrap();
     register_schema(&project_schema, &backend, &mut registry).await;
-
-    // Define _tenant field on tenant-scoped tables (SCHEMAFULL requires explicit field definition)
-    db_client
-        .query("DEFINE FIELD _tenant ON Project TYPE option<string>;")
-        .await
-        .expect("define _tenant field");
 
     // Build tenant config from schemas
     let all_schemas: Vec<SchemaDefinition> = registry.values().cloned().collect();
@@ -668,7 +666,7 @@ async fn demo_multi_tenancy_isolation() {
         Some(serde_json::json!({"fields": {"title": "Tenant A Project"}})),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(status, StatusCode::CREATED, "{json}");
     println!(
         "    Created: {} (title={})",
         json["id"], json["fields"]["title"]
@@ -701,7 +699,7 @@ async fn demo_multi_tenancy_isolation() {
         Some(serde_json::json!({"fields": {"title": "Tenant B Project"}})),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(status, StatusCode::CREATED, "{json}");
     println!(
         "    Created: {} (title={})",
         json["id"], json["fields"]["title"]

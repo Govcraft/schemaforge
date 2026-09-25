@@ -318,11 +318,10 @@ pub(crate) fn filter_patch_fields(
             continue;
         }
         let decision =
-            authorize_field(store, claims, schema, resource, name, FieldDirection::Write).map_err(
-                |_| ForgeError::Forbidden {
+            crate::authz::engine::authorize_input_field(store, claims, schema, resource, name)
+                .map_err(|_| ForgeError::Forbidden {
                     message: "Could not authorize a patched field.".into(),
-                },
-            )?;
+                })?;
         if !decision.errors.is_empty() {
             return Err(ForgeError::Forbidden {
                 message: "Could not authorize a patched field.".into(),
@@ -340,8 +339,8 @@ pub(crate) fn filter_patch_fields(
 
 /// Inject tenant scoping filter into a query.
 ///
-/// Adds `_tenant = <tenant_id>` filter based on the deepest tenant in the
-/// claims' `tenant_chain` custom claim. No-ops when:
+/// Filters child `_tenant` or root `id` by the effective tenant chain.
+/// Shared schemas are not scoped. No-ops when:
 /// - `tenant_config` is `None` or disabled
 /// - `claims` is `None`
 /// - user is `platform_admin` (bypass)
@@ -349,7 +348,11 @@ pub fn inject_tenant_scope(
     query: &mut Query,
     claims: Option<&Claims>,
     tenant_config: &Option<TenantConfig>,
+    schema: &SchemaDefinition,
 ) {
+    if !schema.is_tenanted() {
+        return;
+    }
     let _config = match tenant_config {
         Some(c) if c.is_enabled() => c,
         _ => return,
@@ -377,13 +380,18 @@ pub fn inject_tenant_scope(
         .iter()
         .map(|t| DynamicValue::Text(t.entity_id.clone()))
         .collect();
+    let tenant_field = if is_tenant_root(schema) {
+        "id"
+    } else {
+        "_tenant"
+    };
     let tenant_filter = if tenant_values.len() == 1 {
         Filter::eq(
-            FieldPath::single("_tenant"),
+            FieldPath::single(tenant_field),
             tenant_values.into_iter().next().unwrap(),
         )
     } else {
-        Filter::in_set(FieldPath::single("_tenant"), tenant_values)
+        Filter::in_set(FieldPath::single(tenant_field), tenant_values)
     };
     query.filter = Some(match query.filter.take() {
         Some(existing) => Filter::and(vec![existing, tenant_filter]),
@@ -395,12 +403,17 @@ pub fn inject_tenant_scope(
 ///
 /// Sets `_tenant` to the deepest tenant entity ID in the claims'
 /// `tenant_chain` custom claim. No-ops when tenancy is disabled,
-/// claims is `None`, or the tenant chain is empty.
+/// claims is `None`, or the tenant chain is empty. Shared schemas and tenant
+/// roots are excluded; roots are stamped by [`stamp_root_tenant`].
 pub fn inject_tenant_on_create(
     fields: &mut BTreeMap<String, DynamicValue>,
     claims: Option<&Claims>,
     tenant_config: &Option<TenantConfig>,
+    schema: &SchemaDefinition,
 ) {
+    if !schema.is_tenanted() || is_tenant_root(schema) {
+        return;
+    }
     let _config = match tenant_config {
         Some(c) if c.is_enabled() => c,
         _ => return,
@@ -417,6 +430,42 @@ pub fn inject_tenant_on_create(
             "_tenant".to_string(),
             DynamicValue::Text(tenant_ref.entity_id.clone()),
         );
+    }
+}
+
+/// Whether a schema defines tenant identities rather than tenant-owned data.
+pub fn is_tenant_root(schema: &SchemaDefinition) -> bool {
+    schema.annotations.iter().any(|annotation| {
+        matches!(
+            annotation,
+            schema_forge_core::types::Annotation::Tenant(
+                schema_forge_core::types::TenantKind::Root
+            )
+        )
+    })
+}
+
+/// A tenant root always belongs to its own identity, including admin creates.
+pub fn stamp_root_tenant(entity: &mut Entity, schema: &SchemaDefinition) {
+    if is_tenant_root(schema) {
+        entity
+            .fields
+            .insert("_tenant".into(), DynamicValue::Text(entity.id.to_string()));
+    }
+}
+
+/// Keep tenant ownership server-controlled on updates.
+/// Only platform administrators can reassign child records; roots are immutable.
+pub fn strip_tenant_on_update(
+    fields: &mut BTreeMap<String, DynamicValue>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+) {
+    if !schema.is_tenanted()
+        || is_tenant_root(schema)
+        || !claims.is_some_and(|claims| claims.has_role(PLATFORM_ADMIN_ROLE))
+    {
+        fields.remove("_tenant");
     }
 }
 
@@ -565,6 +614,25 @@ mod tests {
 
     use schema_forge_core::types::DynamicValue;
 
+    fn tenant_child_schema() -> SchemaDefinition {
+        let mut schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Note").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("body").unwrap(),
+                FieldType::Text(TextConstraints::default()),
+            )],
+            vec![],
+        )
+        .unwrap();
+        schema
+            .annotations
+            .push(Annotation::Tenant(TenantKind::Child {
+                parent: SchemaName::new("Organization").unwrap(),
+            }));
+        schema
+    }
+
     fn make_claims(roles: &[&str]) -> Claims {
         Claims {
             sub: format!("user:{}", EntityId::new("user").as_str()),
@@ -658,7 +726,12 @@ mod tests {
         let claims = make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
-        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
+        inject_tenant_scope(
+            &mut query,
+            Some(&claims),
+            &tenant_config,
+            &tenant_child_schema(),
+        );
 
         assert!(query.filter.is_some());
         let filter = query.filter.unwrap();
@@ -681,7 +754,12 @@ mod tests {
         let claims = make_claims_with_tenant(&["member"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
-        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
+        inject_tenant_scope(
+            &mut query,
+            Some(&claims),
+            &tenant_config,
+            &tenant_child_schema(),
+        );
 
         assert!(query.filter.is_none());
     }
@@ -693,7 +771,12 @@ mod tests {
         let claims = make_claims_with_tenant(&["platform_admin"], tenant_id.as_str());
         let mut query = Query::new(SchemaId::new());
 
-        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
+        inject_tenant_scope(
+            &mut query,
+            Some(&claims),
+            &tenant_config,
+            &tenant_child_schema(),
+        );
 
         assert!(query.filter.is_none());
     }
@@ -703,7 +786,7 @@ mod tests {
         let tenant_config = make_enabled_tenant_config();
         let mut query = Query::new(SchemaId::new());
 
-        inject_tenant_scope(&mut query, None, &tenant_config);
+        inject_tenant_scope(&mut query, None, &tenant_config, &tenant_child_schema());
 
         assert!(query.filter.is_none());
     }
@@ -721,7 +804,12 @@ mod tests {
         );
         let mut query = Query::new(SchemaId::new());
 
-        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
+        inject_tenant_scope(
+            &mut query,
+            Some(&claims),
+            &tenant_config,
+            &tenant_child_schema(),
+        );
 
         let filter = query.filter.expect("filter set");
         match filter {
@@ -748,7 +836,12 @@ mod tests {
         let claims = make_claims(&["member"]);
         let mut query = Query::new(SchemaId::new());
 
-        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
+        inject_tenant_scope(
+            &mut query,
+            Some(&claims),
+            &tenant_config,
+            &tenant_child_schema(),
+        );
 
         assert!(query.filter.is_none());
     }
@@ -765,7 +858,12 @@ mod tests {
         );
         let mut query = Query::new(SchemaId::new()).with_filter(existing_filter);
 
-        inject_tenant_scope(&mut query, Some(&claims), &tenant_config);
+        inject_tenant_scope(
+            &mut query,
+            Some(&claims),
+            &tenant_config,
+            &tenant_child_schema(),
+        );
 
         assert!(query.filter.is_some());
         let filter = query.filter.unwrap();
@@ -802,7 +900,12 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
 
-        inject_tenant_on_create(&mut fields, Some(&claims), &tenant_config);
+        inject_tenant_on_create(
+            &mut fields,
+            Some(&claims),
+            &tenant_config,
+            &tenant_child_schema(),
+        );
 
         assert!(fields.contains_key("_tenant"));
         assert_eq!(
@@ -819,7 +922,12 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
 
-        inject_tenant_on_create(&mut fields, Some(&claims), &tenant_config);
+        inject_tenant_on_create(
+            &mut fields,
+            Some(&claims),
+            &tenant_config,
+            &tenant_child_schema(),
+        );
 
         assert!(!fields.contains_key("_tenant"));
     }
@@ -830,7 +938,7 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
 
-        inject_tenant_on_create(&mut fields, None, &tenant_config);
+        inject_tenant_on_create(&mut fields, None, &tenant_config, &tenant_child_schema());
 
         assert!(!fields.contains_key("_tenant"));
     }
@@ -842,7 +950,12 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), DynamicValue::Text("Alice".to_string()));
 
-        inject_tenant_on_create(&mut fields, Some(&claims), &tenant_config);
+        inject_tenant_on_create(
+            &mut fields,
+            Some(&claims),
+            &tenant_config,
+            &tenant_child_schema(),
+        );
 
         assert!(!fields.contains_key("_tenant"));
     }
@@ -1134,6 +1247,105 @@ mod tests {
     }
 
     #[test]
+    fn shared_schema_never_receives_tenant_filter_or_stamp() {
+        let schema = schema_without_owner("Catalog");
+        let claims = make_claims_with_tenant(&["member"], "organization_a");
+        let config = make_enabled_tenant_config();
+        let mut query = Query::new(schema.id.clone());
+        inject_tenant_scope(&mut query, Some(&claims), &config, &schema);
+        assert!(query.filter.is_none());
+        let mut fields = BTreeMap::new();
+        inject_tenant_on_create(&mut fields, Some(&claims), &config, &schema);
+        assert!(!fields.contains_key("_tenant"));
+    }
+
+    #[test]
+    fn tenant_updates_preserve_member_boundaries_and_root_identity() {
+        let child = tenant_child_schema();
+        let mut root = child.clone();
+        root.annotations = vec![Annotation::Tenant(TenantKind::Root)];
+        for (schema, role, retained) in [
+            (&child, "member", false),
+            (&child, "platform_admin", true),
+            (&root, "platform_admin", false),
+        ] {
+            let claims = make_claims(&[role]);
+            let mut fields =
+                BTreeMap::from([("_tenant".into(), DynamicValue::Text("other".into()))]);
+            strip_tenant_on_update(&mut fields, schema, Some(&claims));
+            assert_eq!(fields.contains_key("_tenant"), retained);
+        }
+    }
+
+    #[test]
+    fn tenant_root_stamp_and_query_use_own_identity() {
+        let mut schema = tenant_child_schema();
+        schema.annotations = vec![Annotation::Tenant(TenantKind::Root)];
+        let mut entity = Entity::new(schema.name.clone(), BTreeMap::new());
+        stamp_root_tenant(&mut entity, &schema);
+        assert_eq!(
+            entity.fields["_tenant"],
+            DynamicValue::Text(entity.id.to_string())
+        );
+        let claims = make_claims_with_tenant(&["member"], entity.id.as_str());
+        let mut query = Query::new(schema.id.clone());
+        inject_tenant_scope(
+            &mut query,
+            Some(&claims),
+            &make_enabled_tenant_config(),
+            &schema,
+        );
+        assert!(matches!(query.filter, Some(Filter::Eq { path, .. }) if path.root() == "id"));
+    }
+
+    #[test]
+    fn cedar_tenant_guard_denies_null_children_and_cross_tenant_legacy_roots() {
+        for annotation in ["@tenant(root)", "@tenant(parent: \"Organization\")"] {
+            let source = format!("{annotation}\n@access(read: [\"member\"], write: [\"member\"], delete: [\"member\"])\nschema Note {{ body: text }}");
+            let schema = schema_forge_dsl::parse(&source).unwrap().remove(0);
+            let store = store_for(&schema, None);
+            let mut entity = Entity::new(
+                schema.name.clone(),
+                BTreeMap::from([("body".into(), DynamicValue::Text("secret".into()))]),
+            );
+            let outsider = make_claims_with_tenant(&["member"], "organization_other");
+            let member = make_claims_with_tenant(&["member"], entity.id.as_str());
+            let admin = make_claims(&["platform_admin"]);
+            for tenant in [None, Some(DynamicValue::Null)] {
+                if let Some(value) = tenant {
+                    entity.fields.insert("_tenant".into(), value);
+                }
+                for action in [
+                    ActionVerb::Read,
+                    ActionVerb::List,
+                    ActionVerb::Update,
+                    ActionVerb::Delete,
+                ] {
+                    assert!(
+                        !authorize(&store, Some(&outsider), action, &schema, Some(&entity))
+                            .unwrap()
+                            .is_allow()
+                    );
+                    assert!(
+                        authorize(&store, Some(&admin), action, &schema, Some(&entity))
+                            .unwrap()
+                            .is_allow()
+                    );
+                    assert_eq!(
+                        authorize(&store, Some(&member), action, &schema, Some(&entity))
+                            .unwrap()
+                            .is_allow(),
+                        is_tenant_root(&schema)
+                    );
+                }
+            }
+            assert!(
+                check_schema_access(&store, &schema, Some(&member), AccessAction::Read).is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn patch_authorization_errors_abort_without_filtering_the_delta() {
         let schema = schema_forge_dsl::parse(
             r#"
@@ -1152,9 +1364,38 @@ mod tests {
             schema.name.clone(),
             BTreeMap::from([("draft".into(), DynamicValue::Text("changed".into()))]),
         );
-        // A malformed full resource must never turn authorization failure
-        // into a successful empty update, even for a permitted role.
+        // Required values may still be supplied by defaults after input
+        // authorization. Absence alone is not a Cedar evaluation error.
         let incomplete = delta.clone();
+        filter_patch_fields(&store, &mut delta, &incomplete, &schema, Some(&claims)).unwrap();
+        assert_eq!(delta.fields, incomplete.fields);
+
+        // A forbid that actually reads the absent attribute must fail closed,
+        // even though the role-based permit would otherwise allow the write.
+        let store = store_for(
+            &schema,
+            Some(
+                r#"
+            forbid (
+                principal,
+                action == Action::"WriteFieldSettings_draft",
+                resource is Settings
+            ) when { resource.key == "locked" };
+        "#,
+            ),
+        );
+        let decision = crate::authz::engine::authorize_input_field(
+            &store,
+            Some(&claims),
+            &schema,
+            &incomplete,
+            "draft",
+        )
+        .unwrap();
+        assert!(
+            !decision.errors.is_empty(),
+            "reading the absent key must be a Cedar evaluation error"
+        );
         let error = filter_patch_fields(&store, &mut delta, &incomplete, &schema, Some(&claims))
             .unwrap_err();
         assert!(matches!(error, ForgeError::Forbidden { .. }));

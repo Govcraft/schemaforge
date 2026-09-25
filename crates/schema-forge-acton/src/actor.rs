@@ -28,6 +28,8 @@ use crate::messages::{
 use crate::state::DynForgeBackend;
 use crate::storage::StorageRegistry;
 
+mod schema_changes;
+
 // ---------------------------------------------------------------------------
 // ForgeActor
 // ---------------------------------------------------------------------------
@@ -264,6 +266,28 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
         })
     });
 
+    actor.act_on::<crate::messages::GetAuthorizationSnapshot>(|actor, ctx| {
+        let snapshot =
+            actor
+                .model
+                .policy_store
+                .as_ref()
+                .map(|store| crate::messages::AuthorizationSnapshot {
+                    registry: actor.model.registry.clone(),
+                    policy: store.current(),
+                });
+        let reply = ctx.message().reply.clone();
+        Reply::pending(async move { reply.send(snapshot).await })
+    });
+
+    actor.act_on::<crate::messages::GetCustomPoliciesDir>(|actor, ctx| {
+        let directory = actor.model.custom_policies_dir.clone();
+        let reply = ctx.message().reply.clone();
+        Reply::pending(async move {
+            reply.send(directory).await;
+        })
+    });
+
     actor.act_on::<GetStorageRegistry>(|actor, ctx| {
         let registry = actor.model.storage_registry.clone();
         let reply = ctx.message().reply.clone();
@@ -278,6 +302,7 @@ fn configure_registry_reads(actor: &mut ManagedActor<Idle, ForgeActor>) {
 // ---------------------------------------------------------------------------
 
 fn configure_registry_mutations(actor: &mut ManagedActor<Idle, ForgeActor>) {
+    schema_changes::configure(actor);
     actor.mutate_on::<InsertSchema>(|actor, ctx| {
         let msg = ctx.message();
         let name = msg.name.clone();

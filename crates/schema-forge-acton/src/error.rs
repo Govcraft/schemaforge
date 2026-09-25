@@ -30,6 +30,8 @@ pub enum ForgeError {
     /// with a structured body carrying the offending schema + field so the
     /// client can surface an inline form error.
     UniqueViolation { schema: String, field: String },
+    /// A relation cannot be written or removed without violating integrity.
+    ForeignKeyViolation { schema: String, constraint: String },
     /// Request body failed validation. Maps to 422.
     ValidationFailed { details: Vec<String> },
     /// Invalid schema name (not PascalCase). Maps to 400.
@@ -79,6 +81,10 @@ impl fmt::Display for ForgeError {
             Self::Conflict { reason, message } => {
                 write!(f, "conflict ({reason}): {message}")
             }
+            Self::ForeignKeyViolation { schema, constraint } => write!(
+                f,
+                "relation constraint '{constraint}' violated in schema '{schema}'"
+            ),
             Self::UniqueViolation { schema, field } => {
                 write!(
                     f,
@@ -143,7 +149,8 @@ impl ForgeError {
             Self::SchemaNotFound { .. } | Self::EntityNotFound { .. } => StatusCode::NOT_FOUND,
             Self::SchemaAlreadyExists { .. }
             | Self::Conflict { .. }
-            | Self::UniqueViolation { .. } => StatusCode::CONFLICT,
+            | Self::UniqueViolation { .. }
+            | Self::ForeignKeyViolation { .. } => StatusCode::CONFLICT,
             Self::ValidationFailed { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::InvalidSchemaName { .. }
             | Self::InvalidEntityId { .. }
@@ -167,6 +174,7 @@ impl ForgeError {
             Self::EntityNotFound { .. } => "entity_not_found",
             Self::SchemaAlreadyExists { .. } => "schema_already_exists",
             Self::Conflict { .. } => "conflict",
+            Self::ForeignKeyViolation { .. } => "foreign_key_violation",
             Self::UniqueViolation { .. } => "unique_violation",
             Self::ValidationFailed { .. } => "validation_failed",
             Self::InvalidSchemaName { .. } => "invalid_schema_name",
@@ -194,6 +202,9 @@ impl IntoResponse for ForgeError {
                 "reason": reason,
                 "message": message,
             }),
+            Self::ForeignKeyViolation { schema, constraint } => {
+                serde_json::json!({ "schema": schema, "constraint": constraint })
+            }
             Self::UniqueViolation { schema, field } => serde_json::json!({
                 "error": "unique_violation",
                 "schema": schema,
@@ -273,6 +284,9 @@ impl From<BackendError> for ForgeError {
             },
             BackendError::ConnectionError { message } => Self::BackendUnavailable { message },
             BackendError::QueryError { message } => Self::BackendUnavailable { message },
+            BackendError::ForeignKeyViolation { schema, constraint } => {
+                Self::ForeignKeyViolation { schema, constraint }
+            }
             BackendError::UniqueViolation { schema, field } => {
                 Self::UniqueViolation { schema, field }
             }
@@ -603,12 +617,7 @@ mod tests {
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::CONFLICT);
 
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["error"], "conflict");
         assert_eq!(json["reason"], "last_platform_admin");
@@ -624,12 +633,7 @@ mod tests {
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::CONFLICT);
 
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["error"], "unique_violation");
         assert_eq!(json["schema"], "Contact");

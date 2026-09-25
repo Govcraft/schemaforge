@@ -62,7 +62,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Install Linux system build dependencies
         if: runner.os == 'Linux'
@@ -75,6 +75,13 @@ jobs:
 
       - name: Verify Rust toolchain
         run: rustc --version && cargo --version
+
+      - name: Verify release tag matches CLI version
+        shell: bash
+        run: |
+          PACKAGE_ID="$(cargo pkgid --locked -p schema-forge-cli)"
+          PACKAGE_VERSION="${PACKAGE_ID##*#}"
+          test "$TAG_NAME" = "v${PACKAGE_VERSION##*@}"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -119,7 +126,7 @@ jobs:
           # Points rust-embed at the verified console bundle (build.rs re-exports
           # it for the `#[folder = "$SCHEMAFORGE_CONSOLE_DIST"]` interpolation).
           SCHEMAFORGE_CONSOLE_DIST: ${{ github.workspace }}/console-dist
-        run: cargo build --release --package schema-forge-cli --no-default-features --features ${{ matrix.backend }},embedded-console
+        run: cargo build --locked --release --package schema-forge-cli --no-default-features --features ${{ matrix.backend }},embedded-console
 
       - name: Sign and verify Windows binary (Sigstore keyless)
         if: runner.os == 'Windows'
@@ -170,6 +177,19 @@ jobs:
       contents: write
       id-token: write
     steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare release notes from changelog
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          awk -v version="${TAG_NAME#v}" '
+            index($0, "## [" version "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          test -s RELEASE_NOTES.md
+
       - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
@@ -192,6 +212,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           files: |
             schemaforge-*.tar.gz

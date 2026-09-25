@@ -426,11 +426,11 @@ impl SchemaForgeExtension {
         // won't have `derived_from` set, so this pass recomputes it on
         // every daemon start — cheap and idempotent.
         let mut paired: Vec<SchemaDefinition> = registry.values().cloned().collect();
-        schema_forge_core::inverse_relations::pair_inverse_relations(&mut paired).map_err(
-            |e| ForgeError::Internal {
+        schema_forge_core::inverse_relations::pair_inverse_relations(&mut paired).map_err(|e| {
+            ForgeError::Internal {
                 message: format!("invalid inverse relation: {e}"),
-            },
-        )?;
+            }
+        })?;
         for schema in paired {
             registry.insert(schema.name.as_str().to_string(), schema);
         }
@@ -448,12 +448,11 @@ impl SchemaForgeExtension {
         };
 
         // Initialize the S3 storage registry (empty if no backends configured).
-        let storage_registry =
-            StorageRegistry::from_config(storage_config)
-                .await
-                .map_err(|e| ForgeError::Internal {
-                    message: format!("Failed to initialize storage registry: {e}"),
-                })?;
+        let storage_registry = StorageRegistry::from_config(storage_config)
+            .await
+            .map_err(|e| ForgeError::Internal {
+                message: format!("Failed to initialize storage registry: {e}"),
+            })?;
         validate_file_references(&all_schemas, &storage_registry)?;
         if storage_registry.is_enabled() {
             tracing::info!(
@@ -544,17 +543,17 @@ impl SchemaForgeExtension {
     /// Adds `POST /forge/graphql` (handler) and `GET /forge/graphql` (GraphiQL playground).
     /// Claims are extracted from request extensions (injected by upstream token middleware).
     #[cfg(feature = "graphql")]
-    pub fn register_graphql_routes<S>(&self, router: Router<S>) -> Router<S>
-    where
-        S: Clone + Send + Sync + 'static,
-    {
+    pub fn register_graphql_routes(
+        &self,
+        router: Router<AppState<SchemaForgeConfig>>,
+    ) -> Router<AppState<SchemaForgeConfig>> {
         let gql_router = Router::new()
             .route(
                 "/graphql",
                 axum::routing::get(crate::graphql::graphql_playground)
                     .post(crate::graphql::graphql_handler),
             )
-            .with_state(self.state.clone());
+            .layer(axum::Extension(self.state.clone()));
         router.nest("/forge", gql_router)
     }
 

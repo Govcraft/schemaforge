@@ -24,7 +24,30 @@ pub fn build_create_input(schema: &SchemaDefinition) -> InputObject {
 
     for field in &schema.fields {
         let field_name = field.name.as_str();
-        let required = field.is_required();
+        // The write pipeline materializes defaults, computed values, and ownership.
+        // GraphQL must allow those fields to be omitted just as REST does.
+        let server_supplied = field.annotations.iter().any(|annotation| {
+            matches!(
+                annotation,
+                schema_forge_core::types::FieldAnnotation::Default { .. }
+                    | schema_forge_core::types::FieldAnnotation::Compute { .. }
+                    | schema_forge_core::types::FieldAnnotation::Owner
+            )
+        }) || field.modifiers.iter().any(|modifier| {
+            matches!(
+                modifier,
+                schema_forge_core::types::FieldModifier::Default { .. }
+            )
+        });
+        let audit_supplied = matches!(
+            (field_name, &field.field_type),
+            ("created_at" | "updated_at", FieldType::DateTime)
+                | (
+                    "created_by" | "updated_by",
+                    FieldType::Text(_) | FieldType::RichText
+                )
+        );
+        let required = field.is_required() && !server_supplied && !audit_supplied;
         let type_ref = input_field_type_ref(
             schema.name.as_str(),
             field_name,
@@ -32,6 +55,10 @@ pub fn build_create_input(schema: &SchemaDefinition) -> InputObject {
             required,
         );
         input = input.field(InputValue::new(field_name, type_ref));
+    }
+
+    if schema.unique_scoped_by_tenant() && schema.field("_tenant").is_none() {
+        input = input.field(InputValue::new("_tenant", TypeRef::named(TypeRef::STRING)));
     }
 
     input
@@ -47,6 +74,10 @@ pub fn build_update_input(schema: &SchemaDefinition) -> InputObject {
         let type_ref =
             input_field_type_ref(schema.name.as_str(), field_name, &field.field_type, false);
         input = input.field(InputValue::new(field_name, type_ref));
+    }
+
+    if schema.unique_scoped_by_tenant() && schema.field("_tenant").is_none() {
+        input = input.field(InputValue::new("_tenant", TypeRef::named(TypeRef::STRING)));
     }
 
     input

@@ -124,6 +124,29 @@ async fn app_with_backend(
     schema: SchemaDefinition,
     roles: &[&str],
 ) -> Router {
+    app_with_policies(backend, schema, roles, None).await
+}
+
+async fn app_with_policies(
+    backend: Arc<dyn DynForgeBackend>,
+    schema: SchemaDefinition,
+    roles: &[&str],
+    custom_policies_dir: Option<std::path::PathBuf>,
+) -> Router {
+    let policy_store = custom_policies_dir.as_ref().map(|directory| {
+        use schema_forge_acton::authz::{
+            PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,
+        };
+        Arc::new(PolicyStore::new(
+            PolicyStoreSnapshot::from_schemas(
+                std::slice::from_ref(&schema),
+                Some(directory),
+                RoleRanks::empty(),
+                PrincipalClaimMappings::default(),
+            )
+            .unwrap(),
+        ))
+    });
     let service = ServiceBuilder::new()
         .with_config(Config::<SchemaForgeConfig>::default())
         .with_actor::<ForgeActor>()
@@ -140,8 +163,8 @@ async fn app_with_backend(
             record_access_policy: None,
             hook_dispatcher: None,
             storage_registry: StorageRegistry::default(),
-            policy_store: None,
-            custom_policies_dir: None,
+            policy_store,
+            custom_policies_dir,
             reply: ReplyChannel::new(tx),
         })
         .await;
@@ -431,17 +454,13 @@ async fn conditional_delete_preserves_owner_denial_without_hiding_the_record() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(!headers.contains_key("entity-revision"));
-    assert!(!body.to_string().contains("conditional_mutation_unsupported"));
+    assert!(!body
+        .to_string()
+        .contains("conditional_mutation_unsupported"));
     // `@owner` governs the write, never the read: the editor role the schema grants read to
     // still sees a record it does not own.
-    let (status, headers, body) = request(
-        &app,
-        &path,
-        "GET",
-        Some("malformed"),
-        serde_json::json!({}),
-    )
-    .await;
+    let (status, headers, body) =
+        request(&app, &path, "GET", Some("malformed"), serde_json::json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["fields"]["title"], "Original");
     assert!(!headers.contains_key("entity-revision"));
@@ -1105,4 +1124,341 @@ async fn postgres_http_exact_counts_preserve_projection_and_malformed_row_fallba
             "{body}"
         );
     }
+}
+
+async fn write_pipeline_fixture() -> Router {
+    write_pipeline_fixture_with_policy(&["editor"], None).await
+}
+
+async fn write_pipeline_fixture_with_policy(
+    roles: &[&str],
+    custom_policies_dir: Option<std::path::PathBuf>,
+) -> Router {
+    use schema_forge_backend::SchemaBackend;
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("writes", "writes")
+            .await
+            .unwrap(),
+    );
+    let schema = schema_forge_dsl::parse(r#"
+        @access(read: ["editor", "manager"], write: ["editor", "manager"], delete: ["manager"])
+        schema Line {
+            title: text required
+            stage: text required @default("'pending'")
+            literal: text required default("literal")
+            owner: text required @owner
+            guarded: text required @default("'locked'") @field_access(read: ["editor", "manager"], write: ["manager"])
+            optional: text @require("optional == null || size(optional) > 2", "optional too short")
+            number: text @field_access(read: ["editor", "manager"], write: ["manager"])
+            status: text @default("'pending'") @require("status != 'live' || number != null", "live needs number")
+            has_number: boolean required @compute("number != null") @field_access(read: ["editor", "manager"], write: ["manager"])
+        }
+    "#).unwrap().remove(0);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    app_with_policies(backend, schema, roles, custom_policies_dir).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_rules_observe_only_authorized_input_and_keep_server_values() {
+    let app = write_pipeline_fixture().await;
+    let base = "/schemas/Line/entities";
+    let (status, _, body) = request(
+        &app,
+        base,
+        "POST",
+        None,
+        serde_json::json!({"title":"line", "number":"forbidden", "status":"live"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, _, body) = request(
+        &app,
+        base,
+        "POST",
+        None,
+        serde_json::json!({"title":"line", "number":"forbidden"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["fields"]["stage"], "pending");
+    assert_eq!(body["fields"]["literal"], "literal");
+    assert_eq!(body["fields"]["owner"], "editor");
+    assert_eq!(body["fields"]["has_number"], false);
+    assert!(body["fields"]["number"].is_null());
+    let path = format!("{base}/{}", body["id"].as_str().unwrap());
+    let (status, _, body) = request(
+        &app,
+        &path,
+        "PATCH",
+        None,
+        serde_json::json!({"number":"forbidden", "status":"live"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let (status, _, body) = request(
+        &app,
+        &path,
+        "PATCH",
+        None,
+        serde_json::json!({"number":"forbidden"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["fields"]["number"].is_null());
+    assert_eq!(body["fields"]["has_number"], false);
+    let (status, _, body) = request(&app, &path, "PUT", None,
+        serde_json::json!({"title":"updated", "stage":"pending", "literal":"literal", "status":"live", "number":"forbidden"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn required_fields_reject_null_and_put_does_not_apply_create_defaults() {
+    let app = write_pipeline_fixture().await;
+    let base = "/schemas/Line/entities";
+    let (status, _, body) =
+        request(&app, base, "POST", None, serde_json::json!({"title":null})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(!body.to_string().contains("PUT"));
+    let (status, _, body) = request(
+        &app,
+        base,
+        "POST",
+        None,
+        serde_json::json!({"title":"line"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let path = format!("{base}/{}", body["id"].as_str().unwrap());
+    let (status, _, body) = request(
+        &app,
+        &path,
+        "PATCH",
+        None,
+        serde_json::json!({"guarded":null}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "denied null must not be validated as accepted input: {body}"
+    );
+    assert_eq!(body["fields"]["guarded"], "locked");
+    for method in ["PATCH", "PUT"] {
+        let (status, _, body) = request(
+            &app,
+            &path,
+            method,
+            None,
+            serde_json::json!({"title":null, "stage":"pending", "literal":"literal"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{method}: {body}");
+    }
+    let (status, _, body) = request(
+        &app,
+        &path,
+        "PUT",
+        None,
+        serde_json::json!({"title":"updated"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("stage"));
+    let (status, _, body) = request(
+        &app,
+        &path,
+        "PUT",
+        None,
+        serde_json::json!({"title":"updated", "stage":"pending", "literal":"literal"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["fields"]["owner"], "editor");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_field_authorization_accepts_defaults_but_fails_closed_on_missing_policy_attributes()
+{
+    let base = "/schemas/Line/entities";
+    let app = write_pipeline_fixture_with_policy(&["manager"], None).await;
+    let (status, _, body) = request(
+        &app,
+        base,
+        "POST",
+        None,
+        serde_json::json!({"title":"line", "number":"allowed", "status":"live"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["fields"]["number"], "allowed");
+    assert_eq!(body["fields"]["has_number"], true);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("custom.cedar"),
+        r#"
+        forbid(principal, action == Action::"WriteFieldLine_number", resource is Line)
+        when { resource.stage == "blocked" };
+    "#,
+    )
+    .unwrap();
+    let app =
+        write_pipeline_fixture_with_policy(&["manager"], Some(dir.path().to_path_buf())).await;
+    for stage in [None, Some("blocked")] {
+        let mut fields = serde_json::json!({"title":"line", "number":"allowed"});
+        if let Some(stage) = stage {
+            fields["stage"] = stage.into();
+        }
+        let (status, _, body) = request(&app, base, "POST", None, fields).await;
+        if stage.is_none() {
+            // An errored forbid must not be bypassed by the generated role permit.
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        } else {
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            assert!(body["fields"]["number"].is_null());
+            assert_eq!(body["fields"]["has_number"], false);
+        }
+    }
+    let (status, _, body) = request(
+        &app,
+        base,
+        "POST",
+        None,
+        serde_json::json!({"title":"line", "stage":"open", "number":"allowed"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["fields"]["has_number"], true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_omission_matches_persisted_values_and_preserves_denied_fields() {
+    use schema_forge_backend::SchemaBackend;
+    for role in ["editor", "manager"] {
+        let backend = Arc::new(SurrealBackend::connect_memory("put", "put").await.unwrap());
+        let schema = schema_forge_dsl::parse(
+            r#"
+            @access(read: ["editor", "manager"], write: ["editor", "manager"], delete: ["manager"])
+            schema Contact {
+                title: text required
+                number: text @field_access(read: ["editor", "manager"], write: ["manager"])
+                has_number: boolean @compute("number != null")
+            }
+        "#,
+        )
+        .unwrap()
+        .remove(0);
+        let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+        backend
+            .apply_migration(&schema.name, &plan.steps)
+            .await
+            .unwrap();
+        backend.store_schema_metadata(&schema).await.unwrap();
+        let seed = Entity::new(
+            schema.name.clone(),
+            BTreeMap::from([
+                ("title".into(), DynamicValue::Text("original".into())),
+                ("number".into(), DynamicValue::Text("stored".into())),
+                ("has_number".into(), DynamicValue::Boolean(true)),
+            ]),
+        );
+        DynEntityStore::create(backend.as_ref(), &seed)
+            .await
+            .unwrap();
+        let app = app_with_backend(backend, schema, &[role]).await;
+        let path = format!("/schemas/Contact/entities/{}", seed.id);
+        let (status, _, body) = request(
+            &app,
+            &path,
+            "PUT",
+            None,
+            serde_json::json!({"title":"updated"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{role}: {body}");
+        assert_eq!(body["fields"]["has_number"], role == "editor", "{body}");
+        if role == "editor" {
+            assert_eq!(body["fields"]["number"], "stored");
+        } else {
+            assert!(body["fields"]["number"].is_null());
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn denied_inputs_cannot_authorize_other_fields() {
+    use schema_forge_backend::SchemaBackend;
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("field_auth", "field_auth")
+            .await
+            .unwrap(),
+    );
+    let schema = schema_forge_dsl::parse(
+        r#"
+        @access(read: ["editor"], write: ["editor"], delete: ["editor"])
+        schema Pair {
+            title: text required
+            value: text @field_access(read: ["editor"], write: ["editor"])
+            gate: text @field_access(read: ["editor"], write: ["manager"])
+        }
+    "#,
+    )
+    .unwrap()
+    .remove(0);
+    let plan = schema_forge_core::migration::DiffEngine::create_new(&schema);
+    backend
+        .apply_migration(&schema.name, &plan.steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    let seed = Entity::new(
+        schema.name.clone(),
+        BTreeMap::from([
+            ("title".into(), DynamicValue::Text("original".into())),
+            ("value".into(), DynamicValue::Text("original".into())),
+            ("gate".into(), DynamicValue::Text("locked".into())),
+        ]),
+    );
+    DynEntityStore::create(backend.as_ref(), &seed)
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("custom.cedar"),
+        r#"
+        forbid(principal, action == Action::"WriteFieldPair_value", resource is Pair)
+        when { !(resource has gate && resource.gate == "unlocked") };
+    "#,
+    )
+    .unwrap();
+    let app = app_with_policies(backend, schema, &["editor"], Some(dir.path().to_path_buf())).await;
+    let path = format!("/schemas/Pair/entities/{}", seed.id);
+    for method in ["PATCH", "PUT"] {
+        let (status, _, body) = request(
+            &app,
+            &path,
+            method,
+            None,
+            serde_json::json!({"title":"updated", "value":"attacker", "gate":"unlocked"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["fields"]["value"], "original");
+        assert_eq!(body["fields"]["gate"], "locked");
+    }
+    let (status, _, body) = request(
+        &app,
+        "/schemas/Pair/entities",
+        "POST",
+        None,
+        serde_json::json!({"title":"new", "value":"attacker", "gate":"unlocked"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body["fields"]["value"].is_null());
+    assert!(body["fields"]["gate"].is_null());
 }

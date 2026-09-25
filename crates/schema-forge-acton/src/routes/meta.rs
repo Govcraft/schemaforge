@@ -26,7 +26,7 @@ pub struct MetaInfo {
     /// Lowercase, stable: API clients should match on this token, not the
     /// human label below.
     pub backend: &'static str,
-    /// Backend label suitable for human display (`"SurrealDB 2.x"`).
+    /// Backend label suitable for human display (`"SurrealDB 3.3+"`).
     pub backend_label: String,
     /// Auth posture (always PASETO V4 today).
     pub auth: MetaAuth,
@@ -148,9 +148,9 @@ mod tests {
 
     #[test]
     fn meta_info_carries_compile_time_version() {
-        let info = MetaInfo::new("surrealdb", "SurrealDB 2.x", 3600);
+        let info = MetaInfo::new("surrealdb", "SurrealDB 3.3+", 3600);
         assert_eq!(info.backend, "surrealdb");
-        assert_eq!(info.backend_label, "SurrealDB 2.x");
+        assert_eq!(info.backend_label, "SurrealDB 3.3+");
         assert_eq!(info.auth.kind, "paseto");
         assert_eq!(info.auth.ttl_seconds, 3600);
         // The build version is whatever Cargo stamped on this crate.

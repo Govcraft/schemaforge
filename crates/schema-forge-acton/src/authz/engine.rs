@@ -283,6 +283,38 @@ pub fn authorize_field(
     field_name: &str,
     direction: FieldDirection,
 ) -> Result<AuthzDecision, AuthzError> {
+    authorize_field_resource(store, claims, schema, entity, field_name, direction, true)
+}
+
+/// Authorize provisional caller input before server rules and final validation.
+/// Policies reading unavailable attributes fail closed at the caller.
+pub(crate) fn authorize_input_field(
+    store: &Arc<PolicyStore>,
+    claims: Option<&Claims>,
+    schema: &SchemaDefinition,
+    entity: &Entity,
+    field_name: &str,
+) -> Result<AuthzDecision, AuthzError> {
+    authorize_field_resource(
+        store,
+        claims,
+        schema,
+        entity,
+        field_name,
+        FieldDirection::Write,
+        false,
+    )
+}
+
+fn authorize_field_resource(
+    store: &Arc<PolicyStore>,
+    claims: Option<&Claims>,
+    schema: &SchemaDefinition,
+    entity: &Entity,
+    field_name: &str,
+    direction: FieldDirection,
+    complete: bool,
+) -> Result<AuthzDecision, AuthzError> {
     let snapshot = store.current();
 
     let raw_action = match direction {
@@ -314,7 +346,7 @@ pub fn authorize_field(
     let mut all_entities = principal_entities;
     all_entities.push(resource_entity);
 
-    let entities = Entities::from_entities(all_entities, Some(&snapshot.schema))
+    let entities = Entities::from_entities(all_entities, complete.then_some(&snapshot.schema))
         .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
 
     // `filter_entity_fields` only calls `authorize_field` for fields whose

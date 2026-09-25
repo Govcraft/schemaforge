@@ -447,13 +447,15 @@ async fn cross_tenant_related_row_is_not_readable() {
             .unwrap(),
     );
     let mut registry = HashMap::new();
-    apply_and_register(&backend, &mut registry, approval_schema(vec![])).await;
-    apply_and_register(
-        &backend,
-        &mut registry,
-        document_schema(REQUIRE_GRANTED, Cardinality::One),
-    )
-    .await;
+    let tenant_child = Annotation::Tenant(TenantKind::Child {
+        parent: SchemaName::new("Organization").unwrap(),
+    });
+    let mut approval = approval_schema(vec![]);
+    approval.annotations.push(tenant_child.clone());
+    apply_and_register(&backend, &mut registry, approval).await;
+    let mut document = document_schema(REQUIRE_GRANTED, Cardinality::One);
+    document.annotations.push(tenant_child);
+    apply_and_register(&backend, &mut registry, document).await;
 
     // Tenancy enabled with an Organization root.
     let org = SchemaDefinition::new(
@@ -463,7 +465,9 @@ async fn cross_tenant_related_row_is_not_readable() {
         vec![Annotation::Tenant(TenantKind::Root)],
     )
     .unwrap();
-    let tenant_config = TenantConfig::from_schemas(&[org]).unwrap();
+    apply_and_register(&backend, &mut registry, org).await;
+    let schemas: Vec<_> = registry.values().cloned().collect();
+    let tenant_config = TenantConfig::from_schemas(&schemas).unwrap();
 
     let state = build_state(backend, registry, Some(tenant_config)).await;
 
@@ -478,6 +482,18 @@ async fn cross_tenant_related_row_is_not_readable() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{approval}");
     let approval_id = approval["id"].as_str().unwrap().to_string();
+
+    // The same rule succeeds when the caller owns the related tenant row.
+    let (status, body) = json_request(
+        &app_a,
+        Method::POST,
+        "/schemas/Document/entities",
+        Some(serde_json::json!({
+            "fields": { "title": "own", "status": "closed", "approval": approval_id }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "same-tenant rule read: {body}");
 
     // Tenant B references tenant A's approval id in a closed document. Because
     // the related read is tenant-scoped to org-b, the row is invisible → the

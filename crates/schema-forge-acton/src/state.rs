@@ -27,6 +27,28 @@ use tokio::sync::RwLock;
 /// RPITIT traits cannot be used as `dyn Trait`. This wrapper uses boxed futures
 /// to enable dynamic dispatch for HTTP handler state.
 pub trait DynSchemaBackend: Send + Sync {
+    /// Atomically persist a complete schema change or refuse without writes.
+    fn apply_schema_change<'a>(
+        &'a self,
+        _name: &'a SchemaName,
+        _steps: &'a [MigrationStep],
+        _definition: Option<&'a SchemaDefinition>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>> {
+        Box::pin(async {
+            Err(BackendError::MigrationFailed {
+                step: "atomic schema change".into(),
+                reason: "backend does not support atomic schema changes".into(),
+            })
+        })
+    }
+
+    /// Finish cross-schema constraints after explicit schema administration.
+    fn finalize_schema_migrations(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + '_>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Whether this adapter can explicitly prepare record revisions.
     fn supports_record_revisions(&self) -> bool {
         false
@@ -73,6 +95,25 @@ pub trait DynSchemaBackend: Send + Sync {
 
 /// Blanket impl: any concrete `SchemaBackend` automatically implements `DynSchemaBackend`.
 impl<T: SchemaBackend + 'static> DynSchemaBackend for T {
+    fn apply_schema_change<'a>(
+        &'a self,
+        name: &'a SchemaName,
+        steps: &'a [MigrationStep],
+        definition: Option<&'a SchemaDefinition>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(SchemaBackend::apply_schema_change(
+            self, name, steps, definition,
+        )))
+    }
+
+    fn finalize_schema_migrations(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + Sync + '_>> {
+        Box::pin(SyncFuture::new(SchemaBackend::finalize_schema_migrations(
+            self,
+        )))
+    }
+
     fn supports_record_revisions(&self) -> bool {
         SchemaBackend::supports_record_revisions(self)
     }

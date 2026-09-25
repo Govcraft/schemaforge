@@ -114,7 +114,7 @@ pub(crate) async fn query_compatible(
         }
         return Ok(None);
     }
-    let scoped = scoped_query(query, scope, proof.has_tenant);
+    let scoped = scoped_query(query, scope, proof.has_tenant, expected);
     let total = if scoped.include_total {
         let count = count_to_sql(&scoped, expected.name.as_str());
         let total: i64 = sqlx::query_scalar_with(&count.sql, arguments(&count.params)?)
@@ -255,7 +255,8 @@ fn certify_columns(
             )));
         }
     }
-    if !names.contains("id")
+    if (schema.is_tenanted() && !proof.has_tenant)
+        || !names.contains("id")
         || schema
             .fields
             .iter()
@@ -290,18 +291,38 @@ fn supported_type(field: &FieldType) -> Option<&'static str> {
     }
 }
 
-fn scoped_query(query: &Query, scope: &CedarReadScope, has_tenant: bool) -> Query {
+fn scoped_query(
+    query: &Query,
+    scope: &CedarReadScope,
+    has_tenant: bool,
+    schema: &SchemaDefinition,
+) -> Query {
     let mut query = query.clone();
     if let CedarReadScope::TenantMembers(members) = scope {
         if has_tenant {
-            let tenant = Filter::Or {
-                filters: vec![
-                    Filter::eq(FieldPath::single("_tenant"), DynamicValue::Null),
-                    Filter::in_set(
-                        FieldPath::single("_tenant"),
-                        members.iter().cloned().map(DynamicValue::Text).collect(),
-                    ),
-                ],
+            let root = schema.annotations.iter().any(|annotation| {
+                matches!(
+                    annotation,
+                    schema_forge_core::types::Annotation::Tenant(
+                        schema_forge_core::types::TenantKind::Root
+                    )
+                )
+            });
+            let tenant = Filter::in_set(
+                FieldPath::single(if root { "id" } else { "_tenant" }),
+                members.iter().cloned().map(DynamicValue::Text).collect(),
+            );
+            let tenant = if schema.is_tenanted() {
+                tenant
+            } else {
+                // Legacy unannotated resources may carry tenant metadata. Their
+                // generated guard permits missing metadata, so retain exact parity.
+                Filter::Or {
+                    filters: vec![
+                        Filter::eq(FieldPath::single("_tenant"), DynamicValue::Null),
+                        tenant,
+                    ],
+                }
             };
             query.filter = Some(match query.filter.take() {
                 Some(filter) => Filter::And {

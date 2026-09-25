@@ -43,14 +43,10 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         MigrationStep::RemoveField { name } => {
             vec![format!("REMOVE FIELD {name} ON {table};")]
         }
-        MigrationStep::RenameField { old_name, new_name } => {
-            // SurrealDB does not have a native RENAME FIELD command.
-            // We define the new field, copy data, then remove the old one.
-            vec![
-                format!("DEFINE FIELD {new_name} ON {table} TYPE any;"),
-                format!("UPDATE {table} SET {new_name} = {old_name};"),
-                format!("REMOVE FIELD {old_name} ON {table};"),
-            ]
+        MigrationStep::RenameField { .. } => {
+            // A context-free generator cannot preserve type/modifier/index metadata.
+            // The backend compiles renames with rename_field_stmts and stored schema context.
+            vec!["THROW 'field rename requires stored schema metadata; execute through SchemaBackend';".into()]
         }
         MigrationStep::ChangeType {
             name,
@@ -60,13 +56,13 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
         } => {
             let surql_type = field_type_to_surql(new_type);
             let assertions = field_assertions(new_type);
-            let flex_prefix = if needs_flexible(new_type) {
-                "FLEXIBLE "
+            let flex_suffix = if needs_flexible(new_type) {
+                " FLEXIBLE"
             } else {
                 ""
             };
             let mut stmt =
-                format!("DEFINE FIELD OVERWRITE {name} ON {table} {flex_prefix}TYPE {surql_type}");
+                format!("DEFINE FIELD OVERWRITE {name} ON {table} TYPE {surql_type}{flex_suffix}");
             if !assertions.is_empty() {
                 stmt.push_str(&format!(" ASSERT {}", assertions.join(" AND ")));
             }
@@ -274,6 +270,50 @@ pub fn field_assertions(field_type: &FieldType) -> Vec<String> {
     }
 }
 
+/// Preserve the field's physical type and constraints while copying its values.
+pub(crate) fn rename_field_stmts(
+    table: &str,
+    source: &FieldDefinition,
+    new_name: &schema_forge_core::types::FieldName,
+    per_tenant: bool,
+) -> Vec<String> {
+    let old_name = &source.name;
+    let mut destination = source.clone();
+    destination.name = new_name.clone();
+    let mut statements = define_field_stmts(table, &destination);
+    statements.push(format!("UPDATE {table} SET {new_name} = {old_name};"));
+    if source.is_unique() {
+        statements.push(format!(
+            "REMOVE INDEX {} ON {table};",
+            unique_index_name(table, old_name.as_str())
+        ));
+    }
+    if source.is_indexed() {
+        statements.push(format!("REMOVE INDEX idx_{table}_{old_name} ON {table};"));
+    }
+    // Remove required/default rules before unsetting the old value. Its
+    // definition stays present until the backend finishes all data writes.
+    let original_type = field_type_to_surql(&source.field_type);
+    let optional_type = if original_type == "any" || original_type.starts_with("option<") {
+        original_type
+    } else {
+        format!("option<{original_type}>")
+    };
+    let flexible = if needs_flexible(&source.field_type) {
+        " FLEXIBLE"
+    } else {
+        ""
+    };
+    statements.push(format!(
+        "DEFINE FIELD OVERWRITE {old_name} ON {table} TYPE {optional_type}{flexible};"
+    ));
+    statements.push(format!("UPDATE {table} UNSET {old_name};"));
+    if source.is_unique() {
+        statements.push(add_unique_surql(table, new_name.as_str(), per_tenant));
+    }
+    statements
+}
+
 /// Generate a complete DEFINE FIELD statement (possibly multiple for composites).
 pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<String> {
     let name = &field.name;
@@ -289,8 +329,8 @@ pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<St
     // FLEXIBLE is required for SCHEMAFULL `object` fields that need to accept
     // arbitrary keys. Without it, SurrealDB silently drops unknown sub-fields,
     // reducing a `json` column to an empty object on read-back.
-    let flex_prefix = if needs_flexible(&field.field_type) {
-        "FLEXIBLE "
+    let flex_suffix = if needs_flexible(&field.field_type) {
+        " FLEXIBLE"
     } else {
         ""
     };
@@ -298,7 +338,7 @@ pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<St
     let mut parts = Vec::new();
 
     // Build base DEFINE FIELD
-    let mut stmt = format!("DEFINE FIELD {name} ON {table} {flex_prefix}TYPE {surql_type}");
+    let mut stmt = format!("DEFINE FIELD {name} ON {table} TYPE {surql_type}{flex_suffix}");
 
     // Gather assertions from type constraints
     let mut assertions = field_assertions(&field.field_type);
@@ -347,12 +387,12 @@ pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<St
                 nested_base
             };
             let nested_flex = if needs_flexible(&sub.field_type) {
-                "FLEXIBLE "
+                " FLEXIBLE"
             } else {
                 ""
             };
             let mut nested_stmt =
-                format!("DEFINE FIELD {nested_name} ON {table} {nested_flex}TYPE {nested_type}");
+                format!("DEFINE FIELD {nested_name} ON {table} TYPE {nested_type}{nested_flex}");
 
             let mut nested_assertions = field_assertions(&sub.field_type);
             if sub.is_required() {
@@ -816,16 +856,15 @@ mod tests {
     }
 
     #[test]
-    fn rename_field_produces_three_statements() {
+    fn rename_field() {
         let step = MigrationStep::RenameField {
             old_name: FieldName::new("name").unwrap(),
             new_name: FieldName::new("full_name").unwrap(),
         };
-        let stmts = migration_step_to_surql("Contact", &step);
-        assert_eq!(stmts.len(), 3);
-        assert!(stmts[0].contains("DEFINE FIELD full_name"));
-        assert!(stmts[1].contains("UPDATE Contact SET full_name = name"));
-        assert!(stmts[2].contains("REMOVE FIELD name"));
+        let statements = migration_step_to_surql("Contact", &step);
+        assert_eq!(statements.len(), 1);
+        assert!(statements[0].starts_with("THROW"));
+        assert!(!statements[0].contains("TYPE any"));
     }
 
     #[test]
@@ -837,7 +876,7 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         assert_eq!(
             stmts[0],
-            "DEFINE FIELD metadata ON Employee FLEXIBLE TYPE option<object>;"
+            "DEFINE FIELD metadata ON Employee TYPE option<object> FLEXIBLE;"
         );
     }
 
@@ -854,7 +893,7 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         assert_eq!(
             stmts[0],
-            "DEFINE FIELD config ON Workflow FLEXIBLE TYPE object ASSERT $value != NONE;"
+            "DEFINE FIELD config ON Workflow TYPE object FLEXIBLE ASSERT $value != NONE;"
         );
     }
 
@@ -883,7 +922,7 @@ mod tests {
         // object (and any extra keys — though only declared sub-fields
         // are enforced).
         assert!(
-            stmts[0].contains("FLEXIBLE TYPE option<object>"),
+            stmts[0].contains("TYPE option<object> FLEXIBLE"),
             "parent: {}",
             stmts[0]
         );
@@ -919,7 +958,7 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         assert_eq!(
             stmts[0],
-            "DEFINE FIELD OVERWRITE metadata ON Employee FLEXIBLE TYPE object;"
+            "DEFINE FIELD OVERWRITE metadata ON Employee TYPE object FLEXIBLE;"
         );
     }
 

@@ -189,13 +189,12 @@ pub fn build_principal_entities(
     parents.extend(group_uids);
     parents.extend(tenant_uids);
 
-    let principal_entity =
-        CedarEntity::new(principal_uid_value, attrs, parents).map_err(|e| {
-            AdapterError::UnrepresentableValue {
-                field: "principal".into(),
-                detail: e.to_string(),
-            }
-        })?;
+    let principal_entity = CedarEntity::new(principal_uid_value, attrs, parents).map_err(|e| {
+        AdapterError::UnrepresentableValue {
+            field: "principal".into(),
+            detail: e.to_string(),
+        }
+    })?;
 
     let mut all = Vec::with_capacity(1 + group_entities.len() + tenant_entities.len());
     all.push(principal_entity);
@@ -260,7 +259,13 @@ pub fn build_resource_entity(
 
     // Resource carries _tenant as a Cedar entity reference when present so
     // tenant policies can do `resource._tenant in principal`.
-    if let Some(DynamicValue::Text(tenant_id)) = entity.fields.get("_tenant") {
+    let root_tenant = DynamicValue::Text(entity.id.to_string());
+    let tenant = if crate::access::is_tenant_root(schema) {
+        Some(&root_tenant)
+    } else {
+        entity.fields.get("_tenant")
+    };
+    if let Some(DynamicValue::Text(tenant_id)) = tenant {
         let raw_uid = format!("{TENANT_TYPE}::\"{tenant_id}\"");
         if let Ok(t_uid) = EntityUid::from_str(&raw_uid) {
             attrs.insert(

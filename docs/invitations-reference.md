@@ -164,3 +164,7 @@ project_name = "Bob's Dog Scheduling"
 - **Signed claims authoritative.** On accept, role and tenant come from the cryptographically verified token, not from mutable DB columns.
 - **Fail-closed delivery.** A send failure is a `5xx` with the invite left `Pending`; it never reports success on undelivered mail.
 - **No secret on disk.** The SMTP password enters only through the environment.
+
+## Tenant delegation
+
+An invitation with a tenant target must supply both `tenant_type` and `tenant_id`. The type must be a configured tenant schema. Before creating the signed invitation or sending email, the server checks that the pair belongs to the caller's effective tenant chain, including any active-tenant narrowing. A cross-tenant target returns 403. Platform administrators may invite into any configured tenant type; incomplete or unknown targets return 422.

@@ -38,3 +38,6 @@ pub mod token;
 pub use error::{DslError, Span};
 pub use parser::parse;
 pub use printer::{print, print_all};
+
+mod warnings;
+pub use warnings::{empty_access_grants, EmptyAccessGrant};

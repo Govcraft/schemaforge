@@ -167,8 +167,7 @@ struct FieldDisplay<'a> {
 
 impl RelationDisplay for FieldDisplay<'_> {
     fn display_for(&self, id: &EntityId) -> Option<String> {
-        self.id_to_display
-            .and_then(|m| m.get(id.as_str()).cloned())
+        self.id_to_display.and_then(|m| m.get(id.as_str()).cloned())
     }
 }
 
@@ -488,9 +487,11 @@ pub async fn prepare_export(
     // max_rows + 1 so an over-cap result is detectable without draining the table.
     let mut query = Query::new(schema_def.id.clone()).without_total_count();
     if let Some(filter_json) = filter_json {
-        let filter = crate::routes::entities::json_to_filter(filter_json, schema_def)
-            .map_err(|errors| ForgeError::InvalidQuery {
-                message: errors.join("; "),
+        let filter =
+            crate::routes::entities::json_to_filter(filter_json, schema_def).map_err(|errors| {
+                ForgeError::InvalidQuery {
+                    message: errors.join("; "),
+                }
             })?;
         validate_filter(&filter, schema_def).map_err(|errors| ForgeError::InvalidQuery {
             message: errors
@@ -507,7 +508,7 @@ pub async fn prepare_export(
     query = query.with_limit(probe_limit);
 
     // Same tenant injection as the query path.
-    inject_tenant_scope(&mut query, claims, tenant_config);
+    inject_tenant_scope(&mut query, claims, tenant_config, schema_def);
 
     // Execute.
     let (tx, rx) = oneshot::channel();
@@ -615,9 +616,12 @@ pub async fn materialize_zip_bundle(
     if bundle_files {
         let blob_refs = collect_file_blob_refs(&prepared.entities, schema_def, &prepared.columns);
         for blob in blob_refs {
-            let bytes = store.get(&blob.key).await.map_err(|e| ForgeError::Internal {
-                message: format!("failed to read file blob '{}' for bundle: {e}", blob.key),
-            })?;
+            let bytes = store
+                .get(&blob.key)
+                .await
+                .map_err(|e| ForgeError::Internal {
+                    message: format!("failed to read file blob '{}' for bundle: {e}", blob.key),
+                })?;
             entries.push(BundleEntry::new(blob.member_name, bytes));
         }
     }
@@ -669,11 +673,7 @@ async fn enforce_export_rate_limit(
         })?;
 
     let key = rate_limit_key(claims.map(|c| c.sub.as_str()));
-    let window_ms = settings
-        .rate_limit
-        .window_secs
-        .saturating_mul(1000)
-        .max(1);
+    let window_ms = settings.rate_limit.window_secs.saturating_mul(1000).max(1);
 
     let (tx, rx) = oneshot::channel();
     limiter
@@ -811,7 +811,8 @@ pub async fn export_entities(
     // id-only file (which would mask the attempt). Narrowing a partially-valid
     // request is still allowed — only a wholly-non-exportable request is denied.
     if let Some(requested) = body.fields.as_deref() {
-        if !requested.is_empty() && resolve_export_columns(&schema_def, Some(requested)).is_empty() {
+        if !requested.is_empty() && resolve_export_columns(&schema_def, Some(requested)).is_empty()
+        {
             audit_export(
                 &state,
                 "forge.export.denied",
@@ -858,7 +859,8 @@ pub async fn export_entities(
     // The effective row cap is the schema's `@export(max_rows)` intersected with
     // the server-wide ceiling: a schema may declare a tighter cap, never one
     // above what the operator permits (fail-closed).
-    let max_rows = crate::export_config::resolve_max_rows(max_rows, export_settings.default_max_rows);
+    let max_rows =
+        crate::export_config::resolve_max_rows(max_rows, export_settings.default_max_rows);
 
     // Initiated: the request passed the entity-level and authz gates. Record
     // the requested filter/fields/format for the exfiltration trail.
@@ -945,9 +947,7 @@ pub async fn export_entities(
             .await;
             return Err(ForgeError::ExportTooLarge {
                 max_rows,
-                message: format!(
-                    "{message}; use the async job endpoint (POST with async:true)"
-                ),
+                message: format!("{message}; use the async job endpoint (POST with async:true)"),
             });
         }
         Err(e) => return Err(e),
@@ -1289,7 +1289,7 @@ async fn resolve_export_displays(
             })
             .without_total_count();
         display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
-        inject_tenant_scope(&mut display_query, claims, tenant_config);
+        inject_tenant_scope(&mut display_query, claims, tenant_config, &target_def);
 
         let (tx, rx) = oneshot::channel();
         forge
@@ -1396,11 +1396,7 @@ mod tests {
         for (k, v) in fields {
             map.insert((*k).to_string(), DynamicValue::Text((*v).to_string()));
         }
-        Entity::with_id(
-            EntityId::new(id),
-            SchemaName::new("Subject").unwrap(),
-            map,
-        )
+        Entity::with_id(EntityId::new(id), SchemaName::new("Subject").unwrap(), map)
     }
 
     #[test]
@@ -1455,8 +1451,14 @@ mod tests {
         let schema = export_schema();
         let cols = resolve_export_columns(&schema, None);
         let rows = vec![
-            row("a", &[("name", "Ada"), ("ssn", "111-22-3333"), ("notes", "vip")]),
-            row("b", &[("name", "Bob"), ("ssn", "999-88-7777"), ("notes", "x,y")]),
+            row(
+                "a",
+                &[("name", "Ada"), ("ssn", "111-22-3333"), ("notes", "vip")],
+            ),
+            row(
+                "b",
+                &[("name", "Bob"), ("ssn", "999-88-7777"), ("notes", "x,y")],
+            ),
         ];
         let bytes = entities_to_xlsx(&rows, &cols, &HashMap::new()).unwrap();
 
@@ -1582,8 +1584,14 @@ mod tests {
         let schema = export_schema();
         let cols = resolve_export_columns(&schema, None);
         let rows = vec![
-            row("a", &[("name", "Ada"), ("ssn", "111-22-3333"), ("notes", "vip")]),
-            row("b", &[("name", "Bob"), ("ssn", "999-88-7777"), ("notes", "x,y")]),
+            row(
+                "a",
+                &[("name", "Ada"), ("ssn", "111-22-3333"), ("notes", "vip")],
+            ),
+            row(
+                "b",
+                &[("name", "Bob"), ("ssn", "999-88-7777"), ("notes", "x,y")],
+            ),
         ];
         let csv = entities_to_csv(&rows, &cols, &HashMap::new()).unwrap();
         let mut lines = csv.lines();

@@ -135,7 +135,9 @@ pub async fn run(
         &storage_config,
         role_ranks,
         principal_claims,
-        custom_dir.as_deref(),
+        // Validate custom policies against the proposed registry below, not the
+        // old registry: a coordinated field/policy rename must be deployable.
+        None,
     )
     .await
     .map_err(|e| CliError::Server {
@@ -144,8 +146,23 @@ pub async fn run(
 
     // 5. Apply parsed schemas (using the backend directly, before actor spawning)
     let mut registry = init_data.registry;
+    let proposed_schemas =
+        super::schema_update::merge_schema_definitions(registry.values().cloned(), &schemas);
+    super::schema_update::validate_tenant_hierarchy(&proposed_schemas)?;
+    let prepared_policy = init_data
+        .policy_store
+        .as_ref()
+        .map(|store| {
+            super::policy_preflight::compile(
+                &proposed_schemas,
+                &store.current(),
+                custom_dir.as_deref(),
+            )
+        })
+        .transpose()?;
     if !schemas.is_empty() {
         output.status("Applying schemas...");
+        let mut plans = Vec::new();
         for schema in &schemas {
             let existing = backend_arc
                 .load_schema_metadata(&schema.name)
@@ -153,11 +170,19 @@ pub async fn run(
                 .map_err(CliError::Backend)?;
 
             let plan = if let Some(old) = existing {
-                DiffEngine::diff(&old, schema)
+                DiffEngine::plan_update(&old, schema).map_err(|error| CliError::Config {
+                    message: error.to_string(),
+                })?
             } else {
                 DiffEngine::create_new(schema)
             };
 
+            if plan.has_destructive_steps() && !args.allow_destructive_migrations {
+                return Err(CliError::Config { message: format!("schema '{}': destructive startup migration refused: {}. Declare field renames with @renamed_from(\"old_name\") or explicitly pass --allow-destructive-migrations", schema.name, plan.steps.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ")) });
+            }
+            plans.push(plan);
+        }
+        for (schema, plan) in schemas.iter().zip(plans) {
             if !plan.is_empty() {
                 backend_arc
                     .apply_migration(&schema.name, &plan.steps)
@@ -178,6 +203,11 @@ pub async fn run(
         }
     }
 
+    backend_arc
+        .finalize_schema_migrations()
+        .await
+        .map_err(CliError::Backend)?;
+
     // Rebuild tenant config after applying parsed schemas
     let all_schemas: Vec<_> = registry.values().cloned().collect();
     let tenant_config = schema_forge_backend::tenant::TenantConfig::from_schemas(&all_schemas)
@@ -190,17 +220,11 @@ pub async fn run(
         None
     };
 
-    // Recompile the Cedar policy bundle now that --schemas have been merged
-    // into the registry. `build_init` ran before the parsed schemas were
-    // applied, so its initial PolicyStore covers only the system schemas;
-    // without this step the runtime would reject every authz check against
-    // an app schema with "type X is not declared in the schema".
-    if let Some(policy_store) = &init_data.policy_store {
-        policy_store
-            .recompile_from_schemas(&all_schemas, custom_dir.as_deref())
-            .map_err(|e| CliError::Server {
-                message: format!("Cedar policy recompile failed after schema apply: {e}"),
-            })?;
+    // Install exactly the bundle validated before DDL. Do not reread policy
+    // files after storage changes and risk discovering a late compile failure.
+    if let (Some(policy_store), Some(prepared_policy)) = (&init_data.policy_store, prepared_policy)
+    {
+        policy_store.swap(prepared_policy);
 
         // Log the final bundle posture so misconfiguration (missing custom
         // policies, wrong directory) is obvious at startup. Mirrors the
@@ -297,6 +321,7 @@ pub async fn run(
     // fields here. Database/SurrealDB sections are not touched here — they
     // were resolved up-front by `load_svc_config` so acton-service's pool
     // and the schema-forge backend pool see the same URL by construction.
+    svc_config.service.bind = args.host;
     svc_config.service.port = args.port;
     svc_config.service.name = "schemaforge".to_string();
 
@@ -442,7 +467,7 @@ pub async fn run(
     };
     let console_served = cfg!(feature = "embedded-console") && !args.no_console;
 
-    let bind_addr = format!("{}:{}", args.host, args.port);
+    let bind_addr = std::net::SocketAddr::new(svc_config.service.bind, svc_config.service.port);
     output.success(&format!(
         "SchemaForge server listening on http://{bind_addr}"
     ));
@@ -959,7 +984,7 @@ fn resolve_custom_policies_dir(
 fn build_meta_info(db_params: &DbParams) -> Arc<schema_forge_acton::MetaInfo> {
     let (backend, label) = match db_params {
         #[cfg(feature = "surrealdb")]
-        DbParams::Surrealdb(_) => ("surrealdb", "SurrealDB 2.x"),
+        DbParams::Surrealdb(_) => ("surrealdb", "SurrealDB 3.3+"),
         #[cfg(feature = "postgres")]
         DbParams::Postgres(_) => ("postgres", "PostgreSQL"),
         #[cfg(feature = "mssql")]
@@ -1174,7 +1199,7 @@ mod tests {
 
         let meta = Arc::new(schema_forge_acton::MetaInfo::new(
             "surrealdb",
-            "SurrealDB 2.x",
+            "SurrealDB 3.3+",
             3600,
         ));
         let principal_claims =

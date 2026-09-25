@@ -442,6 +442,10 @@ schema Department { ... }
 
 ### @access(read: [...], write: [...], delete: [...], cross_tenant_read: [...])
 
+For `read`, `write`, and `delete`, an omitted role list and an explicit `[]` both grant access to every authenticated principal. **An empty list does not mean nobody.** For example, `@access(read: ["staff"], write: [], delete: [])` lets any authenticated user create, update, and delete, subject to other Cedar forbids such as tenant and owner guards. Use a nonempty list, such as `write: ["platform_admin"], delete: ["platform_admin"]`, to restrict those actions. `schemaforge parse` warns about explicit empty grants.
+
+`cross_tenant_read: []` does not grant cross-tenant access. Anonymous access requires the explicit `"public"` role in `read`; empty grants require authentication.
+
 Role-based access control. Generates Cedar authorization policies.
 
 ```
@@ -524,6 +528,16 @@ Export is gated by a **distinct Cedar `Export{Entity}` action**, not `Read` — 
 ## Field-Level Annotations — Complete Details
 
 Field-level annotations appear after modifiers on the field line.
+
+### @renamed_from("old_name")
+
+Declare a field rename during migration:
+
+```schema
+business_number: text required @renamed_from("number")
+```
+
+The old field must be removed from the desired schema. A source may name only one replacement, and a rename cannot overwrite another declared field. The hint becomes a no-op after migration and may remain in a signed schema file. Removing it is necessary before reusing the old name for a different field. PostgreSQL renames its column and generated constraints; SurrealDB and SQL Server preserve the stored values through their backend migration implementations. See [safe schema changes](../../docs/migrations/safe-schema-changes.md).
 
 ### @owner
 
@@ -645,6 +659,8 @@ pipeline_stage: enum(
 - The generator emits a per-entity `ENUM_COLORS` map plus a local `EnumBadge` component; both live inside `list.tsx` so Tailwind's JIT picks up the class names without a safelist.
 
 ### @field_access(read: [...], write: [...])
+
+An omitted direction or an explicit empty list grants that direction to every authenticated user who can access the entity. For example, `@field_access(read: ["hr"], write: [])` allows any authenticated entity writer to write the field. To restrict writes, provide a nonempty role list such as `write: ["hr"]` or `write: ["platform_admin"]`.
 
 Field-level access control — restricts who can read/write specific fields.
 

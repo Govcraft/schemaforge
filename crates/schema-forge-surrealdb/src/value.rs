@@ -1,10 +1,9 @@
-//! Pure functions for converting between `DynamicValue` and `surrealdb::sql::Value`.
+//! Pure functions for converting between `DynamicValue` and `surrealdb::types::Value`.
 //!
 //! These conversions are used when reading from and writing to SurrealDB.
 //!
-//! We use the `surrealdb::sql` module types (re-exported from `surrealdb_core`)
-//! for pattern matching on query results. Construction of composite values
-//! goes through the public `surrealdb::Object` wrapper which exposes `insert`.
+//! The SDK exposes native values through `surrealdb::types`, preserving
+//! records, durations, bytes, and nested objects without JSON coercion.
 //!
 //! A SchemaForge `duration` is a signed [`chrono::TimeDelta`], but SurrealDB's
 //! native `duration` type is unsigned. A negative duration therefore cannot be
@@ -16,20 +15,27 @@ use std::collections::BTreeMap;
 use schema_forge_backend::entity::Entity;
 use schema_forge_backend::error::BackendError;
 use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaName};
-use surrealdb::sql::Value as SurrealValue;
+use surrealdb::types::{SurrealValue as IntoSurrealValue, ToSql, Value as SurrealValue};
 
-/// Convert a `DynamicValue` to a `surrealdb::sql::Value`.
+pub(crate) fn record_key_string(key: &surrealdb::types::RecordIdKey) -> String {
+    match key {
+        surrealdb::types::RecordIdKey::String(value) => value.clone(),
+        other => other.to_sql(),
+    }
+}
+
+/// Convert a `DynamicValue` to a `surrealdb::types::Value`.
 pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
     match value {
         DynamicValue::Null => SurrealValue::None,
-        DynamicValue::Text(s) => SurrealValue::from(s.as_str()),
-        DynamicValue::Integer(i) => SurrealValue::from(*i),
-        DynamicValue::Float(f) => SurrealValue::from(*f),
-        DynamicValue::Boolean(b) => SurrealValue::from(*b),
+        DynamicValue::Text(s) => s.as_str().into_value(),
+        DynamicValue::Integer(i) => (*i).into_value(),
+        DynamicValue::Float(f) => (*f).into_value(),
+        DynamicValue::Boolean(b) => (*b).into_value(),
         DynamicValue::DateTime(dt) => {
             // Store as ISO 8601 string — the literal serializer in backend.rs
             // will wrap it with d'...' for SurrealQL datetime fields.
-            SurrealValue::from(dt.to_rfc3339())
+            dt.to_rfc3339().into_value()
         }
         DynamicValue::Duration(d) => {
             timedelta_to_surreal_duration(d).map_or(SurrealValue::None, SurrealValue::Duration)
@@ -37,42 +43,36 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
         DynamicValue::Bytes(b) => {
             // SurrealDB has a native (unsigned-length) `bytes` type; store the
             // bytes verbatim.
-            SurrealValue::Bytes(surrealdb::sql::Bytes::from(b.clone()))
+            SurrealValue::Bytes(surrealdb::types::Bytes::from(b.clone()))
         }
-        DynamicValue::Enum(s) => SurrealValue::from(s.as_str()),
+        DynamicValue::Enum(s) => s.as_str().into_value(),
         DynamicValue::Json(v) => json_to_surreal(v),
         DynamicValue::Array(arr) => {
             let items: Vec<SurrealValue> = arr.iter().map(dynamic_to_surreal).collect();
-            SurrealValue::from(items)
+            items.into_value()
         }
         DynamicValue::Composite(map) | DynamicValue::Map(map) => {
             // A fixed-field `Composite` and a typed open-key `Map` are both
             // stored as a native string-keyed SurrealDB object.
-            let mut obj = surrealdb::Object::new();
+            let mut obj = surrealdb::types::Object::new();
             for (k, v) in map {
-                obj.insert(
-                    k.clone(),
-                    surrealdb::Value::from_inner(dynamic_to_surreal(v)),
-                );
+                obj.insert(k.clone(), dynamic_to_surreal(v));
             }
-            SurrealValue::Object(obj.into_inner())
+            SurrealValue::Object(obj)
         }
-        DynamicValue::Ref(id) => SurrealValue::from(id.as_str()),
+        DynamicValue::Ref(id) => id.as_str().into_value(),
         DynamicValue::RefArray(ids) => {
-            let items: Vec<SurrealValue> = ids
-                .iter()
-                .map(|id| SurrealValue::from(id.as_str()))
-                .collect();
-            SurrealValue::from(items)
+            let items: Vec<SurrealValue> = ids.iter().map(|id| id.as_str().into_value()).collect();
+            items.into_value()
         }
         _ => {
             // Future DynamicValue variants -- store as string fallback.
-            SurrealValue::from(format!("{value:?}").as_str())
+            format!("{value:?}").into_value()
         }
     }
 }
 
-/// Convert a `surrealdb::sql::Value` back to a `DynamicValue`.
+/// Convert a `surrealdb::types::Value` back to a `DynamicValue`.
 ///
 /// This is a best-effort conversion. SurrealDB values that do not have
 /// a corresponding `DynamicValue` variant are stored as JSON.
@@ -83,32 +83,47 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
         SurrealValue::Number(n) => {
             // Match on the Number enum variants directly.
             match n {
-                surrealdb::sql::Number::Int(i) => Ok(DynamicValue::Integer(*i)),
-                surrealdb::sql::Number::Float(f) => Ok(DynamicValue::Float(*f)),
+                surrealdb::types::Number::Int(i) => Ok(DynamicValue::Integer(*i)),
+                surrealdb::types::Number::Float(f) => Ok(DynamicValue::Float(*f)),
                 _ => {
                     // Decimal or future variants -- convert to float.
-                    Ok(DynamicValue::Float((*n).as_float()))
+                    Ok(DynamicValue::Float(n.to_f64().unwrap_or(f64::NAN)))
                 }
             }
         }
-        SurrealValue::Strand(s) => Ok(DynamicValue::Text(s.0.clone())),
+        SurrealValue::String(s) => Ok(DynamicValue::Text(s.clone())),
         SurrealValue::Datetime(dt) => {
-            // surrealdb_core::sql::Datetime wraps chrono::DateTime<Utc> as pub field .0
-            let chrono_dt: chrono::DateTime<chrono::Utc> = dt.0;
+            let chrono_dt: chrono::DateTime<chrono::Utc> = (*dt).into_inner();
             Ok(DynamicValue::DateTime(chrono_dt))
         }
         SurrealValue::Duration(dur) => {
-            // surrealdb::sql::Duration wraps an unsigned std::time::Duration.
-            let delta = chrono::TimeDelta::from_std(dur.0).map_err(|e| BackendError::Internal {
-                message: format!("duration out of representable range: {e}"),
+            // surrealdb::types::Duration wraps an unsigned std::time::Duration.
+            let delta = chrono::TimeDelta::from_std(dur.into_inner()).map_err(|e| {
+                BackendError::Internal {
+                    message: format!("duration out of representable range: {e}"),
+                }
             })?;
             Ok(DynamicValue::Duration(delta))
         }
         SurrealValue::Bytes(b) => Ok(DynamicValue::Bytes(b.to_vec())),
         SurrealValue::Array(arr) => {
-            let items: Result<Vec<DynamicValue>, BackendError> =
-                arr.iter().map(surreal_to_dynamic).collect();
-            Ok(DynamicValue::Array(items?))
+            let items: Vec<DynamicValue> = arr
+                .iter()
+                .map(surreal_to_dynamic)
+                .collect::<Result<_, _>>()?;
+            // Native record-reference arrays are the persisted representation
+            // of to-many relations. Preserve that distinction for consumers.
+            let references: Option<Vec<EntityId>> = items
+                .iter()
+                .map(|item| match item {
+                    DynamicValue::Ref(id) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            match references {
+                Some(ids) if !ids.is_empty() => Ok(DynamicValue::RefArray(ids)),
+                _ => Ok(DynamicValue::Array(items)),
+            }
         }
         SurrealValue::Object(obj) => {
             let mut map = BTreeMap::new();
@@ -117,17 +132,17 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
             }
             Ok(DynamicValue::Composite(map))
         }
-        SurrealValue::Thing(thing) => {
+        SurrealValue::RecordId(thing) => {
             // Record reference from a relation field
-            let id_str = thing.id.to_raw();
+            let id_str = record_key_string(&thing.key);
             match EntityId::parse(&id_str) {
                 Ok(entity_id) => Ok(DynamicValue::Ref(entity_id)),
-                Err(_) => Ok(DynamicValue::Text(format!("{}:{}", thing.tb, id_str))),
+                Err(_) => Ok(DynamicValue::Text(format!("{}:{}", thing.table, id_str))),
             }
         }
         _ => {
             // Fallback: convert to JSON representation
-            let json_str = value.to_string();
+            let json_str = value.to_sql();
             match serde_json::from_str::<serde_json::Value>(&json_str) {
                 Ok(json_val) => Ok(DynamicValue::Json(json_val)),
                 Err(_) => Ok(DynamicValue::Text(json_str)),
@@ -141,7 +156,7 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
 /// The entity ID is stored under the `"id"` key as a plain string.
 pub fn entity_to_surreal_map(entity: &Entity) -> BTreeMap<String, SurrealValue> {
     let mut map = BTreeMap::new();
-    map.insert("id".to_string(), SurrealValue::from(entity.id.as_str()));
+    map.insert("id".to_string(), entity.id.as_str().into_value());
     for (k, v) in &entity.fields {
         map.insert(k.clone(), dynamic_to_surreal(v));
     }
@@ -153,7 +168,7 @@ pub fn entity_to_surreal_map(entity: &Entity) -> BTreeMap<String, SurrealValue> 
 /// Expects an `"id"` field containing the entity's identifier.
 pub fn surreal_object_to_entity(
     schema: &SchemaName,
-    obj: &surrealdb::sql::Object,
+    obj: &surrealdb::types::Object,
 ) -> Result<Entity, BackendError> {
     // Extract ID
     let id_value = obj.get("id").ok_or_else(|| BackendError::Internal {
@@ -182,17 +197,17 @@ pub fn surreal_object_to_entity(
 /// SurrealDB may return IDs as `Thing` (table:id), `Strand`, or other formats.
 fn extract_id_string(value: &SurrealValue) -> Result<String, BackendError> {
     match value {
-        SurrealValue::Strand(s) => Ok(s.0.clone()),
-        SurrealValue::Thing(thing) => {
-            // thing.id is the record's unique part; thing.tb is the table name
-            Ok(thing.id.to_raw())
+        SurrealValue::String(s) => Ok(s.clone()),
+        SurrealValue::RecordId(thing) => {
+            // thing.id is the record's unique part; thing.table is the table name
+            Ok(record_key_string(&thing.key))
         }
-        other => Ok(other.to_string()),
+        other => Ok(other.to_sql()),
     }
 }
 
 /// Convert a signed `chrono::TimeDelta` to SurrealDB's native (unsigned)
-/// `surrealdb::sql::Duration`.
+/// `surrealdb::types::Duration`.
 ///
 /// SurrealDB durations wrap an unsigned `std::time::Duration`, so a negative
 /// `TimeDelta` has no native representation and yields `None`. A negative value
@@ -202,8 +217,8 @@ fn extract_id_string(value: &SurrealValue) -> Result<String, BackendError> {
 /// `duration` field uses on a records platform (retention windows, TTLs, SLA
 /// timers) are non-negative, so `None` here is only ever the unreachable
 /// belt-and-braces case for an already-validated value.
-fn timedelta_to_surreal_duration(d: &chrono::TimeDelta) -> Option<surrealdb::sql::Duration> {
-    d.to_std().ok().map(surrealdb::sql::Duration::from)
+fn timedelta_to_surreal_duration(d: &chrono::TimeDelta) -> Option<surrealdb::types::Duration> {
+    d.to_std().ok().map(surrealdb::types::Duration::from)
 }
 
 /// Find the first negative `duration` anywhere in a value tree.
@@ -262,31 +277,31 @@ pub(crate) fn first_oversized_bytes(
     }
 }
 
-/// Convert a `serde_json::Value` to a `surrealdb::sql::Value`.
+/// Convert a `serde_json::Value` to a `surrealdb::types::Value`.
 fn json_to_surreal(json: &serde_json::Value) -> SurrealValue {
     match json {
         serde_json::Value::Null => SurrealValue::None,
-        serde_json::Value::Bool(b) => SurrealValue::from(*b),
+        serde_json::Value::Bool(b) => (*b).into_value(),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                SurrealValue::from(i)
+                (i).into_value()
             } else if let Some(f) = n.as_f64() {
-                SurrealValue::from(f)
+                (f).into_value()
             } else {
-                SurrealValue::from(n.to_string().as_str())
+                n.to_string().into_value()
             }
         }
-        serde_json::Value::String(s) => SurrealValue::from(s.as_str()),
+        serde_json::Value::String(s) => s.as_str().into_value(),
         serde_json::Value::Array(arr) => {
             let items: Vec<SurrealValue> = arr.iter().map(json_to_surreal).collect();
-            SurrealValue::from(items)
+            items.into_value()
         }
         serde_json::Value::Object(map) => {
-            let mut obj = surrealdb::Object::new();
+            let mut obj = surrealdb::types::Object::new();
             for (k, v) in map {
-                obj.insert(k.clone(), surrealdb::Value::from_inner(json_to_surreal(v)));
+                obj.insert(k.clone(), json_to_surreal(v));
             }
-            SurrealValue::Object(obj.into_inner())
+            SurrealValue::Object(obj)
         }
     }
 }
@@ -461,6 +476,37 @@ mod tests {
     }
 
     #[test]
+    fn record_arrays_preserve_relation_values() {
+        use surrealdb::types::{RecordId, RecordIdKey};
+        let first = EntityId::new("target");
+        let second = EntityId::new("target");
+        let record = |id: &EntityId| {
+            SurrealValue::RecordId(RecordId::new(
+                "Target",
+                RecordIdKey::String(id.as_str().into()),
+            ))
+        };
+        let records = vec![record(&first), record(&second)].into_value();
+        assert_eq!(
+            surreal_to_dynamic(&records).unwrap(),
+            DynamicValue::RefArray(vec![first.clone(), second])
+        );
+        let mixed = vec![record(&first), "ordinary text".into_value()].into_value();
+        assert_eq!(
+            surreal_to_dynamic(&mixed).unwrap(),
+            DynamicValue::Array(vec![
+                DynamicValue::Ref(first),
+                DynamicValue::Text("ordinary text".into()),
+            ])
+        );
+        let empty = Vec::<SurrealValue>::new().into_value();
+        assert_eq!(
+            surreal_to_dynamic(&empty).unwrap(),
+            DynamicValue::Array(vec![])
+        );
+    }
+
+    #[test]
     fn array_round_trip() {
         let dv = DynamicValue::Array(vec![DynamicValue::Integer(1), DynamicValue::Integer(2)]);
         let sv = dynamic_to_surreal(&dv);
@@ -532,19 +578,25 @@ mod tests {
 
     #[test]
     fn thing_converts_to_ref() {
-        use surrealdb::sql::{Id, Thing};
+        use surrealdb::types::{RecordId, RecordIdKey};
         let entity_id = EntityId::new("project");
-        let thing = Thing::from(("Project", Id::String(entity_id.as_str().to_string())));
-        let sv = SurrealValue::Thing(thing);
+        let thing = RecordId::new(
+            "Project",
+            RecordIdKey::String(entity_id.as_str().to_string()),
+        );
+        let sv = SurrealValue::RecordId(thing);
         let back = surreal_to_dynamic(&sv).unwrap();
         assert!(matches!(back, DynamicValue::Ref(ref id) if id.as_str() == entity_id.as_str()));
     }
 
     #[test]
     fn thing_non_entity_id_converts_to_text() {
-        use surrealdb::sql::{Id, Thing};
-        let thing = Thing::from(("SomeTable", Id::String("not_an_entity_id".to_string())));
-        let sv = SurrealValue::Thing(thing);
+        use surrealdb::types::{RecordId, RecordIdKey};
+        let thing = RecordId::new(
+            "SomeTable",
+            RecordIdKey::String("not_an_entity_id".to_string()),
+        );
+        let sv = SurrealValue::RecordId(thing);
         let back = surreal_to_dynamic(&sv).unwrap();
         assert_eq!(
             back,

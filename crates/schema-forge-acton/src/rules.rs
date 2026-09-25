@@ -53,7 +53,7 @@
 //! pass when it evaluates to exactly `Ok(CelValue::Bool(true))`. Any other
 //! outcome surfaces as either a rejection (the predicate definitively returned
 //! `false`) or a [`RuleError::Eval`] (the predicate could not yield a definite
-//! boolean — treated as a schema-authoring/server fault, mapped to 500).
+//! boolean — treated as a schema-authoring/server fault, mapped to 422).
 //!
 //! ## The `now` binding (request-time clock)
 //!
@@ -74,7 +74,9 @@ use chrono::{DateTime, Utc};
 
 use acton_service::middleware::Claims;
 use schema_forge_cel::{cel_to_dynamic, dynamic_to_cel, CelKey, CelValue};
-use schema_forge_core::types::{DynamicValue, FieldAnnotation, FieldType, SchemaDefinition};
+use schema_forge_core::types::{
+    DefaultValue, DynamicValue, FieldAnnotation, FieldModifier, FieldType, SchemaDefinition,
+};
 
 /// The outcome of a failed rule evaluation.
 #[derive(Debug, Clone, PartialEq)]
@@ -85,7 +87,7 @@ pub enum RuleError {
     Rejected(Vec<String>),
     /// A `@require` predicate could not be evaluated to a definite boolean —
     /// it errored or returned a non-boolean. This is a schema-authoring or
-    /// server fault, so it fails closed and maps to HTTP 500.
+    /// server fault, so it fails closed and maps to HTTP 422.
     Eval {
         /// The field whose `@require` annotation could not be evaluated.
         field: String,
@@ -120,6 +122,9 @@ impl std::error::Error for RuleError {}
 /// "undeclared reference" eval error, which [`check_requires`] handles
 /// fail-closed.
 ///
+/// Absent non-derived schema fields and the tenant field on tenanted schemas
+/// are bound as null, allowing explicit null guards in rules.
+///
 /// A `principal` map is always bound (even when `claims` is `None`, in which
 /// case it is an empty map) so that `has(principal.sub)` is a clean `false`
 /// rather than an undeclared-reference error.
@@ -128,15 +133,26 @@ impl std::error::Error for RuleError {}
 /// `now` (see the module docs); the caller passes a single instant so all rules
 /// in one write see the same clock.
 pub fn build_bindings(
+    schema: &SchemaDefinition,
     fields: &BTreeMap<String, DynamicValue>,
     claims: Option<&Claims>,
     now: DateTime<Utc>,
 ) -> schema_forge_cel::Bindings {
     let mut bindings = schema_forge_cel::Bindings::new();
+    for field in &schema.fields {
+        if !field.is_derived() {
+            bindings.insert(field.name.as_str().to_string(), CelValue::Null);
+        }
+    }
+    if schema.is_tenanted() {
+        bindings.insert("_tenant".into(), CelValue::Null);
+    }
 
     for (name, value) in fields {
         if let Ok(cel) = dynamic_to_cel(value) {
             bindings.insert(name.clone(), cel);
+        } else {
+            bindings.remove(name);
         }
         // On conversion failure we intentionally omit the binding; a predicate
         // referencing it will error and be handled fail-closed downstream.
@@ -192,7 +208,7 @@ fn principal_map(claims: Option<&Claims>) -> CelValue {
 /// Fail-closed (see the module docs): a predicate passes only on
 /// `Ok(CelValue::Bool(true))`. A definite `false` is collected as a rejection
 /// (→ [`RuleError::Rejected`], 422). A non-boolean result or an evaluation
-/// error short-circuits immediately to [`RuleError::Eval`] (500) so a broken
+/// error short-circuits immediately to [`RuleError::Eval`] (422) so a broken
 /// predicate can never let a write through.
 pub fn check_requires(
     schema: &SchemaDefinition,
@@ -200,7 +216,7 @@ pub fn check_requires(
     claims: Option<&Claims>,
     now: DateTime<Utc>,
 ) -> Result<(), RuleError> {
-    let bindings = build_bindings(fields, claims, now);
+    let bindings = build_bindings(schema, fields, claims, now);
     check_requires_with_bindings(schema, &bindings)
 }
 
@@ -274,7 +290,7 @@ pub fn check_requires_with_bindings(
 /// chainable).
 ///
 /// Fail-closed: an evaluation error or a value that cannot be converted /
-/// coerced to the field's declared type returns [`RuleError::Eval`] (500) and
+/// coerced to the field's declared type returns [`RuleError::Eval`] (422) and
 /// stores nothing for that field — a half-evaluated value is never persisted.
 /// This runs *before* [`check_requires`] so `@require` predicates validate the
 /// computed values.
@@ -292,15 +308,14 @@ pub fn apply_computed(
 
             // Rebuild bindings from the current fields so this compute sees the
             // results of any earlier computed fields (chaining).
-            let bindings = build_bindings(fields, claims, now);
+            let bindings = build_bindings(schema, fields, claims, now);
             let field_name = field.name.as_str();
 
-            let cel_value = schema_forge_cel::evaluate(expr, &bindings).map_err(|e| {
-                RuleError::Eval {
+            let cel_value =
+                schema_forge_cel::evaluate(expr, &bindings).map_err(|e| RuleError::Eval {
                     field: field_name.to_string(),
                     detail: e.to_string(),
-                }
-            })?;
+                })?;
 
             let natural = cel_to_dynamic(&cel_value).map_err(|e| RuleError::Eval {
                 field: field_name.to_string(),
@@ -323,13 +338,9 @@ pub fn apply_computed(
 /// This is wired into entity **creation only** — never PUT/PATCH. A default
 /// seeds an initial value; it must not silently re-materialize on later writes.
 ///
-/// ## Distinct from the static default
-///
-/// `@default("<expr>")` (this annotation, [`FieldAnnotation::Default`]) is an
-/// *expression-valued* default evaluated by the CEL engine at write time. It is
-/// entirely separate from the literal [`FieldModifier::Default`](schema_forge_core::types::FieldModifier::Default)
-/// (e.g. `default(5)`), which is applied as a storage-layer SQL `DEFAULT`. This
-/// function does not touch the static-default path, whose behavior is unchanged.
+/// Literal `default(...)` modifiers are materialized for absent fields before
+/// their CEL `@default` annotations. This makes storage defaults visible to
+/// required validation, computations, and hooks before persistence.
 ///
 /// ## Absent-vs-null
 ///
@@ -341,13 +352,11 @@ pub fn apply_computed(
 ///
 /// 1. client-supplied non-null value
 /// 2. value stamped by `@owner` / tenant / audit injection (runs before hooks)
-/// 3. value set by a before-hook
+/// 3. literal `default(...)` for an absent field
 /// 4. expression `@default`
 ///
-/// Because `apply_defaults` runs *after* owner/tenant/audit injection and after
-/// the before-hooks, and only fills absent/null fields, any of those earlier
-/// stages "wins" over `@default` for the same field — in particular `@owner`
-/// always beats `@default`.
+/// Owner/tenant/audit injection precedes defaults. Before-hooks run after all
+/// rule phases and can replace their output before final validation.
 ///
 /// ## Order relative to the other rules
 ///
@@ -363,7 +372,7 @@ pub fn apply_computed(
 /// example is spelled `@default("now")`.
 ///
 /// Fail-closed: an evaluation error or a value that cannot be converted /
-/// coerced to the field's declared type returns [`RuleError::Eval`] (500) and
+/// coerced to the field's declared type returns [`RuleError::Eval`] (422) and
 /// stores nothing for that field.
 pub fn apply_defaults(
     schema: &SchemaDefinition,
@@ -372,6 +381,26 @@ pub fn apply_defaults(
     now: DateTime<Utc>,
 ) -> Result<(), RuleError> {
     for field in &schema.fields {
+        if !fields.contains_key(field.name.as_str()) {
+            for modifier in &field.modifiers {
+                if let FieldModifier::Default { value } = modifier {
+                    let natural = match value {
+                        DefaultValue::String(value) => DynamicValue::Text(value.clone()),
+                        DefaultValue::Integer(value) => DynamicValue::Integer(*value),
+                        DefaultValue::Boolean(value) => DynamicValue::Boolean(*value),
+                        DefaultValue::Float(value) => {
+                            DynamicValue::Float(value.parse().map_err(|_| RuleError::Eval {
+                                field: field.name.as_str().into(),
+                                detail: "invalid numeric default".into(),
+                            })?)
+                        }
+                    };
+                    let value =
+                        coerce_to_field_type(natural, &field.field_type, field.name.as_str())?;
+                    fields.insert(field.name.as_str().into(), value);
+                }
+            }
+        }
         for annotation in &field.annotations {
             let FieldAnnotation::Default { expr } = annotation else {
                 continue;
@@ -392,14 +421,13 @@ pub fn apply_defaults(
 
             // Rebuild bindings from the current fields so this default can read
             // other fields, including an earlier-defaulted one (chaining).
-            let bindings = build_bindings(fields, claims, now);
+            let bindings = build_bindings(schema, fields, claims, now);
 
-            let cel_value = schema_forge_cel::evaluate(expr, &bindings).map_err(|e| {
-                RuleError::Eval {
+            let cel_value =
+                schema_forge_cel::evaluate(expr, &bindings).map_err(|e| RuleError::Eval {
                     field: field_name.to_string(),
                     detail: e.to_string(),
-                }
-            })?;
+                })?;
 
             let natural = cel_to_dynamic(&cel_value).map_err(|e| RuleError::Eval {
                 field: field_name.to_string(),
@@ -447,14 +475,12 @@ fn coerce_to_field_type(
                 })
             }
         }
-        (FieldType::DateTime, DynamicValue::Text(s)) => {
-            chrono::DateTime::parse_from_rfc3339(&s)
-                .map(|dt| DynamicValue::DateTime(dt.with_timezone(&chrono::Utc)))
-                .map_err(|e| RuleError::Eval {
-                    field: field.to_string(),
-                    detail: format!("computed value '{s}' is not a valid RFC 3339 datetime: {e}"),
-                })
-        }
+        (FieldType::DateTime, DynamicValue::Text(s)) => chrono::DateTime::parse_from_rfc3339(&s)
+            .map(|dt| DynamicValue::DateTime(dt.with_timezone(&chrono::Utc)))
+            .map_err(|e| RuleError::Eval {
+                field: field.to_string(),
+                detail: format!("computed value '{s}' is not a valid RFC 3339 datetime: {e}"),
+            }),
         // No coercion applies; store the natural value as-is.
         (_, value) => Ok(value),
     }
@@ -478,8 +504,13 @@ mod tests {
     }
 
     fn schema_with(fields: Vec<FieldDefinition>) -> SchemaDefinition {
-        SchemaDefinition::new(SchemaId::new(), SchemaName::new("Thing").unwrap(), fields, vec![])
-            .unwrap()
+        SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Thing").unwrap(),
+            fields,
+            vec![],
+        )
+        .unwrap()
     }
 
     fn require(expr: &str, message: &str) -> FieldAnnotation {
@@ -519,6 +550,24 @@ mod tests {
     }
 
     #[test]
+    fn absent_declared_fields_and_tenant_are_bound_as_null() {
+        let schema = schema_forge_dsl::parse(r#"
+            @tenant(root)
+            schema Tenant {
+                optional: text @require("optional == null && _tenant == null", "expected null context")
+                copy: text @default("optional")
+                derived: boolean @compute("optional == null")
+            }
+        "#).unwrap().remove(0);
+        let mut values = BTreeMap::new();
+        apply_defaults(&schema, &mut values, None, fixed_now()).unwrap();
+        apply_computed(&schema, &mut values, None, fixed_now()).unwrap();
+        assert_eq!(check_requires(&schema, &values, None, fixed_now()), Ok(()));
+        assert_eq!(values.get("copy"), Some(&DynamicValue::Null));
+        assert_eq!(values.get("derived"), Some(&DynamicValue::Boolean(true)));
+    }
+
+    #[test]
     fn passing_require_ok() {
         let schema = schema_with(vec![text_field(
             "age",
@@ -545,10 +594,7 @@ mod tests {
     fn multiple_failing_requires_collected_in_order() {
         let schema = schema_with(vec![
             text_field("age", vec![require("age >= 18", "too young")]),
-            text_field(
-                "name",
-                vec![require("size(name) > 0", "name required")],
-            ),
+            text_field("name", vec![require("size(name) > 0", "name required")]),
         ]);
         let f = fields(&[
             ("age", DynamicValue::Integer(10)),
@@ -598,7 +644,10 @@ mod tests {
             ("status", DynamicValue::Text("closed".to_string())),
             ("close_reason", DynamicValue::Text("done".to_string())),
         ]);
-        assert_eq!(check_requires(&schema, &closed_with_reason, None, fixed_now()), Ok(()));
+        assert_eq!(
+            check_requires(&schema, &closed_with_reason, None, fixed_now()),
+            Ok(())
+        );
     }
 
     #[test]
@@ -686,10 +735,7 @@ mod tests {
     fn skipped_binding_fails_closed() {
         // A field that converts fine but an annotation references a field that
         // was never supplied → undeclared reference → Eval (fail-closed).
-        let schema = schema_with(vec![text_field(
-            "a",
-            vec![require("b == 1", "needs b")],
-        )]);
+        let schema = schema_with(vec![text_field("a", vec![require("b == 1", "needs b")])]);
         let f = fields(&[("a", DynamicValue::Integer(1))]);
         assert!(matches!(
             check_requires(&schema, &f, None, fixed_now()),
@@ -748,16 +794,12 @@ mod tests {
         let schema = schema_with(vec![
             typed_field(
                 "quantity",
-                FieldType::Integer(
-                    schema_forge_core::types::IntegerConstraints::unconstrained(),
-                ),
+                FieldType::Integer(schema_forge_core::types::IntegerConstraints::unconstrained()),
                 vec![],
             ),
             typed_field(
                 "unit_price",
-                FieldType::Integer(
-                    schema_forge_core::types::IntegerConstraints::unconstrained(),
-                ),
+                FieldType::Integer(schema_forge_core::types::IntegerConstraints::unconstrained()),
                 vec![],
             ),
             typed_field(
@@ -818,23 +860,17 @@ mod tests {
         let schema = schema_with(vec![
             typed_field(
                 "base",
-                FieldType::Integer(
-                    schema_forge_core::types::IntegerConstraints::unconstrained(),
-                ),
+                FieldType::Integer(schema_forge_core::types::IntegerConstraints::unconstrained()),
                 vec![],
             ),
             typed_field(
                 "a",
-                FieldType::Integer(
-                    schema_forge_core::types::IntegerConstraints::unconstrained(),
-                ),
+                FieldType::Integer(schema_forge_core::types::IntegerConstraints::unconstrained()),
                 vec![compute("base + 1")],
             ),
             typed_field(
                 "b",
-                FieldType::Integer(
-                    schema_forge_core::types::IntegerConstraints::unconstrained(),
-                ),
+                FieldType::Integer(schema_forge_core::types::IntegerConstraints::unconstrained()),
                 vec![compute("a * 10")],
             ),
         ]);
@@ -864,10 +900,7 @@ mod tests {
 
     #[test]
     fn eval_error_compute_is_eval() {
-        let schema = schema_with(vec![text_field(
-            "x",
-            vec![compute("missing_field + 1")],
-        )]);
+        let schema = schema_with(vec![text_field("x", vec![compute("missing_field + 1")])]);
         let mut f = fields(&[]);
         match apply_computed(&schema, &mut f, None, fixed_now()) {
             Err(RuleError::Eval { field, detail }) => {
@@ -882,15 +915,10 @@ mod tests {
 
     #[test]
     fn enum_coercion_success() {
-        let variants =
-            EnumVariants::new(vec!["low".to_string(), "high".to_string()]).unwrap();
+        let variants = EnumVariants::new(vec!["low".to_string(), "high".to_string()]).unwrap();
         let schema = schema_with(vec![
             text_field("level", vec![]),
-            typed_field(
-                "tier",
-                FieldType::Enum(variants),
-                vec![compute("level")],
-            ),
+            typed_field("tier", FieldType::Enum(variants), vec![compute("level")]),
         ]);
         let mut f = fields(&[("level", DynamicValue::Text("high".to_string()))]);
         assert_eq!(apply_computed(&schema, &mut f, None, fixed_now()), Ok(()));
@@ -899,15 +927,10 @@ mod tests {
 
     #[test]
     fn enum_coercion_invalid_variant_is_eval() {
-        let variants =
-            EnumVariants::new(vec!["low".to_string(), "high".to_string()]).unwrap();
+        let variants = EnumVariants::new(vec!["low".to_string(), "high".to_string()]).unwrap();
         let schema = schema_with(vec![
             text_field("level", vec![]),
-            typed_field(
-                "tier",
-                FieldType::Enum(variants),
-                vec![compute("level")],
-            ),
+            typed_field("tier", FieldType::Enum(variants), vec![compute("level")]),
         ]);
         let mut f = fields(&[("level", DynamicValue::Text("medium".to_string()))]);
         match apply_computed(&schema, &mut f, None, fixed_now()) {
@@ -984,10 +1007,7 @@ mod tests {
             "created_by",
             vec![default_expr("principal.sub")],
         )]);
-        let mut f = fields(&[(
-            "created_by",
-            DynamicValue::Text("explicit".to_string()),
-        )]);
+        let mut f = fields(&[("created_by", DynamicValue::Text("explicit".to_string()))]);
         assert_eq!(
             apply_defaults(&schema, &mut f, Some(&claims(&[])), fixed_now()),
             Ok(())
@@ -1035,16 +1055,12 @@ mod tests {
         let schema = schema_with(vec![
             typed_field(
                 "a",
-                FieldType::Integer(
-                    schema_forge_core::types::IntegerConstraints::unconstrained(),
-                ),
+                FieldType::Integer(schema_forge_core::types::IntegerConstraints::unconstrained()),
                 vec![default_expr("10")],
             ),
             typed_field(
                 "b",
-                FieldType::Integer(
-                    schema_forge_core::types::IntegerConstraints::unconstrained(),
-                ),
+                FieldType::Integer(schema_forge_core::types::IntegerConstraints::unconstrained()),
                 vec![default_expr("a + 5")],
             ),
         ]);

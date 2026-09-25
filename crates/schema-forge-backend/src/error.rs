@@ -33,6 +33,8 @@ pub enum BackendError {
     /// field name when the backend reported a recognisable constraint;
     /// otherwise it falls back to the literal constraint name.
     UniqueViolation { schema: String, field: String },
+    /// A relation references a missing record or prevents removal of a referenced record.
+    ForeignKeyViolation { schema: String, constraint: String },
     /// Internal or unexpected error.
     Internal { message: String },
 }
@@ -74,6 +76,10 @@ impl fmt::Display for BackendError {
             Self::QueryError { message } => {
                 write!(f, "query execution error: {message}")
             }
+            Self::ForeignKeyViolation { schema, constraint } => write!(
+                f,
+                "relation constraint '{constraint}' violated in schema '{schema}'"
+            ),
             Self::UniqueViolation { schema, field } => {
                 write!(
                     f,

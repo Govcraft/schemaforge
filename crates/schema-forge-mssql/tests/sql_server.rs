@@ -1,3 +1,6 @@
+#[path = "../../schema-forge-backend/tests/support/migration_renames.rs"]
+mod migration_renames;
+
 #[path = "../../schema-forge-backend/tests/support/data_correctness.rs"]
 mod data_correctness;
 
@@ -59,8 +62,61 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
         .expect("list initialized metadata")
         .is_empty());
 
+    sparse_updates_preserve_other_fields_and_explicit_null(&backend).await;
+    atomic_metadata_failure_rolls_back_rename(&backend).await;
     exercises_backend_contract(&backend).await;
     data_correctness::exercise(&backend).await;
+    migration_renames::exercise(&backend).await;
+    rename_collision_rolls_back_entire_plan(&backend).await;
+}
+
+async fn rename_collision_rolls_back_entire_plan(backend: &MssqlBackend) {
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("RenameRollback").unwrap(),
+        ["first", "second"]
+            .map(|name| {
+                FieldDefinition::new(
+                    FieldName::new(name).unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                )
+            })
+            .to_vec(),
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_migration(&schema.name, &DiffEngine::create_new(&schema).steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&schema).await.unwrap();
+    let row = backend
+        .create(&Entity::new(
+            schema.name.clone(),
+            BTreeMap::from([
+                ("first".into(), DynamicValue::Text("keep".into())),
+                ("second".into(), DynamicValue::Text("other".into())),
+                ("destination".into(), DynamicValue::Text("occupied".into())),
+            ]),
+        ))
+        .await
+        .unwrap();
+    let steps = [
+        MigrationStep::RenameField {
+            old_name: FieldName::new("first").unwrap(),
+            new_name: FieldName::new("third").unwrap(),
+        },
+        MigrationStep::RenameField {
+            old_name: FieldName::new("second").unwrap(),
+            new_name: FieldName::new("destination").unwrap(),
+        },
+    ];
+    assert!(backend.apply_migration(&schema.name, &steps).await.is_err());
+    assert_eq!(backend.get(&schema.name, &row.id).await.unwrap(), row);
+    assert_eq!(
+        backend.load_schema_metadata(&schema.name).await.unwrap(),
+        Some(schema)
+    );
 }
 
 async fn exercises_backend_contract(backend: &MssqlBackend) {
@@ -211,4 +267,134 @@ fn product(schema: &SchemaName, name: &str, price: i64, active: bool) -> Entity 
             ("active".into(), DynamicValue::Boolean(active)),
         ]),
     )
+}
+
+async fn atomic_metadata_failure_rolls_back_rename(backend: &MssqlBackend) {
+    let original = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("AtomicSchema").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("label").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_schema_change(
+            &original.name,
+            &DiffEngine::create_new(&original).steps,
+            Some(&original),
+        )
+        .await
+        .unwrap();
+    let row = Entity {
+        id: schema_forge_core::types::EntityId::new("atomic"),
+        schema: original.name.clone(),
+        fields: BTreeMap::from([("label".into(), DynamicValue::Text("retained".into()))]),
+    };
+    backend.create(&row).await.unwrap();
+    let mut proposed = original.clone();
+    proposed.fields[0].name = FieldName::new("replacement").unwrap();
+    proposed.fields[0]
+        .annotations
+        .push(schema_forge_core::types::FieldAnnotation::RenamedFrom {
+            name: FieldName::new("label").unwrap(),
+        });
+    {
+        let mut connection = backend.pool().get().await.unwrap();
+        connection.simple_query("CREATE TRIGGER [reject_atomic_metadata] ON [dbo].[_schema_metadata] AFTER UPDATE AS BEGIN THROW 50001, 'test metadata failure', 1; END;").await.unwrap().into_results().await.unwrap();
+    }
+    let plan = DiffEngine::plan_update(&original, &proposed).unwrap();
+    assert!(backend
+        .apply_schema_change(&original.name, &plan.steps, Some(&proposed))
+        .await
+        .is_err());
+    assert_eq!(
+        backend.load_schema_metadata(&original.name).await.unwrap(),
+        Some(original.clone())
+    );
+    assert_eq!(backend.get(&original.name, &row.id).await.unwrap(), row);
+    {
+        let mut connection = backend.pool().get().await.unwrap();
+        connection
+            .simple_query("DROP TRIGGER [reject_atomic_metadata]")
+            .await
+            .unwrap()
+            .into_results()
+            .await
+            .unwrap();
+    }
+    backend
+        .apply_schema_change(&original.name, &plan.steps, Some(&proposed))
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.load_schema_metadata(&original.name).await.unwrap(),
+        Some(proposed)
+    );
+}
+
+async fn sparse_updates_preserve_other_fields_and_explicit_null(backend: &MssqlBackend) {
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("SparseUpdate").unwrap(),
+        ["first", "second", "nullable"]
+            .into_iter()
+            .map(|name| {
+                FieldDefinition::new(
+                    FieldName::new(name).unwrap(),
+                    FieldType::Text(TextConstraints::unconstrained()),
+                )
+            })
+            .collect(),
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_schema_change(
+            &schema.name,
+            &DiffEngine::create_new(&schema).steps,
+            Some(&schema),
+        )
+        .await
+        .unwrap();
+    let initial = Entity::new(
+        schema.name.clone(),
+        BTreeMap::from([
+            ("first".into(), DynamicValue::Text("before".into())),
+            ("second".into(), DynamicValue::Text("before".into())),
+            ("nullable".into(), DynamicValue::Text("clear me".into())),
+        ]),
+    );
+    backend.create(&initial).await.unwrap();
+    let first = Entity::with_id(
+        initial.id.clone(),
+        schema.name.clone(),
+        BTreeMap::from([("first".into(), DynamicValue::Text("first changed".into()))]),
+    );
+    let second = Entity::with_id(
+        initial.id.clone(),
+        schema.name.clone(),
+        BTreeMap::from([("second".into(), DynamicValue::Text("second changed".into()))]),
+    );
+    let (first_result, second_result) =
+        tokio::join!(backend.update(&first), backend.update(&second));
+    assert_eq!(first_result.unwrap().fields.len(), 3);
+    assert_eq!(second_result.unwrap().fields.len(), 3);
+    let null_update = Entity::with_id(
+        initial.id.clone(),
+        schema.name.clone(),
+        BTreeMap::from([("nullable".into(), DynamicValue::Null)]),
+    );
+    let updated = backend.update(&null_update).await.unwrap();
+    assert_eq!(updated.fields.get("first"), first.fields.get("first"));
+    assert_eq!(updated.fields.get("second"), second.fields.get("second"));
+    assert_eq!(updated.fields.get("nullable"), Some(&DynamicValue::Null));
+    assert_eq!(
+        backend.get(&schema.name, &initial.id).await.unwrap(),
+        updated
+    );
+    let empty = Entity::with_id(initial.id, schema.name, BTreeMap::new());
+    assert_eq!(backend.update(&empty).await.unwrap(), updated);
 }

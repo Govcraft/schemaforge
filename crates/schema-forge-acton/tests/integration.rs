@@ -282,6 +282,102 @@ async fn update_schema_triggers_migration() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn destructive_schema_updates_require_explicit_opt_in_and_preserve_data_on_refusal() {
+    let app = test_app().await;
+    let create =
+        serde_json::json!({"name": "Line", "fields": [{"name": "number", "field_type": "Text"}]});
+    assert_eq!(
+        json_request(&app, Method::POST, "/schemas", Some(create))
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    let (status, row) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Line/entities",
+        Some(serde_json::json!({"fields": {"number": "555-9999"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let entity_path = format!("/schemas/Line/entities/{}", row["id"].as_str().unwrap());
+    let mut update = serde_json::json!({"name": "Line", "fields": [{"name": "business_number", "field_type": "Text"}]});
+    for explicit_false in [false, true] {
+        if explicit_false {
+            update["allow_destructive_migrations"] = serde_json::json!(false);
+        }
+        let (status, error) =
+            json_request(&app, Method::PUT, "/schemas/Line", Some(update.clone())).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+        let (status, unchanged) = json_request(&app, Method::GET, &entity_path, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(unchanged["fields"]["number"], "555-9999");
+        let (_, schema) = json_request(&app, Method::GET, "/schemas/Line", None).await;
+        assert_eq!(schema["fields"][0]["name"], "number");
+    }
+    update["allow_destructive_migrations"] = serde_json::json!(true);
+    let (status, result) = json_request(&app, Method::PUT, "/schemas/Line", Some(update)).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["fields"][0]["name"], "business_number");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_annotations_are_validated_and_rename_hints_preserve_values() {
+    let app = test_app().await;
+    let root = serde_json::json!({"name": "Org", "annotations": [schema_forge_core::types::Annotation::Tenant(schema_forge_core::types::TenantKind::Root)], "fields": [{"name": "name", "field_type": "Text"}]});
+    assert_eq!(
+        json_request(&app, Method::POST, "/schemas", Some(root))
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        json_request(&app, Method::GET, "/schemas/Org", None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let invalid_rule = serde_json::json!({"name": "InvalidRule", "fields": [{"name": "value", "field_type": "Text", "annotations": [{"annotation": "Require", "expr": "value", "message": "invalid return type"}]}]});
+    assert_eq!(
+        json_request(&app, Method::POST, "/schemas", Some(invalid_rule))
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        json_request(&app, Method::GET, "/schemas/InvalidRule", None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let create =
+        serde_json::json!({"name": "Line", "fields": [{"name": "number", "field_type": "Text"}]});
+    assert_eq!(
+        json_request(&app, Method::POST, "/schemas", Some(create))
+            .await
+            .0,
+        StatusCode::CREATED
+    );
+    let (_, row) = json_request(
+        &app,
+        Method::POST,
+        "/schemas/Line/entities",
+        Some(serde_json::json!({"fields": {"number": "555-9999"}})),
+    )
+    .await;
+    let rename = serde_json::json!({"name": "Line", "fields": [{"name": "business_number", "field_type": "Text", "annotations": [{"annotation": "RenamedFrom", "name": "number"}]}]});
+    for _ in 0..2 {
+        let (status, body) =
+            json_request(&app, Method::PUT, "/schemas/Line", Some(rename.clone())).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let entity_path = format!("/schemas/Line/entities/{}", row["id"].as_str().unwrap());
+    let (status, loaded) = json_request(&app, Method::GET, &entity_path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(loaded["fields"]["business_number"], "555-9999");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_schema_removes_from_registry() {
     let app = test_app().await;
 

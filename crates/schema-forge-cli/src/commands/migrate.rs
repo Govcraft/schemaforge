@@ -32,6 +32,16 @@ pub(super) async fn migrate_on_backend(
     backend: &dyn DynSchemaBackend,
     output: &OutputContext,
 ) -> Result<(), CliError> {
+    let desired: Vec<_> = schemas
+        .iter()
+        .filter(|schema| {
+            args.schema
+                .as_ref()
+                .is_none_or(|filter| schema.name.as_str() == filter)
+        })
+        .cloned()
+        .collect();
+    super::schema_update::preflight_schema_batch(backend, &desired).await?;
     let mut plans = Vec::new();
     let mut total_steps = 0usize;
     let mut schemas_affected = 0usize;
@@ -45,7 +55,7 @@ pub(super) async fn migrate_on_backend(
         }
 
         let existing = backend.load_schema_metadata(&schema.name).await?;
-        let update = SchemaUpdate::plan(existing.as_ref(), schema);
+        let update = SchemaUpdate::plan(existing.as_ref(), schema)?;
         let plan = &update.migration;
 
         if update.is_empty() {
@@ -177,6 +187,8 @@ pub(super) async fn migrate_on_backend(
 
             update.persist(backend).await?;
         }
+
+        backend.finalize_schema_migrations().await?;
 
         output.success(&format!(
             "Executed {total_steps} migration steps across {schemas_affected} schemas."

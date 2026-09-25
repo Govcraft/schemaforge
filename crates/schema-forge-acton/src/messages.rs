@@ -127,9 +127,42 @@ pub struct GetPolicyStore {
     pub reply: ReplyChannel<Option<Arc<crate::authz::PolicyStore>>>,
 }
 
+/// Coherent definitions and policies captured under the actor message barrier.
+#[derive(Clone, Debug)]
+pub struct AuthorizationSnapshot {
+    pub registry: HashMap<String, SchemaDefinition>,
+    pub policy: Arc<crate::authz::PolicyStoreSnapshot>,
+}
+
+/// Capture a request's authorization context without mixing registry versions.
+#[derive(Clone, Debug)]
+pub struct GetAuthorizationSnapshot {
+    pub reply: ReplyChannel<Option<AuthorizationSnapshot>>,
+}
+
+/// Retrieve the custom policy source selected when the actor was initialized.
+/// This includes CLI overrides and must be used for schema preflight checks.
+#[derive(Clone, Debug)]
+pub struct GetCustomPoliciesDir {
+    pub reply: ReplyChannel<Option<std::path::PathBuf>>,
+}
+
 // ---------------------------------------------------------------------------
 // Registry mutations
 // ---------------------------------------------------------------------------
+
+/// Commit a prevalidated schema change under the actor's mutation barrier.
+/// The expected registry and policy identity guard against stale preflight plans.
+#[derive(Clone, Debug)]
+pub struct ApplyPreparedSchemaChange {
+    pub expected_registry: HashMap<String, SchemaDefinition>,
+    pub expected_policy: Arc<crate::authz::PolicyStoreSnapshot>,
+    pub next_policy: Arc<crate::authz::PolicyStoreSnapshot>,
+    pub definition: SchemaDefinition,
+    pub remove: bool,
+    pub steps: Vec<MigrationStep>,
+    pub reply: ReplyChannel<Result<(), crate::error::ForgeError>>,
+}
 
 /// Insert or update a schema definition in the in-memory registry.
 ///

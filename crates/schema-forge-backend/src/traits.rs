@@ -16,6 +16,29 @@ use crate::error::BackendError;
 /// Uses RPITIT (return position impl Trait in trait) for async methods,
 /// avoiding the `async-trait` crate.
 pub trait SchemaBackend: Send + Sync {
+    /// Atomically apply DDL and persist the resulting metadata, including integrity checks.
+    /// `None` removes metadata; physical deletion requires explicit migration steps.
+    /// Unsupported adapters must refuse before making any changes.
+    fn apply_schema_change(
+        &self,
+        _name: &SchemaName,
+        _steps: &[MigrationStep],
+        _definition: Option<&SchemaDefinition>,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async {
+            Err(BackendError::MigrationFailed {
+                step: "atomic schema change".into(),
+                reason: "backend does not support atomic schema changes".into(),
+            })
+        }
+    }
+
+    /// Finish cross-schema constraints after applying a batch, including legacy repair.
+    /// Called only during explicit schema administration, never on a read connection.
+    fn finalize_schema_migrations(&self) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Whether explicit preparation of record revisions is available.
     fn supports_record_revisions(&self) -> bool {
         false
@@ -144,7 +167,8 @@ pub trait EntityStore: Send + Sync {
     /// Update an existing entity.
     ///
     /// The entity's `id` and `schema` determine which record to update.
-    /// All fields in `entity.fields` replace the existing fields.
+    /// Supplied fields replace their corresponding values; omitted fields remain unchanged.
+    /// An explicit `DynamicValue::Null` writes null rather than omitting the field.
     /// Returns the updated entity.
     fn update(&self, entity: &Entity) -> impl Future<Output = Result<Entity, BackendError>> + Send;
 

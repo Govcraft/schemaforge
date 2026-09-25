@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "crates/schema-forge-mssql/**"
+      - "crates/schema-forge-core/**"
+      - "crates/schema-forge-backend/**"
       - "crates/schema-forge-cli/Cargo.toml"
       - "crates/schema-forge-acton/Cargo.toml"
       - "Cargo.lock"
@@ -23,7 +25,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Install Protocol Buffers compiler
         shell: pwsh
@@ -79,14 +81,20 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Install nextest
+        run: cargo install cargo-nextest --locked
 
       - name: Run SQL Server integration test
         env:
           TEST_NAME: ${{ matrix.test }}
         run: >-
-          cargo test --package schema-forge-mssql --test sql_server
-          "$TEST_NAME" -- --ignored --exact --nocapture
+          cargo nextest run --package schema-forge-mssql --test sql_server
+          --run-ignored only -E "test(=$TEST_NAME)"
+      - name: Deny SQL Server lints
+        if: matrix.version == 2019
+        run: cargo clippy -p schema-forge-mssql --all-targets -- -D warnings
