@@ -31,8 +31,8 @@ Security fixes go into the latest release. Older versions do not receive backpor
 
 | Version | Supported |
 |---|---|
-| 0.45.x (latest release) | Yes |
-| earlier than 0.45 | No, please upgrade |
+| 0.46.x (latest release) | Yes |
+| earlier than 0.46 | No, please upgrade |
 
 ## Scope
 

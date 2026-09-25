@@ -7598,7 +7598,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-acton"
-version = "0.44.0"
+version = "0.45.0"
 dependencies = [
  "acton-service",
  "arc-swap",
@@ -7655,7 +7655,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-backend"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "acton-service",
  "argon2",
@@ -7670,7 +7670,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cel"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "base64",
  "chrono",
@@ -7686,7 +7686,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.45.0"
+version = "0.46.0"
 dependencies = [
  "acton-service",
  "assert_cmd",
@@ -7729,7 +7729,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-core"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "base64",
  "chrono",
@@ -7743,7 +7743,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-dsl"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "logos 0.15.1",
  "proptest",
@@ -7754,7 +7754,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-mssql"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acton-service",
  "bb8",
@@ -7770,7 +7770,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-postgres"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "arc-swap",
  "argon2",
@@ -7808,7 +7808,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-surrealdb"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "chrono",
  "schema-forge-backend",

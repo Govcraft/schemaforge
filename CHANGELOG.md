@@ -7,6 +7,62 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-09-25
+
+### Runtime and API behavior
+
+- Validate tenant declarations consistently across startup, CLI schema application,
+  and runtime schema changes. Applications with a tenant root must annotate every
+  application schema; built-in system schemas remain shared.
+- Validate relation targets against tenant scope and read authorization before
+  create, PUT, or PATCH persists. Platform administrators retain their documented
+  cross-tenant capabilities.
+- Apply hidden-field projection to relation display labels and webhook payloads.
+  Webhooks use a fixed conservative field policy and plain JSON payload version 2.
+- Enforce configured webhook URL schemes and public destinations during
+  configuration and delivery. Delivery checks and pins DNS results, with redirects
+  and environment proxies disabled.
+- Reject undeclared entity fields before persistence. Foreign-key errors include
+  machine-readable `error` and `message` fields; entity and schema JSON rejections
+  use the API error envelope. Internal storage diagnostics stay out of REST and
+  GraphQL error messages, and database connection errors omit credentials.
+
+### Database and operator fixes
+
+- PostgreSQL planning and inspection connections perform no bookkeeping DDL.
+  Fresh databases plan as empty registries, and read-only roles can inspect existing
+  metadata without schema creation privileges.
+- PostgreSQL `contains` and `startswith` now match literal, case-sensitive text.
+  Unsupported array filter comparisons return validation errors before execution.
+- `apply` and `migrate --execute` preflight all selected migration plans before
+  applying a noninteractive batch. Refusals identify every destructive schema and
+  step requiring `--force`.
+- Migration warnings display `review` when they are informational. New-table unique
+  constraints are safe, and new schemas retain their `CREATE` label.
+- Explicit listener flags override environment and file settings; omitted flags
+  preserve configuration. An unconfigured server defaults to `127.0.0.1:3000`.
+- Entity CLI requests retry HTTP 429 with `Retry-After` support and bounded fallback
+  backoff, controlled by `--max-retries`. Transport failures are not retried.
+- Document governor quotas, proxy configuration, probe routes, the full write-rule
+  order, and webhook delivery guarantees.
+
+### Upgrade notes
+
+Webhook consumers must support `payload_version: 2` and plain JSON field values.
+Hidden fields and fields with field-access annotations are excluded. Webhooks
+remain best effort with no durable history or replay; applications must reconcile
+current state separately when delivery gaps matter. See [webhooks](docs/webhooks.md).
+
+Before upgrading a tenanted deployment, annotate every application schema with its
+intended tenant relationship and migrate existing ownership explicitly. Unannotated
+application schemas are no longer implicitly shared when a tenant root exists.
+See [tenant isolation](docs/tenant-isolation.md).
+
+Migration safety serialization emits `Review`; legacy `RequiresConfirmation` input
+is still accepted. Rust embedders must update webhook event constructor calls to
+pass schema definitions, and handler callers must use the new JSON extractor.
+Workspace crate versions are coordinated for the updated public core/backend types.
+
 ## [0.45.0] - 2026-09-24
 
 ### Security and correctness
