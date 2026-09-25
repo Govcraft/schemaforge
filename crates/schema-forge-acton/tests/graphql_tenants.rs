@@ -190,6 +190,23 @@ async fn graphql_scopes_legacy_roots_and_keeps_shared_catalog_usable() {
         catalog["data"]["catalogs"]["items"][0]["name"], "shared",
         "{catalog}"
     );
+    // These routes intentionally have no tenant middleware. A permissive
+    // operator policy must never replace concrete Cedar tenant authorization.
+    for method in [Method::PUT, Method::PATCH, Method::DELETE] {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(format!("/schemas/Org/entities/{foreign}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"fields":{"name":"foreign overwrite"}}).to_string(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(test_claims(&own, &["member"]));
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    }
     let deleted = query(
         &app,
         &format!("mutation {{ deleteOrg(id: \"{own}\") }}"),
@@ -199,11 +216,12 @@ async fn graphql_scopes_legacy_roots_and_keeps_shared_catalog_usable() {
     assert_eq!(deleted["data"]["deleteOrg"], true, "{deleted}");
     let remaining = query(
         &app,
-        &format!("{{ org(id: \"{foreign}\") {{ id }} }}"),
+        &format!("{{ org(id: \"{foreign}\") {{ id name }} }}"),
         &foreign,
     )
     .await;
     assert_eq!(remaining["data"]["org"]["id"], foreign, "{remaining}");
+    assert_eq!(remaining["data"]["org"]["name"], "b", "{remaining}");
 }
 
 async fn administer_catalog(app: &Router, method: Method, body: Value) {
@@ -243,7 +261,7 @@ async fn graphql_uses_live_field_security_and_refuses_removed_schemas() {
     let fields = json!([
         {"name":"name", "field_type":"Text", "modifiers":["required"]},
         {"name":"secret", "field_type":"Text", "annotations":[{"annotation":"FieldAccess", "read":["admin"], "write":["admin"]}]},
-        {"name":"hidden_value", "field_type":"Text", "modifiers":["hidden"]}
+        {"name":"hidden_value", "field_type":"Text", "annotations":[{"annotation":"Hidden"}]}
     ]);
     administer_catalog(
         &app,

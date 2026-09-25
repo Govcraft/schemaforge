@@ -831,6 +831,26 @@ fn enforce_bytes_max_size(bytes: &[u8], max_size: Option<usize>) -> Result<(), S
     }
 }
 
+/// Concrete Cedar authorization is mandatory even when an operator supplies
+/// an additional record policy. Transport middleware is defense in depth.
+fn require_entity_action(
+    store: &Arc<crate::authz::PolicyStore>,
+    schema: &SchemaDefinition,
+    claims: Option<&Claims>,
+    entity: &Entity,
+    action: ActionVerb,
+) -> Result<(), ForgeError> {
+    let permitted = authorize(store, claims, action, schema, Some(entity))
+        .is_ok_and(|decision| decision.is_allow() && decision.errors.is_empty());
+    if permitted {
+        Ok(())
+    } else {
+        Err(ForgeError::Forbidden {
+            message: "not authorized for this entity".into(),
+        })
+    }
+}
+
 /// Reevaluate retained input against the resource after every denied-field removal.
 /// Each pass removes keys, so authorization reaches a stable result in finite time.
 fn filter_update_input(
@@ -2602,6 +2622,12 @@ pub async fn create_entity(
     apply_computed(&schema_def, &mut fields, claims.as_ref(), rules_now)
         .map_err(rule_error_to_forge)?;
     validate_required_fields(&schema_def, &fields)?;
+    require_entity_action(
+        &policy_store, &schema_def, claims.as_ref(),
+        &Entity::with_id(supplied.id.clone(), schema_name.clone(), fields.clone()),
+        ActionVerb::Create,
+    )?;
+
 
     // CEL @require validation rules (#92) — fail-closed, in-transaction,
     // pre-persistence. Cross-entity reads (#95) are resolved here: any
@@ -2661,6 +2687,8 @@ pub async fn create_entity(
     let entity = Entity::with_id(supplied.id, schema_name, fields);
     validate_required_fields(&schema_def, &entity.fields)?;
     check_field_constraints(&schema_def, &entity.fields)?;
+    require_entity_action(&policy_store, &schema_def, claims.as_ref(), &entity, ActionVerb::Create)?;
+
 
     if let Some(intent) = intent {
         let changed_fields: Vec<_> = entity.fields.keys().cloned().collect();
@@ -3329,6 +3357,8 @@ pub async fn update_entity(
         conditional_requested(&headers),
     )
     .await?;
+    require_entity_action(&policy_store, &schema_def, claims.as_ref(), &existing, ActionVerb::Update)?;
+
 
     // Record-level ownership check: fetch existing entity and verify ownership
     let (tx, rx) = oneshot::channel();
@@ -3654,6 +3684,8 @@ pub async fn patch_entity(
         conditional_requested(&headers),
     )
     .await?;
+    require_entity_action(&policy_store, &schema_def, claims.as_ref(), &existing, ActionVerb::Update)?;
+
 
     // Record-level ownership check
     let (tx, rx) = oneshot::channel();
@@ -3963,6 +3995,8 @@ pub async fn delete_entity(
         conditional_requested(&headers),
     )
     .await?;
+    require_entity_action(&policy_store, &schema_def, claims.as_ref(), &existing, ActionVerb::Delete)?;
+
 
     // Record-level ownership check: fetch entity first and verify ownership
     let (tx, rx) = oneshot::channel();
