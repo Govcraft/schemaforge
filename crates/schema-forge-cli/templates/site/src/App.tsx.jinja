@@ -2,13 +2,14 @@
 // route shares one chrome. /login is the only route rendered outside the
 // shell.
 //
-// The shell mirrors the Govcraft DS:
+// The shell mirrors the application design system:
 // - Sidebar (ink rail): brand mark + project name; an Entities section
 //   listing every visible schema with a per-row icon; a footer block with
 //   a quick-switcher stub, a theme toggle, and an API/Build readout.
 // - Topbar: chevron-separated breadcrumbs, a search-shaped command-K
 //   button (palette is a follow-up; the button is the surface for it),
 //   an icon-only theme toggle, and a user pill that signs out on click.
+import { SITE_NAME, THEME_STORAGE_KEY } from "@/lib/branding"
 import type { ComponentType } from "react"
 import { useEffect, useState } from "react"
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom"
@@ -51,7 +52,7 @@ import {
   type SchemaResponse,
 } from "@/generated/api-client"
 
-const THEME_KEY = "{{ project_name | lower }}.theme"
+const THEME_KEY = THEME_STORAGE_KEY
 type Theme = "light" | "dark"
 
 function readTheme(): Theme {
@@ -144,7 +145,7 @@ function Sidebar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
           alt=""
           style={ { width: 26, height: 22, display: "block" }}
         />
-        <div className="rail-title">{{ project_name }}</div>
+        <div className="rail-title">{SITE_NAME}</div>
       </div>
 
       <div className="rail-section" style={ { flex: 1, minHeight: 0, overflow: "auto" }}>

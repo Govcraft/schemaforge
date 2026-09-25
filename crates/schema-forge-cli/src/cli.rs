@@ -395,6 +395,26 @@ pub struct SiteGenerateArgs {
     #[arg(short = 'o', long, default_value = "site")]
     pub out_dir: PathBuf,
 
+    /// Product name shown in the generated site (overrides config).
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Browser-title suffix; pass an empty string to disable.
+    #[arg(long)]
+    pub title_suffix: Option<String>,
+
+    /// SVG logo for light surfaces (overrides config).
+    #[arg(long)]
+    pub logo: Option<PathBuf>,
+
+    /// SVG logo for dark surfaces (defaults to logo).
+    #[arg(long)]
+    pub logo_on_dark: Option<PathBuf>,
+
+    /// SVG favicon (defaults to logo).
+    #[arg(long)]
+    pub favicon: Option<PathBuf>,
+
     /// Pick a single schema by name. Defaults to the first schema in the directory.
     #[arg(long)]
     pub schema: Option<String>,

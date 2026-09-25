@@ -718,61 +718,25 @@ dist
 .DS_Store
 "#;
 
-/// Govcraft brand mark, white fill — used on the inked sidebar rail and
-/// the dark login left panel. Vendored from the Govcraft DS (paths only,
-/// no rasterized stroke). Vite's `public/` dir serves these at the URL
-/// root, so the React templates can `<img src="/logo-mark-white.svg" />`
-/// without bundler involvement.
-pub const LOGO_MARK_WHITE_SVG: &str = r##"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<svg version="1.1" id="svg1" width="886.4729" height="720.97095" viewBox="0 0 886.47289 720.97095" xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg">
-  <defs id="defs1"></defs>
-  <g id="layer-MC0" transform="translate(9.3134156e-4,-75.917999)">
-    <path id="path1" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,270.4512,284.1136)"></path>
-    <path id="path2" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,270.45107,400.17613)"></path>
-    <path id="path3" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,474.93093,400.17613)"></path>
-    <path id="path4" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,679.4108,400.17627)"></path>
-    <path id="path5" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,270.68787,515.8356)"></path>
-    <path id="path6" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,270.68787,631.89813)"></path>
-    <path id="path7" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,475.24653,631.89827)"></path>
-    <path id="path8" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,543.4328,631.89827)"></path>
-    <path id="path9" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,679.80533,631.89827)"></path>
-    <path id="path10" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,679.80533,515.83573)"></path>
-    <path id="path11" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#ffffff;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,543.19613,284.1136)"></path>
-  </g>
-</svg>
+/// Neutral four-square application mark on dark surfaces.
+pub const LOGO_MARK_WHITE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path fill="#fff" d="M2 2h12v12H2zM18 2h12v12H18zM2 18h12v12H2zM18 18h12v12H18z"/></svg>
 "##;
 
-/// Govcraft brand mark, ink fill — used as the favicon and on light surfaces.
-pub const LOGO_MARK_INK_SVG: &str = r##"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<svg version="1.1" id="svg1" width="886.4729" height="720.97095" viewBox="0 0 886.47289 720.97095" xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg">
-  <defs id="defs1"></defs>
-  <g id="layer-MC0" transform="translate(9.3134156e-4,-75.917999)">
-    <path id="path1" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,270.4512,284.1136)"></path>
-    <path id="path2" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,270.45107,400.17613)"></path>
-    <path id="path3" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,474.93093,400.17613)"></path>
-    <path id="path4" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,679.4108,400.17627)"></path>
-    <path id="path5" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,270.68787,515.8356)"></path>
-    <path id="path6" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,270.68787,631.89813)"></path>
-    <path id="path7" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,475.24653,631.89827)"></path>
-    <path id="path8" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,543.4328,631.89827)"></path>
-    <path id="path9" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,679.80533,631.89827)"></path>
-    <path id="path10" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,679.80533,515.83573)"></path>
-    <path id="path11" d="M 0,0 H -46.026 V 78.342 H 0 Z" style="fill:#000000;fill-opacity:1;fill-rule:nonzero;stroke:none" transform="matrix(1.3333333,0,0,-1.3333333,543.19613,284.1136)"></path>
-  </g>
-</svg>
+/// Neutral application mark on light surfaces.
+pub const LOGO_MARK_INK_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path fill="#171717" d="M2 2h12v12H2zM18 2h12v12H18zM2 18h12v12H2zM18 18h12v12H18z"/></svg>
 "##;
 
 pub const INDEX_CSS: &str = r#"@import "tailwindcss";
 
 /* =========================================================
-   SchemaForge generated-site baseline — Govcraft Design System
+   Application design tokens
    Two type families (IBM Plex Sans + Mono), one signal accent
    (Signal Orange), paper ground + ink in light, console in dark.
-   shadcn primitive tokens are rebound onto these Govcraft tokens
+   shadcn primitive tokens are rebound onto these application tokens
    so Button / Input / Card render in-brand without changes.
    ========================================================= */
 
-/* ---- Govcraft palette + DS tokens (light is default) ---- */
+/* ---- Application palette and tokens (light is default) ---- */
 :root {
   --gc-ink:        #0A0A0A;
   --gc-ink-2:      #1F1F1F;
@@ -870,7 +834,7 @@ pub const INDEX_CSS: &str = r#"@import "tailwindcss";
   --link:             #91A8C8;
 }
 
-/* ---- Bind shadcn v4 tokens onto Govcraft DS so primitives render in-brand ---- */
+/* ---- Bind shadcn v4 tokens onto application tokens so primitives render in-brand ---- */
 @theme inline {
   --color-background:        var(--app-bg);
   --color-foreground:        var(--app-fg-1);
@@ -2090,8 +2054,8 @@ function StatusChip({ status }: { status: FileAttachment["status"] }) {
 /// history, and screen-magnification users all rely on a unique,
 /// descriptive title per page. Restores the title on unmount so cross-
 /// route navigation doesn't leak the previous page's name.
-pub const USE_DOCUMENT_TITLE: &str = r#"// Generated by schema-forge — edit freely.
-import { useEffect } from "react"
+pub const USE_DOCUMENT_TITLE: &str = r#"import { useEffect } from "react"
+import { SITE_NAME, TITLE_SUFFIX } from "@/lib/branding"
 
 /**
  * Set the document title for the lifetime of the current page.
@@ -2100,12 +2064,12 @@ import { useEffect } from "react"
  *   useDocumentTitle(`${schema} · ${recordName}`)
  *
  * The previous title is restored on unmount. The product suffix
- * (· SchemaForge) is appended automatically so callers stay terse.
+ * is configured by the project. An empty suffix disables it.
  */
 export function useDocumentTitle(title: string): void {
   useEffect(() => {
     const previous = document.title
-    document.title = title ? `${title} · SchemaForge` : "SchemaForge"
+    document.title = title ? (TITLE_SUFFIX ? `${title} · ${TITLE_SUFFIX}` : title) : SITE_NAME
     return () => {
       document.title = previous
     }

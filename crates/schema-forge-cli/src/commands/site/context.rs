@@ -95,6 +95,7 @@ pub fn pluralize(word: &str) -> String {
 /// `entity` without reaching through the list.
 #[derive(Debug, Clone, Serialize)]
 pub struct SiteContext {
+    pub branding: super::branding::Branding,
     /// Kebab-cased project name (for `package.json`, `<title>`, etc.).
     pub project_name: String,
     /// Every non-system schema, projected into a generator-friendly view.

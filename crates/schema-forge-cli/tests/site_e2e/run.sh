@@ -43,7 +43,9 @@ cargo build --package schema-forge-cli --bin schemaforge --quiet
 # ---------- generate the site ----------
 ./target/debug/schemaforge site generate \
   --schema-dir "$SCHEMAS_DIR" \
-  --out-dir "$SITE_DIR"
+  --out-dir "$SITE_DIR" \
+  --name 'Acme "Operations" & <Review>' \
+  --title-suffix 'Workspace'
 
 # ---------- backend ----------
 BACKEND_LOG="$TMP_ROOT/backend.log"
