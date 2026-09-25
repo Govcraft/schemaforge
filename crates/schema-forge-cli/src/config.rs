@@ -19,6 +19,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use acton_service::config::Config;
+use figment::{
+    providers::{Env, Format, Toml},
+    Figment,
+};
 use schema_forge_acton::config::ClientConfig;
 use schema_forge_acton::SchemaForgeConfig;
 use schema_forge_signing::{SigningConfig, SigningMode, VerifyPolicy};
@@ -144,52 +148,65 @@ pub fn load_svc_config(global: &GlobalOpts) -> Result<Config<SchemaForgeConfig>,
     };
     // acton-service defaults to all interfaces; SchemaForge defaults to loopback.
     // Preserve an explicitly configured unspecified address, including 0.0.0.0.
-    if !service_bind_is_configured(global.config.as_deref())? {
+    if !service_bind_is_configured(global.config.as_deref()) {
         svc.service.bind = std::net::Ipv4Addr::LOCALHOST.into();
     }
     apply_cli_overrides(&mut svc, global)?;
     Ok(svc)
 }
 
-/// Inspect the same file layers as acton-service without changing their precedence.
-fn service_bind_is_configured(explicit: Option<&Path>) -> Result<bool, CliError> {
-    if std::env::var_os("ACTON_SERVICE_BIND").is_some() {
-        return Ok(true);
+/// Match acton-service's user config discovery, without recommended_path's
+/// advisory relative fallback (which the framework does not actually load).
+fn user_service_config_path() -> Option<PathBuf> {
+    #[cfg(unix)]
+    let root = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    #[cfg(windows)]
+    let root = std::env::var_os("APPDATA").map(PathBuf::from).or_else(|| {
+        std::env::var_os("USERPROFILE")
+            .map(|home| PathBuf::from(home).join("AppData").join("Roaming"))
+    });
+    #[cfg(not(any(unix, windows)))]
+    let root: Option<PathBuf> = None;
+    root.map(|root| {
+        root.join("acton-service")
+            .join("schemaforge")
+            .join("config.toml")
+    })
+}
+
+fn service_config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(path) = explicit {
+        return vec![path.to_path_buf()];
     }
-    let mut paths = if let Some(path) = explicit {
-        vec![path.to_path_buf()]
-    } else {
-        vec![
-            PathBuf::from("config.toml"),
-            Config::<SchemaForgeConfig>::recommended_path("schemaforge"),
-        ]
-    };
-    if explicit.is_none() {
-        #[cfg(unix)]
-        paths.push(PathBuf::from("/etc/acton-service/schemaforge/config.toml"));
-        #[cfg(windows)]
-        if let Some(root) = std::env::var_os("PROGRAMDATA") {
-            paths.push(PathBuf::from(root).join("acton-service/schemaforge/config.toml"));
+    let mut paths = vec![PathBuf::from("config.toml")];
+    if let Some(path) = user_service_config_path().filter(|path| path.is_file()) {
+        paths.push(path);
+    }
+    #[cfg(unix)]
+    paths.push(PathBuf::from("/etc/acton-service/schemaforge/config.toml"));
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("PROGRAMDATA") {
+        paths.push(PathBuf::from(root).join("acton-service/schemaforge/config.toml"));
+    }
+    paths
+}
+
+/// Inspect the framework's actual providers, without its default values.
+/// Env handles case-insensitive names and structured ACTON_SERVICE dictionaries.
+/// The framework has already validated and loaded the complete configuration.
+fn service_bind_is_configured(explicit: Option<&Path>) -> bool {
+    let mut configured = Figment::new();
+    for path in service_config_paths(explicit).iter().rev() {
+        if path.exists() {
+            configured = configured.merge(Toml::file(path));
         }
     }
-    for path in paths {
-        let source = match std::fs::read_to_string(&path) {
-            Ok(source) => source,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(source) => return Err(CliError::Io { path, source }),
-        };
-        let config: toml::Value = toml::from_str(&source).map_err(|error| CliError::Config {
-            message: format!("failed to load {}: {error}", path.display()),
-        })?;
-        if config
-            .get("service")
-            .and_then(|service| service.get("bind"))
-            .is_some()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    configured
+        .merge(Env::prefixed("ACTON_").split("_"))
+        .contains("service.bind")
 }
 
 fn load_svc_config_from_path(path: &Path) -> Result<Config<SchemaForgeConfig>, CliError> {
@@ -621,6 +638,91 @@ mod tests {
             trust_policy: None,
             no_verify: false,
         }
+    }
+
+    #[test]
+    fn listener_environment_provider_respects_case_and_dictionary_overrides() {
+        const CHILD: &str = "SCHEMAFORGE_LISTENER_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let global = GlobalOpts {
+                config: Some(PathBuf::from("config.toml")),
+                ..empty_global()
+            };
+            let config = load_svc_config(&global).unwrap();
+            assert_eq!(config.service.bind, std::net::Ipv4Addr::UNSPECIFIED);
+            assert_eq!(config.service.port, 3899);
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("config.toml"),
+            "[service]\nport = 3899\n",
+        )
+        .unwrap();
+        for (key, value) in [
+            ("ACTON_SERVICE_BIND", "0.0.0.0"),
+            ("ACTON_SERVICE_bind", "0.0.0.0"),
+            ("ACTON_SERVICE", "{bind=\"0.0.0.0\"}"),
+        ] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "config::tests::listener_environment_provider_respects_case_and_dictionary_overrides", "--nocapture"])
+                .current_dir(directory.path()).env(CHILD, "1");
+            for (name, _) in std::env::vars_os() {
+                if name
+                    .to_string_lossy()
+                    .to_ascii_uppercase()
+                    .starts_with("ACTON_")
+                {
+                    child.env_remove(name);
+                }
+            }
+            let output = child.env(key, value).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{key}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn missing_home_does_not_discover_the_recommended_relative_fallback() {
+        const CHILD: &str = "SCHEMAFORGE_CONFIG_PATH_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(user_service_config_path().is_none());
+            assert!(!service_config_paths(None)
+                .contains(&PathBuf::from("acton-service/schemaforge/config.toml")));
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let fallback = directory.path().join("acton-service/schemaforge");
+        std::fs::create_dir_all(&fallback).unwrap();
+        std::fs::write(
+            fallback.join("config.toml"),
+            "[service]\nbind = \"0.0.0.0\"\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::missing_home_does_not_discover_the_recommended_relative_fallback",
+                "--nocapture",
+            ])
+            .current_dir(directory.path())
+            .env(CHILD, "1")
+            .env_remove("HOME")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("APPDATA")
+            .env_remove("USERPROFILE")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
