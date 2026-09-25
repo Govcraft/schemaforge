@@ -110,7 +110,9 @@ impl std::fmt::Display for DbParams {
                 write!(
                     f,
                     "surrealdb {}/{}@{} (user={user}, pass={masked_pass})",
-                    p.namespace, p.database, self.redacted_url()
+                    p.namespace,
+                    p.database,
+                    self.redacted_url()
                 )
             }
             DbParams::Postgres(_) => write!(f, "postgres {}", self.redacted_url()),
@@ -140,8 +142,54 @@ pub fn load_svc_config(global: &GlobalOpts) -> Result<Config<SchemaForgeConfig>,
             }
         })?,
     };
+    // acton-service defaults to all interfaces; SchemaForge defaults to loopback.
+    // Preserve an explicitly configured unspecified address, including 0.0.0.0.
+    if !service_bind_is_configured(global.config.as_deref())? {
+        svc.service.bind = std::net::Ipv4Addr::LOCALHOST.into();
+    }
     apply_cli_overrides(&mut svc, global)?;
     Ok(svc)
+}
+
+/// Inspect the same file layers as acton-service without changing their precedence.
+fn service_bind_is_configured(explicit: Option<&Path>) -> Result<bool, CliError> {
+    if std::env::var_os("ACTON_SERVICE_BIND").is_some() {
+        return Ok(true);
+    }
+    let mut paths = if let Some(path) = explicit {
+        vec![path.to_path_buf()]
+    } else {
+        vec![
+            PathBuf::from("config.toml"),
+            Config::<SchemaForgeConfig>::recommended_path("schemaforge"),
+        ]
+    };
+    if explicit.is_none() {
+        #[cfg(unix)]
+        paths.push(PathBuf::from("/etc/acton-service/schemaforge/config.toml"));
+        #[cfg(windows)]
+        if let Some(root) = std::env::var_os("PROGRAMDATA") {
+            paths.push(PathBuf::from(root).join("acton-service/schemaforge/config.toml"));
+        }
+    }
+    for path in paths {
+        let source = match std::fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => return Err(CliError::Io { path, source }),
+        };
+        let config: toml::Value = toml::from_str(&source).map_err(|error| CliError::Config {
+            message: format!("failed to load {}: {error}", path.display()),
+        })?;
+        if config
+            .get("service")
+            .and_then(|service| service.get("bind"))
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn load_svc_config_from_path(path: &Path) -> Result<Config<SchemaForgeConfig>, CliError> {
@@ -434,6 +482,8 @@ pub struct ResolvedClient {
     pub insecure: bool,
     /// Per-request timeout.
     pub timeout: Duration,
+    /// Maximum retries after an explicit HTTP 429 response.
+    pub max_retries: u32,
 }
 
 impl std::fmt::Debug for ResolvedClient {
@@ -445,6 +495,7 @@ impl std::fmt::Debug for ResolvedClient {
             .field("ca_cert", &self.ca_cert)
             .field("insecure", &self.insecure)
             .field("timeout", &self.timeout)
+            .field("max_retries", &self.max_retries)
             .finish()
     }
 }
@@ -487,6 +538,7 @@ pub fn resolve_client_config(
         ca_cert,
         insecure: conn.insecure,
         timeout: Duration::from_secs(timeout_secs),
+        max_retries: conn.max_retries,
     })
 }
 
@@ -569,6 +621,24 @@ mod tests {
             trust_policy: None,
             no_verify: false,
         }
+    }
+
+    #[test]
+    fn listener_file_configuration_and_loopback_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let global = GlobalOpts {
+            config: Some(path.clone()),
+            ..empty_global()
+        };
+        std::fs::write(&path, "[service]\nport = 3899\n").unwrap();
+        let config = load_svc_config(&global).unwrap();
+        assert_eq!(config.service.port, 3899);
+        assert_eq!(config.service.bind, std::net::Ipv4Addr::LOCALHOST);
+        std::fs::write(&path, "[service]\nport = 8080\nbind = \"0.0.0.0\"\n").unwrap();
+        let config = load_svc_config(&global).unwrap();
+        assert_eq!(config.service.port, 8080);
+        assert_eq!(config.service.bind, std::net::Ipv4Addr::UNSPECIFIED);
     }
 
     #[test]
@@ -863,11 +933,20 @@ mod connection_redaction_tests {
     #[test]
     fn connection_labels_do_not_disclose_uri_or_dsn_credentials() {
         let params = DbParams::Postgres(PostgresParams {
-            url: "postgresql://operator:SECRET@localhost:5432/example?password=SECRET#SECRET".into(),
+            url: "postgresql://operator:SECRET@localhost:5432/example?password=SECRET#SECRET"
+                .into(),
         });
         assert_eq!(params.redacted_url(), "postgresql://localhost:5432/example");
         assert!(!params.to_string().contains("SECRET"));
-        assert_eq!(redact_connection_url("Server=localhost;User ID=operator;Password=SECRET;Database=example"), "(configured database)");
-        assert_eq!(redact_connection_url("not a URL with SECRET"), "(configured database)");
+        assert_eq!(
+            redact_connection_url(
+                "Server=localhost;User ID=operator;Password=SECRET;Database=example"
+            ),
+            "(configured database)"
+        );
+        assert_eq!(
+            redact_connection_url("not a URL with SECRET"),
+            "(configured database)"
+        );
     }
 }

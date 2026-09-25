@@ -14,7 +14,7 @@ pub async fn run(
     let svc_config = load_svc_config(global)?;
     let db_params = resolve_db_params(&svc_config)?;
 
-    let backend = super::connect_backend(&db_params, output).await?;
+    let backend = super::connect_backend_read_only(&db_params, output).await?;
 
     let all_schemas = backend.list_schema_metadata().await?;
 

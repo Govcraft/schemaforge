@@ -43,6 +43,25 @@ pub(super) async fn preflight_schema_batch(
     validate_tenant_hierarchy(&merge_schema_definitions(existing, desired))
 }
 
+/// Refuse a known destructive batch before any schema or revision writes.
+pub(super) fn preflight_destructive_batch(
+    updates: &[SchemaUpdate],
+    execute: bool,
+    force: bool,
+    interactive: bool,
+) -> Result<(), CliError> {
+    if execute
+        && !force
+        && !interactive
+        && updates
+            .iter()
+            .any(|update| update.migration.has_destructive_steps())
+    {
+        return Err(CliError::RequiresForce);
+    }
+    Ok(())
+}
+
 pub(super) struct SchemaUpdate {
     pub schema: SchemaDefinition,
     pub migration: MigrationPlan,
@@ -180,7 +199,7 @@ mod tests {
         }
         fn load_schema_metadata<'a>(
             &'a self,
-            _: &'a SchemaName,
+            name: &'a SchemaName,
         ) -> Pin<
             Box<
                 dyn Future<Output = Result<Option<SchemaDefinition>, BackendError>>
@@ -189,7 +208,15 @@ mod tests {
                     + 'a,
             >,
         > {
-            Box::pin(async move { Ok(self.stored.lock().unwrap().schema.clone()) })
+            Box::pin(async move {
+                Ok(self
+                    .stored
+                    .lock()
+                    .unwrap()
+                    .schema
+                    .clone()
+                    .filter(|schema| &schema.name == name))
+            })
         }
         fn list_schema_metadata(
             &self,
@@ -262,6 +289,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn destructive_batch_is_refused_before_safe_schema_or_revision_writes() {
+        let desired = [
+            schema("schema Aaa { label: text }"),
+            schema("schema Note { title: text }"),
+        ];
+        for command in [Command::Apply, Command::Migrate] {
+            let mut backend = Backend::seeded(schema("schema Note { title: text extra: text }"));
+            backend.revisions_supported = true;
+            let result = match command {
+                Command::Apply => {
+                    super::super::apply::apply_to_backend(
+                        &ApplyArgs {
+                            paths: vec![],
+                            dry_run: false,
+                            force: false,
+                            with_policies: false,
+                            prepare_record_revisions: true,
+                        },
+                        &desired,
+                        &backend,
+                        &output(),
+                    )
+                    .await
+                }
+                Command::Migrate => {
+                    super::super::migrate::migrate_on_backend(
+                        &MigrateArgs {
+                            paths: vec![],
+                            execute: true,
+                            force: false,
+                            schema: None,
+                        },
+                        &desired,
+                        &backend,
+                        &output(),
+                    )
+                    .await
+                }
+            };
+            assert!(matches!(result, Err(CliError::RequiresForce)), "{result:?}");
+            let stored = backend.stored.lock().unwrap();
+            assert_eq!(stored.migrations, 0);
+            assert_eq!(stored.writes, 0);
+            assert_eq!(stored.preparations, 0);
+        }
+    }
+
+    #[test]
+    fn destructive_preflight_preserves_dry_run_force_and_interactive_modes() {
+        let original = schema("schema Note { title: text extra: text }");
+        let updates = [
+            SchemaUpdate::plan(Some(&original), &schema("schema Note { title: text }")).unwrap(),
+        ];
+        for (execute, force, interactive) in [
+            (false, false, false),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            assert!(preflight_destructive_batch(&updates, execute, force, interactive).is_ok());
+        }
+        assert!(preflight_destructive_batch(&updates, true, false, false).is_err());
     }
 
     #[tokio::test]

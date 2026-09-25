@@ -198,12 +198,12 @@ Rule: any schema with `@tenant(...)` (root *or* child) gets a composite `(_tenan
 
 ### Migration safety
 
-`AddUnique` is classified `RequiresConfirmation` — `schema-forge apply` will refuse it without `--force` because the DDL fails against existing duplicate rows. Workflow:
+`AddUnique` on an existing table is classified `review`, an informational warning that does not require approval. Existing duplicate rows must be cleaned first; `--force` cannot bypass the database constraint. Unique constraints on a newly created table are `safe`. Workflow:
 
 1. Add `unique` to the schema.
 2. `schema-forge migrate` — shows the `AddUnique` step.
 3. Query/clean any existing duplicates: `SELECT slug, COUNT(*) FROM Organization GROUP BY slug HAVING COUNT(*) > 1`.
-4. `schema-forge apply --force` (or `migrate --execute --force`).
+4. Apply the migration after cleaning duplicate rows.
 
 `RemoveUnique` is `Safe` — drops the index/constraint with no data risk.
 

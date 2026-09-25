@@ -40,7 +40,7 @@ At-a-glance tables. For full grammar see [dsl-reference.md](dsl-reference.md). F
 - Allowed on `text`, `integer`, `float`, `datetime`, `enum`. Other types are a parse error (`UniqueOnUnsupportedType`) — `richtext`, `json`, `boolean`, arrays, `composite`, `relation`, `file`.
 - For a `@tenant(parent: "...")` schema the underlying constraint is composite on `(_tenant, field)`; two tenants can hold the same value.
 - For a `@tenant(root)` schema it is a plain table-wide constraint on `(field)`. A root's rows *are* the tenants, so there is no outer tenant to scope them by. (Earlier releases scoped them to `(_tenant, field)` like a child, which silently accepted every duplicate — `_tenant` is empty on a platform-level create and SQL treats NULLs as distinct. See #134 and the CHANGELOG migration note if you have a database applied before the fix.)
-- Adding `unique` to a column with existing duplicates fails at apply time. The migration step `AddUnique` is classified `RequiresConfirmation`; clean data first or pass `--force`.
+- Adding `unique` to a column with existing duplicates fails at apply time. The migration step `AddUnique` is classified `review`; clean duplicate data first. This informational class does not require `--force`, and `--force` cannot bypass database constraints.
 - A write that collides returns **HTTP 409** with body `{ "error": "unique_violation", "schema": "...", "field": "...", "message": "..." }`. Generated edit forms route this onto the offending field via `react-hook-form`'s `setError`.
 
 ## Schema-Level Annotations (before `schema` keyword)

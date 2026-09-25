@@ -81,7 +81,10 @@ impl<'de> Deserialize<'de> for MigrationId {
 pub enum MigrationSafety {
     /// The step is safe and can be applied automatically.
     Safe,
-    /// The step may require confirmation (e.g. adding a required field without default).
+    /// Informational review warning (e.g. a new constraint on existing data).
+    /// Does not require approval; only destructive changes are gated.
+    /// The Rust variant name is retained for source compatibility.
+    #[serde(rename = "Review", alias = "RequiresConfirmation")]
     RequiresConfirmation,
     /// The step is destructive and may cause data loss (e.g. dropping a field or schema).
     Destructive,
@@ -91,7 +94,7 @@ impl fmt::Display for MigrationSafety {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Safe => write!(f, "safe"),
-            Self::RequiresConfirmation => write!(f, "requires_confirmation"),
+            Self::RequiresConfirmation => write!(f, "review"),
             Self::Destructive => write!(f, "destructive"),
         }
     }
@@ -399,7 +402,7 @@ impl MigrationPlan {
     pub fn overall_safety(&self) -> MigrationSafety {
         let mut worst = MigrationSafety::Safe;
         for step in &self.steps {
-            let s = step.safety();
+            let s = self.step_safety(step);
             worst = match (worst, s) {
                 (MigrationSafety::Destructive, _) | (_, MigrationSafety::Destructive) => {
                     MigrationSafety::Destructive
@@ -412,6 +415,18 @@ impl MigrationPlan {
             };
         }
         worst
+    }
+
+    /// Classify a step in its plan context. Constraints on a newly created
+    /// table cannot conflict with existing data and are safe.
+    pub fn step_safety(&self, step: &MigrationStep) -> MigrationSafety {
+        if matches!(self.steps.first(), Some(MigrationStep::CreateSchema { .. }))
+            && matches!(step, MigrationStep::AddUnique { .. })
+        {
+            MigrationSafety::Safe
+        } else {
+            step.safety()
+        }
     }
 
     /// Returns true if the plan has no steps.
@@ -447,7 +462,7 @@ impl fmt::Display for MigrationPlan {
             self.overall_safety()
         )?;
         for (i, step) in self.steps.iter().enumerate() {
-            writeln!(f, "  {}. {} [{}]", i + 1, step, step.safety())?;
+            writeln!(f, "  {}. {} [{}]", i + 1, step, self.step_safety(step))?;
         }
         Ok(())
     }
@@ -1055,6 +1070,39 @@ mod tests {
     // -- MigrationId tests --
 
     #[test]
+    fn unique_constraints_are_safe_only_when_creating_a_new_table() {
+        let step = MigrationStep::AddUnique {
+            field: FieldName::new("code").unwrap(),
+            per_tenant: false,
+        };
+        let mut plan = MigrationPlan::new(
+            SchemaId::new(),
+            SchemaName::new("Note").unwrap(),
+            vec![step.clone()],
+        );
+        assert_eq!(plan.overall_safety(), MigrationSafety::RequiresConfirmation);
+        assert_eq!(plan.overall_safety().to_string(), "review");
+        plan.steps.insert(
+            0,
+            MigrationStep::CreateSchema {
+                name: plan.schema_name.clone(),
+                fields: vec![],
+                tenanted: false,
+            },
+        );
+        assert_eq!(plan.overall_safety(), MigrationSafety::Safe);
+        assert_eq!(plan.step_safety(&step), MigrationSafety::Safe);
+        assert_eq!(
+            serde_json::from_str::<MigrationSafety>("\"RequiresConfirmation\"").unwrap(),
+            MigrationSafety::RequiresConfirmation
+        );
+        assert_eq!(
+            serde_json::to_string(&MigrationSafety::RequiresConfirmation).unwrap(),
+            "\"Review\""
+        );
+    }
+
+    #[test]
     fn migration_id_has_correct_prefix() {
         let id = MigrationId::new();
         assert!(
@@ -1096,10 +1144,7 @@ mod tests {
     #[test]
     fn safety_display() {
         assert_eq!(MigrationSafety::Safe.to_string(), "safe");
-        assert_eq!(
-            MigrationSafety::RequiresConfirmation.to_string(),
-            "requires_confirmation"
-        );
+        assert_eq!(MigrationSafety::RequiresConfirmation.to_string(), "review");
         assert_eq!(MigrationSafety::Destructive.to_string(), "destructive");
     }
 

@@ -250,3 +250,15 @@ schema-forge serve --db-url postgres://user:pass@host:5432/dbname
 ```
 
 The two backends are **mutually exclusive** at build time (enforced by acton-service). The binary ships with one or the other.
+
+## HTTP governor rate limiting
+
+The top-level `[rate_limit]` applies to all HTTP traffic by default, including
+anonymous login and probe routes. Defaults: `per_user_rpm = 200`,
+`per_client_rpm = 1000`, `auto_apply = true`, `trust_forwarded_headers = false`.
+Anonymous clients share a bucket by TCP peer address, which is the proxy
+address behind a reverse proxy. `[rate_limit.routes."POST /api/v1/forge/auth/login"]`
+supports `requests_per_minute`, `burst_size`, and `per_user` overrides.
+See [rate limiting and proxy deployment](../../docs/rate-limiting.md) for trusted
+forwarded-header configuration, separate probe quotas and limiter disabling.
+This is independent of `[schema_forge.export.rate_limit]`.

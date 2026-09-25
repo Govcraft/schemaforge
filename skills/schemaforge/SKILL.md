@@ -653,7 +653,7 @@ The two backends are **mutually exclusive** at build time (enforced by acton-ser
 - Allowed on `text`, `integer`, `float`, `datetime`, `enum`. Other types are a parse error (`UniqueOnUnsupportedType`) — `richtext`, `json`, `boolean`, arrays, `composite`, `relation`, `file`.
 - For a `@tenant(parent: "...")` schema the underlying constraint is composite on `(_tenant, field)`; two tenants can hold the same value.
 - For a `@tenant(root)` schema it is a plain table-wide constraint on `(field)`. A root's rows *are* the tenants, so there is no outer tenant to scope them by. (Earlier releases scoped them to `(_tenant, field)` like a child, which silently accepted every duplicate — `_tenant` is empty on a platform-level create and SQL treats NULLs as distinct. See #134 and the CHANGELOG migration note if you have a database applied before the fix.)
-- Adding `unique` to a column with existing duplicates fails at apply time. The migration step `AddUnique` is classified `RequiresConfirmation`; clean data first or pass `--force`.
+- Adding `unique` to a column with existing duplicates fails at apply time. The migration step `AddUnique` is classified `review`; clean duplicate data first. This informational class does not require `--force`, and `--force` cannot bypass database constraints.
 - A write that collides returns **HTTP 409** with body `{ "error": "unique_violation", "schema": "...", "field": "...", "message": "..." }`. Generated edit forms route this onto the offending field via `react-hook-form`'s `setError`.
 
 ## Quick Reference — Annotations
@@ -858,7 +858,7 @@ From a `.schema` file, SchemaForge produces:
 | Entity body without `fields` wrapper | `{"fields": {"name": "value"}}` |
 | `active: boolean unique` (or `json` / array / relation / file / composite / richtext) | Move `unique` to a `text`/`integer`/`float`/`datetime`/`enum` field — those are the only types it's allowed on |
 | Expecting `unique` on a `@tenant(parent: ...)` schema to be table-wide | It's **per-tenant**: different tenants may hold the same value. For cross-tenant uniqueness, drop the `@tenant` annotation or move the field onto the tenant-root entity, where `unique` *is* table-wide |
-| Adding `unique` in a migration against a column with existing duplicates | Clean the duplicates first; `AddUnique` is classified `RequiresConfirmation` and the apply will fail otherwise |
+| Adding `unique` in a migration against a column with existing duplicates | Clean the duplicates first; `AddUnique` is classified `review` and the apply will fail otherwise |
 
 ## Additional Resources
 

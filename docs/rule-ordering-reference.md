@@ -13,19 +13,44 @@ bundles, and rollout.
 
 ## 1. Canonical write-path ordering (issue #105)
 
-For every entity create, update (PUT), and patch (PATCH), the engine executes a
-single, fixed, engine-controlled sequence. The order does not depend on schema
-authoring or on field declaration order across phases:
+The route handlers prepare and authorize the proposed row before evaluating
+rules. Field declaration order does not change the order of phases:
 
 ```text
-@default  →  @compute  →  @require  →  before_* hooks  →  PERSIST  →  { after_* hooks, webhook dispatch }
-└───────────── rule phases (in-transaction) ─────────┘   └ network ┘   └────────── detached fan-out ──────────┘
+CREATE
+schema Cedar write check -> reject hidden keys -> JSON conversion
+-> tenant/owner stamping -> field write filtering -> tenant/owner re-stamping
+-> audit columns -> @default -> @compute -> required-field validation
+-> Cedar Create on computed entity -> related-row prefetch -> @require
+-> before_validate -> before_change -> required-field re-check -> PERSIST
+-> after hooks and webhook dispatch
+
+PUT / PATCH
+Cedar and record checks on stored row -> reject hidden keys -> JSON conversion
+-> remove client owner/_tenant edits
+-> PUT: null omitted optional fields and restore server-owned fields
+   PATCH: merge supplied fields with stored row
+-> field write filtering (restore denied fields from stored row)
+-> audit columns -> @compute -> required-field validation
+-> related-row prefetch -> @require
+-> before_validate -> before_change -> required-field re-check -> PERSIST
+-> after hooks and webhook dispatch
 ```
 
 The three rule phases live in `crates/schema-forge-acton/src/rules.rs`
 (`apply_defaults`, `apply_computed`, `check_requires`); the route handlers in
 `crates/schema-forge-acton/src/routes/entities.rs` call them in this order
-before dispatching any `before_*` hook.
+before dispatching any `before_*` hook. Rules and hooks see only permitted
+client input, together with stored and server-derived values. PUT replaces
+writable fields: omitted optional fields become `null`, so computations and
+requirements observe those nulls. PATCH retains omitted fields. Neither update
+method applies insert-only defaults. Create authorization evaluates the proposed
+entity after computation and before `@require`.
+
+Optional create-reconciliation headers can resolve a previously completed
+create before this new-write sequence; see [create reconciliation](create-reconciliation.md).
+Related-row prefetch performs I/O before requirement evaluation. This sequence
+does not promise a database transaction spanning rules and external hooks.
 
 ### 1.1 Why rules run before hooks
 
@@ -39,7 +64,9 @@ never costs a hook call.
 
 | Invariant | Guarantee |
 |---|---|
-| In-transaction, pre-persistence | All three rule phases run before the backend write, inside the same request that persists. |
+| Pre-persistence | Rules run before the backend write in the same request; related reads and hooks are not one database transaction. |
+| Authorized rule inputs | Field write filtering precedes every rule phase; PUT nulls omitted writable optional fields and PATCH preserves omitted values. |
+| Computed create authorization | Cedar `Create` runs after `@compute` and required validation, before `@require`. |
 | Rules ahead of `before_*` hooks | `@default`/`@compute`/`@require` all complete before the first `before_*` hook is dispatched. |
 | Deterministic, no reentrancy | Phases run in the fixed order above; each visits fields in schema declaration order; a phase never re-invokes an earlier phase. |
 | Rejection suppresses all downstream work | A `@require` failure returns **422** and fires **no** `before_*` hook, persists **nothing**, and therefore fires **no** `after_*` hook and **no** webhook. |
@@ -60,7 +87,13 @@ never costs a hook call.
   `Ok(true)`; a definite `false` is a 422 rejection, and an error or non-boolean
   result is a 500 (a broken predicate can never let a write through).
 
-This ordering is proven by integration tests:
+The filtering and replacement edges are pinned by
+`write_rules_observe_only_authorized_input_and_keep_server_values`,
+`required_fields_reject_null_and_put_does_not_apply_create_defaults`, and
+`put_omission_matches_persisted_values_and_preserves_denied_fields` in
+`crates/schema-forge-acton/tests/conditional_entities.rs`.
+
+The phase ordering is also covered by integration tests:
 `rule_phase_order_default_then_compute_then_require_is_observable` (in
 `crates/schema-forge-acton/tests/integration.rs`) and
 `require_rejection_fires_no_before_or_after_hook_and_persists_nothing` /

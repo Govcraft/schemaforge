@@ -361,7 +361,7 @@ Database mapping:
 - **SurrealDB (tenanted)**: `DEFINE INDEX uq_{table}_{field} ON {table} FIELDS _tenant, {field} UNIQUE;`
 - **SurrealDB (non-tenanted)**: `DEFINE INDEX uq_{table}_{field} ON {table} FIELDS {field} UNIQUE;`
 
-Migration safety: `AddUnique` is classified as `RequiresConfirmation`
+Migration safety: `AddUnique` is classified as `review`
 because adding a unique constraint to a column with pre-existing
 duplicate values will fail at apply time. Plan for data cleanup before
 running the migration.
@@ -808,7 +808,7 @@ Semantics and limits:
 | `@require` / `@compute` / `@default` expression must type-check against the schema's field types | Apply-time error (`RuleTypeError`, mapped to `line:column`) |
 | `@require(...)` requires both a CEL expression and a message argument | Parse error |
 | `unique` modifier allowed only on `text`/`integer`/`float`/`datetime`/`enum` fields | Parse error (`UniqueOnUnsupportedType`) |
-| Adding `unique` to a column with duplicate existing rows | Migration apply error (`RequiresConfirmation` safety class — operator must clean data first) |
+| Adding `unique` to a column with duplicate existing rows | Migration apply error (`review` safety class — operator must clean data first) |
 | Write that collides with a `unique` field | API 409 (`unique_violation`) with `{ schema, field }` body |
 
 ## Round-Trip Fidelity

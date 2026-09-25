@@ -172,3 +172,24 @@ creating PostgreSQL bookkeeping tables. A fresh database is treated as an empty
 schema registry. An inspection role needs schema `USAGE` and `SELECT` on existing
 bookkeeping tables, but does not need `CREATE`. Normal write commands initialize
 bookkeeping as before.
+
+## Review classifications and batch preflight
+
+Migration safety has three displayed values: `safe`, `review`, and
+`destructive`. `review` is informational across `apply`, `migrate`, `serve`, and
+runtime schema PUT. It warns that existing rows can prevent a constraint or
+conversion from succeeding; it does not request confirmation. Clean conflicting
+data before applying. `--force` permits destructive changes but cannot override
+database constraints. The Rust enum retains `RequiresConfirmation` for source
+compatibility; serialization emits `Review` and accepts the legacy spelling.
+
+Unique constraints created with a new table are `safe`, and the CLI labels the
+plan `CREATE` even when it includes additional constraint steps. Adding a unique
+constraint to an existing table is `review`.
+
+Before a noninteractive `apply` or `migrate --execute` writes any schema,
+metadata, or record-revision state, it plans the complete selected batch. Any
+destructive plan refuses the whole batch unless `--force` is present. Dry runs
+remain available without force. Interactive users can still approve or skip
+individual destructive schemas. Backend failures during execution can still
+leave earlier schemas committed; preflight is not a transaction for the batch.

@@ -710,13 +710,13 @@ pub struct ServeArgs {
     #[arg(long)]
     pub allow_destructive_migrations: bool,
 
-    /// Host address to bind
-    #[arg(short = 'H', long = "host", default_value = "127.0.0.1")]
-    pub host: IpAddr,
+    /// Host address to bind (default: configuration, then 127.0.0.1)
+    #[arg(short = 'H', long = "host")]
+    pub host: Option<IpAddr>,
 
-    /// Port to listen on
-    #[arg(short = 'p', long = "port", default_value = "3000")]
-    pub port: u16,
+    /// Port to listen on (default: configuration, then 3000)
+    #[arg(short = 'p', long = "port")]
+    pub port: Option<u16>,
 
     /// Schema files to load on startup
     #[arg(long = "schemas", default_value = "schemas/")]
@@ -941,6 +941,10 @@ pub struct EntityConnectionArgs {
     /// Per-request timeout in seconds.
     #[arg(long = "timeout")]
     pub timeout: Option<u64>,
+
+    /// Maximum retries after HTTP 429 (0 disables retries).
+    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(0..=10))]
+    pub max_retries: u32,
 }
 
 /// Field input shared by `create`, `replace`, and `patch`.
@@ -1303,6 +1307,23 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
+    fn absent_listener_flags_do_not_override_configuration() {
+        let cli = Cli::try_parse_from(["schemaforge", "serve"]).unwrap();
+        let Commands::Serve(args) = cli.command else {
+            panic!("expected serve")
+        };
+        assert_eq!(args.host, None);
+        assert_eq!(args.port, None);
+        let cli =
+            Cli::try_parse_from(["schemaforge", "serve", "-H", "127.0.0.1", "-p", "3000"]).unwrap();
+        let Commands::Serve(args) = cli.command else {
+            panic!("expected serve")
+        };
+        assert_eq!(args.host, Some(std::net::Ipv4Addr::LOCALHOST.into()));
+        assert_eq!(args.port, Some(3000));
+    }
+
+    #[test]
     fn verify_cli_structure() {
         // This validates the derive macros produce a valid clap command.
         Cli::command().debug_assert();
@@ -1514,8 +1535,8 @@ mod tests {
         ])
         .unwrap();
         if let Commands::Serve(args) = cli.command {
-            assert_eq!(args.host, std::net::Ipv4Addr::UNSPECIFIED);
-            assert_eq!(args.port, 8080);
+            assert_eq!(args.host, Some(std::net::Ipv4Addr::UNSPECIFIED.into()));
+            assert_eq!(args.port, Some(8080));
             assert!(args.watch);
         } else {
             panic!("expected Serve command");
