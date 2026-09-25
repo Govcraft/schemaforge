@@ -107,9 +107,23 @@ pub fn surreal_to_dynamic(value: &SurrealValue) -> Result<DynamicValue, BackendE
         }
         SurrealValue::Bytes(b) => Ok(DynamicValue::Bytes(b.to_vec())),
         SurrealValue::Array(arr) => {
-            let items: Result<Vec<DynamicValue>, BackendError> =
-                arr.iter().map(surreal_to_dynamic).collect();
-            Ok(DynamicValue::Array(items?))
+            let items: Vec<DynamicValue> = arr
+                .iter()
+                .map(surreal_to_dynamic)
+                .collect::<Result<_, _>>()?;
+            // Native record-reference arrays are the persisted representation
+            // of to-many relations. Preserve that distinction for consumers.
+            let references: Option<Vec<EntityId>> = items
+                .iter()
+                .map(|item| match item {
+                    DynamicValue::Ref(id) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            match references {
+                Some(ids) if !ids.is_empty() => Ok(DynamicValue::RefArray(ids)),
+                _ => Ok(DynamicValue::Array(items)),
+            }
         }
         SurrealValue::Object(obj) => {
             let mut map = BTreeMap::new();
@@ -458,6 +472,37 @@ mod tests {
         assert_eq!(
             first_negative_duration(&comp),
             Some(chrono::TimeDelta::seconds(-1))
+        );
+    }
+
+    #[test]
+    fn record_arrays_preserve_relation_values() {
+        use surrealdb::types::{RecordId, RecordIdKey};
+        let first = EntityId::new("target");
+        let second = EntityId::new("target");
+        let record = |id: &EntityId| {
+            SurrealValue::RecordId(RecordId::new(
+                "Target",
+                RecordIdKey::String(id.as_str().into()),
+            ))
+        };
+        let records = vec![record(&first), record(&second)].into_value();
+        assert_eq!(
+            surreal_to_dynamic(&records).unwrap(),
+            DynamicValue::RefArray(vec![first.clone(), second])
+        );
+        let mixed = vec![record(&first), "ordinary text".into_value()].into_value();
+        assert_eq!(
+            surreal_to_dynamic(&mixed).unwrap(),
+            DynamicValue::Array(vec![
+                DynamicValue::Ref(first),
+                DynamicValue::Text("ordinary text".into()),
+            ])
+        );
+        let empty = Vec::<SurrealValue>::new().into_value();
+        assert_eq!(
+            surreal_to_dynamic(&empty).unwrap(),
+            DynamicValue::Array(vec![])
         );
     }
 
