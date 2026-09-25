@@ -7,10 +7,15 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
-## [0.46.0] - 2026-09-25
+## [0.46.1] - 2026-09-25
+
+This release includes the changes prepared for v0.46.0. The v0.46.0 source tag
+is retained, but its binary release was not published.
 
 ### Runtime and API behavior
 
+- Apply target schema, record, and field authorization consistently when resolving
+  related display labels and derived collection IDs, including export labels.
 - Validate tenant declarations consistently across startup, CLI schema application,
   and runtime schema changes. Applications with a tenant root must annotate every
   application schema; built-in system schemas remain shared.
