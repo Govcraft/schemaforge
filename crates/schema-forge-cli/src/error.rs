@@ -84,6 +84,10 @@ pub enum CliError {
     #[error("destructive changes require --force in non-interactive mode; for field renames declare @renamed_from(\"old_name\") to preserve data")]
     RequiresForce,
 
+    /// Noninteractive migration preflight reports every destructive step.
+    #[error("destructive changes require --force in non-interactive mode; no schemas were applied:\n{details}\nFor field renames declare @renamed_from(\"old_name\") to preserve data")]
+    RequiresForceBatch { details: String },
+
     /// HTTP server errors.
     #[error("server error: {message}")]
     Server { message: String },
@@ -171,6 +175,7 @@ impl CliError {
             | Self::SchemaNotFound { .. }
             | Self::DirectoryExists { .. }
             | Self::RequiresForce
+            | Self::RequiresForceBatch { .. }
             | Self::Other(_) => ExitCode::GeneralError,
         }
     }

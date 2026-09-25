@@ -50,14 +50,25 @@ pub(super) fn preflight_destructive_batch(
     force: bool,
     interactive: bool,
 ) -> Result<(), CliError> {
-    if execute
-        && !force
-        && !interactive
-        && updates
+    if execute && !force && !interactive {
+        let destructive_steps: Vec<_> = updates
             .iter()
-            .any(|update| update.migration.has_destructive_steps())
-    {
-        return Err(CliError::RequiresForce);
+            .flat_map(|update| {
+                update
+                    .migration
+                    .steps
+                    .iter()
+                    .filter(|step| {
+                        step.safety() == schema_forge_core::migration::MigrationSafety::Destructive
+                    })
+                    .map(|step| format!("  {}: {step}", update.schema.name))
+            })
+            .collect();
+        if !destructive_steps.is_empty() {
+            return Err(CliError::RequiresForceBatch {
+                details: destructive_steps.join("\n"),
+            });
+        }
     }
     Ok(())
 }
@@ -331,11 +342,40 @@ mod tests {
                     .await
                 }
             };
-            assert!(matches!(result, Err(CliError::RequiresForce)), "{result:?}");
+            assert!(
+                matches!(result, Err(CliError::RequiresForceBatch { .. })),
+                "{result:?}"
+            );
             let stored = backend.stored.lock().unwrap();
             assert_eq!(stored.migrations, 0);
             assert_eq!(stored.writes, 0);
             assert_eq!(stored.preparations, 0);
+        }
+    }
+
+    #[test]
+    fn destructive_preflight_reports_every_schema_and_step() {
+        let original = schema("schema Note { title: text extra: text other: text }");
+        let task = schema("schema Task { title: text obsolete: text }");
+        let updates = [
+            SchemaUpdate::plan(Some(&original), &schema("schema Note { title: text }")).unwrap(),
+            SchemaUpdate::plan(Some(&task), &schema("schema Task { title: text }")).unwrap(),
+        ];
+        let error = preflight_destructive_batch(&updates, true, false, false).unwrap_err();
+        assert_eq!(
+            error.exit_code() as i32,
+            CliError::RequiresForce.exit_code() as i32
+        );
+        let message = error.to_string();
+        for part in [
+            "Note",
+            "extra",
+            "other",
+            "Task",
+            "obsolete",
+            "no schemas were applied",
+        ] {
+            assert!(message.contains(part), "missing {part}: {message}");
         }
     }
 
@@ -445,7 +485,7 @@ mod tests {
                 let backend = Backend::seeded(original.clone());
                 let result = command.run(&backend, schema(new), true).await;
                 assert!(
-                    matches!(result, Err(CliError::RequiresForce)),
+                    matches!(result, Err(CliError::RequiresForceBatch { .. })),
                     "{command:?}: {result:?}"
                 );
                 let stored = backend.stored.lock().unwrap();

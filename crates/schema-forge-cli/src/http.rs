@@ -558,9 +558,7 @@ impl ForgeClient {
         if let Some(tok) = &self.token {
             req = req.bearer_auth(tok);
         }
-        let mut resp = req.send().await.map_err(|e| CliError::Connection {
-            message: e.to_string(),
-        })?;
+        let mut resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         let final_url = resp.url().to_string();
