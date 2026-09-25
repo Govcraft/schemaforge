@@ -96,7 +96,7 @@ wait_for_http "http://127.0.0.1:$BACKEND_PORT/health"
 # ---------- site (install + dev) ----------
 pushd "$SITE_DIR" >/dev/null
 if [[ ! -d node_modules ]]; then
-  pnpm install --frozen-lockfile 2>&1 | tail -5 || pnpm install 2>&1 | tail -5
+  pnpm install --frozen-lockfile || pnpm install
 fi
 
 # Vite's development server transpiles without type checking. Validate the
@@ -116,7 +116,7 @@ wait_for_http "http://127.0.0.1:$VITE_PORT/"
 PLAYWRIGHT_DIR="$SCRIPT_DIR/playwright"
 pushd "$PLAYWRIGHT_DIR" >/dev/null
 if [[ ! -d node_modules ]]; then
-  pnpm install --frozen-lockfile 2>&1 | tail -5 || pnpm install 2>&1 | tail -5
+  pnpm install --frozen-lockfile || pnpm install
 fi
 pnpm exec playwright install --with-deps chromium 2>&1 | tail -3 || true
 BASE_URL="http://127.0.0.1:$VITE_PORT" pnpm exec playwright test

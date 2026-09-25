@@ -49,6 +49,8 @@ favicon = "branding/icon.svg"
     )
     .unwrap();
     generate(root).assert().success();
+    let package: serde_json::Value = serde_json::from_str(&read(root, "package.json")).unwrap();
+    assert_eq!(package["name"], "acme-operations-review");
     let branding = read(root, "src/lib/branding.ts");
     assert!(branding.contains(r#""Acme \"Operations\" & <Review>""#));
     assert!(branding.contains("TITLE_SUFFIX: string = \"\""));
