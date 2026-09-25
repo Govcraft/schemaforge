@@ -68,6 +68,7 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
     data_correctness::exercise(&backend).await;
     migration_renames::exercise(&backend).await;
     rename_collision_rolls_back_entire_plan(&backend).await;
+    migration_backfills_and_relation_removal(&backend).await;
 }
 
 async fn rename_collision_rolls_back_entire_plan(backend: &MssqlBackend) {
@@ -397,4 +398,190 @@ async fn sparse_updates_preserve_other_fields_and_explicit_null(backend: &MssqlB
     );
     let empty = Entity::with_id(initial.id, schema.name, BTreeMap::new());
     assert_eq!(backend.update(&empty).await.unwrap(), updated);
+}
+
+async fn migration_backfills_and_relation_removal(backend: &MssqlBackend) {
+    use schema_forge_core::types::{Cardinality, DefaultValue, FieldModifier};
+    let name = SchemaName::new("MigrationValues").unwrap();
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        name.clone(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("value").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::new(
+                FieldName::new("links").unwrap(),
+                FieldType::Relation {
+                    target: name.clone(),
+                    cardinality: Cardinality::Many,
+                },
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_schema_change(&name, &DiffEngine::create_new(&schema).steps, Some(&schema))
+        .await
+        .unwrap();
+    let missing = backend
+        .create(&Entity::new(name.clone(), BTreeMap::new()))
+        .await
+        .unwrap();
+    let null = backend
+        .create(&Entity::new(
+            name.clone(),
+            BTreeMap::from([
+                ("value".into(), DynamicValue::Null),
+                (
+                    "links".into(),
+                    DynamicValue::RefArray(vec![missing.id.clone()]),
+                ),
+            ]),
+        ))
+        .await
+        .unwrap();
+    let present = backend
+        .create(&Entity::new(
+            name.clone(),
+            BTreeMap::from([("value".into(), DynamicValue::Text("preserve".into()))]),
+        ))
+        .await
+        .unwrap();
+    let literal = format!("O'Reilly {{value}} {}", "x".repeat(4500));
+    let mut updated = schema.clone();
+    updated.fields[0].modifiers = vec![
+        FieldModifier::Required,
+        FieldModifier::Default {
+            value: DefaultValue::String(literal.clone()),
+        },
+    ];
+    let defaults = [
+        (
+            "count",
+            FieldType::Integer(IntegerConstraints::unconstrained()),
+            DefaultValue::Integer(7),
+            DynamicValue::Integer(7),
+        ),
+        (
+            "active",
+            FieldType::Boolean,
+            DefaultValue::Boolean(true),
+            DynamicValue::Boolean(true),
+        ),
+        (
+            "rate",
+            FieldType::Float(schema_forge_core::types::FloatConstraints::unconstrained()),
+            DefaultValue::float("1.25").unwrap(),
+            DynamicValue::Float(1.25),
+        ),
+        (
+            "status",
+            FieldType::Enum(
+                schema_forge_core::types::EnumVariants::new(vec!["open".into(), "closed".into()])
+                    .unwrap(),
+            ),
+            DefaultValue::String("open".into()),
+            DynamicValue::Enum("open".into()),
+        ),
+        (
+            "created",
+            FieldType::DateTime,
+            DefaultValue::String("2026-01-01T00:00:00Z".into()),
+            DynamicValue::DateTime("2026-01-01T00:00:00Z".parse().unwrap()),
+        ),
+    ];
+    let mut steps = vec![
+        MigrationStep::BackfillRequired {
+            field: FieldName::new("value").unwrap(),
+            default_value: DynamicValue::Text(literal.clone()),
+        },
+        MigrationStep::AddRequired {
+            field: FieldName::new("value").unwrap(),
+        },
+    ];
+    for (field_name, field_type, default, _) in &defaults {
+        let field = FieldDefinition::with_modifiers(
+            FieldName::new(*field_name).unwrap(),
+            field_type.clone(),
+            vec![
+                FieldModifier::Required,
+                FieldModifier::Default {
+                    value: default.clone(),
+                },
+            ],
+        );
+        steps.push(MigrationStep::AddField {
+            field: field.clone(),
+        });
+        updated.fields.push(field);
+    }
+    backend
+        .apply_schema_change(&name, &steps, Some(&updated))
+        .await
+        .unwrap();
+    for (row, expected) in [
+        (&missing, literal.as_str()),
+        (&null, literal.as_str()),
+        (&present, "preserve"),
+    ] {
+        let loaded = backend.get(&name, &row.id).await.unwrap();
+        assert_eq!(
+            loaded.field("value"),
+            Some(&DynamicValue::Text(expected.into()))
+        );
+        for (field, _, _, expected) in &defaults {
+            assert_eq!(loaded.field(field), Some(expected));
+        }
+    }
+    backend
+        .apply_migration(
+            &name,
+            &[
+                MigrationStep::RemoveRelation {
+                    name: FieldName::new("links").unwrap(),
+                },
+                MigrationStep::AddRelation {
+                    name: FieldName::new("links").unwrap(),
+                    target: name.clone(),
+                    cardinality: Cardinality::Many,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    assert!(
+        backend
+            .get(&name, &null.id)
+            .await
+            .unwrap()
+            .field("links")
+            .is_none(),
+        "removed relation data must never reappear on re-add"
+    );
+    let result = backend
+        .apply_migration(
+            &name,
+            &[
+                MigrationStep::RemoveField {
+                    name: FieldName::new("value").unwrap(),
+                },
+                MigrationStep::AddRequired {
+                    field: FieldName::new("value").unwrap(),
+                },
+            ],
+        )
+        .await;
+    assert!(result.is_err(), "required check must reject missing data");
+    assert_eq!(
+        backend
+            .get(&name, &present.id)
+            .await
+            .unwrap()
+            .field("value"),
+        Some(&DynamicValue::Text("preserve".into())),
+        "failed plan must roll back all prior edits"
+    );
 }
