@@ -90,6 +90,7 @@ import {
               />
 {%- elif f.kind == "relation_one" %}
               <RelationSelect
+                id={field.name}
                 target="{{ f.relation_target }}"
 {%- if f.relation_display_field %}
                 displayField="{{ f.relation_display_field }}"
