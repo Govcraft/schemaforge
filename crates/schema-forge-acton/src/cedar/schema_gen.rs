@@ -231,7 +231,7 @@ fn write_per_field_actions(
 /// Returns `None` for types that have no clean Cedar representation
 /// (composites, arbitrary JSON). Such fields will not appear as resource
 /// attributes; policies cannot test them.
-fn cedar_type_for(ft: &FieldType) -> Option<String> {
+pub(crate) fn cedar_type_for(ft: &FieldType) -> Option<String> {
     match ft {
         FieldType::Text(_) | FieldType::RichText => Some("String".into()),
         FieldType::Integer(_) => Some("Long".into()),

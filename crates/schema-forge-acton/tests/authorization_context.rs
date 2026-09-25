@@ -418,3 +418,65 @@ async fn guarded_read_policy_preserves_http_preflight_and_record_denials() {
         }
     }
 }
+
+#[test]
+fn unsupported_array_attributes_do_not_break_resource_authorization() {
+    let schema = schema_forge_dsl::parse(
+        r#"
+        @access(read: ["reviewer"], write: ["reviewer"])
+        schema Job {
+            name: text required
+            delays: duration[] required
+            documents: json[] required
+            nested: duration[][] required
+            numbers: integer[] required
+        }
+    "#,
+    )
+    .unwrap()
+    .remove(0);
+    let snapshot = PolicyStoreSnapshot::from_schemas(
+        std::slice::from_ref(&schema),
+        None,
+        RoleRanks::empty(),
+        PrincipalClaimMappings::default(),
+    )
+    .unwrap();
+    let store = Arc::new(PolicyStore::new(snapshot));
+    let entity = Entity::with_id(
+        EntityId::new("job"),
+        schema.name.clone(),
+        BTreeMap::from([
+            ("name".into(), DynamicValue::Text("Example".into())),
+            (
+                "delays".into(),
+                DynamicValue::Array(vec![DynamicValue::Duration(chrono::TimeDelta::seconds(90))]),
+            ),
+            (
+                "documents".into(),
+                DynamicValue::Array(vec![DynamicValue::Json(
+                    serde_json::json!({"key": "value"}),
+                )]),
+            ),
+            (
+                "nested".into(),
+                DynamicValue::Array(vec![DynamicValue::Array(vec![])]),
+            ),
+            (
+                "numbers".into(),
+                DynamicValue::Array(vec![DynamicValue::Integer(7)]),
+            ),
+        ]),
+    );
+    for role in ["platform_admin", "reviewer"] {
+        let mut caller = claims();
+        caller.roles = vec![role.into()];
+        for resource in [None, Some(&entity)] {
+            for action in [ActionVerb::Create, ActionVerb::Read] {
+                let decision = authorize(&store, Some(&caller), action, &schema, resource).unwrap();
+                assert!(decision.is_allow(), "{role} must retain permitted access");
+                assert!(decision.errors.is_empty());
+            }
+        }
+    }
+}
