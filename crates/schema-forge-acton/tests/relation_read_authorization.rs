@@ -17,7 +17,7 @@ use schema_forge_acton::{
     routes::forge_routes,
     ForgeActor,
 };
-use schema_forge_backend::{auth::RecordAccessPolicy, entity::Entity, SchemaBackend};
+use schema_forge_backend::{auth::RecordAccessPolicy, entity::Entity, EntityStore, SchemaBackend};
 use schema_forge_core::types::{DynamicValue, EntityId, FieldName, SchemaDefinition};
 use schema_forge_surrealdb::SurrealBackend;
 use serde_json::{json, Value};
@@ -333,5 +333,175 @@ async fn operator_redaction_cannot_erase_attributes_before_cedar_read_checks() {
         let children = fields["children"].as_array().unwrap();
         assert_eq!(children.len(), 2, "{fields}");
         assert!(!children.contains(&json!(fixture_id("child_denied"))));
+    }
+}
+
+async fn nested_fixture(product_role: &str) -> Router {
+    let mut schemas = schema_forge_dsl::parse(&format!(r#"
+        @access(read: ["clerk"])
+        schema Parent {{ selected: -> Line @exportable missing: -> Line @exportable cycle: -> Cycle @exportable children: -> Line[] }}
+        @access(read: ["clerk"]) @display("product")
+        schema Line {{ product: -> Product parent: -> Parent }}
+        @access(read: ["{product_role}"]) @display("label")
+        schema Product {{ label: text }}
+        @access(read: ["clerk"]) @display("next")
+        schema Cycle {{ next: -> Cycle }}
+    "#)).unwrap();
+    schemas[0]
+        .fields
+        .iter_mut()
+        .find(|field| field.name.as_str() == "children")
+        .unwrap()
+        .derived_from = Some(FieldName::new("parent").unwrap());
+    schemas[0]
+        .annotations
+        .push(schema_forge_core::types::Annotation::Export {
+            formats: vec![schema_forge_core::types::ExportFormat::Csv],
+            bundle_files: false,
+            max_rows: 100,
+        });
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("nested", "nested")
+            .await
+            .unwrap(),
+    );
+    for schema in &schemas {
+        let plan = schema_forge_core::migration::DiffEngine::create_new(schema);
+        backend
+            .apply_migration(&schema.name, &plan.steps)
+            .await
+            .unwrap();
+        backend.store_schema_metadata(schema).await.unwrap();
+    }
+    for (index, id, fields) in [
+        (
+            0,
+            "parent_one",
+            vec![
+                ("selected", DynamicValue::Ref(fixture_id("line_good"))),
+                ("missing", DynamicValue::Ref(fixture_id("line_missing"))),
+                ("cycle", DynamicValue::Ref(fixture_id("cycle_one"))),
+            ],
+        ),
+        (
+            1,
+            "line_good",
+            vec![
+                ("product", DynamicValue::Ref(fixture_id("product_one"))),
+                ("parent", DynamicValue::Ref(fixture_id("parent_one"))),
+            ],
+        ),
+        (
+            1,
+            "line_missing",
+            vec![("product", DynamicValue::Ref(fixture_id("product_absent")))],
+        ),
+        (
+            2,
+            "product_one",
+            vec![("label", DynamicValue::Text("Blue widget".into()))],
+        ),
+        (
+            3,
+            "cycle_one",
+            vec![("next", DynamicValue::Ref(fixture_id("cycle_one")))],
+        ),
+    ] {
+        let entity = Entity::with_id(
+            fixture_id(id),
+            schemas[index].name.clone(),
+            fields
+                .into_iter()
+                .map(|(key, value)| (key.into(), value))
+                .collect(),
+        );
+        backend.create(&entity).await.unwrap();
+    }
+    let service = acton_service::service_builder::ServiceBuilder::new()
+        .with_config(Config::<SchemaForgeConfig>::default())
+        .with_actor::<ForgeActor>()
+        .with_actor::<schema_forge_acton::HookDispatchActor>()
+        .build();
+    let (tx, rx) = oneshot::channel();
+    service
+        .state()
+        .actor::<ForgeActor>()
+        .unwrap()
+        .send(InitForge {
+            registry: schemas
+                .into_iter()
+                .map(|schema| (schema.name.to_string(), schema))
+                .collect(),
+            backend,
+            tenant_config: None,
+            record_access_policy: None,
+            hook_dispatcher: None,
+            storage_registry: Default::default(),
+            policy_store: None,
+            custom_policies_dir: None,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+        .await
+        .unwrap()
+        .unwrap();
+    forge_routes().with_state(service.state().clone())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_display_hops_authorize_targets_and_bound_missing_or_cyclic_paths() {
+    for role in ["clerk", "manager"] {
+        let app = nested_fixture(role).await;
+        for fields in parent_views(&app).await {
+            if role == "clerk" {
+                assert_eq!(fields["selected__display"], "Blue widget", "{fields}");
+                assert_eq!(
+                    fields["children__display"],
+                    json!(["Blue widget"]),
+                    "{fields}"
+                );
+            } else {
+                assert!(fields.get("selected__display").is_none(), "{fields}");
+                assert!(fields.get("children__display").is_none(), "{fields}");
+            }
+            assert!(fields.get("missing__display").is_none(), "{fields}");
+            assert!(fields.get("cycle__display").is_none(), "{fields}");
+            assert!(!fields.to_string().contains("ref("));
+        }
+        let claims = Claims {
+            sub: "user:viewer".into(),
+            roles: vec!["clerk".into()],
+            perms: vec![],
+            exp: 9_999_999_999,
+            iat: None,
+            jti: None,
+            iss: None,
+            aud: None,
+            email: None,
+            username: None,
+            custom: HashMap::new(),
+        };
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/schemas/Parent/entities/export")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"format":"csv"}"#))
+            .unwrap();
+        request.extensions_mut().insert(claims);
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let csv = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert_eq!(csv.contains("Blue widget"), role == "clerk", "{csv}");
+        assert!(!csv.contains("ref("), "{csv}");
     }
 }
