@@ -1934,8 +1934,8 @@ type AttachmentDownloadProps = {
  *   short-TTL URL, then opens it in a new tab. Avoids the auto-302 path so
  *   the bearer token can be attached to the metadata fetch (browsers strip
  *   `Authorization` across cross-origin redirects to S3).
- * * `proxied`   — links the field endpoint directly. The runtime streams
- *   bytes through the daemon with auth applied; no extra round trip needed.
+ * * `proxied`   — fetches bytes with session and tenant headers, then starts
+ *   a browser download from a temporary object URL.
  */
 export function AttachmentDownload({
   schema,
@@ -1954,16 +1954,32 @@ export function AttachmentDownload({
     schema,
   )}/entities/${encodeURIComponent(entityId)}/fields/${encodeURIComponent(fieldName)}`
 
-  async function openPresigned(e: React.MouseEvent) {
+  async function openAttachment(e: React.MouseEvent) {
     e.preventDefault()
     if (!available || busy) return
     setBusy(true)
     setErr(null)
     try {
-      const res = await fetch(`${fieldUrl}?redirect=false`, { headers: authHeaders() })
-      if (!res.ok) throw new Error(`download failed: ${res.status}`)
-      const body = (await res.json()) as { url: string }
-      window.open(body.url, "_blank", "noopener,noreferrer")
+      const url = access === "proxied" ? fieldUrl : `${fieldUrl}?redirect=false`
+      const res = await fetch(url, { headers: authHeaders() })
+      if (!res.ok) throw new Error(`Unable to download this file (HTTP ${res.status}).`)
+      if (access === "proxied") {
+        const blobUrl = URL.createObjectURL(await res.blob())
+        const link = document.createElement("a")
+        link.href = blobUrl
+        link.download = downloadFilename(res.headers.get("Content-Disposition"), filename)
+        try {
+          document.body.appendChild(link)
+          link.click()
+        } finally {
+          link.remove()
+          // Give the browser time to start consuming the blob before releasing it.
+          window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+        }
+      } else {
+        const body = (await res.json()) as { url: string }
+        window.open(body.url, "_blank", "noopener,noreferrer")
+      }
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : String(e2))
     } finally {
@@ -1971,38 +1987,18 @@ export function AttachmentDownload({
     }
   }
 
-  // Proxied access: link the field endpoint directly. The runtime applies
-  // auth via the bearer cookie / header chain on the daemon side and streams
-  // the response.
-  if (access === "proxied") {
-    return (
-      <a
-        href={available ? fieldUrl : "#"}
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-disabled={!available}
-        className={compact ? "text-xs underline" : "btn"}
-        style={!available ? { opacity: 0.5, pointerEvents: "none" } : undefined}
-      >
-        {compact ? "Download" : `Download ${filename}`}
-        <span className="sr-only"> (opens in a new tab)</span>
-      </a>
-    )
-  }
-
-  // Presigned access: round-trip through ?redirect=false so we can attach
-  // the bearer token on the metadata fetch.
+  // Both modes need a fetch first so tenant selection and bearer auth apply.
   return (
     <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8 }}>
       <button
         type="button"
-        onClick={openPresigned}
+        onClick={openAttachment}
         disabled={!available || busy}
         className={compact ? "text-xs underline" : "btn"}
         style={!available || busy ? { opacity: 0.5 } : undefined}
       >
         {busy ? "Opening…" : compact ? "Download" : `Download ${filename}`}
-        <span className="sr-only"> (opens in a new tab)</span>
+        <span className="sr-only">{access === "proxied" ? " (downloads file)" : " (opens in a new tab)"}</span>
       </button>
       {err ? (
         <span role="alert" aria-live="assertive" className="err">
@@ -2012,6 +2008,19 @@ export function AttachmentDownload({
       ) : null}
     </span>
   )
+}
+
+function downloadFilename(disposition: string | null, fallback: string): string {
+  const extended = disposition?.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  let name: string | undefined
+  if (extended) {
+    try { name = decodeURIComponent(extended.trim()) } catch { /* Use the plain filename. */ }
+  }
+  if (!name) {
+    const plain = disposition?.match(/filename\s*=\s*(?:"((?:\\.|[^"])*)"|([^;]+))/i)
+    name = plain?.[1]?.replace(/\\(.)/g, "$1") ?? plain?.[2]
+  }
+  return name?.split(/[/\\]/).pop()?.trim() || fallback
 }
 
 function attachmentLabel(a: FileAttachment): string {
