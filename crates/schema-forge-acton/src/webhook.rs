@@ -661,7 +661,7 @@ mod tests {
             r#"schema Note {
             title: text
             secret: text @hidden
-            salary: int @field_access(read: ["hr"], write: ["hr"])
+            salary: integer @field_access(read: ["hr"], write: ["hr"])
         }"#,
         )
         .unwrap()
