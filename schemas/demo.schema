@@ -95,6 +95,7 @@ schema Department {
 @display("full_name")
 @dashboard(widgets: ["count"])
 @access(read: ["member", "hr", "manager", "admin"], write: ["hr", "admin"], delete: ["admin"])
+@tenant(parent: "Organization")
 schema Employee {
     full_name:        text(max: 255) required indexed
     email:            text(max: 512) required indexed @widget("email")
@@ -135,6 +136,7 @@ schema Employee {
 @display("full_name")
 @dashboard(widgets: ["count"])
 @access(read: ["sales", "marketing", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
+@tenant(parent: "Organization")
 schema Contact {
     full_name:        text(max: 255) required indexed
     email:            text(max: 512) indexed @widget("email")
@@ -167,6 +169,7 @@ schema Contact {
 @display("name")
 @dashboard(widgets: ["count"])
 @access(read: ["sales", "marketing", "finance", "manager", "admin"], write: ["sales", "admin"], delete: ["admin"])
+@tenant(parent: "Organization")
 schema Company {
     name:             text(max: 255) required indexed
     domain:           text(max: 255) indexed @widget("url")
@@ -205,6 +208,7 @@ schema Company {
 // Parameterized @webhook — POSTs to an external endpoint on the listed lifecycle
 // events (only created/updated/deleted are valid), signed with the shared secret.
 @webhook(events: ["created", "updated", "deleted"], url: "https://example.com/hooks/deals", secret: "whsec_demo_replace_me")
+@tenant(parent: "Organization")
 schema Deal {
     name:             text(max: 255) required indexed
     value:            float(precision: 2) required @field_access(read: ["sales", "finance", "admin"], write: ["sales"]) @format("currency")
@@ -233,6 +237,7 @@ schema Deal {
 // Bare @webhook — registers the schema for outbound notifications using the
 // instance-wide default endpoint/secret (no inline parameters).
 @webhook
+@tenant(parent: "Organization")
 schema Activity {
     subject:          text(max: 500) required
     activity_type:    enum("call", "email", "meeting", "note", "task", "demo", "follow_up") required @widget("status_badge")
@@ -259,6 +264,7 @@ schema Activity {
 @display("name")
 @dashboard(widgets: ["count"], layout: "kanban", group_by: "status")
 @access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
+@tenant(parent: "Organization")
 schema Project {
     name:             text(max: 255) required indexed
     code:             text(max: 20) required indexed @widget("code")
@@ -287,6 +293,7 @@ schema Project {
 @display("title")
 @dashboard(widgets: ["count"], layout: "kanban", group_by: "status")
 @access(read: ["member", "manager", "admin"], write: ["member", "manager", "admin"], delete: ["manager", "admin"])
+@tenant(parent: "Organization")
 schema Task {
     title:            text(max: 500) required indexed
     description:      richtext @widget("markdown")
@@ -311,6 +318,7 @@ schema Task {
 
 @display("name")
 @access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"])
+@tenant(parent: "Organization")
 schema Milestone {
     // @list(...) hints control list-view rendering: `primary` is the headline
     // cell, `column` forces inclusion, `hidden` suppresses an otherwise-shown field.
@@ -334,6 +342,7 @@ schema Milestone {
 @display("title")
 @dashboard(widgets: ["count"])
 @access(read: ["member", "manager", "admin"], write: ["member", "manager", "admin"], delete: ["manager", "admin"])
+@tenant(parent: "Organization")
 schema Document {
     title:            text(max: 500) required indexed
     content:          richtext required @widget("markdown")
@@ -356,6 +365,7 @@ schema Document {
 /* Comments are threaded discussions on any entity. */
 
 @display("preview")
+@tenant(parent: "Organization")
 schema Comment {
     preview:          text(max: 255) required
     body:             richtext required
@@ -419,8 +429,9 @@ schema Theme {
 // cross_tenant_read lets these roles read Tag rows owned by OTHER tenants —
 // appropriate for shared reference data. read/write/delete stay tenant-scoped.
 @access(read: ["member", "manager", "admin"], write: ["manager", "admin"], delete: ["admin"], cross_tenant_read: ["member", "manager", "admin"])
+@tenant(parent: "Organization")
 schema Tag {
-    // Tag is not tenant-scoped, so `unique` enforces a single global namespace.
+    // Tag names are unique within each organization.
     name:             text(max: 100) required indexed unique
     color:            text(max: 7) @widget("color")
     category:         enum("general", "priority", "status", "department", "skill", "industry") default("general") @widget("status_badge") @enum_colors(general: "neutral", priority: "rose", status: "teal", department: "violet", skill: "green", industry: "gray")

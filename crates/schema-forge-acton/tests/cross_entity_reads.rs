@@ -780,3 +780,57 @@ async fn relation_writes_validate_tenant_targets_and_request_fields() {
     .await;
     assert_eq!(status, StatusCode::OK, "administrator override: {body}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subscription_writes_reject_unsafe_urls_before_persistence() {
+    use schema_forge_backend::{Entity, EntityStore};
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("test", "subscription_urls")
+            .await
+            .unwrap(),
+    );
+    let mut registry = HashMap::new();
+    let schema =
+        schema_forge_dsl::parse("@system schema WebhookSubscription { url: text required }")
+            .unwrap()
+            .remove(0);
+    apply_and_register(&backend, &mut registry, schema.clone()).await;
+    let existing = Entity::new(
+        schema.name,
+        std::collections::BTreeMap::from([(
+            "url".into(),
+            schema_forge_core::types::DynamicValue::Text("https://8.8.8.8/hook".into()),
+        )]),
+    );
+    EntityStore::create(backend.as_ref(), &existing)
+        .await
+        .unwrap();
+    let state = build_state(backend, registry, None).await;
+    let app = app_with_claims(state, claims(&["platform_admin"]));
+    let entity_path = format!("/schemas/WebhookSubscription/entities/{}", existing.id);
+    for method in [Method::POST, Method::PUT, Method::PATCH] {
+        let path = if method == Method::POST {
+            "/schemas/WebhookSubscription/entities"
+        } else {
+            &entity_path
+        };
+        for url in ["https://127.0.0.1/hook", "http://8.8.8.8/hook"] {
+            let (status, body) = json_request(
+                &app,
+                method.clone(),
+                path,
+                Some(serde_json::json!({"fields":{"url":url}})),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{method} {url}: {body}"
+            );
+            assert_eq!(body["error"], "validation_failed");
+        }
+    }
+    let (status, body) = json_request(&app, Method::GET, &entity_path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["fields"]["url"], "https://8.8.8.8/hook");
+}

@@ -31,6 +31,10 @@ async fn app() -> (Router, String, String) {
 }
 
 async fn app_with_relations(relations: bool) -> (Router, String, String) {
+    app_with_options(relations, true).await
+}
+
+async fn app_with_options(relations: bool, tenancy: bool) -> (Router, String, String) {
     let backend = SurrealBackend::connect_with_auth("mem://", "graphql", "tenants", None, None)
         .await
         .unwrap();
@@ -40,6 +44,7 @@ async fn app_with_relations(relations: bool) -> (Router, String, String) {
         @access(read: ["member"], write: ["member"], delete: ["member"])
         schema Org { name: text required }
         @access(read: ["member"], write: ["member"])
+        @tenant(parent: "Org")
         schema Catalog { name: text required secret: text hidden_value: text }
         "#,
     )
@@ -49,11 +54,19 @@ async fn app_with_relations(relations: bool) -> (Router, String, String) {
             schema_forge_dsl::parse(
                 r#"
             @access(read: ["member"], write: ["member"])
+            @tenant(parent: "Org")
             schema Link { one: -> Catalog many: -> Catalog[] }
         "#,
             )
             .unwrap(),
         );
+    }
+    if !tenancy {
+        for schema in &mut schemas {
+            schema.annotations.retain(|annotation| {
+                !matches!(annotation, schema_forge_core::types::Annotation::Tenant(_))
+            });
+        }
     }
     for schema in &schemas {
         backend
@@ -148,7 +161,7 @@ async fn query(app: &Router, query: &str, tenant: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn graphql_scopes_legacy_roots_and_keeps_shared_catalog_usable() {
+async fn graphql_scopes_legacy_roots_and_application_catalog() {
     let (app, own, foreign) = app().await;
     let get = query(
         &app,
@@ -186,9 +199,11 @@ async fn graphql_scopes_legacy_roots_and_keeps_shared_catalog_usable() {
     .await;
     assert!(created.get("errors").is_none(), "{created}");
     let catalog = query(&app, "{ catalogs { items { name } } }", &foreign).await;
+    assert_eq!(catalog["data"]["catalogs"]["items"], json!([]), "{catalog}");
+    let own_catalog = query(&app, "{ catalogs { items { name } } }", &own).await;
     assert_eq!(
-        catalog["data"]["catalogs"]["items"][0]["name"], "shared",
-        "{catalog}"
+        own_catalog["data"]["catalogs"]["items"][0]["name"],
+        "shared"
     );
     // These routes intentionally have no tenant middleware. A permissive
     // operator policy must never replace concrete Cedar tenant authorization.
@@ -246,7 +261,7 @@ async fn administer_catalog(app: &Router, method: Method, body: Value) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn graphql_uses_live_field_security_and_refuses_removed_schemas() {
-    let (app, tenant, _) = app().await;
+    let (app, tenant, _) = app_with_options(false, false).await;
     let created = query(&app,
         "mutation { createCatalog(input: {name: \"visible\", secret: \"restricted\", hidden_value: \"private\"}) { id } }",
         &tenant).await;

@@ -27,6 +27,7 @@ async fn app() -> Router {
     let schemas = schema_forge_dsl::parse(
         r#"
         @access(read: ["staff", "manager"], write: ["staff", "manager"])
+        @tenant(parent: "Org")
         schema Line {
             label: text required
             number: text @field_access(read: ["staff", "manager"], write: ["manager"])
@@ -99,7 +100,7 @@ async fn app() -> Router {
 }
 
 async fn query(app: &Router, query: &str, role: &str) -> Value {
-    query_with_tenant(app, query, role, None).await
+    query_with_tenant(app, query, role, Some("org_graphql")).await
 }
 
 async fn query_with_tenant(app: &Router, query: &str, role: &str, tenant: Option<&str>) -> Value {

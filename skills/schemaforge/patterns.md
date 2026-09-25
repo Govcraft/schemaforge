@@ -14,7 +14,7 @@ Use `@tenant` to scope data to organizational boundaries.
 ### Rules
 
 1. Exactly one schema should be `@tenant(root)` — it anchors the hierarchy
-2. Child schemas reference the parent with `@tenant(parent: "ParentName")`
+2. Every other application schema must declare `@tenant(parent: "ParentName")`; only `@system` schemas are exempt
 3. All data in child schemas is automatically scoped to the root tenant
 4. The root schema should have `owner_id: text required @owner` for ownership
 

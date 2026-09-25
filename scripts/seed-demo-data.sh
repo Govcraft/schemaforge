@@ -76,6 +76,12 @@ create_entity() {
     local schema="$1"
     local body="$2"
 
+    # The platform administrator must explicitly stamp ownership on child rows.
+    case "$schema" in
+        Organization|Theme|Workflow) ;;
+        *) body=$(jq --arg tenant "$ORG1_ID" '.fields._tenant = (.fields._tenant // .fields.parent_org // $tenant)' <<< "$body") ;;
+    esac
+
     local response
     local http_code
     local tmp
@@ -131,7 +137,38 @@ echo ""
 
 
 # =========================================================================
-# Layer 1: Tags (no dependencies)
+# Layer 1: Organizations (no dependencies)
+# =========================================================================
+echo -e "${CYAN}--- Organizations ---${NC}"
+
+ORG1_ID=$(create_entity "Organization" "$(jq -n '{fields: {
+    name: "Acme Corporation",
+    slug: "acme-corp",
+    billing_email: "billing@acme-corp.io",
+    plan: "business",
+    max_seats: 50,
+    logo_url: "https://example.com/acme-logo.png",
+    settings: {theme: "dark", timezone: "America/New_York"},
+    founded: "2018-03-15T00:00:00Z",
+    active: true,
+    owner_id: "system"
+}}')")
+
+ORG2_ID=$(create_entity "Organization" "$(jq -n '{fields: {
+    name: "Globex Industries",
+    slug: "globex",
+    billing_email: "accounts@globex.io",
+    plan: "enterprise",
+    max_seats: 200,
+    logo_url: "https://example.com/globex-logo.png",
+    settings: {theme: "light", timezone: "America/Los_Angeles", sso_enabled: true},
+    founded: "2015-07-01T00:00:00Z",
+    active: true,
+    owner_id: "system"
+}}')")
+
+# =========================================================================
+# Layer 2: Tags (owned by Acme)
 # =========================================================================
 echo -e "${CYAN}--- Tags ---${NC}"
 
@@ -173,37 +210,6 @@ TAG5_ID=$(create_entity "Tag" "$(jq -n '{fields: {
     category: "industry",
     description: "Healthcare industry vertical",
     active: true
-}}')")
-
-# =========================================================================
-# Layer 2: Organizations (no dependencies)
-# =========================================================================
-echo -e "${CYAN}--- Organizations ---${NC}"
-
-ORG1_ID=$(create_entity "Organization" "$(jq -n '{fields: {
-    name: "Acme Corporation",
-    slug: "acme-corp",
-    billing_email: "billing@acme-corp.io",
-    plan: "business",
-    max_seats: 50,
-    logo_url: "https://example.com/acme-logo.png",
-    settings: {theme: "dark", timezone: "America/New_York"},
-    founded: "2018-03-15T00:00:00Z",
-    active: true,
-    owner_id: "system"
-}}')")
-
-ORG2_ID=$(create_entity "Organization" "$(jq -n '{fields: {
-    name: "Globex Industries",
-    slug: "globex",
-    billing_email: "accounts@globex.io",
-    plan: "enterprise",
-    max_seats: 200,
-    logo_url: "https://example.com/globex-logo.png",
-    settings: {theme: "light", timezone: "America/Los_Angeles", sso_enabled: true},
-    founded: "2015-07-01T00:00:00Z",
-    active: true,
-    owner_id: "system"
 }}')")
 
 # =========================================================================
