@@ -1954,23 +1954,6 @@ fn collect_relation_ids(value: &DynamicValue, out: &mut HashSet<String>) {
 // Cross-entity reads in @require: prefetch-and-bind (#95)
 // ---------------------------------------------------------------------------
 
-/// Run `@require` validation with cross-entity-read (`related.<F>.<col>`)
-/// support (#95).
-///
-/// The CEL engine stays pure: this resolver performs ALL I/O *before*
-/// evaluation, dereferences each referenced `Relation{One}` field to its
-/// committed, tenant-scoped related row, projects the row to a `CelValue::Map`,
-/// and injects a `related` binding next to `principal`/`now` — exactly the
-/// "prefetch-and-bind" pattern the request clock `now` already uses. It then
-/// calls the pure [`check_requires_with_bindings`].
-///
-/// Fail-closed: if a referenced relation's FK is absent/null, the related row
-/// does not exist, or tenant scope hides it, that `related.F` entry is simply
-/// NOT bound; a `@require` referencing it then hits an absent reference and the
-/// existing fail-closed contract turns it into a rejection/eval-error.
-///
-/// Fast path: when no `@require` on the schema references `related.*`, no I/O is
-/// performed and the pure binding set is used directly.
 /// Validate the final relation values before any write reaches storage.
 async fn validate_relation_targets(
     forge: &acton_service::prelude::ActorHandle,
@@ -2051,6 +2034,23 @@ async fn validate_relation_targets(
     Ok(())
 }
 
+/// Run `@require` validation with cross-entity-read (`related.<F>.<col>`)
+/// support (#95).
+///
+/// The CEL engine stays pure: this resolver performs ALL I/O *before*
+/// evaluation, dereferences each referenced `Relation{One}` field to its
+/// committed, tenant-scoped related row, projects the row to a `CelValue::Map`,
+/// and injects a `related` binding next to `principal`/`now` — exactly the
+/// "prefetch-and-bind" pattern the request clock `now` already uses. It then
+/// calls the pure [`check_requires_with_bindings`].
+///
+/// Fail-closed: if a referenced relation's FK is absent/null, the related row
+/// does not exist, or tenant scope hides it, that `related.F` entry is simply
+/// NOT bound; a `@require` referencing it then hits an absent reference and the
+/// existing fail-closed contract turns it into a rejection/eval-error.
+///
+/// Fast path: when no `@require` on the schema references `related.*`, no I/O is
+/// performed and the pure binding set is used directly.
 async fn check_requires_with_related(
     forge: &acton_service::prelude::ActorHandle,
     schema: &SchemaDefinition,
@@ -3929,16 +3929,6 @@ pub async fn patch_entity(
     apply_computed(&schema_def, &mut merged, claims.as_ref(), rules_now)
         .map_err(rule_error_to_forge)?;
 
-    validate_relation_targets(
-        &forge,
-        &policy_store,
-        &schema_def,
-        &merged,
-        claims.as_ref(),
-        &tenant_config,
-    )
-    .await?;
-
     validate_required_fields(&schema_def, &merged)?;
 
     // Tenant config for cross-entity-read tenant scoping (#95).
@@ -4004,6 +3994,16 @@ pub async fn patch_entity(
 
     validate_required_fields(&schema_def, &merged)?;
     check_field_constraints(&schema_def, &merged)?;
+
+    validate_relation_targets(
+        &forge,
+        &policy_store,
+        &schema_def,
+        &merged,
+        claims.as_ref(),
+        &tenant_config,
+    )
+    .await?;
 
     crate::webhook::validate_subscription_fields(
         &schema_def,
