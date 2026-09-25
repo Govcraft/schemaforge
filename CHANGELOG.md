@@ -37,6 +37,11 @@ is retained, but its binary release was not published.
 
 ### Database and operator fixes
 
+- Add PostgreSQL literal defaults with their columns so existing rows are filled.
+  Required-field transitions backfill before enforcing `NOT NULL`; plans without
+  a usable literal backfill value are refused before changes are applied.
+- Report stored/derived inverse-collection transitions as destructive migrations.
+  Cross-schema changes in collection meaning require a reviewed batch migration.
 - PostgreSQL planning and inspection connections perform no bookkeeping DDL.
   Fresh databases plan as empty registries, and read-only roles can inspect existing
   metadata without schema creation privileges.
@@ -56,6 +61,9 @@ is retained, but its binary release was not published.
 
 ### Generated sites
 
+- Generate compilable list and detail pages for relation-only and file-only
+  schemas. Primary relation cells and relation pickers use display labels, and
+  nested display relations resolve through bounded, authorized lookups.
 - Carry the active tenant on entity, invitation, and file requests, including
   requests retried after a token refresh.
 - Show readable API errors and avoid duplicate global notifications when pages
