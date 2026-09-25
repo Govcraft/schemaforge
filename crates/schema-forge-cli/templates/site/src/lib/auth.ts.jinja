@@ -172,6 +172,18 @@ export const activeTenantStore = {
   },
 }
 
+/** Build same-origin API headers from the current session and tenant choice. */
+export function authenticatedHeaders(initial?: HeadersInit): Headers {
+  const headers = new Headers(initial)
+  const token = tokenStore.get()
+  if (token) headers.set("Authorization", `Bearer ${token}`)
+  const active = activeTenantStore.get()
+  if (active && !headers.has(ACTIVE_TENANT_HEADER)) {
+    headers.set(ACTIVE_TENANT_HEADER, active)
+  }
+  return headers
+}
+
 function storeAndSchedule(body: LoginResponse): LoginResponse {
   tokenStore.set(body.token, body.expires_at, body.roles ?? [])
   scheduleRefresh(body.expires_at)
@@ -340,12 +352,7 @@ export type MeResponse = {
 export async function fetchMe(): Promise<MeResponse> {
   const token = tokenStore.get()
   if (!token) throw new Error("no stored token")
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-  }
-  const active = activeTenantStore.get()
-  if (active) headers[ACTIVE_TENANT_HEADER] = active
-  const res = await fetch(`${API_BASE}${ME_PATH}`, { headers })
+  const res = await fetch(`${API_BASE}${ME_PATH}`, { headers: authenticatedHeaders() })
   if (!res.ok) throw new Error(`auth/me failed: ${res.status}`)
   return (await res.json()) as MeResponse
 }

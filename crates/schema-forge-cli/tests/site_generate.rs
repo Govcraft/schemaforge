@@ -252,6 +252,29 @@ fn preserve_pages_survive_rerun() {
 }
 
 #[test]
+fn custom_error_handlers_survive_regeneration_and_drift_check() {
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+    write_schemas(&schema_dir, V0_EMPLOYEE);
+    run_generate(&schema_dir, &out_dir, "Employee", &[])
+        .assert()
+        .success();
+    let handler = out_dir.join("src/lib/error-toast.ts");
+    let scaffold = fs::read_to_string(&handler).unwrap();
+    assert!(scaffold.contains("suppressGlobalError"));
+    let customization = "export function onQueryError() {}\nexport function onMutationError() {}\n";
+    fs::write(&handler, customization).unwrap();
+    run_generate(&schema_dir, &out_dir, "Employee", &[])
+        .assert()
+        .success();
+    run_generate(&schema_dir, &out_dir, "Employee", &["--check"])
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(handler).unwrap(), customization);
+}
+
+#[test]
 fn issue_40_preserve_shell_survives_while_generated_refreshes() {
     // Acceptance criterion from #40: schema changes flow into the
     // per-entity pages without touching user-owned layout or composition.

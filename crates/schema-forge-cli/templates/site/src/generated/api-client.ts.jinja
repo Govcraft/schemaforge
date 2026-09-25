@@ -1,7 +1,7 @@
 // Auto-generated typed REST client.
 // One set of CRUD functions per schema. Regenerated on every
 // `schema-forge site generate` run.
-import { refreshToken, tokenStore } from "@/lib/auth"
+import { authenticatedHeaders, refreshToken, tokenStore } from "@/lib/auth"
 {%- for entity in entities %}
 import type { {{ entity.pascal }} } from "./entity-types"
 {%- endfor %}
@@ -49,15 +49,15 @@ export type EntityPermissions = {
 /** Structured error thrown by the request helper on any non-OK status.
  *  Carries the parsed JSON body when the server returned one so callers
  *  can branch on the stable `error` discriminator (e.g. `unique_violation`,
- *  `validation_failed`, `forbidden`). Falls back to the raw text for
- *  endpoints that don't return JSON. */
+ *  `validation_failed`, `forbidden`). Raw text remains available for diagnostics;
+ *  the displayed message uses readable envelope text or a status fallback. */
 export class ApiError extends Error {
   readonly status: number
   readonly body: unknown
   readonly raw: string
 
   constructor(status: number, body: unknown, raw: string) {
-    super(`API ${status}: ${raw || (body ? JSON.stringify(body) : "")}`)
+    super(responseErrorMessage(status, body))
     this.status = status
     this.body = body
     this.raw = raw
@@ -82,6 +82,43 @@ export class ApiError extends Error {
     const f = (this.body as { field?: unknown }).field
     return typeof f === "string" ? f : undefined
   }
+}
+
+function readableMessage(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined
+  const message = value.trim()
+  if (!message || ["{", "[", "<"].includes(message.charAt(0)) || /^[A-Z][A-Z0-9_]*$/.test(message) || /^[a-z][a-z0-9_]*$/.test(message)) return undefined
+  return message
+}
+
+function responseErrorMessage(status: number, body: unknown): string {
+  if (body && typeof body === "object") {
+    const envelope = body as { message?: unknown; error?: unknown }
+    const message = readableMessage(envelope.message) ?? readableMessage(envelope.error)
+    if (message) return message
+  }
+  switch (status) {
+    case 401: return "Your session has expired. Please sign in again."
+    case 403: return "You don't have permission to do that."
+    case 404: return "The requested record could not be found."
+    case 409: return "This change conflicts with an existing record."
+    case 400:
+    case 422: return "Check the information and try again."
+    case 429: return "Too many requests. Try again shortly."
+    default: return "The server could not complete the request. Try again shortly."
+  }
+}
+
+/** A readable message for either API envelope, network errors, and local errors. */
+export function formatApiError(error: unknown): string {
+  if (error instanceof ApiError) return error.message
+  if (error instanceof TypeError && /fetch|network/i.test(error.message)) {
+    return "Unable to connect. Check your connection and try again."
+  }
+  const message = readableMessage(error instanceof Error ? error.message : error)
+  return message && !/^API \d+:/.test(message)
+    ? message
+    : "Something went wrong. Please try again."
 }
 
 export type ListResponse<T> = {
@@ -113,19 +150,12 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const next = encodeURIComponent(window.location.pathname + window.location.search)
       window.location.replace(`/login?next=${next}`)
     }
-    throw new Error("API 401: unauthorized")
+    throw new ApiError(401, undefined, "")
   }
   if (!res.ok) {
     // Preserve the structured JSON body when present so the form layer can
     // map error codes like `unique_violation` to inline field errors.
-    const raw = await res.text()
-    let body: unknown
-    try {
-      body = raw ? JSON.parse(raw) : undefined
-    } catch {
-      body = undefined
-    }
-    throw new ApiError(res.status, body, raw)
+    throw await responseError(res)
   }
   // 204 No Content: don't try to parse JSON.
   if (res.status === 204) {
@@ -134,15 +164,16 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function responseError(response: Response): Promise<ApiError> {
+  const raw = await response.text()
+  let body: unknown
+  try { body = raw ? JSON.parse(raw) : undefined } catch { body = undefined }
+  return new ApiError(response.status, body, raw)
+}
+
 async function sendRequest(path: string, init?: RequestInit): Promise<Response> {
-  const token = tokenStore.get()
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...((init?.headers as Record<string, string> | undefined) ?? {}),
-  }
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`
-  }
+  const headers = authenticatedHeaders(init?.headers)
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json")
   return fetch(`${API_BASE}${path}`, { ...init, headers })
 }
 
@@ -296,7 +327,7 @@ export async function getMeta(): Promise<MetaResponse> {
     headers: { "Content-Type": "application/json" },
   })
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${await res.text()}`)
+    throw await responseError(res)
   }
   return res.json() as Promise<MetaResponse>
 }

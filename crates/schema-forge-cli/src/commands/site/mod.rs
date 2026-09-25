@@ -291,6 +291,11 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         vendor::USE_DOCUMENT_TITLE.to_string(),
     ));
 
+    plan.push(preserve(
+        "src/lib/error-toast.ts",
+        renderer.render("src/lib/error-toast.ts", ctx)?,
+    ));
+
     // ---- shadcn primitives (vendored, owned, unmodified) ----
     plan.push(owned(
         "src/components/ui/button.tsx",

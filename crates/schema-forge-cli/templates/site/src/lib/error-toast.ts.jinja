@@ -1,0 +1,23 @@
+// Scaffolded once. Customize or disable global error notifications here.
+import { toast } from "sonner"
+import { formatApiError } from "@/generated/api-client"
+
+type ErrorSource = { meta?: Record<string, unknown> }
+type MutationSource = ErrorSource & { options?: { onError?: unknown } }
+
+/** Set meta.suppressGlobalError on a query that renders its own recovery UI. */
+export function onQueryError(error: unknown, query: ErrorSource): void {
+  if (query.meta?.suppressGlobalError !== true) toast.error(formatApiError(error))
+}
+
+/** Mutations with inline or local error handling should opt out through meta. */
+export function onMutationError(
+  error: unknown,
+  _variables: unknown,
+  _context: unknown,
+  mutation: MutationSource,
+): void {
+  if (mutation.meta?.suppressGlobalError !== true && !mutation.options?.onError) {
+    toast.error(formatApiError(error))
+  }
+}

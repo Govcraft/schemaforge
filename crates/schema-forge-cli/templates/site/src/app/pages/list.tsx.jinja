@@ -63,6 +63,7 @@ export function {{ entity.pascal }}List() {
       : undefined
 
   const query = useQuery({
+    meta: { suppressGlobalError: true },
     queryKey: [
       "{{ entity.snake }}",
       "list",

@@ -21,6 +21,7 @@ export function {{ entity.pascal }}Detail() {
   const { id } = useParams<{ id: string }>()
   useDocumentTitle("{{ entity.title }} record")
   const query = useQuery({
+    meta: { suppressGlobalError: true },
     queryKey: ["{{ entity.snake }}", "detail", id],
     queryFn: () => get{{ entity.pascal }}(id!),
     enabled: Boolean(id),
