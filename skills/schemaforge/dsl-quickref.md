@@ -57,6 +57,8 @@ At-a-glance tables. For full grammar see [dsl-reference.md](dsl-reference.md). F
 | Hook | `@hook(event) """intent"""` | declare a lifecycle hook (see hooks-reference.md) |
 | Export | `@export(formats: [csv\|ndjson\|xlsx\|zip], bundle_files: bool, max_rows: N)` | enable bulk export (fail-closed; distinct Cedar `Export{Entity}` action, not `Read`). See export.md |
 
+When a tenant root exists, every application schema must declare a tenant annotation. Only `@system` schemas are exempt. Unannotated application schemas are rejected during apply and startup. Relation writes must reference visible targets within the caller's tenant scope; platform administrators may cross tenant boundaries. See [tenant isolation](../../docs/tenant-isolation.md).
+
 ## Field-Level Annotations (after modifiers on a field line)
 
 | Annotation | Syntax | Purpose |
