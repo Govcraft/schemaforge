@@ -153,6 +153,8 @@ pub struct EntityView {
     /// always render through `formatFieldValue`, so nested relations do
     /// not require the import.
     pub has_relation_link: bool,
+    /// Detail rendering reads data from at least one visible field or child.
+    pub detail_uses_data: bool,
     /// Detail rendering includes at least one generic formatter call.
     pub detail_uses_formatter: bool,
     /// Detail rendering includes a generic field's empty-value guard.
@@ -225,11 +227,16 @@ impl EntityView {
         }
 
         let has_form_fields = fields.iter().any(|field| !field.computed && !field.derived);
+        let detail_uses_data = fields
+            .iter()
+            .any(|field| field.kind != "composite" || !field.sub_fields.is_empty());
         let detail_uses_is_empty = fields.iter().any(|field| {
             field.kind != "composite" && field.kind != "file" && !uses_relation_label(field)
         });
         let detail_uses_formatter = detail_uses_is_empty
-            || fields.iter().any(|field| field.kind == "composite" && !field.sub_fields.is_empty());
+            || fields
+                .iter()
+                .any(|field| field.kind == "composite" && !field.sub_fields.is_empty());
         let list_uses_formatter = fields.iter().any(|field| {
             matches!(field.list_placement.as_str(), "primary" | "column")
                 && field.kind != "enum"
@@ -249,6 +256,7 @@ impl EntityView {
             display_field,
             has_relation_one,
             has_relation_link,
+            detail_uses_data,
             detail_uses_formatter,
             detail_uses_is_empty,
             list_uses_formatter,

@@ -779,9 +779,15 @@ fn relation_and_file_only_pages_emit_only_used_formatters() {
         ("FileOnly", "file-only"),
     ] {
         let out_dir = tmp.path().join(path);
-        run_generate(&schema_dir, &out_dir, name, &[]).assert().success();
-        let detail = fs::read_to_string(out_dir.join(format!("src/app/pages/{path}/detail.generated.tsx"))).unwrap();
-        let list = fs::read_to_string(out_dir.join(format!("src/app/pages/{path}/list.generated.tsx"))).unwrap();
+        run_generate(&schema_dir, &out_dir, name, &[])
+            .assert()
+            .success();
+        let detail =
+            fs::read_to_string(out_dir.join(format!("src/app/pages/{path}/detail.generated.tsx")))
+                .unwrap();
+        let list =
+            fs::read_to_string(out_dir.join(format!("src/app/pages/{path}/list.generated.tsx")))
+                .unwrap();
         assert!(!detail.contains("formatFieldValue"), "{name}: {detail}");
         assert!(!detail.contains("function isEmpty"), "{name}: {detail}");
         assert!(!list.contains("formatFieldValue"), "{name}: {list}");
@@ -792,5 +798,31 @@ fn relation_and_file_only_pages_emit_only_used_formatters() {
         if name == "ManyJoin" {
             assert!(list.contains("row.original.companies__display?.[index] ?? id"));
         }
+    }
+}
+
+#[test]
+fn details_without_visible_values_keep_props_without_unused_bindings() {
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    write_schemas(&schema_dir, "schema HiddenOnly { secret: text @hidden } schema HiddenComposite { details: composite { secret: text @hidden } }");
+    for (name, path, has_rows) in [
+        ("HiddenOnly", "hidden-only", false),
+        ("HiddenComposite", "hidden-composite", true),
+    ] {
+        let out_dir = tmp.path().join(path);
+        run_generate(&schema_dir, &out_dir, name, &[])
+            .assert()
+            .success();
+        let detail =
+            fs::read_to_string(out_dir.join(format!("src/app/pages/{path}/detail.generated.tsx")))
+                .unwrap();
+        assert!(
+            detail.contains(&format!("DetailRows(_props: {{ data: {name} }}")),
+            "{detail}"
+        );
+        assert_eq!(detail.contains("function specNum"), has_rows, "{detail}");
+        assert!(!detail.contains("formatFieldValue"), "{detail}");
+        assert!(!detail.contains("function isEmpty"), "{detail}");
     }
 }

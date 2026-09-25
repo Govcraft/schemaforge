@@ -24,3 +24,14 @@ schema JoinReference {
 schema FileOnly {
     document: file(bucket: "documents", max_size: "5MB", mime: ["application/pdf"])
 }
+
+
+schema HiddenOnly {
+    secret: text @hidden
+}
+
+schema HiddenComposite {
+    details: composite {
+        secret: text @hidden
+    }
+}
