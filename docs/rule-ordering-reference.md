@@ -22,7 +22,9 @@ schema Cedar write check -> reject hidden keys -> JSON conversion
 -> tenant/owner stamping -> field write filtering -> tenant/owner re-stamping
 -> audit columns -> @default -> @compute -> required-field validation
 -> Cedar Create on computed entity -> related-row prefetch -> @require
--> before_validate -> before_change -> required-field re-check -> PERSIST
+-> before_validate -> before_change
+-> relation visibility and webhook destination checks -> required-field re-check
+-> PERSIST
 -> after hooks and webhook dispatch
 
 PUT / PATCH
@@ -33,7 +35,9 @@ Cedar and record checks on stored row -> reject hidden keys -> JSON conversion
 -> field write filtering (restore denied fields from stored row)
 -> audit columns -> @compute -> required-field validation
 -> related-row prefetch -> @require
--> before_validate -> before_change -> required-field re-check -> PERSIST
+-> before_validate -> before_change
+-> relation visibility and webhook destination checks -> required-field re-check
+-> PERSIST
 -> after hooks and webhook dispatch
 ```
 
