@@ -1,11 +1,126 @@
-// Auto-generated Zod validators. One schema + FormValues type per entity.
+// Auto-generated validators and form authority hints. Cedar remains authoritative.
 import { z } from "zod"
+import { getCurrentRoles, hasAnyRole } from "@/lib/auth"
+
+export const durationSchema = z.string().regex(
+  /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:ns|us|µs|μs|ms|s|m|h|d|w))+$/,
+  "Use a duration such as 90s or 1h30m",
+)
+export const base64Schema = z.string().regex(
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/,
+  "Use standard padded base64",
+)
+export function decodedBase64Size(value: string): number {
+  return value.length / 4 * 3 - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0)
+}
+export function jsonTextSchema(schema: z.ZodTypeAny) {
+  return z.string().superRefine((value, context) => {
+    try {
+      if (!schema.safeParse(JSON.parse(value)).success) {
+        context.addIssue({ code: "custom", message: "JSON values do not match the field type" })
+      }
+    } catch {
+      context.addIssue({ code: "custom", message: "Enter valid JSON" })
+    }
+  })
+}
+export function canReadFormField(read: readonly string[]): boolean {
+  const roles = getCurrentRoles()
+  return roles.includes("platform_admin") || hasAnyRole(read, roles)
+}
+export function canWriteFormField(read: readonly string[], write: readonly string[]): boolean {
+  const roles = getCurrentRoles()
+  return roles.includes("platform_admin") || (hasAnyRole(read, roles) && hasAnyRole(write, roles))
+}
+// Resolve roles at validation time, including after login or refresh.
+export function formFieldSchema<T extends z.ZodTypeAny>(schema: T, read: readonly string[], write: readonly string[], children: FormFieldSpec[] = [], hasHiddenChildren = false) {
+  return z.lazy(() => !hasHiddenChildren && canWriteFormField(read, write) && canWriteFormChildren(children)
+    ? schema
+    : z.unknown().optional().transform(() => undefined))
+}
+
+export type FormFieldSpec = {
+  leaf: string
+  name: string
+  kind: string
+  item_kind: string | null
+  required: boolean
+  computed: boolean
+  has_hidden_children: boolean
+  derived: boolean
+  read_roles: string[]
+  write_roles: string[]
+  sub_fields: FormFieldSpec[]
+}
+
+// PATCH replaces composite values wholesale. Never submit a partial composite
+// which could erase protected children that the caller cannot safely preserve.
+export function canWriteFormChildren(fields: FormFieldSpec[]): boolean {
+  return fields.every(field => !field.has_hidden_children && !field.computed && !field.derived && field.kind !== "file"
+    && canWriteFormField(field.read_roles, field.write_roles) && canWriteFormChildren(field.sub_fields))
+}
+
+// Whitelist declared fields recursively. Server-only keys never enter a save.
+export function normalizeFormValues(data: Record<string, unknown>, fields: FormFieldSpec[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const field of fields) {
+    if (field.computed || field.derived || !canReadFormField(field.read_roles)) continue
+    let value = data[field.leaf]
+    if (value === undefined) continue
+    if (field.kind === "composite" && value && typeof value === "object" && !Array.isArray(value)) {
+      value = normalizeFormValues(value as Record<string, unknown>, field.sub_fields)
+    } else if (field.kind === "json" && value !== null && typeof value !== "string") {
+      value = JSON.stringify(value, null, 2)
+    } else if ((field.kind === "array" || field.kind === "relation_many") && Array.isArray(value)) {
+      value = value.map(item => item == null ? "" : String(item)).join(", ")
+    } else if (field.kind === "datetime" && typeof value === "string" && value) {
+      const date = new Date(value)
+      if (!isNaN(date.getTime())) {
+        const pad = (n: number) => n.toString().padStart(2, "0")
+        value = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+      }
+    }
+    result[field.leaf] = value
+  }
+  return result
+}
+
+export function normalizeFormPayload(
+  data: Record<string, unknown>, fields: FormFieldSpec[], onError: (name: string, message: string) => void,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const field of fields) {
+    if (field.has_hidden_children || field.computed || field.derived || field.kind === "file" || !canWriteFormField(field.read_roles, field.write_roles) || !canWriteFormChildren(field.sub_fields)) continue
+    let value = data[field.leaf]
+    if (value === undefined || (!field.required && (value === "" || value === null))) continue
+    if (field.kind === "composite" && value && typeof value === "object" && !Array.isArray(value)) {
+      const nested = normalizeFormPayload(value as Record<string, unknown>, field.sub_fields, onError)
+      if (Object.keys(nested).length === 0) continue
+      value = nested
+    } else if (field.kind === "json" && typeof value === "string") {
+      try { value = JSON.parse(value) } catch {
+        const message = "Enter valid JSON"
+        onError(field.name, message)
+        throw new Error(message)
+      }
+    } else if ((field.kind === "array" || field.kind === "relation_many") && typeof value === "string") {
+      const parts = value.split(",").map(part => part.trim()).filter(Boolean)
+      value = field.item_kind === "integer" || field.item_kind === "float" ? parts.map(Number)
+        : field.item_kind === "boolean" ? parts.map(part => ["true", "1", "yes"].includes(part)) : parts
+    } else if (field.kind === "datetime" && value) {
+      const date = new Date(value as string)
+      if (!isNaN(date.getTime())) value = date.toISOString()
+    }
+    result[field.leaf] = value
+  }
+  return result
+}
 
 {% for entity in entities %}
 export const {{ entity.snake }}Schema = z.object({
 {%- for f in entity.fields %}
-{%- if not f.derived %}
-  {{ f.leaf }}: {{ f.zod }},
+{%- if not f.derived and not f.computed %}
+  {{ f.leaf }}: formFieldSchema({{ f.zod }}, {{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}, {{ f.form_sub_fields | tojson }}, {{ f.has_hidden_children | tojson }}),
 {%- endif %}
 {%- endfor %}
 })

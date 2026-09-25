@@ -74,6 +74,17 @@ pub async fn run(
         Err(e) => return Err(e),
     };
 
+    for schema in &schemas {
+        schema_forge_acton::webhook::validate_schema_webhooks(
+            schema,
+            &svc_config.custom.schema_forge.webhooks,
+        )
+        .await
+        .map_err(|error| CliError::Config {
+            message: format!("invalid webhook on {}: {error}", schema.name),
+        })?;
+    }
+
     // 4. Connect to database (try remote, fail explicitly for production)
     let connected = connect_with_retries(&db_params, output).await?;
     let backend_arc = connected.backend.clone();
@@ -321,8 +332,12 @@ pub async fn run(
     // fields here. Database/SurrealDB sections are not touched here — they
     // were resolved up-front by `load_svc_config` so acton-service's pool
     // and the schema-forge backend pool see the same URL by construction.
-    svc_config.service.bind = args.host;
-    svc_config.service.port = args.port;
+    if let Some(host) = args.host {
+        svc_config.service.bind = host;
+    }
+    if let Some(port) = args.port {
+        svc_config.service.port = port;
+    }
     svc_config.service.name = "schemaforge".to_string();
 
     // Token auth public paths: both endpoints must be reachable without a

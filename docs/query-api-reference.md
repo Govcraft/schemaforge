@@ -582,3 +582,15 @@ The JSON sort key accepts both `order` and `direction`, with `asc` or `desc`.
 The implicit `id` field supports filters, including `gt` for id-range paging.
 This makes pages deterministic for an unchanged dataset. Concurrent inserts,
 deletes, or sort-field edits can still move records between offset pages.
+
+### Array filter limitations
+
+Array fields currently support only null equality and inequality checks (`eq` /
+`ne` with a JSON null). Other comparisons, including whole-array equality, `in`,
+`contains`, and `startswith`, return HTTP 400 `invalid_query` before reaching the
+database. Element membership and overlap operators are not yet supported. Model
+searchable tags as related records when membership queries are needed.
+
+Text `contains` and `startswith` match literal, case-sensitive text on all
+backends. Percent signs, underscores, and backslashes in their values are literal
+characters, not SQL wildcard patterns.

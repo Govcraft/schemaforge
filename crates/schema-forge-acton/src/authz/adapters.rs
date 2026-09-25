@@ -220,13 +220,13 @@ pub fn build_resource_entity(
 
     let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
     for (field_name, value) in &entity.fields {
-        // `@hidden` fields are never declared as Cedar attributes, so
-        // including them here would fail strict-mode entity validation.
-        // The schema's field definition is the canonical source of the
-        // hidden flag — entities loaded from storage may still carry the
-        // value, but it must not leak into authorization context.
+        // Only types declared by the schema generator may enter Cedar.
+        // Unsupported arrays otherwise become undeclared set attributes,
+        // causing strict validation to reject even permitted operations.
         if let Some(field_def) = schema.field(field_name) {
-            if field_def.is_hidden() {
+            if field_def.is_hidden()
+                || crate::cedar::schema_gen::cedar_type_for(&field_def.field_type).is_none()
+            {
                 continue;
             }
             // The Cedar schema declares file attributes as strings. Supply
@@ -304,10 +304,11 @@ pub fn build_resource_placeholder(schema: &SchemaDefinition) -> Result<CedarEnti
 
     let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
     for field in &schema.fields {
-        if !field.is_required() || field.is_hidden() {
-            // Hidden fields are not declared in the Cedar schema, so the
-            // strict-mode entity validator would reject a placeholder that
-            // includes them.
+        if !field.is_required()
+            || field.is_hidden()
+            || crate::cedar::schema_gen::cedar_type_for(&field.field_type).is_none()
+        {
+            // Hidden and unsupported field types have no Cedar attribute.
             continue;
         }
         if let Some(expr) = default_cedar_expr(&field.field_type) {
@@ -378,7 +379,7 @@ pub fn dynamic_to_cedar(value: &DynamicValue) -> Option<RestrictedExpression> {
         }
         DynamicValue::Array(items) => {
             let mapped: Vec<RestrictedExpression> =
-                items.iter().filter_map(dynamic_to_cedar).collect();
+                items.iter().map(dynamic_to_cedar).collect::<Option<_>>()?;
             Some(RestrictedExpression::new_set(mapped))
         }
         DynamicValue::Null | DynamicValue::Json(_) | DynamicValue::Composite(_) => None,
@@ -423,6 +424,15 @@ mod principal_claim_tests {
         PrincipalClaimConfigEntry, PrincipalClaimMappings, PrincipalClaimType,
         PrincipalClaimsConfig,
     };
+
+    #[test]
+    fn array_projection_does_not_silently_drop_unrepresentable_members() {
+        let value = DynamicValue::Array(vec![
+            DynamicValue::Integer(1),
+            DynamicValue::Json(serde_json::json!({"value": 2})),
+        ]);
+        assert!(dynamic_to_cedar(&value).is_none());
+    }
 
     fn claims_with(custom: HashMap<String, serde_json::Value>) -> Claims {
         Claims {

@@ -7,7 +7,7 @@ import {
   QueryClient,
   QueryClientProvider,
 } from "@tanstack/react-query"
-import { toast } from "sonner"
+import { onQueryError, onMutationError } from "./lib/error-toast"
 import App from "./App"
 import { ensureRefreshScheduled } from "./lib/auth"
 import "./index.css"
@@ -22,14 +22,10 @@ ensureRefreshScheduled()
 // instead of a toast; they reach this cache only as a final fallback.
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
-    onError: (error) => {
-      toast.error(`Load failed: ${error instanceof Error ? error.message : String(error)}`)
-    },
+    onError: onQueryError,
   }),
   mutationCache: new MutationCache({
-    onError: (error) => {
-      toast.error(`Action failed: ${error instanceof Error ? error.message : String(error)}`)
-    },
+    onError: onMutationError,
   }),
 })
 

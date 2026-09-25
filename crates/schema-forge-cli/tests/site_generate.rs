@@ -143,9 +143,12 @@ fn fresh_generate_emits_expected_tree() {
     // Task 4: updates go through PATCH, not PUT.
     assert!(api.contains("method: \"PATCH\""));
     assert!(!api.contains("method: \"PUT\""));
-    // Task 4: the client threads the Bearer token through tokenStore.
-    assert!(api.contains("tokenStore.get()"));
-    assert!(api.contains("Bearer ${token}"));
+    // Requests share the current bearer token and active tenant headers.
+    assert!(api.contains("authenticatedHeaders(init?.headers)"));
+    let auth = fs::read_to_string(out_dir.join("src/lib/auth.ts")).unwrap();
+    assert!(auth.contains("const token = tokenStore.get()"));
+    assert!(auth.contains("Bearer ${token}"));
+    assert!(auth.contains("headers.set(ACTIVE_TENANT_HEADER, active)"));
     // GH #36: rawEntityList opts out of the parallel COUNT(*) query, and
     // listQuery forwards `count: false` when set.
     assert!(api.contains("count?: boolean"));
@@ -165,7 +168,10 @@ fn fresh_generate_emits_expected_tree() {
     assert!(app_tsx.contains("path=\"/login\""));
     assert!(app_tsx.contains("/app/${r.path}"));
     assert!(app_tsx.contains("/app/${defaultEntity}"));
-    assert!(!app_tsx.contains("/admin"), "App.tsx must not reference the removed /admin shell");
+    assert!(
+        !app_tsx.contains("/admin"),
+        "App.tsx must not reference the removed /admin shell"
+    );
     assert!(!app_tsx.contains("AdminLayout"));
 
     // Phase 2: route-manifest imports from @/app/pages and emits mount-relative
@@ -249,6 +255,29 @@ fn preserve_pages_survive_rerun() {
 
     let after = fs::read_to_string(&list_path).unwrap();
     assert_eq!(after, "// user edit\n");
+}
+
+#[test]
+fn custom_error_handlers_survive_regeneration_and_drift_check() {
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+    write_schemas(&schema_dir, V0_EMPLOYEE);
+    run_generate(&schema_dir, &out_dir, "Employee", &[])
+        .assert()
+        .success();
+    let handler = out_dir.join("src/lib/error-toast.ts");
+    let scaffold = fs::read_to_string(&handler).unwrap();
+    assert!(scaffold.contains("suppressGlobalError"));
+    let customization = "export function onQueryError() {}\nexport function onMutationError() {}\n";
+    fs::write(&handler, customization).unwrap();
+    run_generate(&schema_dir, &out_dir, "Employee", &[])
+        .assert()
+        .success();
+    run_generate(&schema_dir, &out_dir, "Employee", &["--check"])
+        .assert()
+        .success();
+    assert_eq!(fs::read_to_string(handler).unwrap(), customization);
 }
 
 #[test]
@@ -475,8 +504,7 @@ fn derived_inverse_collection_skipped_in_forms() {
     // schema-driven form-field rendering lives in the Owned
     // `edit.generated.tsx` sibling now (see issue #40).
     let edit_gen =
-        fs::read_to_string(out_dir.join("src/app/pages/opportunity/edit.generated.tsx"))
-            .unwrap();
+        fs::read_to_string(out_dir.join("src/app/pages/opportunity/edit.generated.tsx")).unwrap();
     assert!(
         !edit_gen.contains("name=\"documents\""),
         "edit form should not render a control for derived field `documents`"
@@ -529,21 +557,10 @@ schema Glossary {
 
     let edit =
         fs::read_to_string(out_dir.join("src/app/pages/glossary/edit.generated.tsx")).unwrap();
-    // The `normalize…Payload` signature carries `_form` (underscore-prefixed)
-    // so TypeScript's `noUnusedParameters` accepts the unused argument while
-    // keeping the call signature stable for the preserve `edit.tsx` shell.
-    // Look at the slice between the function's open paren and the closing
-    // `): Record` so we don't false-positive against `FormFields(... form: UseFormReturn<...>)`.
-    let payload_sig = slice_between(&edit, "normalizeGlossaryPayload(", "): Record<")
-        .expect("normalizeGlossaryPayload signature must be present");
-    assert!(
-        payload_sig.contains("_form: UseFormReturn<"),
-        "normalizeGlossaryPayload must rename the unused `form` param to `_form`:\n{payload_sig}"
-    );
-    assert!(
-        !payload_sig.contains("\n  form: UseFormReturn<"),
-        "normalizeGlossaryPayload must not declare `form: UseFormReturn<...>` when no JSON field exists:\n{payload_sig}"
-    );
+    // Shared recursive normalization uses the callback on malformed JSON,
+    // including nested fields, so the form parameter is always referenced.
+    assert!(edit.contains("form.setError(name as never"));
+    assert!(edit.contains("normalizeFormPayload(values as Record<string, unknown>"));
 
     // And the contrapositive: an entity *with* a JSON field still gets the
     // real `form` parameter so the JSON-parse setError branch compiles.
@@ -562,8 +579,9 @@ schema Settings {
         .success();
     let edit_with_json =
         fs::read_to_string(out_dir2.join("src/app/pages/settings/edit.generated.tsx")).unwrap();
-    let payload_sig_json = slice_between(&edit_with_json, "normalizeSettingsPayload(", "): Record<")
-        .expect("normalizeSettingsPayload signature must be present");
+    let payload_sig_json =
+        slice_between(&edit_with_json, "normalizeSettingsPayload(", "): Record<")
+            .expect("normalizeSettingsPayload signature must be present");
     assert!(
         payload_sig_json.contains("\n  form: UseFormReturn<"),
         "entity with a JSON field must keep the real `form` param:\n{payload_sig_json}"
@@ -632,22 +650,38 @@ fn invitations_registered_and_hidden_fields_omitted_from_forms() {
     let tmp = TempDir::new().unwrap();
     let schemas = tmp.path().join("schemas");
     let out = tmp.path().join("site");
-    write_schemas(&schemas, r#"
+    write_schemas(
+        &schemas,
+        r#"
         schema Profile {
             name: text required
             password_hash: text required @hidden
         }
-    "#);
-    run_generate(&schemas, &out, "Profile", &[]).assert().success();
-    for file in ["src/pages/invite.tsx", "src/pages/invite-accept.tsx", "src/generated/invites.ts"] {
+    "#,
+    );
+    run_generate(&schemas, &out, "Profile", &[])
+        .assert()
+        .success();
+    for file in [
+        "src/pages/invite.tsx",
+        "src/pages/invite-accept.tsx",
+        "src/generated/invites.ts",
+    ] {
         assert!(out.join(file).exists(), "missing {file}");
     }
     let routes = fs::read_to_string(out.join("src/generated/route-manifest.ts")).unwrap();
     assert!(routes.contains("/admin/users/invite"));
     assert!(routes.contains("/invite/accept"));
-    for file in ["src/generated/zod-schemas.ts", "src/app/pages/profile/edit.generated.tsx", "src/app/pages/profile/detail.generated.tsx"] {
+    for file in [
+        "src/generated/zod-schemas.ts",
+        "src/app/pages/profile/edit.generated.tsx",
+        "src/app/pages/profile/detail.generated.tsx",
+    ] {
         let content = fs::read_to_string(out.join(file)).unwrap();
-        assert!(!content.contains("password_hash"), "hidden field leaked into {file}");
+        assert!(
+            !content.contains("password_hash"),
+            "hidden field leaked into {file}"
+        );
         assert!(content.contains("name"));
     }
 }
@@ -656,5 +690,73 @@ fn invitations_registered_and_hidden_fields_omitted_from_forms() {
 fn invitation_tenant_picker_matches_annotation_wire_shape() {
     use schema_forge_core::types::{Annotation, TenantKind};
     let value = serde_json::to_value(Annotation::Tenant(TenantKind::Root)).unwrap();
-    assert_eq!(value, serde_json::json!({ "annotation": "Tenant", "Root": null }));
+    assert_eq!(
+        value,
+        serde_json::json!({ "annotation": "Tenant", "Root": null })
+    );
+}
+
+#[test]
+fn generated_extended_fields_and_authority_survive_regeneration() {
+    let tmp = TempDir::new().unwrap();
+    let schema_dir = tmp.path().join("schemas");
+    let out_dir = tmp.path().join("site");
+    write_schemas(
+        &schema_dir,
+        r#"
+    schema Job {
+        name: text required
+        timeout: duration required
+        labels: map<text, integer>
+        checksum: bytes
+        delays: duration[]
+        nested: composite { delay: duration data: map<text, integer> }
+        computed: float @compute("1.0")
+        secret: text @field_access(read: ["finance"], write: ["lead"])
+    }
+    "#,
+    );
+    run_generate(&schema_dir, &out_dir, "Job", &[])
+        .assert()
+        .success();
+    let types = fs::read_to_string(out_dir.join("src/generated/entity-types.ts")).unwrap();
+    for expected in [
+        "timeout: string",
+        "Record<string, number>",
+        "checksum?: string",
+        "delays?: string[]",
+        "computed?: number",
+    ] {
+        assert!(types.contains(expected), "missing {expected}: {types}");
+    }
+    let edit = fs::read_to_string(out_dir.join("src/app/pages/job/edit.generated.tsx")).unwrap();
+    for field in [
+        "timeout",
+        "labels",
+        "checksum",
+        "nested.delay",
+        "nested.data",
+    ] {
+        assert!(
+            edit.contains(&format!("name=\"{field}\"")),
+            "missing control {field}"
+        );
+    }
+    assert!(!edit.contains("name=\"computed\""));
+    assert!(edit.contains("canWriteFormField([\"finance\"], [\"lead\"])"));
+    assert!(edit.contains("normalizeFormPayload"));
+    let zod = fs::read_to_string(out_dir.join("src/generated/zod-schemas.ts")).unwrap();
+    let schema = zod.split("export const jobSchema").nth(1).unwrap();
+    assert!(schema.contains("timeout: formFieldSchema(durationSchema"));
+    assert!(!schema.contains("computed:"));
+    assert!(schema.contains("jsonTextSchema(z.record(z.number().int()))"));
+    let shell = out_dir.join("src/app/pages/job/edit.tsx");
+    fs::write(&shell, "// user-owned edit shell\n").unwrap();
+    run_generate(&schema_dir, &out_dir, "Job", &[])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(shell).unwrap(),
+        "// user-owned edit shell\n"
+    );
 }

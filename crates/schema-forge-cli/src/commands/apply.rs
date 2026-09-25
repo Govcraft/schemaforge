@@ -21,9 +21,24 @@ pub async fn run(
     output.status(&format!("  {} schemas parsed.", schemas.len()));
 
     let svc_config = load_svc_config(global)?;
+    for schema in &schemas {
+        schema_forge_acton::webhook::validate_schema_webhooks(
+            schema,
+            &svc_config.custom.schema_forge.webhooks,
+        )
+        .await
+        .map_err(|error| CliError::Config {
+            message: format!("invalid webhook on {}: {error}", schema.name),
+        })?;
+    }
+
     let db_params = resolve_db_params(&svc_config)?;
 
-    let backend = super::connect_backend(&db_params, output).await?;
+    let backend = if args.dry_run {
+        super::connect_backend_read_only(&db_params, output).await?
+    } else {
+        super::connect_backend(&db_params, output).await?
+    };
 
     apply_to_backend(&args, &schemas, backend.as_ref(), output).await
 }
@@ -43,10 +58,22 @@ pub(super) async fn apply_to_backend(
     let mut applied_schemas = 0usize;
     let mut metadata_only_updates = 0usize;
 
+    let mut updates = Vec::with_capacity(schemas.len());
     for schema in schemas {
         let existing = backend.load_schema_metadata(&schema.name).await?;
 
         let update = SchemaUpdate::plan(existing.as_ref(), schema)?;
+        updates.push(update);
+    }
+    super::schema_update::preflight_destructive_batch(
+        &updates,
+        !args.dry_run,
+        args.force,
+        Term::stderr().is_term(),
+    )?;
+
+    for update in &updates {
+        let schema = &update.schema;
         let plan = &update.migration;
         if update.is_empty() {
             output.status(&format!("  {} .... no changes", schema.name.as_str()));
@@ -70,7 +97,7 @@ pub(super) async fn apply_to_backend(
                 schema.name.as_str()
             ));
             for (i, step) in plan.steps.iter().enumerate() {
-                let safety = step.safety();
+                let safety = plan.step_safety(step);
                 output.status(&format!("  {}. {} [{}]", i + 1, step, safety));
             }
 
@@ -98,12 +125,10 @@ pub(super) async fn apply_to_backend(
                         "  {:<16} METADATA UPDATE (0 migration steps)",
                         schema.name.as_str()
                     ));
-                } else if plan.steps.len() == 1
-                    && matches!(
-                        &plan.steps[0],
-                        schema_forge_core::migration::MigrationStep::CreateSchema { .. }
-                    )
-                {
+                } else if matches!(
+                    &plan.steps[0],
+                    schema_forge_core::migration::MigrationStep::CreateSchema { .. }
+                ) {
                     output.status(&format!(
                         "  {:<16} CREATE ({} fields){}",
                         schema.name.as_str(),
@@ -190,7 +215,7 @@ pub(super) async fn apply_to_backend(
 fn format_safety_tag(safety: MigrationSafety) -> String {
     match safety {
         MigrationSafety::Safe => "  [safe]".to_string(),
-        MigrationSafety::RequiresConfirmation => "  [requires_confirmation]".to_string(),
+        MigrationSafety::RequiresConfirmation => "  [review]".to_string(),
         MigrationSafety::Destructive => "  [destructive]".to_string(),
         _ => String::new(),
     }

@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-cli"
-version = "0.45.0"
+version = "0.46.0"
 edition = "2021"
 
 [[bin]]
@@ -29,7 +29,7 @@ glob = "0.3"
 axum = { version = "0.8" }
 acton-service = { version = "0.43.1", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth", "crypto-aws-lc-rs", "windows-auth"] }
 heck = "0.5.0"
-minijinja = "2.19.0"
+minijinja = { version = "2.19.0", features = ["json"] }
 tracing = "0.1.44"
 schema-forge-signing = { version = "0.1.0", path = "../schema-forge-signing" }
 sigstore-trust-root = { version = "0.7.0", default-features = false, features = ["tuf"] }
@@ -38,7 +38,9 @@ rust-embed = { version = "8.11.0", features = ["interpolate-folder-path"], optio
 mime_guess = { version = "2.0.5" }
 sha2 = "0.11.0"
 tokio-util = { version = "0.7.18", features = ["io"] }
-schema-forge-mssql = { version = "0.5.0", path = "../schema-forge-mssql", optional = true }
+schema-forge-mssql = { version = "0.6.0", path = "../schema-forge-mssql", optional = true }
+httpdate = "1.0.3"
+figment = { version = "0.10.19", features = ["env", "toml"] }
 
 [features]
 default = ["surrealdb"]

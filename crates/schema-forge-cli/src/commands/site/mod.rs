@@ -6,6 +6,7 @@
 //! route manifest) and per-entity pages. `--schema NAME` narrows generation
 //! to a single schema for debugging or partial regen.
 
+mod branding;
 mod context;
 mod mapping;
 mod render;
@@ -70,12 +71,21 @@ fn generate(
         output.status(&format!("  target: {}", def.name.as_str()));
     }
 
-    let project_name = args
-        .out_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("schema-forge-site")
-        .to_kebab_case();
+    let config = crate::config::load_svc_config(global)?;
+    let branding =
+        branding::Branding::resolve(&args, &config.custom.schema_forge.site, global, &schemas)?;
+    let slug: String = branding
+        .name
+        .to_kebab_case()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .collect();
+    let slug = slug.trim_matches('-').to_string();
+    let project_name = if slug.is_empty() {
+        "application".into()
+    } else {
+        slug
+    };
 
     // Build a catalog of every known schema so mapping can resolve
     // relation targets (display field, kebab slug) even when the target
@@ -111,6 +121,7 @@ fn generate(
     }
 
     let ctx = SiteContext {
+        branding,
         project_name: project_name.clone(),
         entities,
         accessibility_contact: args.accessibility_contact.clone(),
@@ -255,7 +266,10 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
         vendor::TSCONFIG_NODE_JSON.to_string(),
     ));
     plan.push(owned(".gitignore", vendor::GITIGNORE.to_string()));
-    plan.push(owned("eslint.config.js", vendor::ESLINT_CONFIG_JS.to_string()));
+    plan.push(owned(
+        "eslint.config.js",
+        vendor::ESLINT_CONFIG_JS.to_string(),
+    ));
 
     // Brand marks. Vite serves `public/` at the URL root, so the templates
     // can reference `/logo-mark-white.svg` and `/logo-mark.svg` directly
@@ -263,17 +277,41 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
     // and login left panel; the ink mark is the favicon.
     plan.push(owned(
         "public/logo-mark-white.svg",
-        vendor::LOGO_MARK_WHITE_SVG.to_string(),
+        ctx.branding
+            .logo_on_dark
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(|| renderer.render("public/logo-mark-white.svg", ctx))?,
     ));
     plan.push(owned(
         "public/logo-mark.svg",
-        vendor::LOGO_MARK_INK_SVG.to_string(),
+        ctx.branding
+            .logo
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(|| renderer.render("public/logo-mark.svg", ctx))?,
+    ));
+
+    plan.push(owned(
+        "public/favicon.svg",
+        ctx.branding
+            .favicon
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(|| renderer.render("public/favicon.svg", ctx))?,
     ));
 
     // ---- src/ scaffolding ----
     plan.push(owned("src/main.tsx", renderer.render("src/main.tsx", ctx)?));
     plan.push(owned("src/App.tsx", renderer.render("src/App.tsx", ctx)?));
-    plan.push(owned("src/index.css", vendor::INDEX_CSS.to_string()));
+    plan.push(owned(
+        "src/index.css",
+        renderer.render("src/index.css", ctx)?,
+    ));
+    plan.push(owned(
+        "src/lib/branding.ts",
+        renderer.render("src/lib/branding.ts", ctx)?,
+    ));
     plan.push(owned(
         "src/lib/utils.ts",
         vendor::SHADCN_UTILS_TS.to_string(),
@@ -288,7 +326,12 @@ fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan
     ));
     plan.push(owned(
         "src/lib/use-document-title.ts",
-        vendor::USE_DOCUMENT_TITLE.to_string(),
+        renderer.render("src/lib/use-document-title.ts", ctx)?,
+    ));
+
+    plan.push(preserve(
+        "src/lib/error-toast.ts",
+        renderer.render("src/lib/error-toast.ts", ctx)?,
     ));
 
     // ---- shadcn primitives (vendored, owned, unmodified) ----
@@ -517,12 +560,8 @@ mod tests {
                 FieldDefinition::with_annotations(
                     FieldName::new("stage").unwrap(),
                     FieldType::Enum(
-                        EnumVariants::new(vec![
-                            "qualifying".into(),
-                            "won".into(),
-                            "lost".into(),
-                        ])
-                        .unwrap(),
+                        EnumVariants::new(vec!["qualifying".into(), "won".into(), "lost".into()])
+                            .unwrap(),
                     ),
                     vec![FieldModifier::Required],
                     vec![FieldAnnotation::EnumColors { colors }],
@@ -540,10 +579,7 @@ mod tests {
 
         let schema = opportunity_schema_with_enum_colors();
         let mut catalog = BTreeMap::new();
-        catalog.insert(
-            "Opportunity".to_string(),
-            SchemaMeta::from_schema(&schema),
-        );
+        catalog.insert("Opportunity".to_string(), SchemaMeta::from_schema(&schema));
         let output = crate::output::OutputContext {
             mode: crate::output::OutputMode::Plain,
             verbose: 0,
@@ -595,19 +631,14 @@ mod tests {
                 // Explicit column hint.
                 FieldDefinition::with_annotations(
                     FieldName::new("stage").unwrap(),
-                    FieldType::Enum(
-                        EnumVariants::new(vec!["new".into(), "won".into()]).unwrap(),
-                    ),
+                    FieldType::Enum(EnumVariants::new(vec!["new".into(), "won".into()]).unwrap()),
                     vec![FieldModifier::Required],
                     vec![FieldAnnotation::List {
                         hint: ListHint::Column,
                     }],
                 ),
                 // Rich text auto-hides by default.
-                FieldDefinition::new(
-                    FieldName::new("description").unwrap(),
-                    FieldType::RichText,
-                ),
+                FieldDefinition::new(FieldName::new("description").unwrap(), FieldType::RichText),
                 // Unannotated integer -> column.
                 FieldDefinition::new(
                     FieldName::new("pwin").unwrap(),
@@ -808,8 +839,7 @@ mod tests {
             "FileUpload meta must carry the byte limit"
         );
         assert!(
-            rendered.contains("\"application/pdf\"")
-                && rendered.contains("\"image/*\""),
+            rendered.contains("\"application/pdf\"") && rendered.contains("\"image/*\""),
             "FileUpload meta must carry the mime allowlist"
         );
 
@@ -819,12 +849,20 @@ mod tests {
             "FormFields must accept entityId for file-bearing entities"
         );
 
-        // Entity update payload must NOT carry the file attachment — uploads
-        // go through the dedicated 3-endpoint flow, not entity PUT.
-        assert!(
-            rendered.contains(r#"delete payload["attachment"]"#),
-            "normalize<Pascal>Payload must strip file fields from entity PUT body"
-        );
+        // Entity updates delegate to the shared normalizer, which excludes
+        // file fields handled by the dedicated upload endpoints.
+        assert!(rendered.contains("return normalizeFormPayload("));
+        assert!(document_entity()
+            .form_fields
+            .iter()
+            .any(|field| field.leaf == "attachment" && field.kind == "file"));
+        let validators = include_str!("../../../templates/site/src/generated/zod-schemas.ts.jinja");
+        let payload_normalizer = validators
+            .split("export function normalizeFormPayload(")
+            .nth(1)
+            .expect("shared payload normalizer must exist");
+        assert!(payload_normalizer.contains(r#"field.kind === "file""#));
+        assert!(payload_normalizer.contains("continue"));
 
         // The pre-fix stub must be gone.
         assert!(

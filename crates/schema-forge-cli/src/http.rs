@@ -182,11 +182,31 @@ pub fn classify_http_error(status: u16, body: &str) -> CliError {
     }
 }
 
+/// Honor Retry-After seconds or HTTP dates; malformed/missing headers use
+/// exponential backoff from 1 to 30 seconds. The retry count remains bounded.
+fn retry_delay(
+    header: Option<&str>,
+    retry: u32,
+    now: std::time::SystemTime,
+) -> std::time::Duration {
+    use std::time::Duration;
+    if let Some(header) = header {
+        if let Ok(seconds) = header.trim().parse::<u64>() {
+            return Duration::from_secs(seconds);
+        }
+        if let Ok(date) = httpdate::parse_http_date(header) {
+            return date.duration_since(now).unwrap_or_default();
+        }
+    }
+    Duration::from_secs(1u64.checked_shl(retry).unwrap_or(30).min(30))
+}
+
 /// HTTP client bound to one running instance and (optionally) one token.
 pub struct ForgeClient {
     http: Client,
     base: String,
     token: Option<String>,
+    max_retries: u32,
 }
 
 impl ForgeClient {
@@ -229,6 +249,7 @@ impl ForgeClient {
             http,
             base: forge_base(&rc.server, &rc.api_version),
             token: rc.token.clone(),
+            max_retries: rc.max_retries,
         })
     }
 
@@ -245,6 +266,39 @@ impl ForgeClient {
             path.extend(segments);
         }
         Ok(url)
+    }
+
+    /// Retry only explicit rate-limit refusals. Transport errors and server
+    /// failures have ambiguous write outcomes and must never be replayed here.
+    async fn send_with_retry(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, CliError> {
+        let mut retries = 0;
+        loop {
+            let attempt = request.try_clone().ok_or_else(|| CliError::Config {
+                message: "cannot replay a streaming request".into(),
+            })?;
+            let response = attempt.send().await.map_err(|error| CliError::Connection {
+                message: error.to_string(),
+            })?;
+            if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+                || retries >= self.max_retries
+            {
+                return Ok(response);
+            }
+            let delay = retry_delay(
+                response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok()),
+                retries,
+                std::time::SystemTime::now(),
+            );
+            drop(response);
+            tokio::time::sleep(delay).await;
+            retries += 1;
+        }
     }
 
     /// Send a request and decode the response.
@@ -272,9 +326,7 @@ impl ForgeClient {
             req = req.json(b);
         }
 
-        let resp = req.send().await.map_err(|e| CliError::Connection {
-            message: e.to_string(),
-        })?;
+        let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         let text = resp.text().await.map_err(|e| CliError::Connection {
@@ -506,9 +558,7 @@ impl ForgeClient {
         if let Some(tok) = &self.token {
             req = req.bearer_auth(tok);
         }
-        let mut resp = req.send().await.map_err(|e| CliError::Connection {
-            message: e.to_string(),
-        })?;
+        let mut resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         let final_url = resp.url().to_string();
@@ -570,9 +620,7 @@ impl ForgeClient {
             req = req.bearer_auth(tok);
         }
 
-        let resp = req.send().await.map_err(|e| CliError::Connection {
-            message: e.to_string(),
-        })?;
+        let resp = self.send_with_retry(req).await?;
 
         let status = resp.status();
         let content_type = resp
@@ -692,6 +740,88 @@ fn content_disposition_filename(header: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limit_delays_honor_seconds_dates_and_bounded_fallback() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        assert_eq!(retry_delay(Some("7"), 0, now), Duration::from_secs(7));
+        assert_eq!(
+            retry_delay(
+                Some(&httpdate::fmt_http_date(now + Duration::from_secs(9))),
+                0,
+                now
+            ),
+            Duration::from_secs(9)
+        );
+        assert_eq!(
+            retry_delay(
+                Some(&httpdate::fmt_http_date(now - Duration::from_secs(9))),
+                0,
+                now
+            ),
+            Duration::ZERO
+        );
+        assert_eq!(retry_delay(None, 0, now), Duration::from_secs(1));
+        assert_eq!(retry_delay(Some("invalid"), 2, now), Duration::from_secs(4));
+        assert_eq!(retry_delay(None, u32::MAX, now), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_retries_only_429_and_preserves_request_body() {
+        schema_forge_acton::crypto::install_default_crypto_provider();
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        for (status, failures, max_retries, expected_attempts, success) in [
+            (429, 2, 3, 3, true),
+            (429, 5, 2, 3, false),
+            (429, 1, 0, 1, false),
+            (503, 1, 3, 1, false),
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let counter = attempts.clone();
+            let app = axum::Router::new().route(
+                "/api/v1/forge/schemas/Note/entities",
+                axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                    let counter = counter.clone();
+                    async move {
+                        assert_eq!(body, serde_json::json!({"fields": {"title": "hello"}}));
+                        let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                        let response_status = if attempt < failures { status } else { 200 };
+                        (
+                            axum::http::StatusCode::from_u16(response_status).unwrap(),
+                            [("retry-after", "0")],
+                            axum::Json(serde_json::json!({"id": "note_example", "fields": {}})),
+                        )
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let client = ForgeClient {
+                http: Client::new(),
+                base: forge_base(&format!("http://{address}"), "v1"),
+                token: None,
+                max_retries,
+            };
+            let result = client
+                .send(
+                    Method::POST,
+                    client.url(&["schemas", "Note", "entities"]).unwrap(),
+                    &[],
+                    Some(&serde_json::json!({"fields": {"title": "hello"}})),
+                )
+                .await;
+            assert_eq!(result.is_ok(), success, "{result:?}");
+            assert_eq!(attempts.load(Ordering::SeqCst), expected_attempts);
+            server.abort();
+        }
+    }
 
     #[test]
     fn forge_base_joins_versioned_path() {

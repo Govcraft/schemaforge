@@ -746,7 +746,10 @@ fn check_type_compat(
         FieldType::Bytes(_) => matches!(value, DynamicValue::Bytes(_)),
         FieldType::Enum(_) => matches!(value, DynamicValue::Enum(_) | DynamicValue::Text(_)),
         FieldType::Map { .. } => matches!(value, DynamicValue::Map(_)),
-        _ => true, // Json, Relation, Array, Composite — accept anything
+        // Array bindings are not portable across backend query compilers yet.
+        // Reject them before execution instead of returning a database type error.
+        FieldType::Array(_) => false,
+        _ => true, // Json, Relation, Composite retain their existing semantics.
     };
     if !compatible {
         errors.push(QueryError::TypeMismatch {
@@ -1199,6 +1202,43 @@ mod tests {
             vec![],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn array_filters_reject_unsupported_values_before_backend_execution() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Tagged").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("tags").unwrap(),
+                FieldType::Array(Box::new(FieldType::Text(TextConstraints::unconstrained()))),
+            )],
+            vec![],
+        )
+        .unwrap();
+        let path = FieldPath::single("tags");
+        for value in [
+            DynamicValue::Text("vip".into()),
+            DynamicValue::Array(vec![DynamicValue::Text("vip".into())]),
+        ] {
+            for filter in [
+                Filter::eq(path.clone(), value.clone()),
+                Filter::ne(path.clone(), value.clone()),
+                Filter::gt(path.clone(), value.clone()),
+                Filter::gte(path.clone(), value.clone()),
+                Filter::lt(path.clone(), value.clone()),
+                Filter::lte(path.clone(), value.clone()),
+                Filter::In {
+                    path: path.clone(),
+                    values: vec![value],
+                },
+            ] {
+                assert!(validate_filter(&filter, &schema).is_err(), "{filter:?}");
+            }
+        }
+        assert!(validate_filter(&Filter::contains(path.clone(), "vip"), &schema).is_err());
+        assert!(validate_filter(&Filter::eq(path.clone(), DynamicValue::Null), &schema).is_ok());
+        assert!(validate_filter(&Filter::ne(path, DynamicValue::Null), &schema).is_ok());
     }
 
     #[test]

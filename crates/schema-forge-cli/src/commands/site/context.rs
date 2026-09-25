@@ -95,6 +95,7 @@ pub fn pluralize(word: &str) -> String {
 /// `entity` without reaching through the list.
 #[derive(Debug, Clone, Serialize)]
 pub struct SiteContext {
+    pub branding: super::branding::Branding,
     /// Kebab-cased project name (for `package.json`, `<title>`, etc.).
     pub project_name: String,
     /// Every non-system schema, projected into a generator-friendly view.
@@ -134,6 +135,8 @@ pub struct EntityView {
     pub schema_name: String,
     /// v0-supported fields only. Unsupported fields are dropped with a stderr warning.
     pub fields: Vec<FieldView>,
+    /// Exact browser normalization contract, without display/template metadata.
+    pub form_fields: Vec<FormFieldSpec>,
     /// The field nominated by `@display("...")`, if any. Used for
     /// breadcrumbs and list-view "headline" rendering.
     pub display_field: Option<String>,
@@ -161,6 +164,10 @@ pub struct EntityView {
     /// components when the entity actually has a file field, otherwise
     /// `noUnusedLocals` rejects the generated file.
     pub has_file_field: bool,
+    /// Writable file controls require an entity identifier.
+    pub has_form_file_field: bool,
+    pub has_form_fields: bool,
+    pub has_form_controls: bool,
 }
 
 impl EntityView {
@@ -179,8 +186,11 @@ impl EntityView {
             match field_to_view(f, catalog) {
                 Ok(v) => fields.push(v),
                 Err(FieldMapError::Unsupported { field, reason }) => {
+                    if f.is_required() {
+                        return Err(CliError::Config { message: format!("cannot generate a usable create form: required field {name}.{field} is unsupported: {reason}") });
+                    }
                     output.warn(&format!(
-                        "site v0: skipping field `{name}.{field}` — {reason}"
+                        "site: skipping optional field `{name}.{field}`: {reason}"
                     ));
                 }
             }
@@ -192,6 +202,7 @@ impl EntityView {
         });
         let has_json_field = fields.iter().any(|f| f.kind == "json");
         let has_file_field = fields.iter().any(|f| f.kind == "file");
+        let has_form_file_field = fields.iter().any(has_form_file);
         let display_field = def.display_field().map(|s| s.to_string());
 
         // `@display("field")` auto-promotes to `primary` when no explicit
@@ -207,6 +218,8 @@ impl EntityView {
             }
         }
 
+        let has_form_fields = fields.iter().any(|field| !field.computed && !field.derived);
+        let has_form_controls = fields.iter().any(has_form_control);
         let pascal = name.to_pascal_case();
         Ok(Self {
             pascal_plural: pluralize(&pascal),
@@ -215,20 +228,38 @@ impl EntityView {
             kebab: name.to_kebab_case(),
             title: name.to_title_case(),
             schema_name: name.to_string(),
+            form_fields: fields.iter().map(FormFieldSpec::from).collect(),
             fields,
             display_field,
             has_relation_one,
             has_relation_link,
             has_json_field,
             has_file_field,
+            has_form_file_field,
+            has_form_fields,
+            has_form_controls,
         })
     }
+}
+
+fn has_form_file(field: &FieldView) -> bool {
+    !field.computed
+        && !field.derived
+        && (field.kind == "file" || field.sub_fields.iter().any(has_form_file))
+}
+
+fn has_form_control(field: &FieldView) -> bool {
+    !field.computed
+        && !field.derived
+        && (field.kind != "composite" || field.sub_fields.iter().any(has_form_control))
 }
 
 /// Recursive check: does this field or any nested composite sub-field
 /// contain a `relation_one`?
 fn has_relation_one_field(f: &FieldView) -> bool {
-    f.kind == "relation_one" || f.sub_fields.iter().any(has_relation_one_field)
+    !f.computed
+        && !f.derived
+        && (f.kind == "relation_one" || f.sub_fields.iter().any(has_relation_one_field))
 }
 
 /// One schema field projected into a TS/Zod-aware view model.
@@ -281,6 +312,8 @@ pub struct FieldView {
     /// For `kind == "composite"`: the flattened sub-fields, each with
     /// `name` set to its dot-path. Empty for non-composite fields.
     pub sub_fields: Vec<FieldView>,
+    /// Narrow browser contract for descendants.
+    pub form_sub_fields: Vec<FormFieldSpec>,
     /// For `kind == "enum"`: map from variant name to its `@enum_colors`
     /// color token (one of `neutral|gray|red|amber|green|blue|purple|violet|teal|rose`).
     /// Empty when the field carries no `@enum_colors` annotation; variants
@@ -304,11 +337,54 @@ pub struct FieldView {
     /// the detail view. Reads already flow through the standard relation
     /// envelope, populated by the backend's inverse-collection pass.
     pub derived: bool,
+    /// Server-computed values are read-only and excluded from forms.
+    pub computed: bool,
+    /// A partial replacement would erase a descendant hidden by the schema.
+    pub has_hidden_children: bool,
+    /// Declarative role hints; Cedar remains authoritative.
+    pub read_roles: Vec<String>,
+    pub write_roles: Vec<String>,
     /// For `kind == "file"`: metadata the template needs to render the
     /// upload widget (accept attribute, max-size guard, proxied vs. presigned
     /// behavior). `None` for non-file fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_meta: Option<FileMetaView>,
+}
+
+/// Serialized contract consumed by the generated form normalizers. Keep this
+/// shape aligned with FormFieldSpec in zod-schemas.ts; display hints and Zod
+/// source expressions never belong in browser form metadata.
+#[derive(Debug, Clone, Serialize)]
+pub struct FormFieldSpec {
+    pub leaf: String,
+    pub name: String,
+    pub kind: String,
+    pub item_kind: Option<String>,
+    pub required: bool,
+    pub computed: bool,
+    pub has_hidden_children: bool,
+    pub derived: bool,
+    pub read_roles: Vec<String>,
+    pub write_roles: Vec<String>,
+    pub sub_fields: Vec<FormFieldSpec>,
+}
+
+impl From<&FieldView> for FormFieldSpec {
+    fn from(field: &FieldView) -> Self {
+        Self {
+            leaf: field.leaf.clone(),
+            name: field.name.clone(),
+            kind: field.kind.clone(),
+            item_kind: field.item_kind.clone(),
+            required: field.required,
+            computed: field.computed,
+            has_hidden_children: field.has_hidden_children,
+            derived: field.derived,
+            read_roles: field.read_roles.clone(),
+            write_roles: field.write_roles.clone(),
+            sub_fields: field.form_sub_fields.clone(),
+        }
+    }
 }
 
 /// File-field metadata projected to the site template layer.
@@ -373,6 +449,7 @@ pub fn make_field_view(
         item_kind: None,
         item_enum_variants: Vec::new(),
         sub_fields: Vec::new(),
+        form_sub_fields: Vec::new(),
         file_meta: None,
         enum_colors: field
             .enum_colors()
@@ -390,6 +467,39 @@ pub fn make_field_view(
             None => default_list_placement(kind).to_string(),
         },
         derived: field.is_derived(),
+        has_hidden_children: has_hidden_descendants(&field.field_type),
+        computed: field.annotations.iter().any(|annotation| {
+            matches!(
+                annotation,
+                schema_forge_core::types::FieldAnnotation::Compute { .. }
+            )
+        }),
+        read_roles: match field.field_access() {
+            Some(schema_forge_core::types::FieldAnnotation::FieldAccess { read, .. }) => {
+                read.clone()
+            }
+            _ => Vec::new(),
+        },
+        write_roles: match field.field_access() {
+            Some(schema_forge_core::types::FieldAnnotation::FieldAccess { write, .. }) => {
+                write.clone()
+            }
+            _ => Vec::new(),
+        },
+    }
+}
+
+/// Inspect original definitions before hidden fields are removed from the view.
+fn has_hidden_descendants(field_type: &schema_forge_core::types::FieldType) -> bool {
+    use schema_forge_core::types::FieldType;
+    match field_type {
+        FieldType::Composite(fields) => fields
+            .iter()
+            .any(|field| field.is_hidden() || has_hidden_descendants(&field.field_type)),
+        FieldType::Array(inner) | FieldType::Map { value: inner, .. } => {
+            has_hidden_descendants(inner)
+        }
+        _ => false,
     }
 }
 

@@ -550,3 +550,11 @@ if ! printf '%s' "$FORGE_TOKEN" \
   exit "$code"
 fi
 ```
+
+## Rate-limit retries
+
+Entity JSON API and export requests retry HTTP 429 up to `--max-retries` times
+(default 3, maximum 10; 0 disables). `Retry-After` seconds and HTTP dates are
+honored; otherwise delays double from one second up to 30 seconds. Other HTTP
+statuses and transport failures are not retried. See
+[rate limiting](rate-limiting.md) for proxy and server configuration.

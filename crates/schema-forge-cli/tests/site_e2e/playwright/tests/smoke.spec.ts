@@ -48,3 +48,14 @@ test("create → detail round-trip on Company", async ({ page }) => {
     page.getByRole("heading", { name: "Playwright Test Co" }),
   ).toBeVisible()
 })
+
+
+test("project branding renders safely in titles and navigation", async ({ page }) => {
+  await page.goto("/login")
+  await expect(page).toHaveTitle("Sign in · Workspace")
+  await expect(page.getByRole("heading", { name: 'Sign in to Acme "Operations" & <Review>' })).toBeVisible()
+  await login(page)
+  await expect(page.locator(".rail-title")).toHaveText('Acme "Operations" & <Review>')
+  await expect(page).toHaveTitle(/ · Workspace$/)
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", "/favicon.svg")
+})

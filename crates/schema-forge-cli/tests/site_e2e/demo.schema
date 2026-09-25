@@ -12,3 +12,25 @@ schema Company {
         postal_code: text(max: 32)
     }
 }
+
+@display("name")
+@access(read: ["clerk", "finance"], write: ["clerk", "finance"], delete: ["finance"])
+schema Job {
+    name: text required
+    timeout: duration required
+    labels: map<text, integer>
+    checksum: bytes
+    delays: duration[]
+    settings: composite {
+        delay: duration
+        counters: map<text, integer>
+    }
+    protected_group: composite {
+        public_note: text
+        private_note: text @field_access(write: ["finance"])
+    }
+    hidden_group: composite { visible: text secret_storage: text @hidden }
+    computed_label: text @compute("name + '-computed'")
+    finance_only: text @field_access(read: ["finance"], write: ["finance"])
+    review_note: text required default("server") @field_access(write: ["finance"])
+}

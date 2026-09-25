@@ -88,6 +88,21 @@ pub struct SchemaForgeSettings {
     /// environment variables still override these values.
     #[serde(default)]
     pub client: ClientConfig,
+
+    /// Branding for generated sites.
+    #[serde(default)]
+    pub site: SiteBrandingConfig,
+}
+
+/// Optional generated-site identity and SVG assets.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SiteBrandingConfig {
+    pub name: Option<String>,
+    /// Defaults to name; an empty string disables the suffix.
+    pub title_suffix: Option<String>,
+    pub logo: Option<PathBuf>,
+    pub logo_on_dark: Option<PathBuf>,
+    pub favicon: Option<PathBuf>,
 }
 
 /// `[schema_forge.client]` section of config.toml.
@@ -165,6 +180,7 @@ impl Default for SchemaForgeSettings {
             authz: AuthzConfig::default(),
             signing: SigningConfig::default(),
             client: ClientConfig::default(),
+            site: SiteBrandingConfig::default(),
         }
     }
 }
@@ -195,6 +211,7 @@ mod tests {
                 authz: AuthzConfig::default(),
                 signing: SigningConfig::default(),
                 client: ClientConfig::default(),
+                site: SiteBrandingConfig::default(),
             },
         };
         let json = serde_json::to_string(&config).unwrap();

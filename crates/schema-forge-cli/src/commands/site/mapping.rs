@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use schema_forge_core::types::{Cardinality, FieldDefinition, FieldType};
 
-use super::context::{make_field_view, FieldView, FileMetaView, SchemaMeta};
+use super::context::{make_field_view, FieldView, FileMetaView, FormFieldSpec, SchemaMeta};
 
 /// Reason a field could not be projected into the v0 site view model.
 #[derive(Debug, Clone)]
@@ -59,6 +59,47 @@ fn field_to_view_with_prefix(
                 "string".to_string(),
                 zod,
                 "text",
+                false,
+                None,
+                Vec::new(),
+            ))
+        }
+        FieldType::Duration => {
+            let zod = optional_form_zod("durationSchema".into(), required);
+            Ok(make_field_view(
+                field,
+                "string".into(),
+                zod,
+                "duration",
+                false,
+                None,
+                Vec::new(),
+            ))
+        }
+        FieldType::Bytes(constraints) => {
+            let mut zod = "base64Schema".to_string();
+            if let Some(max) = constraints.max_size {
+                zod.push_str(&format!(
+                    ".refine(value => decodedBase64Size(value) <= {max}, \"Maximum {max} bytes\")"
+                ));
+            }
+            Ok(make_field_view(
+                field,
+                "string".into(),
+                optional_form_zod(zod, required),
+                "bytes",
+                false,
+                None,
+                Vec::new(),
+            ))
+        }
+        FieldType::Map { value, .. } => {
+            let validator = format!("jsonTextSchema(z.record({}))", wire_zod(value));
+            Ok(make_field_view(
+                field,
+                format!("Record<string, {}>", ts_type_for_field_type(value)),
+                optional_form_zod(validator, required),
+                "json",
                 false,
                 None,
                 Vec::new(),
@@ -295,7 +336,17 @@ fn field_to_view_with_prefix(
             for sv in &sub_fields {
                 let opt = if sv.required { "" } else { "?" };
                 ts_parts.push(format!("{}{}: {}", sv.leaf, opt, sv.ts_type));
-                zod_parts.push(format!("{}: {}", sv.leaf, sv.zod));
+                if !sv.derived && !sv.computed {
+                    zod_parts.push(format!(
+                        "{}: formFieldSchema({}, {}, {}, {}, {})",
+                        sv.leaf,
+                        sv.zod,
+                        serde_json::to_string(&sv.read_roles).unwrap_or_default(),
+                        serde_json::to_string(&sv.write_roles).unwrap_or_default(),
+                        serde_json::to_string(&sv.form_sub_fields).unwrap_or_default(),
+                        sv.has_hidden_children
+                    ));
+                }
             }
             let ts_type = format!("{{ {} }}", ts_parts.join(", "));
             let mut zod = format!("z.object({{ {} }})", zod_parts.join(", "));
@@ -341,8 +392,7 @@ fn field_to_view_with_prefix(
                 mime_allowlist,
                 access: constraints.access.as_str().to_string(),
             };
-            let mut view =
-                make_field_view(field, ts_type, zod, "file", false, None, Vec::new());
+            let mut view = make_field_view(field, ts_type, zod, "file", false, None, Vec::new());
             view.file_meta = Some(file_meta);
             Ok(view)
         }
@@ -355,8 +405,55 @@ fn field_to_view_with_prefix(
         if !prefix.is_empty() && v.kind != "composite" {
             v.name = format!("{prefix}.{}", v.leaf);
         }
+        v.form_sub_fields = v.sub_fields.iter().map(FormFieldSpec::from).collect();
         v
     })
+}
+
+/// Optional text controls treat a blank input as absent before validation.
+fn optional_form_zod(zod: String, required: bool) -> String {
+    if required {
+        zod
+    } else {
+        format!("z.preprocess(value => value === \"\" ? undefined : value, {zod}.nullish())")
+    }
+}
+
+/// JSON wire validators used for homogeneous map values.
+fn wire_zod(field_type: &FieldType) -> String {
+    match field_type {
+        FieldType::Text(_)
+        | FieldType::RichText
+        | FieldType::DateTime
+        | FieldType::Relation { .. } => "z.string()".into(),
+        FieldType::Duration => "durationSchema".into(),
+        FieldType::Bytes(_) => "base64Schema".into(),
+        FieldType::Integer(_) => "z.number().int()".into(),
+        FieldType::Float(_) => "z.number()".into(),
+        FieldType::Boolean => "z.boolean()".into(),
+        FieldType::Enum(variants) => format!(
+            "z.enum({} as [string, ...string[]])",
+            serde_json::to_string(variants.as_slice()).unwrap_or_default()
+        ),
+        FieldType::Array(inner) => format!("z.array({})", wire_zod(inner)),
+        FieldType::Map { value, .. } => format!("z.record({})", wire_zod(value)),
+        FieldType::Composite(fields) => {
+            let entries: Vec<_> = fields
+                .iter()
+                .filter(|field| !field.is_hidden())
+                .map(|field| {
+                    let optional = if field.is_required() {
+                        ""
+                    } else {
+                        ".nullish()"
+                    };
+                    format!("{}: {}{optional}", field.name, wire_zod(&field.field_type))
+                })
+                .collect();
+            format!("z.object({{ {} }})", entries.join(", "))
+        }
+        _ => "z.unknown()".into(),
+    }
 }
 
 /// Format a byte count as a short human-readable string for template labels.
@@ -414,20 +511,26 @@ fn with_relation_metadata(
 /// `unknown` since the JSON wire shape is opaque to the generator.
 fn ts_type_for_field_type(ft: &FieldType) -> String {
     match ft {
-        FieldType::Text(_) | FieldType::RichText | FieldType::DateTime => "string".to_string(),
+        FieldType::Text(_)
+        | FieldType::RichText
+        | FieldType::DateTime
+        | FieldType::Duration
+        | FieldType::Bytes(_) => "string".to_string(),
         FieldType::Integer(_) | FieldType::Float(_) => "number".to_string(),
         FieldType::Boolean => "boolean".to_string(),
         FieldType::Enum(v) => {
-            let parts: Vec<String> =
-                v.as_slice().iter().map(|s| format!("\"{s}\"")).collect();
+            let parts: Vec<String> = v.as_slice().iter().map(|s| format!("\"{s}\"")).collect();
             format!("({})", parts.join(" | "))
         }
         FieldType::Json => "unknown".to_string(),
         FieldType::Relation { .. } => "string".to_string(),
         FieldType::Array(inner) => format!("{}[]", ts_type_for_field_type(inner)),
+        FieldType::Map { value, .. } => {
+            format!("Record<string, {}>", ts_type_for_field_type(value))
+        }
         FieldType::Composite(sub_defs) => {
             let mut parts = Vec::with_capacity(sub_defs.len());
-            for sub in sub_defs {
+            for sub in sub_defs.iter().filter(|field| !field.is_hidden()) {
                 let opt = if sub.is_required() { "" } else { "?" };
                 parts.push(format!(
                     "{}{opt}: {}",
@@ -506,6 +609,107 @@ mod tests {
     // every existing test.
     fn project(field: &FieldDefinition) -> Result<FieldView, FieldMapError> {
         field_to_view(field, &empty_catalog())
+    }
+
+    #[test]
+    fn form_metadata_has_only_the_browser_contract_at_every_depth() {
+        let schemas = schema_forge_dsl::parse("schema Job { settings: composite { visible: text nested: composite { delay: duration } } }").unwrap();
+        let field = project(&schemas[0].fields[0]).unwrap();
+        let spec = serde_json::to_value(FormFieldSpec::from(&field)).unwrap();
+        let expected = [
+            "leaf",
+            "name",
+            "kind",
+            "item_kind",
+            "required",
+            "computed",
+            "has_hidden_children",
+            "derived",
+            "read_roles",
+            "write_roles",
+            "sub_fields",
+        ];
+        fn verify(spec: &serde_json::Value, expected: &[&str]) {
+            let object = spec.as_object().unwrap();
+            assert_eq!(object.len(), expected.len());
+            for key in expected {
+                assert!(object.contains_key(*key), "missing {key}");
+            }
+            for child in spec["sub_fields"].as_array().unwrap() {
+                verify(child, expected);
+            }
+        }
+        verify(&spec, &expected);
+        assert_eq!(
+            spec["sub_fields"][1]["sub_fields"][0]["name"],
+            "settings.nested.delay"
+        );
+    }
+
+    #[test]
+    fn hidden_descendants_protect_ancestors_without_exposing_hidden_metadata() {
+        let schemas = schema_forge_dsl::parse(r#"schema Job {
+            settings: composite { visible: text nested: composite { secret_storage: text @hidden public_note: text } }
+        }"#).unwrap();
+        let settings = project(&schemas[0].fields[0]).unwrap();
+        assert!(settings.has_hidden_children);
+        let nested = settings
+            .sub_fields
+            .iter()
+            .find(|field| field.leaf == "nested")
+            .unwrap();
+        assert!(nested.has_hidden_children);
+        let serialized = serde_json::to_string(&settings).unwrap();
+        assert!(!serialized.contains("secret_storage"));
+        assert!(serialized.contains("public_note"));
+    }
+
+    #[test]
+    fn duration_bytes_and_maps_have_complete_form_and_read_types() {
+        use schema_forge_core::types::BytesConstraints;
+        let duration = project(&field("timeout", FieldType::Duration, true)).unwrap();
+        assert_eq!(duration.kind, "duration");
+        assert_eq!(duration.ts_type, "string");
+        assert_eq!(duration.zod, "durationSchema");
+        let bytes = project(&field(
+            "checksum",
+            FieldType::Bytes(BytesConstraints::with_max_size(32)),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(bytes.kind, "bytes");
+        assert_eq!(bytes.ts_type, "string");
+        assert!(bytes.zod.contains("decodedBase64Size(value) <= 32"));
+        let schemas = schema_forge_dsl::parse("schema Job { labels: map<text, integer> }").unwrap();
+        let map = project(&schemas[0].fields[0]).unwrap();
+        assert_eq!(map.kind, "json");
+        assert_eq!(map.ts_type, "Record<string, number>");
+        assert!(map
+            .zod
+            .contains("jsonTextSchema(z.record(z.number().int()))"));
+        let array = project(&field(
+            "delays",
+            FieldType::Array(Box::new(FieldType::Duration)),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(array.ts_type, "string[]");
+    }
+
+    #[test]
+    fn computed_and_field_roles_are_projected_into_form_authority() {
+        let schemas = schema_forge_dsl::parse(
+            r#"schema Invoice {
+            tax: float @compute("1.0")
+            secret: text @field_access(read: ["finance"], write: ["lead"])
+        }"#,
+        )
+        .unwrap();
+        let computed = project(&schemas[0].fields[0]).unwrap();
+        assert!(computed.computed);
+        let restricted = project(&schemas[0].fields[1]).unwrap();
+        assert_eq!(restricted.read_roles, vec!["finance"]);
+        assert_eq!(restricted.write_roles, vec!["lead"]);
     }
 
     #[test]
@@ -804,7 +1008,7 @@ mod tests {
         assert_eq!(v.sub_fields[0].ts_type, "boolean[][]");
     }
 
-#[test]
+    #[test]
     fn derived_relation_many_marks_view_as_derived() {
         let mut fd = field(
             "documents",

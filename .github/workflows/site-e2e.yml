@@ -56,3 +56,14 @@ jobs:
             crates/schema-forge-cli/tests/site_e2e/playwright/test-results
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Upload complete server logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: site-server-logs
+          path: |
+            target/site-e2e-*/backend.log
+            target/site-e2e-*/vite.log
+          if-no-files-found: ignore
+          retention-days: 7

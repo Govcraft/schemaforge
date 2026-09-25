@@ -7,7 +7,7 @@
 // schema changes while keeping your layout, charts, and custom state in
 // this preserve file.
 //
-// Layout follows the Govcraft DS: eyebrow + page title, mono toolbar with
+// Layout follows the site design system: eyebrow + page title, mono toolbar with
 // field-targeted contains filter, compact 32px-row table with mono
 // uppercase headers + signal-orange sort arrows, hairline pager.
 import { useEffect, useMemo, useState } from "react"
@@ -63,6 +63,7 @@ export function {{ entity.pascal }}List() {
       : undefined
 
   const query = useQuery({
+    meta: { suppressGlobalError: true },
     queryKey: [
       "{{ entity.snake }}",
       "list",

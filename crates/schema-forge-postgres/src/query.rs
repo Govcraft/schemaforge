@@ -163,12 +163,26 @@ pub fn filter_to_sql(filter: &Filter, params: &mut Vec<DynamicValue>) -> String 
             format!("{} <= ${}", field_path_to_sql(path), params.len())
         }
         Filter::Contains { path, value } => {
-            params.push(DynamicValue::Text(format!("%{value}%")));
-            format!("{} ILIKE ${}", field_path_to_sql(path), params.len())
+            params.push(DynamicValue::Text(format!(
+                "%{}%",
+                escape_like_literal(value)
+            )));
+            format!(
+                "{} LIKE ${} ESCAPE E'\\\\'",
+                field_path_to_sql(path),
+                params.len()
+            )
         }
         Filter::StartsWith { path, value } => {
-            params.push(DynamicValue::Text(format!("{value}%")));
-            format!("{} ILIKE ${}", field_path_to_sql(path), params.len())
+            params.push(DynamicValue::Text(format!(
+                "{}%",
+                escape_like_literal(value)
+            )));
+            format!(
+                "{} LIKE ${} ESCAPE E'\\\\'",
+                field_path_to_sql(path),
+                params.len()
+            )
         }
         Filter::In { path, values } => {
             if values.is_empty() {
@@ -209,6 +223,13 @@ pub fn filter_to_sql(filter: &Filter, params: &mut Vec<DynamicValue>) -> String 
             "true".to_string()
         }
     }
+}
+
+fn escape_like_literal(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// Convert a `FieldPath` to its PostgreSQL quoted representation.
@@ -338,7 +359,7 @@ mod tests {
         let compiled = query_to_sql(&q, "Contact");
         assert_eq!(
             compiled.sql,
-            "SELECT * FROM \"Contact\" WHERE \"email\" ILIKE $1;"
+            "SELECT * FROM \"Contact\" WHERE \"email\" LIKE $1 ESCAPE E'\\\\';"
         );
         assert_eq!(
             compiled.params,
@@ -353,7 +374,7 @@ mod tests {
         let compiled = query_to_sql(&q, "Contact");
         assert_eq!(
             compiled.sql,
-            "SELECT * FROM \"Contact\" WHERE \"name\" ILIKE $1;"
+            "SELECT * FROM \"Contact\" WHERE \"name\" LIKE $1 ESCAPE E'\\\\';"
         );
         assert_eq!(compiled.params, vec![DynamicValue::Text("J%".into())]);
     }

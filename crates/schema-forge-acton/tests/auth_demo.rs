@@ -609,7 +609,7 @@ async fn demo_multi_tenancy_isolation() {
     .unwrap();
     register_schema(&org_schema, &backend, &mut registry).await;
 
-    // Declare Project as a tenant child; unannotated schemas are shared.
+    // Declare Project as a tenant child; all application schemas require tenancy.
     // @access with empty lists = all authenticated users permitted (testing tenancy, not schema-level)
     let project_schema = SchemaDefinition::new(
         SchemaId::new(),

@@ -635,3 +635,202 @@ async fn multi_hop_related_read_is_rejected_with_clear_error() {
         "body should mention multi-hop: {body}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relation_writes_validate_tenant_targets_and_request_fields() {
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("test", "relation_writes")
+            .await
+            .unwrap(),
+    );
+    let mut registry = HashMap::new();
+    let access = Annotation::Access {
+        read: vec!["member".into()],
+        write: vec!["member".into()],
+        delete: vec!["member".into()],
+        cross_tenant_read: vec![],
+    };
+    for (name, fields, tenant) in [
+        ("Organization", vec![text_field("name")], TenantKind::Root),
+        (
+            "Approval",
+            vec![text_field("name")],
+            TenantKind::Child {
+                parent: SchemaName::new("Organization").unwrap(),
+            },
+        ),
+        (
+            "Document",
+            vec![
+                text_field("title"),
+                relation_field("approval", "Approval", Cardinality::One),
+                relation_field("reviewers", "Approval", Cardinality::Many),
+            ],
+            TenantKind::Child {
+                parent: SchemaName::new("Organization").unwrap(),
+            },
+        ),
+    ] {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new(name).unwrap(),
+            fields,
+            vec![access.clone(), Annotation::Tenant(tenant)],
+        )
+        .unwrap();
+        apply_and_register(&backend, &mut registry, schema).await;
+    }
+    let tenant_config =
+        TenantConfig::from_schemas(&registry.values().cloned().collect::<Vec<_>>()).unwrap();
+    let state = build_state(backend, registry, Some(tenant_config)).await;
+    let app_a = app_with_claims(state.clone(), claims_in_tenant(&["member"], "org-a"));
+    let app_b = app_with_claims(state.clone(), claims_in_tenant(&["member"], "org-b"));
+    let (status, own) = json_request(
+        &app_a,
+        Method::POST,
+        "/schemas/Approval/entities",
+        Some(serde_json::json!({"fields":{"name":"own"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{own}");
+    let (status, other) = json_request(
+        &app_b,
+        Method::POST,
+        "/schemas/Approval/entities",
+        Some(serde_json::json!({"fields":{"name":"other"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{other}");
+    let (status, document) = json_request(
+        &app_a,
+        Method::POST,
+        "/schemas/Document/entities",
+        Some(serde_json::json!({"fields":{"title":"own","approval":own["id"]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{document}");
+    let entity_path = format!(
+        "/schemas/Document/entities/{}",
+        document["id"].as_str().unwrap()
+    );
+    let missing = schema_forge_core::types::EntityId::new("approval");
+    for method in [Method::POST, Method::PUT, Method::PATCH] {
+        let path = if method == Method::POST {
+            "/schemas/Document/entities"
+        } else {
+            &entity_path
+        };
+        for field in ["approval", "reviewers"] {
+            let mut failures = Vec::new();
+            for id in [other["id"].as_str().unwrap(), missing.as_str()] {
+                let value = if field == "reviewers" {
+                    serde_json::json!([own["id"], id])
+                } else {
+                    serde_json::json!(id)
+                };
+                let (status, body) = json_request(
+                    &app_a,
+                    method.clone(),
+                    path,
+                    Some(serde_json::json!({"fields":{"title":"candidate",field:value}})),
+                )
+                .await;
+                assert_eq!(
+                    status,
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "{method} {field}: {body}"
+                );
+                failures.push(body);
+            }
+            assert_eq!(
+                failures[0], failures[1],
+                "missing and inaccessible targets must be indistinguishable"
+            );
+        }
+        let (status, body) = json_request(
+            &app_a,
+            method.clone(),
+            path,
+            Some(serde_json::json!({"fields":{"title":"candidate","bogus_key":"x"}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{method}: {body}");
+        assert_eq!(body["error"], "validation_failed");
+        assert!(body["message"].as_str().unwrap().contains("bogus_key"));
+        let (status, body) = json_request(
+            &app_a,
+            method.clone(),
+            path,
+            Some(serde_json::json!({"title":"missing wrapper"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["error"], "validation_failed");
+    }
+    let (status, unchanged) = json_request(&app_a, Method::GET, &entity_path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(unchanged["fields"]["approval"], own["id"]);
+    let admin = app_with_claims(state, claims(&["platform_admin"]));
+    let (status, body) = json_request(
+        &admin,
+        Method::PATCH,
+        &entity_path,
+        Some(serde_json::json!({"fields":{"approval":other["id"]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "administrator override: {body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subscription_writes_reject_unsafe_urls_before_persistence() {
+    use schema_forge_backend::{Entity, EntityStore};
+    let backend = Arc::new(
+        SurrealBackend::connect_memory("test", "subscription_urls")
+            .await
+            .unwrap(),
+    );
+    let mut registry = HashMap::new();
+    let schema =
+        schema_forge_dsl::parse("@system schema WebhookSubscription { url: text required }")
+            .unwrap()
+            .remove(0);
+    apply_and_register(&backend, &mut registry, schema.clone()).await;
+    let existing = Entity::new(
+        schema.name,
+        std::collections::BTreeMap::from([(
+            "url".into(),
+            schema_forge_core::types::DynamicValue::Text("https://8.8.8.8/hook".into()),
+        )]),
+    );
+    EntityStore::create(backend.as_ref(), &existing)
+        .await
+        .unwrap();
+    let state = build_state(backend, registry, None).await;
+    let app = app_with_claims(state, claims(&["platform_admin"]));
+    let entity_path = format!("/schemas/WebhookSubscription/entities/{}", existing.id);
+    for method in [Method::POST, Method::PUT, Method::PATCH] {
+        let path = if method == Method::POST {
+            "/schemas/WebhookSubscription/entities"
+        } else {
+            &entity_path
+        };
+        for url in ["https://127.0.0.1/hook", "http://8.8.8.8/hook"] {
+            let (status, body) = json_request(
+                &app,
+                method.clone(),
+                path,
+                Some(serde_json::json!({"fields":{"url":url}})),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{method} {url}: {body}"
+            );
+            assert_eq!(body["error"], "validation_failed");
+        }
+    }
+    let (status, body) = json_request(&app, Method::GET, &entity_path, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["fields"]["url"], "https://8.8.8.8/hook");
+}

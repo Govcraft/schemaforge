@@ -31,6 +31,8 @@ pub struct TenantLevel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TenantConfigError {
+    /// An application schema omitted its tenant annotation.
+    MissingAnnotation { schema: String },
     /// Multiple schemas have `@tenant(root)`.
     MultipleRoots { first: String, second: String },
     /// A `@tenant(child: "X")` references a non-existent schema.
@@ -42,6 +44,10 @@ pub enum TenantConfigError {
 impl fmt::Display for TenantConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MissingAnnotation { schema } => write!(
+                f,
+                "schema '{schema}' must declare @tenant when a tenant root exists"
+            ),
             Self::MultipleRoots { first, second } => {
                 write!(
                     f,
@@ -117,6 +123,16 @@ impl TenantConfig {
                 root_schema: None,
                 hierarchy: Vec::new(),
             });
+        }
+
+        if root.is_some() {
+            for schema in schemas {
+                if !schema.is_tenanted() && !schema.is_system() {
+                    return Err(TenantConfigError::MissingAnnotation {
+                        schema: schema.name.as_str().to_string(),
+                    });
+                }
+            }
         }
 
         // Collect all tenant schema names for validation
@@ -292,6 +308,20 @@ mod tests {
         assert!(!config.is_enabled());
         assert!(config.root_schema.is_none());
         assert!(config.hierarchy.is_empty());
+    }
+
+    #[test]
+    fn tenant_root_rejects_unannotated_application_schema() {
+        let root = make_schema("Org", vec![Annotation::Tenant(TenantKind::Root)]);
+        let note = make_schema("Note", vec![]);
+        assert_eq!(
+            TenantConfig::from_schemas(&[root.clone(), note]).unwrap_err(),
+            TenantConfigError::MissingAnnotation {
+                schema: "Note".into()
+            }
+        );
+        let system = make_schema("Account", vec![Annotation::System]);
+        assert!(TenantConfig::from_schemas(&[root, system]).is_ok());
     }
 
     #[test]

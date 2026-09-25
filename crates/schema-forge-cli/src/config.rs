@@ -19,6 +19,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use acton_service::config::Config;
+use figment::{
+    providers::{Env, Format, Toml},
+    Figment,
+};
 use schema_forge_acton::config::ClientConfig;
 use schema_forge_acton::SchemaForgeConfig;
 use schema_forge_signing::{SigningConfig, SigningMode, VerifyPolicy};
@@ -110,7 +114,9 @@ impl std::fmt::Display for DbParams {
                 write!(
                     f,
                     "surrealdb {}/{}@{} (user={user}, pass={masked_pass})",
-                    p.namespace, p.database, self.redacted_url()
+                    p.namespace,
+                    p.database,
+                    self.redacted_url()
                 )
             }
             DbParams::Postgres(_) => write!(f, "postgres {}", self.redacted_url()),
@@ -140,8 +146,67 @@ pub fn load_svc_config(global: &GlobalOpts) -> Result<Config<SchemaForgeConfig>,
             }
         })?,
     };
+    // acton-service defaults to all interfaces; SchemaForge defaults to loopback.
+    // Preserve an explicitly configured unspecified address, including 0.0.0.0.
+    if !service_bind_is_configured(global.config.as_deref()) {
+        svc.service.bind = std::net::Ipv4Addr::LOCALHOST.into();
+    }
     apply_cli_overrides(&mut svc, global)?;
     Ok(svc)
+}
+
+/// Match acton-service's user config discovery, without recommended_path's
+/// advisory relative fallback (which the framework does not actually load).
+fn user_service_config_path() -> Option<PathBuf> {
+    #[cfg(unix)]
+    let root = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    #[cfg(windows)]
+    let root = std::env::var_os("APPDATA").map(PathBuf::from).or_else(|| {
+        std::env::var_os("USERPROFILE")
+            .map(|home| PathBuf::from(home).join("AppData").join("Roaming"))
+    });
+    #[cfg(not(any(unix, windows)))]
+    let root: Option<PathBuf> = None;
+    root.map(|root| {
+        root.join("acton-service")
+            .join("schemaforge")
+            .join("config.toml")
+    })
+}
+
+fn service_config_paths(explicit: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(path) = explicit {
+        return vec![path.to_path_buf()];
+    }
+    let mut paths = vec![PathBuf::from("config.toml")];
+    if let Some(path) = user_service_config_path().filter(|path| path.is_file()) {
+        paths.push(path);
+    }
+    #[cfg(unix)]
+    paths.push(PathBuf::from("/etc/acton-service/schemaforge/config.toml"));
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("PROGRAMDATA") {
+        paths.push(PathBuf::from(root).join("acton-service/schemaforge/config.toml"));
+    }
+    paths
+}
+
+/// Inspect the framework's actual providers, without its default values.
+/// Env handles case-insensitive names and structured ACTON_SERVICE dictionaries.
+/// The framework has already validated and loaded the complete configuration.
+fn service_bind_is_configured(explicit: Option<&Path>) -> bool {
+    let mut configured = Figment::new();
+    for path in service_config_paths(explicit).iter().rev() {
+        if path.exists() {
+            configured = configured.merge(Toml::file(path));
+        }
+    }
+    configured
+        .merge(Env::prefixed("ACTON_").split("_"))
+        .contains("service.bind")
 }
 
 fn load_svc_config_from_path(path: &Path) -> Result<Config<SchemaForgeConfig>, CliError> {
@@ -434,6 +499,8 @@ pub struct ResolvedClient {
     pub insecure: bool,
     /// Per-request timeout.
     pub timeout: Duration,
+    /// Maximum retries after an explicit HTTP 429 response.
+    pub max_retries: u32,
 }
 
 impl std::fmt::Debug for ResolvedClient {
@@ -445,6 +512,7 @@ impl std::fmt::Debug for ResolvedClient {
             .field("ca_cert", &self.ca_cert)
             .field("insecure", &self.insecure)
             .field("timeout", &self.timeout)
+            .field("max_retries", &self.max_retries)
             .finish()
     }
 }
@@ -487,6 +555,7 @@ pub fn resolve_client_config(
         ca_cert,
         insecure: conn.insecure,
         timeout: Duration::from_secs(timeout_secs),
+        max_retries: conn.max_retries,
     })
 }
 
@@ -569,6 +638,109 @@ mod tests {
             trust_policy: None,
             no_verify: false,
         }
+    }
+
+    #[test]
+    fn listener_environment_provider_respects_case_and_dictionary_overrides() {
+        const CHILD: &str = "SCHEMAFORGE_LISTENER_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let global = GlobalOpts {
+                config: Some(PathBuf::from("config.toml")),
+                ..empty_global()
+            };
+            let config = load_svc_config(&global).unwrap();
+            assert_eq!(config.service.bind, std::net::Ipv4Addr::UNSPECIFIED);
+            assert_eq!(config.service.port, 3899);
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("config.toml"),
+            "[service]\nport = 3899\n",
+        )
+        .unwrap();
+        for (key, value) in [
+            ("ACTON_SERVICE_BIND", "0.0.0.0"),
+            ("ACTON_SERVICE_bind", "0.0.0.0"),
+            ("ACTON_SERVICE", "{bind=\"0.0.0.0\"}"),
+        ] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "config::tests::listener_environment_provider_respects_case_and_dictionary_overrides", "--nocapture"])
+                .current_dir(directory.path()).env(CHILD, "1");
+            for (name, _) in std::env::vars_os() {
+                if name
+                    .to_string_lossy()
+                    .to_ascii_uppercase()
+                    .starts_with("ACTON_")
+                {
+                    child.env_remove(name);
+                }
+            }
+            let output = child.env(key, value).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{key}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn missing_home_does_not_discover_the_recommended_relative_fallback() {
+        const CHILD: &str = "SCHEMAFORGE_CONFIG_PATH_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(user_service_config_path().is_none());
+            assert!(!service_config_paths(None)
+                .contains(&PathBuf::from("acton-service/schemaforge/config.toml")));
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let fallback = directory.path().join("acton-service/schemaforge");
+        std::fs::create_dir_all(&fallback).unwrap();
+        std::fs::write(
+            fallback.join("config.toml"),
+            "[service]\nbind = \"0.0.0.0\"\n",
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::tests::missing_home_does_not_discover_the_recommended_relative_fallback",
+                "--nocapture",
+            ])
+            .current_dir(directory.path())
+            .env(CHILD, "1")
+            .env_remove("HOME")
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("APPDATA")
+            .env_remove("USERPROFILE")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn listener_file_configuration_and_loopback_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let global = GlobalOpts {
+            config: Some(path.clone()),
+            ..empty_global()
+        };
+        std::fs::write(&path, "[service]\nport = 3899\n").unwrap();
+        let config = load_svc_config(&global).unwrap();
+        assert_eq!(config.service.port, 3899);
+        assert_eq!(config.service.bind, std::net::Ipv4Addr::LOCALHOST);
+        std::fs::write(&path, "[service]\nport = 8080\nbind = \"0.0.0.0\"\n").unwrap();
+        let config = load_svc_config(&global).unwrap();
+        assert_eq!(config.service.port, 8080);
+        assert_eq!(config.service.bind, std::net::Ipv4Addr::UNSPECIFIED);
     }
 
     #[test]
@@ -863,11 +1035,20 @@ mod connection_redaction_tests {
     #[test]
     fn connection_labels_do_not_disclose_uri_or_dsn_credentials() {
         let params = DbParams::Postgres(PostgresParams {
-            url: "postgresql://operator:SECRET@localhost:5432/example?password=SECRET#SECRET".into(),
+            url: "postgresql://operator:SECRET@localhost:5432/example?password=SECRET#SECRET"
+                .into(),
         });
         assert_eq!(params.redacted_url(), "postgresql://localhost:5432/example");
         assert!(!params.to_string().contains("SECRET"));
-        assert_eq!(redact_connection_url("Server=localhost;User ID=operator;Password=SECRET;Database=example"), "(configured database)");
-        assert_eq!(redact_connection_url("not a URL with SECRET"), "(configured database)");
+        assert_eq!(
+            redact_connection_url(
+                "Server=localhost;User ID=operator;Password=SECRET;Database=example"
+            ),
+            "(configured database)"
+        );
+        assert_eq!(
+            redact_connection_url("not a URL with SECRET"),
+            "(configured database)"
+        );
     }
 }

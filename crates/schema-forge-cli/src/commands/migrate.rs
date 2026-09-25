@@ -19,9 +19,24 @@ pub async fn run(
     let schemas = parse_all_schemas_with_global(&args.paths, global, output)?;
 
     let svc_config = load_svc_config(global)?;
+    for schema in &schemas {
+        schema_forge_acton::webhook::validate_schema_webhooks(
+            schema,
+            &svc_config.custom.schema_forge.webhooks,
+        )
+        .await
+        .map_err(|error| CliError::Config {
+            message: format!("invalid webhook on {}: {error}", schema.name),
+        })?;
+    }
+
     let db_params = resolve_db_params(&svc_config)?;
 
-    let backend = super::connect_backend(&db_params, output).await?;
+    let backend = if args.execute {
+        super::connect_backend(&db_params, output).await?
+    } else {
+        super::connect_backend_read_only(&db_params, output).await?
+    };
 
     migrate_on_backend(&args, &schemas, backend.as_ref(), output).await
 }
@@ -70,6 +85,13 @@ pub(super) async fn migrate_on_backend(
         plans.push(update);
     }
 
+    super::schema_update::preflight_destructive_batch(
+        &plans,
+        args.execute,
+        args.force,
+        Term::stderr().is_term(),
+    )?;
+
     // Render plan
     match output.mode {
         OutputMode::Human => {
@@ -96,7 +118,7 @@ pub(super) async fn migrate_on_backend(
                     plan.overall_safety()
                 );
                 for (i, step) in plan.steps.iter().enumerate() {
-                    println!("  {}. {} [{}]", i + 1, step, step.safety());
+                    println!("  {}. {} [{}]", i + 1, step, plan.step_safety(step));
                 }
                 println!();
             }
@@ -118,7 +140,7 @@ pub(super) async fn migrate_on_backend(
                         .map(|s| {
                             serde_json::json!({
                                 "description": s.to_string(),
-                                "safety": s.safety().to_string(),
+                                "safety": plan.step_safety(s).to_string(),
                             })
                         })
                         .collect();
@@ -148,7 +170,12 @@ pub(super) async fn migrate_on_backend(
                     println!("{}\tmetadata update\tsafe", schema.name.as_str());
                 }
                 for step in &plan.steps {
-                    println!("{}\t{}\t{}", schema.name.as_str(), step, step.safety());
+                    println!(
+                        "{}\t{}\t{}",
+                        schema.name.as_str(),
+                        step,
+                        plan.step_safety(step)
+                    );
                 }
             }
         }

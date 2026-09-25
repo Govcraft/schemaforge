@@ -6,6 +6,7 @@
 // office; do not delete the page — it is required by 36 CFR 1194
 // §§603.2–603.3 to be reachable from every page in both authed and
 // unauthed states.
+import { SITE_NAME } from "@/lib/branding"
 import { useDocumentTitle } from "@/lib/use-document-title"
 
 const ACCESSIBILITY_CONTACT =
@@ -21,7 +22,7 @@ export function AccessibilityPage() {
       </h1>
 
       <p className="mt-4 text-sm text-muted-foreground">
-        {{ project_name }} is committed to providing a digital experience
+        {SITE_NAME} is committed to providing a digital experience
         that conforms with Section 508 of the Rehabilitation Act of 1973
         (29 U.S.C. § 794d) and the Web Content Accessibility Guidelines
         (WCAG) 2.1 Level AA, consistent with OMB Memorandum M-24-08 and
@@ -30,8 +31,7 @@ export function AccessibilityPage() {
 
       <h2 className="mt-10 text-xl font-semibold">Conformance status</h2>
       <p className="mt-2">
-        This site is built on the SchemaForge generated-site baseline,
-        which targets WCAG 2.1 AA. Conformance is monitored in CI via
+        {SITE_NAME} targets WCAG 2.1 AA. Conformance is monitored in CI via
         automated axe scans (no critical or serious violations gate
         deployment) and verified by manual assistive-technology testing
         on each release.
@@ -62,7 +62,7 @@ export function AccessibilityPage() {
           or ask questions by emailing{" "}
           <a
             className="underline"
-            href={`mailto:${ACCESSIBILITY_CONTACT}?subject=Accessibility%20feedback%20for%20{{ project_name }}`}
+            href={`mailto:${ACCESSIBILITY_CONTACT}?subject=Accessibility%20feedback%20for%20${encodeURIComponent(SITE_NAME)}`}
           >
             {ACCESSIBILITY_CONTACT}
           </a>

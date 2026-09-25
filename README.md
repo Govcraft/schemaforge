@@ -1056,3 +1056,7 @@ See the project repository for license information.
 Platform administrators can browse recorded audit events and verify bounded chain ranges through the [audit API](docs/audit-api-reference.md). Access is deployment-wide, uses the active framework audit store, and reports collection limits separately from local chain consistency. Available in v0.42.0.
 
 See [safe schema changes](docs/migrations/safe-schema-changes.md) for declared field renames, destructive migration opt-ins, PostgreSQL relation integrity, and explicit tenancy migrations.
+
+See the [webhook delivery contract](docs/webhooks.md) for delivery guarantees, payload format, and destination policy.
+
+Configure product names, title suffixes, and SVG marks with [generated-site branding](docs/site-branding.md).

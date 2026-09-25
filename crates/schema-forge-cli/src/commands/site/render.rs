@@ -7,13 +7,9 @@
 //!   2. Fall back to the slice baked into the binary at build time
 //!      (`EMBEDDED_SITE_TEMPLATES`, emitted by `build.rs`).
 //!
-//! This lets framework users iterate on generator output without a CLI
-//! rebuild: drop an override tree next to your schemas, tweak `.jinja`
-//! files, re-run `schema-forge site generate`, and only the overridden
-//! files swap — every other template still comes from the embedded
-//! defaults. When the overrides look right, copy them back into
-//! `crates/schema-forge-cli/templates/site/` and they become the new
-//! baked-in default.
+//! Projects can keep persistent customizations in this override tree. Overrides
+//! participate in generation and drift checking, including CSS, title helpers,
+//! and brand SVGs that otherwise use embedded vendor defaults.
 //!
 //! Logical template names (`"src/App.tsx"`, `"package.json"`, …) are the
 //! post-`.jinja`-strip relative paths, which is also the final output
@@ -38,17 +34,24 @@ impl SiteRenderer {
     ///
     /// If `override_dir` is `Some`, the loader checks that directory for
     /// `<logical_name>.jinja` before falling back to the embedded defaults.
-    /// Read errors on an override file are treated as "not overridden" and
-    /// silently fall through to the embedded template.
+    /// Unreadable override files fail generation rather than silently falling back.
     pub fn new(override_dir: Option<PathBuf>) -> Result<Self, CliError> {
         let mut env = Environment::new();
         env.set_loader(move |name: &str| {
             if let Some(ref dir) = override_dir {
                 let candidate = dir.join(format!("{name}.jinja"));
                 if candidate.is_file() {
-                    if let Ok(content) = std::fs::read_to_string(&candidate) {
-                        return Ok(Some(content));
-                    }
+                    return std::fs::read_to_string(&candidate)
+                        .map(Some)
+                        .map_err(|error| {
+                            minijinja::Error::new(
+                                minijinja::ErrorKind::InvalidOperation,
+                                format!(
+                                    "cannot read template override {}: {error}",
+                                    candidate.display()
+                                ),
+                            )
+                        });
                 }
             }
             for (logical, content) in EMBEDDED_SITE_TEMPLATES {
@@ -56,7 +59,16 @@ impl SiteRenderer {
                     return Ok(Some((*content).to_string()));
                 }
             }
-            Ok(None)
+            let vendor = match name {
+                "public/logo-mark.svg" | "public/favicon.svg" => {
+                    Some(super::vendor::LOGO_MARK_INK_SVG)
+                }
+                "public/logo-mark-white.svg" => Some(super::vendor::LOGO_MARK_WHITE_SVG),
+                "src/index.css" => Some(super::vendor::INDEX_CSS),
+                "src/lib/use-document-title.ts" => Some(super::vendor::USE_DOCUMENT_TITLE),
+                _ => None,
+            };
+            Ok(vendor.map(str::to_string))
         });
         Ok(Self { env })
     }
