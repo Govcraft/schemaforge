@@ -421,20 +421,28 @@ async fn guarded_read_policy_preserves_http_preflight_and_record_denials() {
 
 #[test]
 fn unsupported_array_attributes_do_not_break_resource_authorization() {
-    let schema = schema_forge_dsl::parse(
+    let mut schema = schema_forge_dsl::parse(
         r#"
         @access(read: ["reviewer"], write: ["reviewer"])
         schema Job {
             name: text required
             delays: duration[] required
             documents: json[] required
-            nested: duration[][] required
+            nested: duration[] required
             numbers: integer[] required
         }
     "#,
     )
     .unwrap()
     .remove(0);
+    // The DSL accepts one array suffix; exercise nested core types directly.
+    let nested = schema
+        .fields
+        .iter_mut()
+        .find(|field| field.name.as_str() == "nested")
+        .unwrap();
+    nested.field_type =
+        schema_forge_core::types::FieldType::Array(Box::new(nested.field_type.clone()));
     let snapshot = PolicyStoreSnapshot::from_schemas(
         std::slice::from_ref(&schema),
         None,
