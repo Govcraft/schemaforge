@@ -11,7 +11,9 @@ use schema_forge_backend::error::BackendError;
 use schema_forge_backend::traits::{EntityStore, SchemaBackend};
 use schema_forge_core::migration::MigrationStep;
 use schema_forge_core::query::{AggregateQuery, AggregateResult, Query};
-use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName};
+use schema_forge_core::types::{
+    DynamicValue, EntityId, FieldDefinition, FieldModifier, FieldType, SchemaDefinition, SchemaName,
+};
 use surrealdb::engine::any::Any;
 use surrealdb::types::ToSql;
 use surrealdb::Surreal;
@@ -313,40 +315,28 @@ impl SurrealBackend {
         steps: &[MigrationStep],
     ) -> Result<Vec<String>, BackendError> {
         let table = schema_name.as_str();
-        let needs_enum_metadata = steps
-            .iter()
-            .any(|step| matches!(step, MigrationStep::RenameField { .. }))
-            || steps.iter().any(|step| {
-                matches!(
-                    step,
-                    MigrationStep::ChangeType {
-                        old_type: FieldType::Enum(_),
-                        new_type: FieldType::Enum(_),
-                        ..
-                    }
-                )
-            });
-        let metadata = if needs_enum_metadata {
-            self.load_schema_metadata(schema_name).await?
-        } else {
-            None
-        };
+        let metadata = self.load_schema_metadata(schema_name).await?;
+        let mut fields: BTreeMap<String, FieldDefinition> = metadata
+            .as_ref()
+            .map(|schema| {
+                schema
+                    .fields
+                    .iter()
+                    .map(|field| (field.name.to_string(), field.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut statements = Vec::new();
         let mut rename_cleanup = Vec::new();
         for step in steps {
             let mut compiled = if let MigrationStep::RenameField { old_name, new_name } = step {
-                let schema = metadata
-                    .as_ref()
-                    .ok_or_else(|| BackendError::MigrationFailed {
-                        step: step.to_string(),
-                        reason: "rename requires stored schema metadata".into(),
-                    })?;
-                let field = schema.field(old_name.as_str()).ok_or_else(|| {
-                    BackendError::MigrationFailed {
-                        step: step.to_string(),
-                        reason: "rename source missing from stored metadata".into(),
-                    }
-                })?;
+                let field =
+                    fields
+                        .get(old_name.as_str())
+                        .ok_or_else(|| BackendError::MigrationFailed {
+                            step: step.to_string(),
+                            reason: "rename source missing from stored metadata".into(),
+                        })?;
                 // SurrealDB's transaction-local field refresh after REMOVE FIELD
                 // can strip unrelated object data on a later UPDATE. Complete
                 // every data write before removing renamed source definitions.
@@ -355,35 +345,25 @@ impl SurrealBackend {
                     table,
                     field,
                     new_name,
-                    schema.unique_scoped_by_tenant(),
+                    metadata
+                        .as_ref()
+                        .is_some_and(SchemaDefinition::unique_scoped_by_tenant),
                 )
             } else {
                 migration_step_to_surql(table, step)
             };
-            if let MigrationStep::ChangeType {
-                name,
-                old_type: FieldType::Enum(_),
-                new_type: new_type @ FieldType::Enum(_),
-                ..
-            } = step
-            {
-                let original_name = steps
-                    .iter()
-                    .find_map(|candidate| match candidate {
-                        MigrationStep::RenameField { old_name, new_name } if new_name == name => {
-                            Some(old_name)
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or(name);
-                let field = metadata.as_ref().and_then(|schema| schema.field(original_name.as_str())).ok_or_else(|| BackendError::MigrationFailed { step: step.to_string(), reason: "enum migration requires stored field metadata to preserve required/default modifiers".into() })?;
-                let mut field = field.clone();
-                field.name = name.clone();
-                field.field_type = new_type.clone();
-                compiled.pop();
+            if let Some(field) = advance_field_definition(&mut fields, step)? {
+                // ChangeType may first rewrite removed enum variants. Keep that
+                // data rewrite, then restore the entire field definition.
+                if matches!(step, MigrationStep::ChangeType { .. }) {
+                    compiled.pop();
+                } else {
+                    compiled.clear();
+                }
                 compiled.extend(
                     crate::codegen::define_field_stmts(table, &field)
                         .into_iter()
+                        .filter(|sql| sql.starts_with("DEFINE FIELD "))
                         .map(|sql| sql.replacen("DEFINE FIELD ", "DEFINE FIELD OVERWRITE ", 1)),
                 );
             }
@@ -392,6 +372,107 @@ impl SurrealBackend {
         statements.extend(rename_cleanup);
         Ok(statements)
     }
+}
+
+// Track definitions in migration order, so a rename/type change followed by
+// required/default changes retains the new name and type as well as all
+// unrelated modifiers. Modifier DDL cannot safely be compiled without metadata.
+fn advance_field_definition(
+    fields: &mut BTreeMap<String, FieldDefinition>,
+    step: &MigrationStep,
+) -> Result<Option<FieldDefinition>, BackendError> {
+    match step {
+        MigrationStep::CreateSchema {
+            fields: created, ..
+        } => {
+            fields.extend(
+                created
+                    .iter()
+                    .map(|field| (field.name.to_string(), field.clone())),
+            );
+        }
+        MigrationStep::AddField { field } => {
+            fields.insert(field.name.to_string(), field.clone());
+        }
+        MigrationStep::RenameField { old_name, new_name } => {
+            if let Some(mut field) = fields.remove(old_name.as_str()) {
+                field.name = new_name.clone();
+                fields.insert(new_name.to_string(), field);
+            }
+        }
+        MigrationStep::RemoveField { name } | MigrationStep::RemoveRelation { name } => {
+            fields.remove(name.as_str());
+        }
+        MigrationStep::AddRelation {
+            name,
+            target,
+            cardinality,
+        } => {
+            fields.insert(
+                name.to_string(),
+                FieldDefinition::new(
+                    name.clone(),
+                    FieldType::Relation {
+                        target: target.clone(),
+                        cardinality: *cardinality,
+                    },
+                ),
+            );
+        }
+        MigrationStep::AddRequired { field }
+        | MigrationStep::RemoveRequired { field }
+        | MigrationStep::SetDefault { field, .. }
+        | MigrationStep::RemoveDefault { field } => {
+            let definition =
+                fields
+                    .get_mut(field.as_str())
+                    .ok_or_else(|| BackendError::MigrationFailed {
+                        step: step.to_string(),
+                        reason: "field modifier migration requires stored field metadata".into(),
+                    })?;
+            match step {
+                MigrationStep::AddRequired { .. } => {
+                    if !definition.is_required() {
+                        definition.modifiers.push(FieldModifier::Required);
+                    }
+                }
+                MigrationStep::RemoveRequired { .. } => {
+                    definition
+                        .modifiers
+                        .retain(|modifier| !matches!(modifier, FieldModifier::Required));
+                }
+                MigrationStep::SetDefault { value, .. } => {
+                    definition
+                        .modifiers
+                        .retain(|modifier| !matches!(modifier, FieldModifier::Default { .. }));
+                    definition.modifiers.push(FieldModifier::Default {
+                        value: value.clone(),
+                    });
+                }
+                MigrationStep::RemoveDefault { .. } => {
+                    definition
+                        .modifiers
+                        .retain(|modifier| !matches!(modifier, FieldModifier::Default { .. }));
+                }
+                _ => unreachable!(),
+            }
+            return Ok(Some(definition.clone()));
+        }
+        MigrationStep::ChangeType { name, new_type, .. } => {
+            if let Some(definition) = fields.get_mut(name.as_str()) {
+                definition.field_type = new_type.clone();
+                return Ok(Some(definition.clone()));
+            }
+            if matches!(new_type, FieldType::Enum(_)) {
+                return Err(BackendError::MigrationFailed {
+                    step: step.to_string(),
+                    reason: "enum migration requires stored field metadata".into(),
+                });
+            }
+        }
+        _ => {}
+    }
+    Ok(None)
 }
 
 impl SchemaBackend for SurrealBackend {

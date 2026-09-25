@@ -50,44 +50,13 @@ pub fn migration_step_to_sql(table: &str, step: &MigrationStep) -> Vec<String> {
             vec![format!("DROP TABLE IF EXISTS \"{table}\" CASCADE;")]
         }
         MigrationStep::AddField { field } => {
-            let pg_type = field_type_to_pg(&field.field_type);
-            let mut constraints =
-                field_check_constraints(table, field.name.as_ref(), &field.field_type);
-
-            if field.is_required() {
-                constraints.push("NOT NULL".to_string());
-            }
-
-            let constraint_str = if constraints.is_empty() {
-                String::new()
-            } else {
-                format!(" {}", constraints.join(" "))
-            };
-
+            // PostgreSQL only fills existing rows when DEFAULT is part of
+            // ADD COLUMN, before the NOT NULL constraint is enforced.
+            let (column, extra_statements) = field_to_column_def(table, field);
             let mut stmts = vec![format!(
-                "ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS \"{}\" {pg_type}{constraint_str};",
-                field.name
+                "ALTER TABLE \"{table}\" ADD COLUMN IF NOT EXISTS {column};"
             )];
-
-            // Add default value
-            for modifier in &field.modifiers {
-                if let FieldModifier::Default { value } = modifier {
-                    let literal = default_value_to_sql(value);
-                    stmts.push(format!(
-                        "ALTER TABLE \"{table}\" ALTER COLUMN \"{}\" SET DEFAULT {literal};",
-                        field.name
-                    ));
-                }
-            }
-
-            // Add index
-            if field.is_indexed() {
-                let idx_name = format!("idx_{table}_{}", field.name);
-                stmts.push(format!(
-                    "CREATE INDEX IF NOT EXISTS \"{idx_name}\" ON \"{table}\" (\"{}\");",
-                    field.name
-                ));
-            }
+            stmts.extend(extra_statements);
 
             stmts
         }
@@ -627,9 +596,27 @@ mod tests {
             ),
         };
         let stmts = migration_step_to_sql("Contact", &step);
-        assert_eq!(stmts.len(), 2);
-        assert!(stmts[0].contains("\"status\" TEXT"));
-        assert!(stmts[1].contains("SET DEFAULT 'active'"));
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].contains("\"status\" TEXT DEFAULT 'active'"));
+    }
+
+    #[test]
+    fn add_required_field_default_is_inline_and_escaped() {
+        let step = MigrationStep::AddField {
+            field: FieldDefinition::with_modifiers(
+                FieldName::new("status").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+                vec![
+                    FieldModifier::Required,
+                    FieldModifier::Default {
+                        value: DefaultValue::String("it's ready".into()),
+                    },
+                ],
+            ),
+        };
+        let statements = migration_step_to_sql("Widget", &step);
+        assert_eq!(statements.len(), 1);
+        assert!(statements[0].contains("NOT NULL DEFAULT 'it''s ready'"));
     }
 
     #[test]

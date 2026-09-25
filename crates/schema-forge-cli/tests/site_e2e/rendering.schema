@@ -1,0 +1,37 @@
+// Generation fixtures use mocked browser APIs and need no storage backend.
+@display("company")
+schema PrimaryJoin {
+    company: -> Company required
+}
+
+schema HiddenJoin {
+    company: -> Company required
+}
+
+schema ExplicitJoin {
+    company: -> Company required @list(primary)
+}
+
+@display("companies")
+schema ManyJoin {
+    companies: -> Company[]
+}
+
+schema JoinReference {
+    entry: -> PrimaryJoin
+}
+
+schema FileOnly {
+    document: file(bucket: "documents", max_size: "5MB", mime: ["application/pdf"])
+}
+
+
+schema HiddenOnly {
+    secret: text @hidden
+}
+
+schema HiddenComposite {
+    details: composite {
+        secret: text @hidden
+    }
+}

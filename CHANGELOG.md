@@ -7,10 +7,15 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
-## [0.46.0] - 2026-09-25
+## [0.46.1] - 2026-09-25
+
+This release includes the changes prepared for v0.46.0. The v0.46.0 source tag
+is retained, but its binary release was not published.
 
 ### Runtime and API behavior
 
+- Apply target schema, record, and field authorization consistently when resolving
+  related display labels and derived collection IDs, including export labels.
 - Validate tenant declarations consistently across startup, CLI schema application,
   and runtime schema changes. Applications with a tenant root must annotate every
   application schema; built-in system schemas remain shared.
@@ -32,6 +37,11 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Database and operator fixes
 
+- Add PostgreSQL literal defaults with their columns so existing rows are filled.
+  Required-field transitions backfill before enforcing `NOT NULL`; plans without
+  a usable literal backfill value are refused before changes are applied.
+- Report stored/derived inverse-collection transitions as destructive migrations.
+  Cross-schema changes in collection meaning require a reviewed batch migration.
 - PostgreSQL planning and inspection connections perform no bookkeeping DDL.
   Fresh databases plan as empty registries, and read-only roles can inspect existing
   metadata without schema creation privileges.
@@ -51,6 +61,9 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Generated sites
 
+- Generate compilable list and detail pages for relation-only and file-only
+  schemas. Primary relation cells and relation pickers use display labels, and
+  nested display relations resolve through bounded, authorized lookups.
 - Carry the active tenant on entity, invitation, and file requests, including
   requests retried after a token refresh.
 - Show readable API errors and avoid duplicate global notifications when pages

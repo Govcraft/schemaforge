@@ -23,6 +23,9 @@ SITE_DIR="$TMP_ROOT/site"
 
 mkdir -p "$SCHEMAS_DIR"
 cp "$SCRIPT_DIR/demo.schema" "$SCHEMAS_DIR/demo.schema"
+SITE_SCHEMAS_DIR="$TMP_ROOT/site-schemas"
+mkdir -p "$SITE_SCHEMAS_DIR"
+cp "$SCRIPT_DIR/demo.schema" "$SCRIPT_DIR/rendering.schema" "$SITE_SCHEMAS_DIR/"
 
 # ---------- pick two free ports ----------
 pick_port() {
@@ -42,7 +45,7 @@ cargo build --package schema-forge-cli --bin schemaforge --quiet
 
 # ---------- generate the site ----------
 ./target/debug/schemaforge site generate \
-  --schema-dir "$SCHEMAS_DIR" \
+  --schema-dir "$SITE_SCHEMAS_DIR" \
   --out-dir "$SITE_DIR" \
   --name 'Acme "Operations" & <Review>' \
   --title-suffix 'Workspace'

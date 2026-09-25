@@ -193,3 +193,46 @@ destructive plan refuses the whole batch unless `--force` is present. Dry runs
 remain available without force. Interactive users can still approve or skip
 individual destructive schemas. Backend failures during execution can still
 leave earlier schemas committed; preflight is not a transaction for the batch.
+
+## Required fields and existing rows
+
+PostgreSQL adds literal `default(...)` values inline with the new column, so
+both optional and required additions populate existing rows. Changing an
+optional field to required emits a NULL backfill before installing `NOT NULL`;
+non-NULL values remain unchanged.
+
+For an existing schema, adding a required field or making an optional field
+required needs a usable literal default compatible with the declared field type
+and constraints. Planning refuses the change otherwise, even if the table is
+currently empty or all rows already have values. Fresh schema creation and
+unchanged required fields remain valid without defaults. This is a conservative
+schema-only preflight; it does not inspect existing data.
+
+CEL `@default("...")` rules run during entity writes and are not evaluated for
+migration backfill, including constant expressions such as `@default("0")`.
+Use `default(0)` for an integer migration default instead. If no literal is
+appropriate, add the field as optional and perform a reviewed manual data,
+constraint, and schema-metadata migration. Destructive approval does not bypass
+this refusal.
+
+## Inverse collections and storage changes
+
+A collection `Team.members: -> Person[]` is stored when Person has no to-one
+relation back to Team. Exactly one such relation makes it a derived collection;
+two or more are ambiguous and rejected by `parse` as well as write commands.
+
+Adding or removing a child foreign key can therefore change the parent's
+storage even when the parent's source text is unchanged. Plans now include a
+destructive `REMOVE RELATION` for the affected parent field. Stored-to-derived
+removes the unused column and its IDs; it does not translate those IDs into
+child foreign keys. Derived-to-stored removes any legacy orphan column and
+creates an empty stored column. Changing a derived collection's inverse key or
+target is also destructive. Migrate relationships explicitly before approving
+these changes if their membership must be retained.
+
+The usual destructive gates apply to CLI batches and startup. Direct runtime
+startup refuses unresolved storage transitions in persisted metadata. REST
+single-schema changes that would alter a sibling schema's pairing are refused;
+apply the complete schema batch during a maintenance window, review the parent
+and child plans, then restart. Batch preflight is not a transaction across all
+schemas, so keep concurrent writers offline for the migration.

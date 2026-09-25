@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use acton_service::config::DatabaseConfig;
 use acton_service::mssql::{create_pool, MssqlPool};
 use schema_forge_backend::{BackendError, Entity, EntityStore, QueryResult, SchemaBackend};
-use schema_forge_core::migration::{MigrationStep, ValueTransform};
+use schema_forge_core::migration::{DiffEngine, MigrationStep, ValueTransform};
 use schema_forge_core::query::{
     AggregateOp, AggregateQuery, AggregateResult, FieldPath, Filter, Query, SortOrder,
 };
@@ -71,12 +71,33 @@ impl MssqlBackend {
 fn migration_statements(
     schema_name: &SchemaName,
     steps: &[MigrationStep],
-) -> (String, Vec<String>) {
+) -> Result<(String, Vec<String>), BackendError> {
     let table = quote(schema_name.as_str());
     let mut statements = Vec::new();
     let mut parameters = Vec::new();
     for step in steps {
         match step {
+            MigrationStep::RemoveRelation { name } | MigrationStep::RemoveField { name } => {
+                let parameter = parameters.len() + 1;
+                parameters.push(format!("$.\"{name}\""));
+                statements.push(format!("UPDATE [dbo].{table} SET [data] = JSON_MODIFY([data], @P{parameter}, NULL);"));
+            }
+            MigrationStep::BackfillRequired { field, default_value } => {
+                append_backfill(&table, field.as_str(), default_value, &mut statements, &mut parameters)?;
+            }
+            MigrationStep::AddField { field } => {
+                if let Some(value) = DiffEngine::backfill_value(field) {
+                    append_backfill(&table, field.name.as_str(), &value, &mut statements, &mut parameters)?;
+                } else if field.modifiers.iter().any(|modifier| matches!(modifier, schema_forge_core::types::FieldModifier::Default { .. })) {
+                    return Err(BackendError::MigrationFailed { step: step.to_string(), reason: "literal default is incompatible with the field type".into() });
+                }
+                if field.is_required() {
+                    append_required_check(&table, field.name.as_str(), &mut statements, &mut parameters);
+                }
+            }
+            MigrationStep::AddRequired { field } => {
+                append_required_check(&table, field.as_str(), &mut statements, &mut parameters);
+            }
             MigrationStep::RenameField { old_name, new_name } => {
                 let old_parameter = parameters.len() + 1;
                 let new_parameter = old_parameter + 1;
@@ -102,7 +123,47 @@ fn migration_statements(
             _ => {}
         }
     }
-    (statements.join("\n"), parameters)
+    Ok((statements.join("\n"), parameters))
+}
+
+/// Preserve existing non-null values while filling absent or tagged-null fields.
+fn append_backfill(
+    table: &str,
+    field: &str,
+    value: &DynamicValue,
+    statements: &mut Vec<String>,
+    parameters: &mut Vec<String>,
+) -> Result<(), BackendError> {
+    if matches!(value, DynamicValue::Null)
+        || matches!(value, DynamicValue::Float(number) if !number.is_finite())
+    {
+        return Err(BackendError::MigrationFailed {
+            step: format!("backfill '{field}'"),
+            reason: "required backfill must have a non-null, finite value".into(),
+        });
+    }
+    let path = parameters.len() + 1;
+    let tag = path + 1;
+    let default = path + 2;
+    parameters.extend([
+        format!("$.\"{field}\""),
+        format!("$.\"{field}\".type"),
+        serde_json::to_string(value).map_err(json_error)?,
+    ]);
+    statements.push(format!("UPDATE [dbo].{table} SET [data] = JSON_MODIFY([data], @P{path}, JSON_QUERY(@P{default})) WHERE JSON_QUERY([data], @P{path}) IS NULL OR JSON_VALUE([data], @P{tag}) = N'Null';"));
+    Ok(())
+}
+
+fn append_required_check(
+    table: &str,
+    field: &str,
+    statements: &mut Vec<String>,
+    parameters: &mut Vec<String>,
+) {
+    let path = parameters.len() + 1;
+    let tag = path + 1;
+    parameters.extend([format!("$.\"{field}\""), format!("$.\"{field}\".type")]);
+    statements.push(format!("IF EXISTS (SELECT 1 FROM [dbo].{table} WITH (UPDLOCK, HOLDLOCK) WHERE JSON_QUERY([data], @P{path}) IS NULL OR JSON_VALUE([data], @P{tag}) = N'Null') THROW 50002, 'required field has missing or null values', 1;"));
 }
 
 fn transaction_batch(statements: &str) -> String {
@@ -171,7 +232,7 @@ impl SchemaBackend for MssqlBackend {
             }
         }
         self.validate_migration(name, steps).await?;
-        let (mut sql, mut parameters) = migration_statements(name, steps);
+        let (mut sql, mut parameters) = migration_statements(name, steps)?;
         let name_parameter = parameters.len() + 1;
         parameters.push(name.to_string());
         if let Some(definition) = definition {
@@ -204,7 +265,7 @@ impl SchemaBackend for MssqlBackend {
         steps: &[MigrationStep],
     ) -> Result<(), BackendError> {
         self.validate_migration(schema_name, steps).await?;
-        let (sql, parameters) = migration_statements(schema_name, steps);
+        let (sql, parameters) = migration_statements(schema_name, steps)?;
         if sql.is_empty() {
             return Ok(());
         }
@@ -697,6 +758,56 @@ mod tests {
     use schema_forge_core::types::{DynamicValue, SchemaName};
 
     use super::{aggregate_value, matches_filter, quote, sort_entities};
+
+    #[test]
+    fn invalid_required_default_rejects_entire_migration_before_sql_execution() {
+        use schema_forge_core::migration::MigrationStep;
+        use schema_forge_core::types::{
+            DefaultValue, FieldDefinition, FieldModifier, FieldName, FieldType,
+        };
+        let field = FieldDefinition::with_modifiers(
+            FieldName::new("active").unwrap(),
+            FieldType::Boolean,
+            vec![
+                FieldModifier::Required,
+                FieldModifier::Default {
+                    value: DefaultValue::String("invalid".into()),
+                },
+            ],
+        );
+        let result = super::migration_statements(
+            &SchemaName::new("Item").unwrap(),
+            &[
+                MigrationStep::RemoveField {
+                    name: FieldName::new("old").unwrap(),
+                },
+                MigrationStep::AddField { field },
+            ],
+        );
+        assert!(matches!(
+            result,
+            Err(schema_forge_backend::BackendError::MigrationFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn backfill_values_are_bound_as_tagged_json_instead_of_interpolated_sql() {
+        use schema_forge_core::{migration::MigrationStep, types::FieldName};
+        let value = DynamicValue::Text("'quoted' \"name\" \n text".into());
+        let (sql, bindings) = super::migration_statements(
+            &SchemaName::new("Item").unwrap(),
+            &[MigrationStep::BackfillRequired {
+                field: FieldName::new("label").unwrap(),
+                default_value: value.clone(),
+            }],
+        )
+        .unwrap();
+        assert!(!sql.contains("quoted"));
+        assert_eq!(
+            serde_json::from_str::<DynamicValue>(&bindings[2]).unwrap(),
+            value
+        );
+    }
 
     fn entity(name: &str, score: i64) -> Entity {
         Entity::new(
