@@ -164,3 +164,11 @@ Other transitions have different requirements:
 For every case, commit physical changes, validated ownership, and the canonical
 annotation update together. Other database backends require equivalent native
 DDL and metadata changes; the PostgreSQL SQL above is not portable.
+
+## Read-only PostgreSQL planning
+
+`apply --dry-run`, `migrate` without `--execute`, and `inspect` connect without
+creating PostgreSQL bookkeeping tables. A fresh database is treated as an empty
+schema registry. An inspection role needs schema `USAGE` and `SELECT` on existing
+bookkeeping tables, but does not need `CREATE`. Normal write commands initialize
+bookkeeping as before.
