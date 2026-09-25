@@ -37,7 +37,7 @@ test("duration, map, base64 and nested fields survive create and edit", async ({
   const payload = response.request().postDataJSON().fields
   expect(payload).toMatchObject({ timeout: "1h30m", labels: { attempts: 3 }, checksum: "aGVsbG8=", delays: ["1s", "2m"], settings: { delay: "2m", counters: { success: 2 } } })
   expect(payload).not.toHaveProperty("computed_label")
-  await expect(page).toHaveURL(/\/app\/job\/entity_[a-z0-9]+$/)
+  await expect(page).toHaveURL(/\/app\/job\/job_[a-z0-9]+$/)
   await expect(page.getByText("1h 30m", { exact: true })).toBeVisible()
   await expect(page.getByText("Extended field job-computed", { exact: true })).toBeVisible()
   const detailUrl = page.url()
@@ -79,7 +79,7 @@ test("role hints hide unreadable controls and omit unwritable required values", 
   expect(payload).not.toHaveProperty("review_note")
   expect(payload).not.toHaveProperty("finance_only")
   expect(payload).not.toHaveProperty("computed_label")
-  await expect(page).toHaveURL(/\/app\/job\/entity_[a-z0-9]+$/)
+  await expect(page).toHaveURL(/\/app\/job\/job_[a-z0-9]+$/)
   const editUrl = `${page.url()}/edit`
   await page.goto(editUrl)
   await expect(page.getByRole("note", { name: "Review Note (read only)" })).toContainText("server")
