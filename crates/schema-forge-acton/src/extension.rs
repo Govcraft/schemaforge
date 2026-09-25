@@ -432,6 +432,17 @@ impl SchemaForgeExtension {
             }
         })?;
         for schema in paired {
+            if let Some(stored) = registry.get(schema.name.as_str()) {
+                let plan = schema_forge_core::migration::DiffEngine::plan_update(stored, &schema)
+                    .map_err(|error| ForgeError::Internal {
+                    message: error.to_string(),
+                })?;
+                if plan.has_destructive_steps() {
+                    return Err(ForgeError::Internal {
+                        message: format!("inverse collection storage transition requires an explicit batch migration before startup: {plan}"),
+                    });
+                }
+            }
             registry.insert(schema.name.as_str().to_string(), schema);
         }
 

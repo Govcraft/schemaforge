@@ -707,3 +707,26 @@ fn serve_rejects_invalid_host_before_connecting() {
         .failure()
         .stderr(predicate::str::contains("invalid IP address syntax"));
 }
+
+#[test]
+fn parse_reports_ambiguous_inverse_relations_across_files() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("team.schema"),
+        "schema Team { members: -> Person[] }",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("person.schema"),
+        "schema Person { home: -> Team backup_for: -> Team }",
+    )
+    .unwrap();
+    schema_forge()
+        .args(["--format", "json", "parse", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "ambiguous inverse relation for Team.members",
+        ))
+        .stdout(predicate::str::contains("\"errors\": 1"));
+}

@@ -258,14 +258,18 @@ schema Contact {
   show as `[]`, never `null`.
 - Writes to the derived field are rejected with `422` — persist the
   relationship by writing `Contact.company` on the child.
-- Migrations never emit a column for a derived field. Nothing to drift.
+- New derived fields have no physical column. Changing an existing field's
+  stored/derived status is a destructive migration: the old column is removed,
+  and returning to stored semantics creates an empty column. Stored IDs are
+  not converted into child foreign keys. Review the complete parent/child batch
+  before using `--force` or `serve --allow-destructive-migrations`.
 
 If the target schema has **no** FK pointing back, `-> X[]` keeps its
 older stored-array behavior (use it for many-to-many / tag-style lists
 where both sides are independent).
 
 Two FKs from the same child back to the same parent is rejected at
-schema-load time with an "ambiguous inverse" error. Fix it by removing
+`parse` and schema-load time with an "ambiguous inverse" error. Fix it by removing
 the duplicate FK — the DSL does not currently support an `@inverse`
 annotation to disambiguate.
 

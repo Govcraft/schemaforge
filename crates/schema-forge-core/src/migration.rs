@@ -521,7 +521,67 @@ impl DiffEngine {
                 }
             }
         }
+        Self::validate_required_backfills(old, new)?;
         Ok(())
+    }
+
+    // Existing rows need a deterministic, type-compatible value before a new
+    // NOT NULL constraint can be installed. CEL defaults run during writes,
+    // not DDL; even constant CEL expressions require explicit manual backfill.
+    fn validate_required_backfills(
+        old: &crate::types::SchemaDefinition,
+        new: &crate::types::SchemaDefinition,
+    ) -> Result<(), MigrationError> {
+        for field in &new.fields {
+            if !field.is_required() || field.is_derived() {
+                continue;
+            }
+            let old_field = old.field(field.name.as_str()).or_else(|| {
+                field.annotations.iter().find_map(|annotation| {
+                    if let crate::types::FieldAnnotation::RenamedFrom { name } = annotation {
+                        old.field(name.as_str())
+                    } else {
+                        None
+                    }
+                })
+            });
+            let needs_backfill =
+                old_field.is_none_or(|previous| !previous.is_required() || previous.is_derived());
+            if needs_backfill && Self::backfill_value(field).is_none() {
+                return Err(MigrationError::RequiredFieldWithoutDefault {
+                    field_name: field.name.to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn backfill_value(field: &FieldDefinition) -> Option<DynamicValue> {
+        let default = Self::extract_default(&field.modifiers)?;
+        let value = match (&field.field_type, default) {
+            (FieldType::Text(_) | FieldType::RichText, DefaultValue::String(value)) => {
+                DynamicValue::Text(value.clone())
+            }
+            (FieldType::Enum(_), DefaultValue::String(value)) => DynamicValue::Enum(value.clone()),
+            (FieldType::Integer(_), DefaultValue::Integer(value)) => DynamicValue::Integer(*value),
+            (FieldType::Float(_), DefaultValue::Float(value)) => {
+                let number = value.parse::<f64>().ok()?;
+                if !number.is_finite() {
+                    return None;
+                }
+                DynamicValue::Float(number)
+            }
+            (FieldType::Float(_), DefaultValue::Integer(value)) => {
+                DynamicValue::Float(value.to_string().parse().ok()?)
+            }
+            (FieldType::DateTime, DefaultValue::String(value)) => {
+                DynamicValue::DateTime(chrono::DateTime::parse_from_rfc3339(value).ok()?.to_utc())
+            }
+            (FieldType::Boolean, DefaultValue::Boolean(value)) => DynamicValue::Boolean(*value),
+            _ => return None,
+        };
+        field.field_type.check_value(&value).ok()?;
+        Some(value)
     }
 
     /// Compute an unchecked structural diff of two schema definitions.
@@ -710,6 +770,20 @@ impl DiffEngine {
         // Emit RenameField for valid rename pairs
         for (old_name, new_name) in renames {
             if let Some(old_field) = old.field(old_name.as_str()) {
+                if let Some(new_field) = new.field(new_name.as_str()) {
+                    if Self::diff_storage(
+                        old_field,
+                        new_field,
+                        new.unique_scoped_by_tenant(),
+                        steps,
+                    ) {
+                        continue;
+                    }
+                    // Neither version has a physical column to rename.
+                    if old_field.is_derived() && new_field.is_derived() {
+                        continue;
+                    }
+                }
                 steps.push(MigrationStep::RenameField {
                     old_name: old_name.clone(),
                     new_name: new_name.clone(),
@@ -756,11 +830,38 @@ impl DiffEngine {
                 continue; // already handled above
             }
             if let Some(old_field) = old.field(new_field.name.as_str()) {
+                if Self::diff_storage(old_field, new_field, per_tenant, steps) {
+                    continue;
+                }
+                if old_field.is_derived() && new_field.is_derived() {
+                    continue;
+                }
                 if old_field.field_type != new_field.field_type {
                     Self::emit_change_type(old_field, new_field, steps);
                 }
             }
         }
+    }
+
+    // Pairing can change because another schema changed, even when this
+    // field's DSL type is identical. Explicitly remove the old storage so
+    // every transition is destructive, visible and gated by all callers.
+    fn diff_storage(
+        old: &FieldDefinition,
+        new: &FieldDefinition,
+        per_tenant: bool,
+        steps: &mut Vec<MigrationStep>,
+    ) -> bool {
+        if old.derived_from == new.derived_from
+            && (!old.is_derived() || old.field_type == new.field_type)
+        {
+            return false;
+        }
+        steps.push(MigrationStep::RemoveRelation {
+            name: old.name.clone(),
+        });
+        Self::emit_add_field(new, per_tenant, steps);
+        true
     }
 
     fn diff_modifiers_with_renames(
@@ -791,19 +892,18 @@ impl DiffEngine {
             };
 
             if let Some(old_field) = old_field {
+                if old_field.is_derived() {
+                    continue; // newly created storage already carries its modifiers
+                }
                 // For renamed fields, we compare old type with new type
                 // (type changes are handled in diff_fields_with_renames)
                 // Modifier diffing uses the new field's name for step output
-                let old_type = &old_field.field_type;
-                let new_type = &new_field.field_type;
-                if old_type == new_type {
-                    Self::diff_field_modifiers(
-                        old_field,
-                        new_field,
-                        new.unique_scoped_by_tenant(),
-                        steps,
-                    );
-                }
+                Self::diff_field_modifiers(
+                    old_field,
+                    new_field,
+                    new.unique_scoped_by_tenant(),
+                    steps,
+                );
             }
         }
     }
@@ -825,6 +925,12 @@ impl DiffEngine {
 
         // Required changes
         if !old_required && new_required {
+            if let Some(default_value) = Self::backfill_value(new_field) {
+                steps.push(MigrationStep::BackfillRequired {
+                    field: new_field.name.clone(),
+                    default_value,
+                });
+            }
             steps.push(MigrationStep::AddRequired {
                 field: new_field.name.clone(),
             });
@@ -1028,7 +1134,7 @@ impl fmt::Display for MigrationError {
             Self::RequiredFieldWithoutDefault { field_name } => {
                 write!(
                     f,
-                    "required field '{field_name}' was added without a default value for backfill"
+                    "required field '{field_name}' needs a usable literal default(...) for existing-row backfill; CEL @default expressions are not evaluated during migration. Add the field as optional, backfill existing rows manually, then install the required constraint and schema metadata manually"
                 )
             }
             Self::UnsupportedTypeConversion {
@@ -1996,7 +2102,7 @@ mod tests {
                 MigrationError::RequiredFieldWithoutDefault {
                     field_name: "email".into(),
                 },
-                "required field 'email' was added without a default value for backfill",
+                "required field 'email' needs a usable literal default(...) for existing-row backfill; CEL @default expressions are not evaluated during migration. Add the field as optional, backfill existing rows manually, then install the required constraint and schema metadata manually",
             ),
             (
                 MigrationError::UnsupportedTypeConversion {

@@ -56,3 +56,19 @@ fn all_tenant_transitions_require_explicit_manual_migration() {
         }
     }
 }
+
+#[test]
+fn cel_defaults_are_not_implicitly_evaluated_for_existing_rows() {
+    let old = schema("schema Widget { name: text }");
+    for expression in ["0", "now()", "fields.other"] {
+        let new = schema(&format!(
+            r#"schema Widget {{ name: text priority: integer required @default("{expression}") }}"#
+        ));
+        let error = DiffEngine::plan_update(&old, &new).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("CEL @default expressions are not evaluated"));
+        assert!(!DiffEngine::create_new(&new).is_empty());
+        assert!(DiffEngine::plan_update(&new, &new).unwrap().is_empty());
+    }
+}
