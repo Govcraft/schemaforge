@@ -26,6 +26,8 @@ is pre-1.0; breaking changes bump the **minor** version per
   machine-readable `error` and `message` fields; entity and schema JSON rejections
   use the API error envelope. Internal storage diagnostics stay out of REST and
   GraphQL error messages, and database connection errors omit credentials.
+- Keep authorization resource attributes aligned with the generated Cedar schema,
+  so arrays of unsupported policy types do not incorrectly deny valid writes.
 
 ### Database and operator fixes
 
