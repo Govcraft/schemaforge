@@ -46,6 +46,20 @@ is pre-1.0; breaking changes bump the **minor** version per
 - Document governor quotas, proxy configuration, probe routes, the full write-rule
   order, and webhook delivery guarantees.
 
+### Generated sites
+
+- Carry the active tenant on entity, invitation, and file requests, including
+  requests retried after a token refresh.
+- Show readable API errors and avoid duplicate global notifications when pages
+  handle errors locally. Projects can customize the preserved error-toast helper.
+- Generate typed duration, map, and base64 bytes fields in forms, lists, and
+  details. Form validation and payload normalization respect computed fields and
+  role-based field access. Composites with protected children remain read-only.
+- Configure the product name, title suffix, and SVG logos and favicon through
+  `[schema_forge.site]` or generation flags. Default marks are neutral, and CSS,
+  title helpers, and SVG assets support template overrides and drift checking.
+- CI now builds and lints generated TypeScript before running browser tests.
+
 ### Upgrade notes
 
 Webhook consumers must support `payload_version: 2` and plain JSON field values.
@@ -62,6 +76,10 @@ Migration safety serialization emits `Review`; legacy `RequiresConfirmation` inp
 is still accepted. Rust embedders must update webhook event constructor calls to
 pass schema definitions, and handler callers must use the new JSON extractor.
 Workspace crate versions are coordinated for the updated public core/backend types.
+
+Regenerate sites to update owned API and branding helpers. Existing customized
+page shells remain preserved; see the migration instructions for
+[error feedback](docs/generated-site-errors.md) and [branding](docs/site-branding.md).
 
 ## [0.45.0] - 2026-09-24
 
