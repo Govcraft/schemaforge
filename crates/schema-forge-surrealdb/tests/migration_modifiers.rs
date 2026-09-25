@@ -260,14 +260,14 @@ async fn new_fields_with_defaults_fill_existing_rows() {
     let mut steps = Vec::new();
     for (name, required) in [("required_status", true), ("optional_status", false)] {
         let mut modifiers = vec![FieldModifier::Default {
-            value: DefaultValue::String("draft".into()),
+            value: DefaultValue::String("O'Brien\\x".into()),
         }];
         if required {
             modifiers.push(FieldModifier::Required);
         }
         let field = FieldDefinition::with_modifiers(
             FieldName::new(name).unwrap(),
-            FieldType::Text(TextConstraints::with_max_length(8)),
+            FieldType::Text(TextConstraints::with_max_length(40)),
             modifiers,
         );
         steps.push(MigrationStep::AddField {
@@ -283,7 +283,180 @@ async fn new_fields_with_defaults_fill_existing_rows() {
     for name in ["required_status", "optional_status"] {
         assert_eq!(
             loaded.field(name),
-            Some(&DynamicValue::Text("draft".into()))
+            Some(&DynamicValue::Text("O'Brien\\x".into()))
         );
     }
+}
+
+#[tokio::test]
+async fn removing_and_readding_relation_does_not_restore_values_or_lose_other_fields() {
+    let backend = SurrealBackend::connect_memory("relationvalues", "relationvalues")
+        .await
+        .unwrap();
+    let mut schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("RelationValues").unwrap(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("label").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::new(FieldName::new("details").unwrap(), FieldType::Json),
+            FieldDefinition::new(
+                FieldName::new("members").unwrap(),
+                FieldType::Relation {
+                    target: SchemaName::new("RelationValues").unwrap(),
+                    cardinality: Cardinality::Many,
+                },
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_schema_change(
+            &schema.name,
+            &DiffEngine::create_new(&schema).steps,
+            Some(&schema),
+        )
+        .await
+        .unwrap();
+    let related = Entity::new(
+        schema.name.clone(),
+        BTreeMap::from([("label".into(), DynamicValue::Text("target".into()))]),
+    );
+    backend.create(&related).await.unwrap();
+    let details =
+        DynamicValue::Json(serde_json::json!({"nested": {"keep": "value"}, "items": [1, 2]}));
+    let row = Entity::new(
+        schema.name.clone(),
+        BTreeMap::from([
+            ("label".into(), DynamicValue::Text("unchanged".into())),
+            ("details".into(), details.clone()),
+            (
+                "members".into(),
+                DynamicValue::RefArray(vec![related.id.clone()]),
+            ),
+        ]),
+    );
+    backend.create(&row).await.unwrap();
+    let field = FieldName::new("members").unwrap();
+    let added = FieldDefinition::with_modifiers(
+        FieldName::new("phase").unwrap(),
+        FieldType::Text(TextConstraints::unconstrained()),
+        vec![FieldModifier::Default {
+            value: DefaultValue::String("ready".into()),
+        }],
+    );
+    let steps = [
+        MigrationStep::RemoveRelation {
+            name: field.clone(),
+        },
+        MigrationStep::AddRelation {
+            name: field,
+            target: schema.name.clone(),
+            cardinality: Cardinality::Many,
+        },
+        MigrationStep::AddField {
+            field: added.clone(),
+        },
+    ];
+    schema.fields.push(added);
+    backend
+        .apply_schema_change(&schema.name, &steps, Some(&schema))
+        .await
+        .unwrap();
+    let loaded = backend.get(&schema.name, &row.id).await.unwrap();
+    assert!(
+        loaded
+            .field("members")
+            .is_none_or(|value| matches!(value, DynamicValue::Null)),
+        "old relation resurrected: {loaded:?}"
+    );
+    assert_eq!(
+        loaded.field("label"),
+        Some(&DynamicValue::Text("unchanged".into()))
+    );
+    assert_eq!(loaded.field("details"), Some(&details));
+    assert_eq!(
+        loaded.field("phase"),
+        Some(&DynamicValue::Text("ready".into()))
+    );
+    assert_eq!(
+        backend
+            .get(&schema.name, &related.id)
+            .await
+            .unwrap()
+            .field("label"),
+        Some(&DynamicValue::Text("target".into()))
+    );
+}
+
+#[tokio::test]
+async fn removing_required_relation_clears_values_before_recreating_optional_storage() {
+    let backend = SurrealBackend::connect_memory("requiredrelation", "requiredrelation")
+        .await
+        .unwrap();
+    let name = SchemaName::new("RequiredRelation").unwrap();
+    let field = FieldName::new("parent").unwrap();
+    let mut schema = SchemaDefinition::new(
+        SchemaId::new(),
+        name.clone(),
+        vec![
+            FieldDefinition::new(
+                FieldName::new("label").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            ),
+            FieldDefinition::with_modifiers(
+                field.clone(),
+                FieldType::Relation {
+                    target: name.clone(),
+                    cardinality: Cardinality::One,
+                },
+                vec![FieldModifier::Required],
+            ),
+        ],
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_schema_change(&name, &DiffEngine::create_new(&schema).steps, Some(&schema))
+        .await
+        .unwrap();
+    let id = EntityId::new("requiredrelation");
+    let row = Entity::with_id(
+        id.clone(),
+        name.clone(),
+        BTreeMap::from([
+            ("parent".into(), DynamicValue::Ref(id.clone())),
+            ("label".into(), DynamicValue::Text("keep".into())),
+        ]),
+    );
+    backend.create(&row).await.unwrap();
+    schema.fields[1].modifiers.clear();
+    backend
+        .apply_schema_change(
+            &name,
+            &[
+                MigrationStep::RemoveRelation {
+                    name: field.clone(),
+                },
+                MigrationStep::AddRelation {
+                    name: field,
+                    target: name.clone(),
+                    cardinality: Cardinality::One,
+                },
+            ],
+            Some(&schema),
+        )
+        .await
+        .unwrap();
+    let loaded = backend.get(&name, &id).await.unwrap();
+    assert!(loaded
+        .field("parent")
+        .is_none_or(|value| matches!(value, DynamicValue::Null)));
+    assert_eq!(
+        loaded.field("label"),
+        Some(&DynamicValue::Text("keep".into()))
+    );
 }

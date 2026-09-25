@@ -129,7 +129,12 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
             }
         },
         MigrationStep::RemoveRelation { name } => {
-            vec![format!("REMOVE FIELD IF EXISTS {name} ON {table};")]
+            vec![
+                // Relax required/default rules before clearing stored references.
+                format!("DEFINE FIELD OVERWRITE {name} ON {table} TYPE any;"),
+                format!("UPDATE {table} UNSET {name};"),
+                format!("REMOVE FIELD IF EXISTS {name} ON {table};"),
+            ]
         }
         MigrationStep::BackfillRequired {
             field,
@@ -408,7 +413,9 @@ pub(crate) fn define_field_stmts(table: &str, field: &FieldDefinition) -> Vec<St
 fn default_value_to_surql(value: &schema_forge_core::types::DefaultValue) -> String {
     use schema_forge_core::types::DefaultValue;
     match value {
-        DefaultValue::String(s) => format!("'{s}'"),
+        DefaultValue::String(s) => crate::query::dynamic_value_to_surql_literal(
+            &schema_forge_core::types::DynamicValue::Text(s.clone()),
+        ),
         DefaultValue::Integer(i) => i.to_string(),
         DefaultValue::Float(s) => s.clone(),
         DefaultValue::Boolean(b) => b.to_string(),
