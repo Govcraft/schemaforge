@@ -9,3 +9,7 @@ Use the existing view-model and template architecture. Keep display types comple
 - Preserve existing generated styling and accessibility labels, avoiding controls which imply unavailable actions (UI design expert, interaction patterns).
 
 No new dependencies or error types required. Semver: fixes in release already planned by root. Run only targeted cargo check locally; root runs generation, TypeScript build/lint, and browser checks in CI. Sign conventional commits; no push.
+
+## CI follow-up: exact browser metadata
+
+Site CI reported TS2352 because full FieldView JSON contains display-only properties. Introduce a dedicated recursive FormFieldSpec serialization type; use it for all template metadata arguments and entity normalizer tables. Remove casts, preserve hidden-descendant/role flags, and test the exact serialized keys at every depth.

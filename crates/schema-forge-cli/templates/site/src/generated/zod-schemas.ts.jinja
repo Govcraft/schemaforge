@@ -120,7 +120,7 @@ export function normalizeFormPayload(
 export const {{ entity.snake }}Schema = z.object({
 {%- for f in entity.fields %}
 {%- if not f.derived and not f.computed %}
-  {{ f.leaf }}: formFieldSchema({{ f.zod }}, {{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}, {{ f.sub_fields | tojson }} as FormFieldSpec[], {{ f.has_hidden_children | tojson }}),
+  {{ f.leaf }}: formFieldSchema({{ f.zod }}, {{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}, {{ f.form_sub_fields | tojson }}, {{ f.has_hidden_children | tojson }}),
 {%- endif %}
 {%- endfor %}
 })

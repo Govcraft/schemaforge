@@ -135,6 +135,8 @@ pub struct EntityView {
     pub schema_name: String,
     /// v0-supported fields only. Unsupported fields are dropped with a stderr warning.
     pub fields: Vec<FieldView>,
+    /// Exact browser normalization contract, without display/template metadata.
+    pub form_fields: Vec<FormFieldSpec>,
     /// The field nominated by `@display("...")`, if any. Used for
     /// breadcrumbs and list-view "headline" rendering.
     pub display_field: Option<String>,
@@ -226,6 +228,7 @@ impl EntityView {
             kebab: name.to_kebab_case(),
             title: name.to_title_case(),
             schema_name: name.to_string(),
+            form_fields: fields.iter().map(FormFieldSpec::from).collect(),
             fields,
             display_field,
             has_relation_one,
@@ -309,6 +312,8 @@ pub struct FieldView {
     /// For `kind == "composite"`: the flattened sub-fields, each with
     /// `name` set to its dot-path. Empty for non-composite fields.
     pub sub_fields: Vec<FieldView>,
+    /// Narrow browser contract for descendants.
+    pub form_sub_fields: Vec<FormFieldSpec>,
     /// For `kind == "enum"`: map from variant name to its `@enum_colors`
     /// color token (one of `neutral|gray|red|amber|green|blue|purple|violet|teal|rose`).
     /// Empty when the field carries no `@enum_colors` annotation; variants
@@ -344,6 +349,42 @@ pub struct FieldView {
     /// behavior). `None` for non-file fields.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_meta: Option<FileMetaView>,
+}
+
+/// Serialized contract consumed by the generated form normalizers. Keep this
+/// shape aligned with FormFieldSpec in zod-schemas.ts; display hints and Zod
+/// source expressions never belong in browser form metadata.
+#[derive(Debug, Clone, Serialize)]
+pub struct FormFieldSpec {
+    pub leaf: String,
+    pub name: String,
+    pub kind: String,
+    pub item_kind: Option<String>,
+    pub required: bool,
+    pub computed: bool,
+    pub has_hidden_children: bool,
+    pub derived: bool,
+    pub read_roles: Vec<String>,
+    pub write_roles: Vec<String>,
+    pub sub_fields: Vec<FormFieldSpec>,
+}
+
+impl From<&FieldView> for FormFieldSpec {
+    fn from(field: &FieldView) -> Self {
+        Self {
+            leaf: field.leaf.clone(),
+            name: field.name.clone(),
+            kind: field.kind.clone(),
+            item_kind: field.item_kind.clone(),
+            required: field.required,
+            computed: field.computed,
+            has_hidden_children: field.has_hidden_children,
+            derived: field.derived,
+            read_roles: field.read_roles.clone(),
+            write_roles: field.write_roles.clone(),
+            sub_fields: field.form_sub_fields.clone(),
+        }
+    }
 }
 
 /// File-field metadata projected to the site template layer.
@@ -408,6 +449,7 @@ pub fn make_field_view(
         item_kind: None,
         item_enum_variants: Vec::new(),
         sub_fields: Vec::new(),
+        form_sub_fields: Vec::new(),
         file_meta: None,
         enum_colors: field
             .enum_colors()

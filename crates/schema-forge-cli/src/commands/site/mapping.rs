@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use schema_forge_core::types::{Cardinality, FieldDefinition, FieldType};
 
-use super::context::{make_field_view, FieldView, FileMetaView, SchemaMeta};
+use super::context::{make_field_view, FieldView, FileMetaView, FormFieldSpec, SchemaMeta};
 
 /// Reason a field could not be projected into the v0 site view model.
 #[derive(Debug, Clone)]
@@ -338,12 +338,12 @@ fn field_to_view_with_prefix(
                 ts_parts.push(format!("{}{}: {}", sv.leaf, opt, sv.ts_type));
                 if !sv.derived && !sv.computed {
                     zod_parts.push(format!(
-                        "{}: formFieldSchema({}, {}, {}, {} as FormFieldSpec[], {})",
+                        "{}: formFieldSchema({}, {}, {}, {}, {})",
                         sv.leaf,
                         sv.zod,
                         serde_json::to_string(&sv.read_roles).unwrap_or_default(),
                         serde_json::to_string(&sv.write_roles).unwrap_or_default(),
-                        serde_json::to_string(&sv.sub_fields).unwrap_or_default(),
+                        serde_json::to_string(&sv.form_sub_fields).unwrap_or_default(),
                         sv.has_hidden_children
                     ));
                 }
@@ -405,6 +405,7 @@ fn field_to_view_with_prefix(
         if !prefix.is_empty() && v.kind != "composite" {
             v.name = format!("{prefix}.{}", v.leaf);
         }
+        v.form_sub_fields = v.sub_fields.iter().map(FormFieldSpec::from).collect();
         v
     })
 }
@@ -608,6 +609,41 @@ mod tests {
     // every existing test.
     fn project(field: &FieldDefinition) -> Result<FieldView, FieldMapError> {
         field_to_view(field, &empty_catalog())
+    }
+
+    #[test]
+    fn form_metadata_has_only_the_browser_contract_at_every_depth() {
+        let schemas = schema_forge_dsl::parse("schema Job { settings: composite { visible: text nested: composite { delay: duration } } }").unwrap();
+        let field = project(&schemas[0].fields[0]).unwrap();
+        let spec = serde_json::to_value(FormFieldSpec::from(&field)).unwrap();
+        let expected = [
+            "leaf",
+            "name",
+            "kind",
+            "item_kind",
+            "required",
+            "computed",
+            "has_hidden_children",
+            "derived",
+            "read_roles",
+            "write_roles",
+            "sub_fields",
+        ];
+        fn verify(spec: &serde_json::Value, expected: &[&str]) {
+            let object = spec.as_object().unwrap();
+            assert_eq!(object.len(), expected.len());
+            for key in expected {
+                assert!(object.contains_key(*key), "missing {key}");
+            }
+            for child in spec["sub_fields"].as_array().unwrap() {
+                verify(child, expected);
+            }
+        }
+        verify(&spec, &expected);
+        assert_eq!(
+            spec["sub_fields"][1]["sub_fields"][0]["name"],
+            "settings.nested.delay"
+        );
     }
 
     #[test]
