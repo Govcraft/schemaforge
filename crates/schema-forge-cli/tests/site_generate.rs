@@ -143,9 +143,12 @@ fn fresh_generate_emits_expected_tree() {
     // Task 4: updates go through PATCH, not PUT.
     assert!(api.contains("method: \"PATCH\""));
     assert!(!api.contains("method: \"PUT\""));
-    // Task 4: the client threads the Bearer token through tokenStore.
-    assert!(api.contains("tokenStore.get()"));
-    assert!(api.contains("Bearer ${token}"));
+    // Requests share the current bearer token and active tenant headers.
+    assert!(api.contains("authenticatedHeaders(init?.headers)"));
+    let auth = fs::read_to_string(out_dir.join("src/lib/auth.ts")).unwrap();
+    assert!(auth.contains("const token = tokenStore.get()"));
+    assert!(auth.contains("Bearer ${token}"));
+    assert!(auth.contains("headers.set(ACTIVE_TENANT_HEADER, active)"));
     // GH #36: rawEntityList opts out of the parallel COUNT(*) query, and
     // listQuery forwards `count: false` when set.
     assert!(api.contains("count?: boolean"));

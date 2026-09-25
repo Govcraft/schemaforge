@@ -849,12 +849,20 @@ mod tests {
             "FormFields must accept entityId for file-bearing entities"
         );
 
-        // Entity update payload must NOT carry the file attachment — uploads
-        // go through the dedicated 3-endpoint flow, not entity PUT.
-        assert!(
-            rendered.contains(r#"delete payload["attachment"]"#),
-            "normalize<Pascal>Payload must strip file fields from entity PUT body"
-        );
+        // Entity updates delegate to the shared normalizer, which excludes
+        // file fields handled by the dedicated upload endpoints.
+        assert!(rendered.contains("return normalizeFormPayload("));
+        assert!(document_entity()
+            .form_fields
+            .iter()
+            .any(|field| field.leaf == "attachment" && field.kind == "file"));
+        let validators = include_str!("../../../templates/site/src/generated/zod-schemas.ts.jinja");
+        let payload_normalizer = validators
+            .split("export function normalizeFormPayload(")
+            .nth(1)
+            .expect("shared payload normalizer must exist");
+        assert!(payload_normalizer.contains(r#"field.kind === "file""#));
+        assert!(payload_normalizer.contains("continue"));
 
         // The pre-fix stub must be gone.
         assert!(
