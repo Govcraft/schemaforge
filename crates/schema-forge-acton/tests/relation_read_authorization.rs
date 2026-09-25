@@ -24,6 +24,10 @@ use serde_json::{json, Value};
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
+fn fixture_id(prefix: &str) -> EntityId {
+    EntityId::parse(&format!("{prefix}_00000000000000000000000000")).unwrap()
+}
+
 struct OperatorPolicy;
 impl RecordAccessPolicy for OperatorPolicy {
     fn filter_visible<'a>(
@@ -102,29 +106,29 @@ async fn fixture(
         backend.store_schema_metadata(schema).await.unwrap();
     }
     let parent = Entity::with_id(
-        EntityId::new("parent_one"),
+        fixture_id("parent_one"),
         schemas[0].name.clone(),
         BTreeMap::from([
             ("title".into(), DynamicValue::Text("Parent".into())),
             (
                 "selected".into(),
-                DynamicValue::Ref(EntityId::new("child_good")),
+                DynamicValue::Ref(fixture_id("child_good")),
             ),
             (
                 "denied".into(),
-                DynamicValue::Ref(EntityId::new("child_denied")),
+                DynamicValue::Ref(fixture_id("child_denied")),
             ),
             (
                 "missing".into(),
-                DynamicValue::Ref(EntityId::new("child_absent")),
+                DynamicValue::Ref(fixture_id("child_absent")),
             ),
             (
                 "linked".into(),
                 DynamicValue::RefArray(vec![
-                    EntityId::new("child_good"),
-                    EntityId::new("child_denied"),
-                    EntityId::new("child_redacted"),
-                    EntityId::new("child_absent"),
+                    fixture_id("child_good"),
+                    fixture_id("child_denied"),
+                    fixture_id("child_redacted"),
+                    fixture_id("child_absent"),
                 ]),
             ),
         ]),
@@ -136,7 +140,7 @@ async fn fixture(
         ("child_redacted", "viewer", false, true, "Redacted"),
     ] {
         let child = Entity::with_id(
-            EntityId::new(id),
+            fixture_id(id),
             schemas[1].name.clone(),
             BTreeMap::from([
                 ("label".into(), DynamicValue::Text(label.into())),
@@ -225,7 +229,10 @@ async fn read(app: &Router, method: Method, path: &str) -> Value {
 async fn parent_views(app: &Router) -> Vec<Value> {
     let mut views = vec![];
     for (method, path) in [
-        (Method::GET, "/schemas/Parent/entities/parent_one"),
+        (
+            Method::GET,
+            "/schemas/Parent/entities/parent_one_00000000000000000000000000",
+        ),
         (Method::GET, "/schemas/Parent/entities"),
         (Method::POST, "/schemas/Parent/entities/query"),
     ] {
@@ -263,8 +270,8 @@ async fn related_rows_use_complete_owner_and_custom_policy_attributes() {
             assert!(fields.get("missing__display").is_none(), "{fields}");
             let children = fields["children"].as_array().unwrap();
             assert_eq!(children.len(), 2, "{fields}");
-            assert!(children.contains(&json!("child_good")));
-            assert!(!children.contains(&json!("child_denied")));
+            assert!(children.contains(&json!(fixture_id("child_good"))));
+            assert!(!children.contains(&json!(fixture_id("child_denied"))));
             assert!(
                 !fields["linked__display"].to_string().contains("Private"),
                 "{fields}"
@@ -286,7 +293,7 @@ async fn operator_policy_filters_related_rows_and_display_fields() {
         );
         let children = fields["children"].as_array().unwrap();
         assert_eq!(children.len(), 2, "{fields}");
-        assert!(!children.contains(&json!("child_denied")));
+        assert!(!children.contains(&json!(fixture_id("child_denied"))));
     }
 }
 
