@@ -1080,6 +1080,28 @@ fn convert_json_with_type_hint(
             serde_json::Value::Null => Ok(DynamicValue::Null),
             _ => Err(format!("expected array, got {value}")),
         },
+        FieldType::Composite(definitions) => {
+            match value {
+                serde_json::Value::Object(object) => {
+                    let mut fields = BTreeMap::new();
+                    for (name, value) in object {
+                        let definition = definitions
+                            .iter()
+                            .find(|field| field.name.as_str() == name)
+                            .ok_or_else(|| format!("undeclared composite field '{name}'"))?;
+                        if definition.is_hidden() {
+                            return Err(format!("composite field '{name}' cannot be set via the API (marked @hidden)"));
+                        }
+                        let converted = convert_json_with_type_hint(value, &definition.field_type)
+                            .map_err(|error| format!("{name}: {error}"))?;
+                        fields.insert(name.clone(), converted);
+                    }
+                    Ok(DynamicValue::Composite(fields))
+                }
+                serde_json::Value::Null => Ok(DynamicValue::Null),
+                _ => Err(format!("expected composite object, got {value}")),
+            }
+        }
         FieldType::Map {
             value: value_type, ..
         } => match value {
@@ -1237,14 +1259,28 @@ fn coerce_dynamic_value_with_type_hint(
             DynamicValue::Null => Ok(DynamicValue::Null),
             other => Err(format!("expected array, got {other}")),
         },
-        // Composite fields are passed through unchanged. Nested datetime
-        // coercion over composite structures is not exercised by any
-        // in-repo schema today; add recursion here if/when needed.
-        FieldType::Composite(_) => Ok(value),
+        FieldType::Composite(definitions) => match value {
+            DynamicValue::Composite(values) => {
+                let mut fields = BTreeMap::new();
+                for (name, value) in values {
+                    let definition = definitions
+                        .iter()
+                        .find(|field| field.name.as_str() == name)
+                        .ok_or_else(|| format!("undeclared composite field '{name}'"))?;
+                    let converted =
+                        coerce_dynamic_value_with_type_hint(value, &definition.field_type)
+                            .map_err(|error| format!("{name}: {error}"))?;
+                    fields.insert(name, converted);
+                }
+                Ok(DynamicValue::Composite(fields))
+            }
+            DynamicValue::Null => Ok(DynamicValue::Null),
+            other => Err(format!("expected composite, got {other}")),
+        },
         FieldType::Map {
             value: value_type, ..
         } => match value {
-            DynamicValue::Map(map) => {
+            DynamicValue::Map(map) | DynamicValue::Composite(map) => {
                 let mut out = BTreeMap::new();
                 for (k, v) in map {
                     out.insert(k, coerce_dynamic_value_with_type_hint(v, value_type)?);
@@ -4878,6 +4914,79 @@ mod tests {
     fn convert_json_untyped_object() {
         let result = convert_json_untyped(&serde_json::json!({"key": "value"})).unwrap();
         assert!(matches!(result, DynamicValue::Composite(map) if map.len() == 1));
+    }
+
+    #[test]
+    fn composite_api_and_hook_conversion_preserve_nested_types() {
+        let schema = schema_forge_dsl::parse(
+            r#"schema Job {
+            settings: composite {
+                delay: duration checksum: bytes at: datetime
+                counters: map<text, integer> delays: duration[]
+                nested: composite { delay: duration }
+            }
+        }"#,
+        )
+        .unwrap()
+        .remove(0);
+        let field_type = &schema.fields[0].field_type;
+        let json = serde_json::json!({
+            "delay": "2m", "checksum": "aGVsbG8=", "at": "2026-01-01T00:00:00Z",
+            "counters": {"success": 2}, "delays": ["1s"], "nested": {"delay": "3s"}
+        });
+        let api = convert_json_with_type_hint(&json, field_type).unwrap();
+        let hook =
+            coerce_dynamic_value_with_type_hint(convert_json_untyped(&json).unwrap(), field_type)
+                .unwrap();
+        assert_eq!(api, hook);
+        let DynamicValue::Composite(fields) = api else {
+            panic!("expected composite")
+        };
+        assert_eq!(
+            fields["delay"],
+            DynamicValue::Duration(chrono::TimeDelta::seconds(120))
+        );
+        assert_eq!(fields["checksum"], DynamicValue::Bytes(b"hello".to_vec()));
+        assert!(matches!(fields["at"], DynamicValue::DateTime(_)));
+        assert!(matches!(fields["counters"], DynamicValue::Map(_)));
+        assert_eq!(
+            fields["delays"],
+            DynamicValue::Array(vec![DynamicValue::Duration(chrono::TimeDelta::seconds(1))])
+        );
+        let DynamicValue::Composite(nested) = &fields["nested"] else {
+            panic!("expected nested composite")
+        };
+        assert_eq!(
+            nested["delay"],
+            DynamicValue::Duration(chrono::TimeDelta::seconds(3))
+        );
+        let error = convert_json_with_type_hint(
+            &serde_json::json!({"nested": {"delay": "invalid"}}),
+            field_type,
+        )
+        .unwrap_err();
+        assert!(error.contains("nested: delay:"));
+    }
+
+    #[test]
+    fn composite_conversion_rejects_wrong_shape_and_undeclared_or_hidden_input() {
+        let schema = schema_forge_dsl::parse(
+            "schema Job { settings: composite { visible: text secret: text @hidden } }",
+        )
+        .unwrap()
+        .remove(0);
+        let field_type = &schema.fields[0].field_type;
+        for input in [
+            serde_json::json!("text"),
+            serde_json::json!({"unknown": 1}),
+            serde_json::json!({"secret": "value"}),
+        ] {
+            assert!(convert_json_with_type_hint(&input, field_type).is_err());
+        }
+        assert_eq!(
+            convert_json_with_type_hint(&serde_json::Value::Null, field_type).unwrap(),
+            DynamicValue::Null
+        );
     }
 
     fn map_string_integer_type() -> FieldType {
