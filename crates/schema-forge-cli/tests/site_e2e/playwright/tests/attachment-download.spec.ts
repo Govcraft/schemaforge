@@ -9,8 +9,8 @@ async function mountDownload(page: Page) {
     const domPath = "/node_modules/.vite/deps/react-dom_client.js"
     const componentPath = "/src/components/ui/file-upload.tsx"
     const authPath = "/src/lib/auth.ts"
-    const React = await import(reactPath)
-    const ReactDOM = await import(domPath)
+    const React = (await import(reactPath)).default
+    const ReactDOM = (await import(domPath)).default
     const { AttachmentDownload } = await import(componentPath)
     const auth = await import(authPath)
     auth.tokenStore.set("download-token", new Date(Date.now() + 3600000).toISOString(), ["member"])
