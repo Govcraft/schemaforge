@@ -6,15 +6,23 @@
 // page, so users can customize layout, section headers, and intercepts
 // there without ever touching the schema-shaped data here.
 import type { UseFormReturn } from "react-hook-form"
+{%- if entity.has_form_controls %}
 import { FormField } from "@/components/ui/form"
+{%- endif %}
 {%- if entity.has_relation_one %}
 import { RelationSelect } from "@/components/ui/relation-select"
 {%- endif %}
-{%- if entity.has_file_field %}
+{%- if entity.has_form_file_field %}
 import { FileUpload, type FileAttachment } from "@/components/ui/file-upload"
 {%- endif %}
 import type { {{ entity.pascal }} } from "@/generated/entity-types"
-import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
+import {
+{%- if entity.has_form_fields %}
+  canReadFormField, canWriteFormField, canWriteFormChildren,
+{%- endif %}
+  normalizeFormValues, normalizeFormPayload,
+  type FormFieldSpec, type {{ entity.pascal }}FormValues,
+} from "@/generated/zod-schemas"
 
 {#-
   -- Shared macros ----------------------------------------------------------
@@ -23,6 +31,8 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
   single `.form-row` block that fits inside the parent `.form-grid`.
 -#}
 {% macro control(f) -%}
+{%- if not f.derived and not f.computed %}
+      {canReadFormField({{ f.read_roles | tojson }}) ? (
       <FormField
         control={form.control}
         name="{{ f.name }}"
@@ -38,6 +48,8 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
 {%- endif %}
             </label>
             <div className="form-field">
+              {canWriteFormField({{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}) && canWriteFormChildren({{ f.sub_fields | tojson }} as FormFieldSpec[]) ? (
+              <>
 {%- if f.kind == "boolean" %}
               <label style={ { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13 }}>
                 <input
@@ -112,13 +124,17 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
                 rows={6}
                 className={"textarea" + (fieldState.error ? " invalid" : "")}
               />
-{%- elif f.kind == "json" %}
+{%- elif f.kind == "json" or f.kind == "bytes" %}
               <textarea
                 id={field.name}
                 {...field}
                 value={field.value as string | undefined ?? ""}
                 rows={6}
+{%- if f.kind == "bytes" %}
+                placeholder="Standard base64, for example aGVsbG8="
+{%- else %}
                 placeholder='{"key": "value"}'
+{%- endif %}
                 className={"textarea mono" + (fieldState.error ? " invalid" : "")}
                 style={ { fontSize: 12 }}
               />
@@ -144,14 +160,48 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
                 className={"input" + (fieldState.error ? " invalid" : "")}
               />
 {%- endif %}
-              <div className="help mono">{{ f.kind }}</div>
+              <div className="help mono">{% if f.kind == "duration" %}Duration, for example 90s or 1h30m{% elif f.kind == "bytes" %}Standard padded base64{% else %}{{ f.kind }}{% endif %}</div>
               {fieldState.error ? (
                 <div className="err">{fieldState.error.message}</div>
               ) : null}
+              </>
+              ) : <div role="note" aria-label="{{ f.label }} (read only)">
+                <span>{field.value == null ? "Not set" : typeof field.value === "object" ? JSON.stringify(field.value) : String(field.value)}</span>
+                <span className="help">Read only</span>
+              </div>}
             </div>
           </div>
         )}
       />
+      ) : null}
+{%- endif %}
+{%- endmacro %}
+
+{% macro render_field(f) -%}
+{%- if not f.derived and not f.computed %}
+{%- if f.kind == "composite" %}
+      {canReadFormField({{ f.read_roles | tojson }}) ? (
+      <div className="form-row">
+        <div className="form-label" id="{{ f.name }}-label">{{ f.label }}</div>
+        <div className="form-field">
+          {canWriteFormField({{ f.read_roles | tojson }}, {{ f.write_roles | tojson }}) && canWriteFormChildren({{ f.sub_fields | tojson }} as FormFieldSpec[]) ? (
+          <fieldset aria-labelledby="{{ f.name }}-label">
+            <legend className="sr-only">{{ f.label }}</legend>
+{%- for sub in f.sub_fields %}
+{{ render_field(sub) }}
+{%- endfor %}
+          </fieldset>
+          ) : <div role="note" aria-label="{{ f.label }} (read only)">
+            <span>{JSON.stringify(form.getValues("{{ f.name }}")) ?? "Not set"}</span>
+            <span className="help">Read only: this group contains protected fields.</span>
+          </div>}
+        </div>
+      </div>
+      ) : null}
+{%- else %}
+{{ control(f) }}
+{%- endif %}
+{%- endif %}
 {%- endmacro %}
 
 // Default rendering of every non-derived form field in schema declaration
@@ -163,7 +213,7 @@ import type { {{ entity.pascal }}FormValues } from "@/generated/zod-schemas"
 // `undefined` in create mode. File-upload fields use it to address the
 // per-entity upload endpoints; non-file forms ignore it. The preserve
 // `edit.tsx` should forward `id` from `useParams` directly.
-{%- if entity.has_file_field %}
+{%- if entity.has_form_file_field %}
 export function {{ entity.pascal }}FormFields({
   form,
   entityId,
@@ -173,235 +223,35 @@ export function {{ entity.pascal }}FormFields({
 }) {
 {%- else %}
 export function {{ entity.pascal }}FormFields({
-  form,
+  {% if entity.has_form_fields %}form{% else %}form: _form{% endif %},
 }: {
   form: UseFormReturn<{{ entity.pascal }}FormValues>
+  entityId?: string
 }) {
 {%- endif %}
   return (
     <>
 {%- for f in entity.fields %}
-{%- if f.derived %}
-{#- Derived inverse collections are read-only — surfaced on the detail view only. #}
-{%- elif f.kind == "composite" %}
-      <div className="form-row">
-        <label className="form-label">{{ f.label }}</label>
-        <div className="form-field">
-          <fieldset
-            style={ {
-              border: "1px solid var(--app-border)",
-              borderRadius: 2,
-              padding: 12,
-              display: "grid",
-              gridTemplateColumns: "180px 1fr",
-              gap: "12px 16px",
-              alignItems: "start",
-            }}
-          >
-{%- for sub in f.sub_fields %}
-{{ control(sub) }}
-{%- endfor %}
-          </fieldset>
-        </div>
-      </div>
-{%- else %}
-{{ control(f) }}
-{%- endif %}
+{{ render_field(f) }}
 {%- endfor %}
     </>
   )
 }
 
-// Convert server representations into the form-friendly shapes each
-// `<input>` / `<textarea>` expects for its `value` prop:
-//   - datetime ISO-8601  -> local-time "YYYY-MM-DDTHH:MM"
-//   - array / relation[] -> comma-separated string
-//   - json object        -> pretty-printed JSON text
-//   - composite          -> passthrough (react-hook-form walks dot-paths)
-// Without this, edit mode silently drops (or garbles) existing values.
+const fields = {{ entity.fields | tojson }} as FormFieldSpec[]
+
 export function normalize{{ entity.pascal }}InitialValues(
   data: {{ entity.pascal }} | undefined,
 ): {{ entity.pascal }}FormValues | undefined {
   if (!data) return undefined
-  const v: Record<string, unknown> = { ...(data as unknown as Record<string, unknown>) }
-{%- for f in entity.fields %}
-{%- if f.derived %}
-  // Derived inverse collection — read-only, strip before seeding the form.
-  delete v["{{ f.leaf }}"]
-  delete v["{{ f.leaf }}__display"]
-{%- elif f.kind == "datetime" %}
-  if (typeof v["{{ f.leaf }}"] === "string" && v["{{ f.leaf }}"]) {
-    const _d = new Date(v["{{ f.leaf }}"] as string)
-    if (!isNaN(_d.getTime())) {
-      const _pad = (n: number) => n.toString().padStart(2, "0")
-      v["{{ f.leaf }}"] =
-        `${_d.getFullYear()}-${_pad(_d.getMonth() + 1)}-${_pad(_d.getDate())}` +
-        `T${_pad(_d.getHours())}:${_pad(_d.getMinutes())}`
-    }
-  }
-{%- elif f.kind == "array" or f.kind == "relation_many" %}
-  if (Array.isArray(v["{{ f.leaf }}"])) {
-    v["{{ f.leaf }}"] = (v["{{ f.leaf }}"] as unknown[])
-      .map((x) => (x === null || x === undefined ? "" : String(x)))
-      .join(", ")
-  }
-{%- elif f.kind == "json" %}
-  if (v["{{ f.leaf }}"] !== null && v["{{ f.leaf }}"] !== undefined && typeof v["{{ f.leaf }}"] !== "string") {
-    try {
-      v["{{ f.leaf }}"] = JSON.stringify(v["{{ f.leaf }}"], null, 2)
-    } catch {
-      v["{{ f.leaf }}"] = ""
-    }
-  }
-{%- elif f.kind == "composite" %}
-  // Composite: walk sub-fields that need per-leaf conversion. Keeps the
-  // parent object intact so react-hook-form can address `parent.child`.
-  {
-    const _cv = v["{{ f.leaf }}"] as Record<string, unknown> | undefined
-    if (_cv && typeof _cv === "object") {
-      const _nested: Record<string, unknown> = { ..._cv }
-{%- for sub in f.sub_fields %}
-{%- if sub.kind == "datetime" %}
-      if (typeof _nested["{{ sub.leaf }}"] === "string" && _nested["{{ sub.leaf }}"]) {
-        const _d = new Date(_nested["{{ sub.leaf }}"] as string)
-        if (!isNaN(_d.getTime())) {
-          const _pad = (n: number) => n.toString().padStart(2, "0")
-          _nested["{{ sub.leaf }}"] =
-            `${_d.getFullYear()}-${_pad(_d.getMonth() + 1)}-${_pad(_d.getDate())}` +
-            `T${_pad(_d.getHours())}:${_pad(_d.getMinutes())}`
-        }
-      }
-{%- elif sub.kind == "array" or sub.kind == "relation_many" %}
-      if (Array.isArray(_nested["{{ sub.leaf }}"])) {
-        _nested["{{ sub.leaf }}"] = (_nested["{{ sub.leaf }}"] as unknown[])
-          .map((x) => (x === null || x === undefined ? "" : String(x)))
-          .join(", ")
-      }
-{%- endif %}
-{%- endfor %}
-      v["{{ f.leaf }}"] = _nested
-    }
-  }
-{%- endif %}
-{%- endfor %}
-  return v as {{ entity.pascal }}FormValues
+  return normalizeFormValues(data as unknown as Record<string, unknown>, fields) as {{ entity.pascal }}FormValues
 }
 
-// Normalize form values back into the shape the REST API expects:
-// comma-separated strings -> arrays, datetime-local -> ISO-8601, JSON
-// textareas parsed, empty optionals dropped. `form` is used to surface
-// structured validation errors on JSON-parse failures via `setError`.
 export function normalize{{ entity.pascal }}Payload(
   values: {{ entity.pascal }}FormValues,
-{%- if entity.has_json_field %}
   form: UseFormReturn<{{ entity.pascal }}FormValues>,
-{%- else %}
-  // No JSON field on this entity — `form.setError` is unreachable, so the
-  // parameter is renamed (`_`-prefix) to satisfy `noUnusedParameters`.
-  // Callers can still pass their `form`; the wider signature stays stable.
-  _form: UseFormReturn<{{ entity.pascal }}FormValues>,
-{%- endif %}
 ): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
-    ...(values as unknown as Record<string, unknown>),
-  }
-{%- for f in entity.fields %}
-{%- if f.derived %}
-  // Derived inverse collection — never writable.
-  delete payload["{{ f.leaf }}"]
-{%- elif f.kind == "file" %}
-  // File attachments are mutated via the dedicated upload flow
-  // (POST /upload-url → PUT bytes → POST /confirm-upload), not by entity PUT.
-  // Strip the field so the round-trip never resends the existing attachment
-  // and never tries to clear one through the wrong endpoint.
-  delete payload["{{ f.leaf }}"]
-{%- elif f.kind == "datetime" %}
-  if (payload["{{ f.leaf }}"]) {
-    const _d = new Date(payload["{{ f.leaf }}"] as string)
-    if (!isNaN(_d.getTime())) payload["{{ f.leaf }}"] = _d.toISOString()
-  } else {
-    delete payload["{{ f.leaf }}"]
-  }
-{%- elif f.kind == "array" or f.kind == "relation_many" %}
-  {
-    const _raw = payload["{{ f.leaf }}"]
-    if (typeof _raw === "string" && _raw.trim() !== "") {
-      const _parts = _raw
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s !== "")
-{%- if f.item_kind == "integer" or f.item_kind == "float" %}
-      payload["{{ f.leaf }}"] = _parts.map((s) => Number(s))
-{%- elif f.item_kind == "boolean" %}
-      payload["{{ f.leaf }}"] = _parts.map((s) => s === "true" || s === "1" || s === "yes")
-{%- else %}
-      payload["{{ f.leaf }}"] = _parts
-{%- endif %}
-    } else {
-      delete payload["{{ f.leaf }}"]
-    }
-  }
-{%- elif f.kind == "json" %}
-  {
-    const _raw = payload["{{ f.leaf }}"]
-    if (typeof _raw === "string" && _raw.trim() !== "") {
-      try {
-        payload["{{ f.leaf }}"] = JSON.parse(_raw)
-      } catch (e) {
-        form.setError("{{ f.leaf }}" as never, {
-          type: "manual",
-          message: `Invalid JSON: ${(e as Error).message}`,
-        })
-        throw e
-      }
-    } else {
-      delete payload["{{ f.leaf }}"]
-    }
-  }
-{%- elif f.kind == "composite" %}
-  // Composite: post-process sub-fields inline. Drops the wrapper
-  // entirely if all sub-fields are empty.
-  {
-    const _cvRaw = payload["{{ f.leaf }}"]
-    if (_cvRaw && typeof _cvRaw === "object") {
-      const _cv: Record<string, unknown> = { ...(_cvRaw as Record<string, unknown>) }
-{%- for sub in f.sub_fields %}
-{%- if sub.kind == "datetime" %}
-      if (_cv["{{ sub.leaf }}"]) {
-        const _d = new Date(_cv["{{ sub.leaf }}"] as string)
-        if (!isNaN(_d.getTime())) _cv["{{ sub.leaf }}"] = _d.toISOString()
-      }
-{%- elif sub.kind == "array" or sub.kind == "relation_many" %}
-      {
-        const _raw = _cv["{{ sub.leaf }}"]
-        if (typeof _raw === "string" && _raw.trim() !== "") {
-          _cv["{{ sub.leaf }}"] = _raw
-            .split(",")
-            .map((s) => s.trim())
-            .filter((s) => s !== "")
-        }
-      }
-{%- endif %}
-{%- if not sub.required %}
-      if (_cv["{{ sub.leaf }}"] === "" || _cv["{{ sub.leaf }}"] === undefined || _cv["{{ sub.leaf }}"] === null) {
-        delete _cv["{{ sub.leaf }}"]
-      }
-{%- endif %}
-{%- endfor %}
-      if (Object.keys(_cv).length === 0) {
-        delete payload["{{ f.leaf }}"]
-      } else {
-        payload["{{ f.leaf }}"] = _cv
-      }
-    } else {
-      delete payload["{{ f.leaf }}"]
-    }
-  }
-{%- elif not f.required %}
-  if (payload["{{ f.leaf }}"] === "" || payload["{{ f.leaf }}"] === undefined || payload["{{ f.leaf }}"] === null) {
-    delete payload["{{ f.leaf }}"]
-  }
-{%- endif %}
-{%- endfor %}
-  return payload
+  return normalizeFormPayload(values as Record<string, unknown>, fields, (name, message) => {
+    form.setError(name as never, { type: "manual", message })
+  })
 }

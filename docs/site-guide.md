@@ -84,7 +84,7 @@ The React app's login flow:
 3. Client stores the PASETO token + expiry + roles in `sessionStorage`.
 4. A silent refresh is scheduled ~5 minutes before `expires_at` via `POST /auth/refresh`, and the api-client retries any 401 once through the refresh endpoint before redirecting to `/login`.
 
-The `roles` claim is stored alongside the token for role-scoped chrome. Field- and record-level access (`@field_access`, `@access`) is enforced authoritatively server-side: the API omits fields the caller may not read and rejects writes it may not make, so the generated pages only ever render what Cedar already permits.
+The `roles` claim is stored alongside the token for role-scoped chrome. Field- and record-level access (`@field_access`, `@access`) is enforced authoritatively server-side: the API omits fields the caller may not read and rejects writes it may not make, the generated form controls additionally use declarative role hints to hide unreadable fields and show readable but unwritable fields as read-only. These hints do not reproduce custom Cedar policies; the server remains authoritative.
 
 ## Production builds
 
@@ -104,6 +104,8 @@ pnpm preview        # local sanity check of the production build
 | `rich_text` | `<textarea>` | Rendered verbatim; no editor widget in v1. |
 | `integer` / `float` | `<Input type="number">` | Form state is string; handler coerces to number on submit. |
 | `boolean` | `<input type="checkbox">` | |
+| `duration` | Text input | Go-style wire strings such as `90s`, `1h30m`, or `-0.5s`; validated before submit. Whole-second responses are formatted as readable units on list/detail, for example `86400s` becomes `1d`. |
+| `bytes` | Base64 `<textarea>` | Standard padded base64 on both read and write; generated validation checks base64 shape and the decoded `max_size` bound. Detail displays base64 text. |
 | `datetime` | `<input type="datetime-local">` | Emits `YYYY-MM-DDTHH:MM`; edit handler round-trips to ISO-8601 with timezone before submit. |
 | `enum("a", "b")` | `<select>` | Variants are frozen at codegen time; regenerate after schema edits. |
 | `json` | `<textarea>` | Form state is a JSON string; edit handler runs `JSON.parse` before submit. |
@@ -135,3 +137,31 @@ These three look similar on the wire (all JSON objects) but mean different thing
 
 - [`docs/query-api-reference.md`](query-api-reference.md) — REST query parameter grammar
 - [`docs/hooks-reference.md`](hooks-reference.md) — lifecycle hook service scaffolding
+
+### Computed and restricted form fields
+
+`@compute` values are server-owned. Generated create/edit controls, Zod form
+schemas and submit payloads omit them, while detail pages retain read-only
+values. Derived inverse relations follow the same rule.
+
+For `@field_access`, the generator hides controls when the current roles cannot
+read the field and renders inert values when the roles can read but cannot
+write it. Empty role lists impose no role restriction; `platform_admin` follows
+the global permit. Validation reads the current roles each time, so a hidden or
+read-only required field does not prevent submission. Initial form state omits
+computed and unreadable fields. Payload construction whitelists declared fields
+and removes computed, derived, read-denied and write-denied keys recursively,
+including nested composite fields. Because PATCH replaces a composite as a
+whole, a composite containing any computed, derived, upload-only, or denied
+child is read-only as a whole and omitted from both submission and required-field
+validation. This prevents a partial update from erasing protected siblings.
+Custom Cedar policies remain authoritative
+and can impose additional restrictions beyond these UI hints.
+
+Regenerating updates the owned `edit.generated.tsx` and shared Zod helpers.
+Existing preserved `edit.tsx` pages that call the generated normalization helpers
+benefit without being overwritten. Custom pages that bypass those helpers must
+adopt the generated payload normalizer themselves. Duration, map and bytes
+fields are supported inside composites and typed read interfaces; duration
+arrays use a JSON textarea. Unsupported required fields now stop generation
+with an actionable error instead of producing an unusable create form.

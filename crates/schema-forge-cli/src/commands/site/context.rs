@@ -162,6 +162,10 @@ pub struct EntityView {
     /// components when the entity actually has a file field, otherwise
     /// `noUnusedLocals` rejects the generated file.
     pub has_file_field: bool,
+    /// Writable file controls require an entity identifier.
+    pub has_form_file_field: bool,
+    pub has_form_fields: bool,
+    pub has_form_controls: bool,
 }
 
 impl EntityView {
@@ -180,8 +184,11 @@ impl EntityView {
             match field_to_view(f, catalog) {
                 Ok(v) => fields.push(v),
                 Err(FieldMapError::Unsupported { field, reason }) => {
+                    if f.is_required() {
+                        return Err(CliError::Config { message: format!("cannot generate a usable create form: required field {name}.{field} is unsupported: {reason}") });
+                    }
                     output.warn(&format!(
-                        "site v0: skipping field `{name}.{field}` — {reason}"
+                        "site: skipping optional field `{name}.{field}`: {reason}"
                     ));
                 }
             }
@@ -193,6 +200,7 @@ impl EntityView {
         });
         let has_json_field = fields.iter().any(|f| f.kind == "json");
         let has_file_field = fields.iter().any(|f| f.kind == "file");
+        let has_form_file_field = fields.iter().any(has_form_file);
         let display_field = def.display_field().map(|s| s.to_string());
 
         // `@display("field")` auto-promotes to `primary` when no explicit
@@ -208,6 +216,8 @@ impl EntityView {
             }
         }
 
+        let has_form_fields = fields.iter().any(|field| !field.computed && !field.derived);
+        let has_form_controls = fields.iter().any(has_form_control);
         let pascal = name.to_pascal_case();
         Ok(Self {
             pascal_plural: pluralize(&pascal),
@@ -222,14 +232,31 @@ impl EntityView {
             has_relation_link,
             has_json_field,
             has_file_field,
+            has_form_file_field,
+            has_form_fields,
+            has_form_controls,
         })
     }
+}
+
+fn has_form_file(field: &FieldView) -> bool {
+    !field.computed
+        && !field.derived
+        && (field.kind == "file" || field.sub_fields.iter().any(has_form_file))
+}
+
+fn has_form_control(field: &FieldView) -> bool {
+    !field.computed
+        && !field.derived
+        && (field.kind != "composite" || field.sub_fields.iter().any(has_form_control))
 }
 
 /// Recursive check: does this field or any nested composite sub-field
 /// contain a `relation_one`?
 fn has_relation_one_field(f: &FieldView) -> bool {
-    f.kind == "relation_one" || f.sub_fields.iter().any(has_relation_one_field)
+    !f.computed
+        && !f.derived
+        && (f.kind == "relation_one" || f.sub_fields.iter().any(has_relation_one_field))
 }
 
 /// One schema field projected into a TS/Zod-aware view model.
@@ -305,6 +332,11 @@ pub struct FieldView {
     /// the detail view. Reads already flow through the standard relation
     /// envelope, populated by the backend's inverse-collection pass.
     pub derived: bool,
+    /// Server-computed values are read-only and excluded from forms.
+    pub computed: bool,
+    /// Declarative role hints; Cedar remains authoritative.
+    pub read_roles: Vec<String>,
+    pub write_roles: Vec<String>,
     /// For `kind == "file"`: metadata the template needs to render the
     /// upload widget (accept attribute, max-size guard, proxied vs. presigned
     /// behavior). `None` for non-file fields.
@@ -391,6 +423,24 @@ pub fn make_field_view(
             None => default_list_placement(kind).to_string(),
         },
         derived: field.is_derived(),
+        computed: field.annotations.iter().any(|annotation| {
+            matches!(
+                annotation,
+                schema_forge_core::types::FieldAnnotation::Compute { .. }
+            )
+        }),
+        read_roles: match field.field_access() {
+            Some(schema_forge_core::types::FieldAnnotation::FieldAccess { read, .. }) => {
+                read.clone()
+            }
+            _ => Vec::new(),
+        },
+        write_roles: match field.field_access() {
+            Some(schema_forge_core::types::FieldAnnotation::FieldAccess { write, .. }) => {
+                write.clone()
+            }
+            _ => Vec::new(),
+        },
     }
 }
 
