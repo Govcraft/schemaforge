@@ -757,7 +757,7 @@ impl schema_forge_backend::auth::RecordAccessPolicy for ExportTargetPolicy {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_relation_labels_respect_target_schema_row_field_and_operator_access() {
     use schema_forge_acton::authz::{
         PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,

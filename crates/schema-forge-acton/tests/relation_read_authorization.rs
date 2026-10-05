@@ -337,6 +337,13 @@ async fn operator_redaction_cannot_erase_attributes_before_cedar_read_checks() {
 }
 
 async fn nested_fixture(product_role: &str) -> Router {
+    let policies = tempfile::tempdir().unwrap();
+    std::fs::write(
+        policies.path().join("export.cedar"),
+        r#"permit(principal, action == Action::"ExportParent", resource is Parent)
+        when { principal.roles.contains("clerk") };"#,
+    )
+    .unwrap();
     let mut schemas = schema_forge_dsl::parse(&format!(r#"
         @access(read: ["clerk"])
         @export(formats: [csv], bundle_files: false, max_rows: 100)
@@ -432,7 +439,7 @@ async fn nested_fixture(product_role: &str) -> Router {
             hook_dispatcher: None,
             storage_registry: Default::default(),
             policy_store: None,
-            custom_policies_dir: None,
+            custom_policies_dir: Some(policies.path().to_path_buf()),
             reply: ReplyChannel::new(tx),
         })
         .await;
