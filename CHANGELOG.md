@@ -37,6 +37,8 @@ is retained, but its binary release was not published.
 
 ### Database and operator fixes
 
+- Create SurrealDB records without supplied fields using valid statements, allowing
+  schema defaults and required-field checks to run.
 - Add PostgreSQL literal defaults with their columns so existing rows are filled.
   Required-field transitions backfill before enforcing `NOT NULL`; plans without
   a usable literal backfill value are refused before changes are applied.

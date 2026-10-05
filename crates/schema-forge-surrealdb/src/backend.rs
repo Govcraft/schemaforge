@@ -710,7 +710,11 @@ impl EntityStore for SurrealBackend {
         let id_str = entity.id.as_str();
 
         let set_clause = self.build_field_assignments(entity).await?;
-        let sql = format!("CREATE {table}:`{id_str}` SET {set_clause};");
+        let sql = if set_clause.is_empty() {
+            format!("CREATE {table}:`{id_str}`;")
+        } else {
+            format!("CREATE {table}:`{id_str}` SET {set_clause};")
+        };
 
         let rows = self
             .execute_and_take_rows(&sql)

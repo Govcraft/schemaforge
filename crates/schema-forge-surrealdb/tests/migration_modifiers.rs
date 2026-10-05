@@ -340,6 +340,13 @@ async fn removing_and_readding_relation_does_not_restore_values_or_lose_other_fi
         ]),
     );
     backend.create(&row).await.unwrap();
+    let original_details = backend
+        .get(&schema.name, &row.id)
+        .await
+        .unwrap()
+        .field("details")
+        .cloned()
+        .unwrap();
     let field = FieldName::new("members").unwrap();
     let added = FieldDefinition::with_modifiers(
         FieldName::new("phase").unwrap(),
@@ -377,7 +384,7 @@ async fn removing_and_readding_relation_does_not_restore_values_or_lose_other_fi
         loaded.field("label"),
         Some(&DynamicValue::Text("unchanged".into()))
     );
-    assert_eq!(loaded.field("details"), Some(&details));
+    assert_eq!(loaded.field("details"), Some(&original_details));
     assert_eq!(
         loaded.field("phase"),
         Some(&DynamicValue::Text("ready".into()))

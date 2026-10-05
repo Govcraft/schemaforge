@@ -782,6 +782,7 @@ async fn export_relation_labels_respect_target_schema_row_field_and_operator_acc
         @display("label")
         schema VisibleTarget { label: text }
         @access(read: ["viewer"])
+        @export(formats: [csv], bundle_files: false, max_rows: 100)
         schema ExportLinks {
             denied: -> RestrictedTarget @exportable
             field_denied: -> FieldTarget @exportable

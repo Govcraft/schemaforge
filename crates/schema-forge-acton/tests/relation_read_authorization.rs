@@ -339,6 +339,7 @@ async fn operator_redaction_cannot_erase_attributes_before_cedar_read_checks() {
 async fn nested_fixture(product_role: &str) -> Router {
     let mut schemas = schema_forge_dsl::parse(&format!(r#"
         @access(read: ["clerk"])
+        @export(formats: [csv], bundle_files: false, max_rows: 100)
         schema Parent {{ selected: -> Line @exportable missing: -> Line @exportable cycle: -> Cycle @exportable children: -> Line[] }}
         @access(read: ["clerk"]) @display("product")
         schema Line {{ product: -> Product parent: -> Parent }}
@@ -353,13 +354,6 @@ async fn nested_fixture(product_role: &str) -> Router {
         .find(|field| field.name.as_str() == "children")
         .unwrap()
         .derived_from = Some(FieldName::new("parent").unwrap());
-    schemas[0]
-        .annotations
-        .push(schema_forge_core::types::Annotation::Export {
-            formats: vec![schema_forge_core::types::ExportFormat::Csv],
-            bundle_files: false,
-            max_rows: 100,
-        });
     let backend = Arc::new(
         SurrealBackend::connect_memory("nested", "nested")
             .await
