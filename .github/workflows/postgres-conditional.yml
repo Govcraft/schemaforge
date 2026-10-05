@@ -1,17 +1,7 @@
 name: PostgreSQL conditional mutations
 
 on:
-  pull_request:
-    paths:
-      - "crates/schema-forge-core/**"
-      - "crates/schema-forge-dsl/**"
-      - "crates/schema-forge-surrealdb/**"
-      - "crates/schema-forge-backend/**"
-      - "crates/schema-forge-postgres/**"
-      - "crates/schema-forge-acton/**"
-      - "crates/schema-forge-cli/**"
-      - "Cargo.lock"
-      - ".github/workflows/postgres-conditional.yml"
+  workflow_call:
   workflow_dispatch:
 
 permissions:

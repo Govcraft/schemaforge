@@ -1,13 +1,7 @@
 name: Site E2E
 
 on:
-  pull_request:
-    paths:
-      - "crates/schema-forge-cli/templates/site/**"
-      - "crates/schema-forge-cli/src/commands/site/**"
-      - "crates/schema-forge-cli/tests/site_e2e/**"
-      - "crates/schema-forge-acton/src/routes/**"
-      - ".github/workflows/site-e2e.yml"
+  workflow_call:
   workflow_dispatch:
 
 jobs:
