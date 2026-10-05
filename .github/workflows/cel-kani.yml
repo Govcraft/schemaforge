@@ -1,21 +1,7 @@
 name: CEL scalar proofs
 
 on:
-  pull_request:
-    paths:
-      - 'crates/schema-forge-cel/**'
-      - 'crates/schema-forge-core/**'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - '.github/workflows/cel-kani.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'crates/schema-forge-cel/**'
-      - 'crates/schema-forge-core/**'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - '.github/workflows/cel-kani.yml'
+  workflow_call:
   workflow_dispatch:
 
 permissions:

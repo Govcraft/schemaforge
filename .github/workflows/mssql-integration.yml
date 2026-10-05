@@ -1,15 +1,7 @@
 name: MSSQL Integration
 
 on:
-  pull_request:
-    paths:
-      - "crates/schema-forge-mssql/**"
-      - "crates/schema-forge-core/**"
-      - "crates/schema-forge-backend/**"
-      - "crates/schema-forge-cli/Cargo.toml"
-      - "crates/schema-forge-acton/Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/mssql-integration.yml"
+  workflow_call:
   workflow_dispatch:
 
 permissions:
