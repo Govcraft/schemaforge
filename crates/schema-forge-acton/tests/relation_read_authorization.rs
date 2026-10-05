@@ -361,6 +361,13 @@ async fn nested_fixture(product_role: &str) -> Router {
         .find(|field| field.name.as_str() == "children")
         .unwrap()
         .derived_from = Some(FieldName::new("parent").unwrap());
+    let store = schema_forge_acton::authz::PolicyStoreSnapshot::from_schemas(
+        &schemas,
+        Some(policies.path()),
+        schema_forge_acton::authz::RoleRanks::empty(),
+        schema_forge_acton::authz::PrincipalClaimMappings::default(),
+    )
+    .unwrap();
     let backend = Arc::new(
         SurrealBackend::connect_memory("nested", "nested")
             .await
@@ -438,8 +445,8 @@ async fn nested_fixture(product_role: &str) -> Router {
             record_access_policy: None,
             hook_dispatcher: None,
             storage_registry: Default::default(),
-            policy_store: None,
-            custom_policies_dir: Some(policies.path().to_path_buf()),
+            policy_store: Some(Arc::new(schema_forge_acton::authz::PolicyStore::new(store))),
+            custom_policies_dir: None,
             reply: ReplyChannel::new(tx),
         })
         .await;
