@@ -44,10 +44,7 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
             for modifier in &field.modifiers {
                 if let FieldModifier::Default { value } = modifier {
                     let literal = default_value_to_surql(value);
-                    statements.push(format!(
-                        "UPDATE {table} SET {name} = {literal} WHERE {name} = NONE OR {name} = NULL;",
-                        name = field.name,
-                    ));
+                    statements.push(backfill_field_stmt(table, &field.name, &literal));
                 }
             }
             statements
@@ -141,9 +138,7 @@ pub fn migration_step_to_surql(table: &str, step: &MigrationStep) -> Vec<String>
             default_value,
         } => {
             let literal = crate::query::dynamic_value_to_surql_literal(default_value);
-            vec![format!(
-                "UPDATE {table} SET {field} = {literal} WHERE {field} = NONE OR {field} = NULL;"
-            )]
+            vec![backfill_field_stmt(table, field, &literal)]
         }
         MigrationStep::AddRequired { .. }
         | MigrationStep::RemoveRequired { .. }
@@ -267,6 +262,18 @@ pub fn field_assertions(field_type: &FieldType) -> Vec<String> {
         }
         _ => Vec::new(),
     }
+}
+
+// Newly defined indexes can omit records whose field is absent. Select backfill
+// targets without an index so renames and added fields include every missing value.
+fn backfill_field_stmt(
+    table: &str,
+    field: &schema_forge_core::types::FieldName,
+    literal: &str,
+) -> String {
+    format!(
+        "UPDATE (SELECT VALUE id FROM {table} WITH NOINDEX WHERE {field} = NONE OR {field} = NULL) SET {field} = {literal};"
+    )
 }
 
 /// Preserve the field's physical type and constraints while copying its values.
@@ -734,7 +741,7 @@ mod tests {
             stmts,
             vec![
                 "DEFINE FIELD status ON Contact TYPE option<string> DEFAULT 'active';",
-                "UPDATE Contact SET status = 'active' WHERE status = NONE OR status = NULL;",
+                "UPDATE (SELECT VALUE id FROM Contact WITH NOINDEX WHERE status = NONE OR status = NULL) SET status = 'active';",
             ]
         );
     }

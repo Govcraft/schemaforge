@@ -39,6 +39,8 @@ is retained, but its binary release was not published.
 
 - Create SurrealDB records without supplied fields using valid statements, allowing
   schema defaults and required-field checks to run.
+- Backfill missing SurrealDB values through a table scan so newly created indexes
+  cannot omit rows during field additions and renames.
 - Add PostgreSQL literal defaults with their columns so existing rows are filled.
   Required-field transitions backfill before enforcing `NOT NULL`; plans without
   a usable literal backfill value are refused before changes are applied.

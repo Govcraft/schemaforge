@@ -135,6 +135,11 @@ async fn backfill_and_required_default_changes_preserve_type_and_constraints() {
 #[tokio::test]
 async fn rename_then_required_default_changes_use_the_renamed_definition() {
     let (backend, mut schema, row) = fixture("renamedmodifiers").await;
+    let populated = Entity::new(
+        schema.name.clone(),
+        BTreeMap::from([("status".into(), DynamicValue::Text("active".into()))]),
+    );
+    backend.create(&populated).await.unwrap();
     let old_name = schema.fields[0].name.clone();
     let new_name = FieldName::new("phase").unwrap();
     let steps = [
@@ -172,6 +177,14 @@ async fn rename_then_required_default_changes_use_the_renamed_definition() {
             .unwrap()
             .field("phase"),
         Some(&DynamicValue::Text("ready".into()))
+    );
+    assert_eq!(
+        backend
+            .get(&schema.name, &populated.id)
+            .await
+            .unwrap()
+            .field("phase"),
+        Some(&DynamicValue::Text("active".into()))
     );
     assert!(backend
         .create(&Entity::new(
@@ -259,9 +272,12 @@ async fn new_fields_with_defaults_fill_existing_rows() {
     let (backend, mut schema, row) = fixture("addeddefaults").await;
     let mut steps = Vec::new();
     for (name, required) in [("required_status", true), ("optional_status", false)] {
-        let mut modifiers = vec![FieldModifier::Default {
-            value: DefaultValue::String("O'Brien\\x".into()),
-        }];
+        let mut modifiers = vec![
+            FieldModifier::Default {
+                value: DefaultValue::String("O'Brien\\x".into()),
+            },
+            FieldModifier::Indexed,
+        ];
         if required {
             modifiers.push(FieldModifier::Required);
         }
