@@ -811,6 +811,13 @@ fn details_without_visible_values_keep_props_without_unused_bindings() {
         ("HiddenComposite", "hidden-composite", true),
     ] {
         let out_dir = tmp.path().join(path);
+        if !has_rows {
+            run_generate(&schema_dir, &out_dir, name, &[])
+                .assert()
+                .failure()
+                .stderr(predicates::str::contains("no supported fields"));
+            continue;
+        }
         run_generate(&schema_dir, &out_dir, name, &[])
             .assert()
             .success();
