@@ -205,7 +205,16 @@ fn service_bind_is_configured(explicit: Option<&Path>) -> bool {
         }
     }
     configured
-        .merge(Env::prefixed("ACTON_").split("_"))
+        .merge(
+            Env::prefixed("ACTON_")
+                .filter(|key| !key.as_str().contains("__"))
+                .split("_"),
+        )
+        .merge(
+            Env::prefixed("ACTON_")
+                .filter(|key| key.as_str().contains("__"))
+                .split("__"),
+        )
         .contains("service.bind")
 }
 
@@ -662,6 +671,8 @@ mod tests {
         for (key, value) in [
             ("ACTON_SERVICE_BIND", "0.0.0.0"),
             ("ACTON_SERVICE_bind", "0.0.0.0"),
+            ("ACTON_SERVICE__BIND", "0.0.0.0"),
+            ("ACTON_SERVICE__bind", "0.0.0.0"),
             ("ACTON_SERVICE", "{bind=\"0.0.0.0\"}"),
         ] {
             let mut child = std::process::Command::new(std::env::current_exe().unwrap());

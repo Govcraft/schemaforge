@@ -107,9 +107,12 @@ fn generate_emits_an_authenticated_service() {
         .success();
 
     let cargo_toml = fs::read_to_string(out_dir.join("Cargo.toml")).unwrap();
-    assert!(
-        cargo_toml.contains("acton-service"),
-        "scaffold must depend on acton-service:\n{cargo_toml}"
+    let generated_manifest: toml::Value = toml::from_str(&cargo_toml).unwrap();
+    let cli_manifest: toml::Value = toml::from_str(include_str!("../Cargo.toml")).unwrap();
+    assert_eq!(
+        generated_manifest["dependencies"]["acton-service"]["version"],
+        cli_manifest["dependencies"]["acton-service"]["version"],
+        "hook services must use the forge's acton-service version"
     );
 
     let main_rs = fs::read_to_string(out_dir.join("src/main.rs")).unwrap();
@@ -133,17 +136,21 @@ fn generate_emits_an_authenticated_service() {
         "reflection must stay opt-in:\n{main_rs}"
     );
 
-    // A commented-out `[token]` section authenticates exactly as much as no
-    // section at all, so the emitted config must carry a live one.
-    let config_toml = fs::read_to_string(out_dir.join("config.toml"))
-        .expect("scaffold must emit a config.toml");
+    // Load with the framework so its strict config validation also covers
+    // generated tables. Token and gRPC sections must be active, not comments.
+    let config_path = out_dir.join("config.toml");
+    let config = acton_service::config::Config::<()>::load_from(config_path.to_str().unwrap())
+        .expect("scaffold must emit valid framework configuration");
     assert!(
-        config_toml.contains("\n[token]\n") && config_toml.contains("format = \"paseto\""),
-        "config.toml must configure token auth, uncommented:\n{config_toml}"
+        matches!(
+            config.token,
+            Some(acton_service::config::TokenConfig::Paseto(_))
+        ),
+        "scaffold must configure PASETO token auth"
     );
     assert!(
-        config_toml.contains("\n[grpc]\n") && config_toml.contains("enabled = true"),
-        "config.toml must enable gRPC or ServiceBuilder refuses the build:\n{config_toml}"
+        config.grpc.is_some_and(|grpc| grpc.enabled),
+        "scaffold must enable gRPC or ServiceBuilder refuses the build"
     );
 }
 
