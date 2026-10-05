@@ -6,7 +6,7 @@ use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::query::{FieldPath, Filter, Query, SortOrder};
 use schema_forge_core::types::{
-    Cardinality, DynamicValue, EntityId, EnumVariants, FieldAnnotation, FieldDefinition,
+    Cardinality, DefaultValue, DynamicValue, EntityId, EnumVariants, FieldAnnotation, FieldDefinition,
     FieldModifier, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName, TextConstraints,
 };
 use schema_forge_postgres::PgBackend;
@@ -194,7 +194,15 @@ async fn absent_tenant_and_schema_or_physical_drift_are_rechecked() {
             .is_none());
         execute(&backend, "ALTER TABLE \"CountProof\" DROP COLUMN _tenant").await;
         let mut changed = schema.clone();
-        changed.fields[0].modifiers.push(FieldModifier::Required);
+        // Keep this a metadata-only change so the later direct NULL write
+        // exercises re-certification of physical drift. The proposed required
+        // field must still satisfy the migration planner's backfill contract.
+        changed.fields[0].modifiers.extend([
+            FieldModifier::Required,
+            FieldModifier::Default {
+                value: DefaultValue::String("fallback".into()),
+            },
+        ]);
         backend.store_schema_metadata(&changed).await.unwrap();
         assert!(backend
             .query_cedar_compatible(&schema, &query, &scope)

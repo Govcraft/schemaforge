@@ -74,11 +74,14 @@ pub fn pair_inverse_relations(
                 cardinality: Cardinality::One,
             } = &field.field_type
             {
-                child_fks.entry(target.as_str().to_string()).or_default().push((
-                    schema_idx,
-                    schema.name.as_str().to_string(),
-                    field.name.as_str().to_string(),
-                ));
+                child_fks
+                    .entry(target.as_str().to_string())
+                    .or_default()
+                    .push((
+                        schema_idx,
+                        schema.name.as_str().to_string(),
+                        field.name.as_str().to_string(),
+                    ));
             }
         }
     }
@@ -126,6 +129,23 @@ pub fn pair_inverse_relations(
                         child_schema: target_name.to_string(),
                         candidates,
                     });
+                }
+            }
+        }
+    }
+
+    // Clear stale pairings only after the whole pass succeeds. Removing the
+    // last FK must return the parent field to stored semantics as well.
+    let names: std::collections::HashSet<_> = schemas.iter().map(|s| s.name.clone()).collect();
+    for schema in schemas.iter_mut() {
+        for field in &mut schema.fields {
+            if let FieldType::Relation {
+                target,
+                cardinality: Cardinality::Many,
+            } = &field.field_type
+            {
+                if names.contains(target) {
+                    field.derived_from = None;
                 }
             }
         }

@@ -91,6 +91,8 @@ async fn relations_have_consistent_integrity_and_legacy_constraints_are_repaired
 }
 
 async fn exercise(backend: &PgBackend) {
+    defaults_populate_existing_rows_before_required_constraints(backend).await;
+    inverse_transitions_drop_and_recreate_storage(backend).await;
     atomic_schema_failure_preserves_data_and_metadata(backend).await;
     // Pet precedes Owner, and both reference each other.
     let mut pet = definition("Pet", Some(("owner", "Owner")));
@@ -422,4 +424,160 @@ async fn atomic_schema_failure_preserves_data_and_metadata(backend: &PgBackend) 
         .await
         .unwrap()
         .is_none());
+}
+
+async fn defaults_populate_existing_rows_before_required_constraints(backend: &PgBackend) {
+    use schema_forge_core::types::{DefaultValue, FieldModifier};
+    let original = definition("DefaultMigration", None);
+    backend
+        .apply_schema_change(
+            &original.name,
+            &DiffEngine::create_new(&original).steps,
+            Some(&original),
+        )
+        .await
+        .unwrap();
+    let row = backend
+        .create(&Entity::new(
+            original.name.clone(),
+            BTreeMap::from([("label".into(), DynamicValue::Text("kept".into()))]),
+        ))
+        .await
+        .unwrap();
+    let mut proposed = original.clone();
+    for (name, required) in [("required_status", true), ("optional_status", false)] {
+        let mut field = FieldDefinition::new(
+            FieldName::new(name).unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        );
+        field.modifiers.push(FieldModifier::Default {
+            value: DefaultValue::String("draft".into()),
+        });
+        if required {
+            field.modifiers.push(FieldModifier::Required);
+        }
+        proposed.fields.push(field);
+    }
+    let plan = DiffEngine::plan_update(&original, &proposed).unwrap();
+    backend
+        .apply_schema_change(&original.name, &plan.steps, Some(&proposed))
+        .await
+        .unwrap();
+    let read = backend.get(&original.name, &row.id).await.unwrap();
+    assert_eq!(
+        read.fields["required_status"],
+        DynamicValue::Text("draft".into())
+    );
+    assert_eq!(
+        read.fields["optional_status"],
+        DynamicValue::Text("draft".into())
+    );
+    // Explicit NULLs are backfilled, while populated values are preserved.
+    sqlx::query("UPDATE \"DefaultMigration\" SET optional_status = NULL")
+        .execute(backend.pool())
+        .await
+        .unwrap();
+    let kept = backend
+        .create(&Entity::new(
+            original.name.clone(),
+            BTreeMap::from([
+                ("label".into(), DynamicValue::Text("other".into())),
+                ("required_status".into(), DynamicValue::Text("live".into())),
+                ("optional_status".into(), DynamicValue::Text("live".into())),
+            ]),
+        ))
+        .await
+        .unwrap();
+    let before = proposed.clone();
+    proposed.fields[2].modifiers.push(FieldModifier::Required);
+    let plan = DiffEngine::plan_update(&before, &proposed).unwrap();
+    backend
+        .apply_schema_change(&original.name, &plan.steps, Some(&proposed))
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.get(&original.name, &row.id).await.unwrap().fields["optional_status"],
+        DynamicValue::Text("draft".into())
+    );
+    assert_eq!(
+        backend.get(&original.name, &kept.id).await.unwrap().fields["optional_status"],
+        DynamicValue::Text("live".into())
+    );
+    assert!(
+        sqlx::query("UPDATE \"DefaultMigration\" SET optional_status = NULL")
+            .execute(backend.pool())
+            .await
+            .is_err()
+    );
+}
+
+async fn inverse_transitions_drop_and_recreate_storage(backend: &PgBackend) {
+    let mut person = definition("InversePerson", None);
+    let mut team = definition("InverseTeam", None);
+    team.fields.push(FieldDefinition::new(
+        FieldName::new("members").unwrap(),
+        FieldType::Relation {
+            target: person.name.clone(),
+            cardinality: Cardinality::Many,
+        },
+    ));
+    for schema in [&person, &team] {
+        backend
+            .apply_schema_change(
+                &schema.name,
+                &DiffEngine::create_new(schema).steps,
+                Some(schema),
+            )
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO \"InverseTeam\" (id, members) VALUES ('team_saved', ARRAY['person_saved'])",
+    )
+    .execute(backend.pool())
+    .await
+    .unwrap();
+    let old_person = person.clone();
+    person.fields.push(FieldDefinition::new(
+        FieldName::new("team").unwrap(),
+        FieldType::Relation {
+            target: team.name.clone(),
+            cardinality: Cardinality::One,
+        },
+    ));
+    let plan = DiffEngine::plan_update(&old_person, &person).unwrap();
+    backend
+        .apply_schema_change(&person.name, &plan.steps, Some(&person))
+        .await
+        .unwrap();
+    let stored_team = team.clone();
+    team.fields[1].derived_from = Some(FieldName::new("team").unwrap());
+    let plan = DiffEngine::plan_update(&stored_team, &team).unwrap();
+    assert!(plan.has_destructive_steps());
+    backend
+        .apply_schema_change(&team.name, &plan.steps, Some(&team))
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'InverseTeam' AND column_name = 'members'").fetch_one(backend.pool()).await.unwrap();
+    assert_eq!(count, 0);
+    let plan = DiffEngine::plan_update(&person, &old_person).unwrap();
+    backend
+        .apply_schema_change(&person.name, &plan.steps, Some(&old_person))
+        .await
+        .unwrap();
+    let plan = DiffEngine::plan_update(&team, &stored_team).unwrap();
+    assert!(plan.has_destructive_steps());
+    backend
+        .apply_schema_change(&team.name, &plan.steps, Some(&stored_team))
+        .await
+        .unwrap();
+    let old_ids: Option<Vec<String>> =
+        sqlx::query_scalar("SELECT members FROM \"InverseTeam\" WHERE id = 'team_saved'")
+            .fetch_one(backend.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        old_ids, None,
+        "returning to stored semantics must not resurrect the discarded IDs"
+    );
 }

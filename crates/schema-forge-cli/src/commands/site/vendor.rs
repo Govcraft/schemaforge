@@ -555,6 +555,15 @@ type RelationRow = { id: string; [key: string]: unknown }
 ///   2. first string-valued field we encounter
 ///   3. the entity id itself
 function labelFor(row: RelationRow, displayField?: string): string {
+  if (displayField) {
+    const display = row[`${displayField}__display`]
+    if (typeof display === "string" && display.length > 0) return display
+    if (Array.isArray(display)) {
+      const ids = Array.isArray(row[displayField]) ? row[displayField] as unknown[] : []
+      const labels = ids.map((id, index) => typeof display[index] === "string" ? display[index] : String(id))
+      if (labels.length > 0) return labels.join(", ")
+    }
+  }
   if (displayField && typeof row[displayField] === "string") {
     return `${row[displayField] as string}`
   }

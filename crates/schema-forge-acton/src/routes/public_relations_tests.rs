@@ -1,4 +1,4 @@
-use super::filter_public_relation_entities;
+use super::filter_relation_entities_with_policy;
 use crate::authz::{PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks};
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::{
@@ -68,19 +68,25 @@ fn row(schema: &SchemaDefinition, published: bool) -> Entity {
     )
 }
 
-#[test]
-fn anonymous_enrichment_cannot_disclose_private_target_rows() {
+#[tokio::test]
+async fn anonymous_enrichment_cannot_disclose_private_target_rows() {
     let schema = schema(false, false);
-    let rows =
-        filter_public_relation_entities(&store(&schema, None), &schema, vec![row(&schema, true)]);
+    let rows = filter_relation_entities_with_policy(
+        None,
+        &store(&schema, None),
+        &schema,
+        None,
+        vec![row(&schema, true)],
+    )
+    .await;
     assert!(
         rows.is_empty(),
         "private target IDs and displays must be absent"
     );
 }
 
-#[test]
-fn anonymous_enrichment_checks_full_rows_before_selecting_display_or_child_ids() {
+#[tokio::test]
+async fn anonymous_enrichment_checks_full_rows_before_selecting_display_or_child_ids() {
     let schema = schema(true, false);
     let policy = r#"
 forbid(principal, action == Action::"ReadRelated", resource is Related)
@@ -88,22 +94,31 @@ when { resource has published && !resource.published };
 "#;
     let published = row(&schema, true);
     let id = published.id.clone();
-    let rows = filter_public_relation_entities(
+    let rows = filter_relation_entities_with_policy(
+        None,
         &store(&schema, Some(policy)),
         &schema,
+        None,
         vec![row(&schema, false), published],
-    );
+    )
+    .await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, id);
     assert!(rows[0].field("label").is_some());
     assert!(rows[0].field("secret").is_none());
 }
 
-#[test]
-fn anonymous_enrichment_scrubs_restricted_display_and_foreign_key_values() {
+#[tokio::test]
+async fn anonymous_enrichment_scrubs_restricted_display_and_foreign_key_values() {
     let schema = schema(true, true);
-    let rows =
-        filter_public_relation_entities(&store(&schema, None), &schema, vec![row(&schema, true)]);
+    let rows = filter_relation_entities_with_policy(
+        None,
+        &store(&schema, None),
+        &schema,
+        None,
+        vec![row(&schema, true)],
+    )
+    .await;
     assert_eq!(rows.len(), 1);
     assert!(
         rows[0].field("label").is_none(),
@@ -148,18 +163,15 @@ async fn anonymous_enrichment_honors_custom_record_policy_denial() {
     let schema = schema(true, false);
     let store = store(&schema, None);
     let entity = row(&schema, true);
-    let without_custom = super::filter_public_relation_entities_with_policy(
-        None,
-        &store,
-        &schema,
-        vec![entity.clone()],
-    )
-    .await;
+    let without_custom =
+        filter_relation_entities_with_policy(None, &store, &schema, None, vec![entity.clone()])
+            .await;
     assert_eq!(without_custom.len(), 1, "Cedar permits this target");
-    let restricted = super::filter_public_relation_entities_with_policy(
+    let restricted = filter_relation_entities_with_policy(
         Some(&AuthenticatedOnlyPolicy),
         &store,
         &schema,
+        None,
         vec![entity],
     )
     .await;

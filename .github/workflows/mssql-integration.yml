@@ -98,3 +98,6 @@ jobs:
       - name: Deny SQL Server lints
         if: matrix.version == 2019
         run: cargo clippy -p schema-forge-mssql --all-targets -- -D warnings
+      - name: Run SQL Server unit and migration tests
+        if: matrix.version == 2019
+        run: cargo nextest run -p schema-forge-mssql --no-fail-fast

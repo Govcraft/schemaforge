@@ -37,11 +37,8 @@ const ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
 /// `target`. Isolated in its own function so both `create_schema` and
 /// `update_schema` share the exact same logic.
 ///
-/// Note: this only updates `target`. If adding/updating `target` would
-/// cause an *existing* schema's stored `-> X[]` field to become derived
-/// (because the new schema provides the inverse FK), that existing schema
-/// is not rewritten here — the change takes effect on the next daemon
-/// restart, which re-pairs the entire registry in `build_init`.
+/// Cross-schema pairing changes are rejected by the policy preflight below;
+/// they require a reviewed batch migration, not a target-only metadata write.
 async fn pair_with_registry(
     forge: &acton_service::prelude::ActorHandle,
     target: &mut SchemaDefinition,
@@ -93,6 +90,51 @@ async fn pair_with_registry(
     Ok(registry)
 }
 
+// A single-schema REST transaction cannot migrate sibling storage. Refuse
+// changes that would silently alter sibling reads on this or the next start.
+fn reject_sibling_pairing_changes(
+    existing: &std::collections::HashMap<String, SchemaDefinition>,
+    proposed: &mut [SchemaDefinition],
+    target: &str,
+) -> Result<(), ForgeError> {
+    if !proposed.iter().any(|schema| schema.name.as_str() == target) {
+        for schema in proposed.iter() {
+            for field in &schema.fields {
+                if field.is_derived()
+                    && matches!(&field.field_type, FieldType::Relation { target: related, .. } if related.as_str() == target)
+                {
+                    return Err(ForgeError::ValidationFailed {
+                        details: vec![format!("schema '{target}' is used by derived collection '{}.{}'; remove the collection in a reviewed batch migration before deleting its target", schema.name, field.name)],
+                    });
+                }
+            }
+        }
+    }
+    schema_forge_core::inverse_relations::pair_inverse_relations(proposed).map_err(|error| {
+        ForgeError::ValidationFailed {
+            details: vec![error.to_string()],
+        }
+    })?;
+    for schema in proposed {
+        if schema.name.as_str() == target {
+            continue;
+        }
+        if let Some(previous) = existing.get(schema.name.as_str()) {
+            for field in &schema.fields {
+                if previous
+                    .field(field.name.as_str())
+                    .is_some_and(|old| old.derived_from != field.derived_from)
+                {
+                    return Err(ForgeError::ValidationFailed {
+                        details: vec![format!("schema change alters inverse collection '{}.{}'; apply the complete schema batch with schemaforge migrate/apply and explicitly approve destructive storage changes", schema.name, field.name)],
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Dry-run the Cedar policy bundle that would result from inserting (or
 /// removing, when `removing` is `true`) `target` into the current registry.
 ///
@@ -133,6 +175,8 @@ async fn precheck_policy_bundle(
     if !removing {
         proposed.push(target.clone());
     }
+
+    reject_sibling_pairing_changes(&expected_registry, &mut proposed, target.name.as_str())?;
 
     if tenant_structure(&proposed)? != current_tenant_structure {
         return Err(ForgeError::ValidationFailed { details: vec!["tenant hierarchy changes require applying schema files and restarting serve so actor and middleware configuration change together".into()] });
@@ -1031,6 +1075,37 @@ pub async fn delete_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_schema_change_refuses_implicit_sibling_storage_transitions() {
+        let old = schema_forge_dsl::parse(
+            "schema Team { members: -> Person[] } schema Person { name: text }",
+        )
+        .unwrap();
+        let registry = old
+            .iter()
+            .map(|schema| (schema.name.to_string(), schema.clone()))
+            .collect();
+        let mut changed = schema_forge_dsl::parse(
+            "schema Team { members: -> Person[] } schema Person { name: text backup_for: -> Team }",
+        )
+        .unwrap();
+        let error = reject_sibling_pairing_changes(&registry, &mut changed, "Person").unwrap_err();
+        assert!(error.to_string().contains("Team.members"));
+        let paired_registry = changed
+            .iter()
+            .map(|schema| (schema.name.to_string(), schema.clone()))
+            .collect();
+        let mut removed_fk = old;
+        assert!(
+            reject_sibling_pairing_changes(&paired_registry, &mut removed_fk, "Person").is_err()
+        );
+        let mut deleted_child = vec![changed[0].clone()];
+        assert!(
+            reject_sibling_pairing_changes(&paired_registry, &mut deleted_child, "Person").is_err()
+        );
+        assert!(reject_sibling_pairing_changes(&paired_registry, &mut changed, "Person").is_ok());
+    }
 
     #[test]
     fn parse_field_type_simple_text() {

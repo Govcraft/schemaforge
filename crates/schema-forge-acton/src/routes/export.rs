@@ -40,10 +40,8 @@ use schema_forge_backend::entity::Entity;
 use schema_forge_core::export::{
     to_cell, to_ndjson, to_xlsx_cell, CellOptions, RelationDisplay, XlsxCell,
 };
-use schema_forge_core::query::{validate_filter, Filter, Query};
-use schema_forge_core::types::{
-    DynamicValue, EntityId, ExportFormat, FieldType, SchemaDefinition, SchemaName,
-};
+use schema_forge_core::query::{validate_filter, Query};
+use schema_forge_core::types::{EntityId, ExportFormat, SchemaDefinition, SchemaName};
 use serde::Deserialize;
 use tokio::sync::oneshot;
 use tracing::instrument;
@@ -70,7 +68,7 @@ const ACTOR_TIMEOUT: Duration = Duration::from_secs(5);
 /// never widen what leaves.
 #[derive(Debug, Deserialize)]
 pub struct ExportRequestBody {
-    /// Raw JSON filter — converted to a [`Filter`] using schema type hints,
+    /// Raw JSON filter — converted to a [`schema_forge_core::query::Filter`] using schema type hints,
     /// identical to the query endpoint.
     #[serde(default)]
     pub filter: Option<serde_json::Value>,
@@ -544,9 +542,7 @@ pub async fn prepare_export(
 
     // Resolve relation displays, then strip read-restricted fields per row
     // (dynamic half of the intersection).
-    let display_map =
-        resolve_export_displays(forge, schema_def, &visible, &columns, claims, tenant_config)
-            .await?;
+    let display_map = resolve_export_displays(ctx, schema_def, &visible, &columns).await?;
     for entity in &mut visible {
         filter_entity_fields(
             policy_store,
@@ -1233,127 +1229,33 @@ fn may_read_export_job(owner: Option<&str>, caller: Option<&str>) -> bool {
 /// `@exportable` (present in `columns`) and relations get resolved; everything
 /// else is absent (the serializer then falls back to the raw id).
 async fn resolve_export_displays(
-    forge: &acton_service::prelude::ActorHandle,
+    ctx: &ExportContext<'_>,
     schema: &SchemaDefinition,
     visible: &[Entity],
     columns: &[(String, Option<schema_forge_core::types::ExportFlatten>)],
-    claims: Option<&Claims>,
-    tenant_config: &Option<schema_forge_backend::tenant::TenantConfig>,
 ) -> Result<HashMap<String, HashMap<String, String>>, ForgeError> {
-    use std::collections::HashSet;
-
-    let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
-    if visible.is_empty() {
-        return Ok(out);
-    }
-
-    for (field_name, _) in columns {
-        let Some(field) = schema.field(field_name) else {
-            continue;
-        };
-        let FieldType::Relation { target, .. } = &field.field_type else {
-            continue;
-        };
-
-        // Distinct referenced IDs for this relation column across all rows.
-        let mut ids: HashSet<String> = HashSet::new();
-        for entity in visible {
-            if let Some(value) = entity.field(field_name) {
-                collect_ref_ids(value, &mut ids);
-            }
-        }
-        if ids.is_empty() {
-            continue;
-        }
-
-        // Look up the target schema to find its @display field.
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(GetSchema {
-                name: target.as_str().to_string(),
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        let Some(target_def) = ask_forge(rx).await? else {
-            continue;
-        };
-        let Some(display_field) = target_def.display_field().map(str::to_string) else {
-            continue;
-        };
-
-        let id_values: Vec<DynamicValue> = ids.into_iter().map(DynamicValue::Text).collect();
-        let mut display_query = Query::new(target_def.id.clone())
-            .with_filter(Filter::In {
-                path: schema_forge_core::query::FieldPath::single("id"),
-                values: id_values,
-            })
-            .without_total_count();
-        display_query.projection = Some(vec!["id".to_string(), display_field.clone()]);
-        inject_tenant_scope(&mut display_query, claims, tenant_config, &target_def);
-
-        let (tx, rx) = oneshot::channel();
-        forge
-            .send(QueryEntities {
-                query: display_query,
-                reply: ReplyChannel::new(tx),
-            })
-            .await;
-        let display_result = ask_forge(rx).await?.map_err(ForgeError::from)?;
-
-        let mut id_to_display: HashMap<String, String> = HashMap::new();
-        for target_entity in display_result.entities {
-            if let Some(value) = target_entity.field(&display_field) {
-                id_to_display.insert(target_entity.id.to_string(), display_scalar(value));
-            }
-        }
-        if !id_to_display.is_empty() {
-            out.insert(field_name.clone(), id_to_display);
-        }
-    }
-
-    Ok(out)
-}
-
-/// Collect referenced relation IDs from a stored relation value into `out`.
-fn collect_ref_ids(value: &DynamicValue, out: &mut std::collections::HashSet<String>) {
-    match value {
-        DynamicValue::Ref(id) => {
-            out.insert(id.to_string());
-        }
-        DynamicValue::RefArray(ids) => {
-            for id in ids {
-                out.insert(id.to_string());
-            }
-        }
-        DynamicValue::Text(s) => {
-            out.insert(s.clone());
-        }
-        DynamicValue::Array(items) => {
-            for item in items {
-                collect_ref_ids(item, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Stringify a `@display` field value for the relation display map.
-fn display_scalar(value: &DynamicValue) -> String {
-    match value {
-        DynamicValue::Text(s) => s.clone(),
-        DynamicValue::Integer(n) => n.to_string(),
-        DynamicValue::Float(n) => n.to_string(),
-        DynamicValue::Boolean(b) => b.to_string(),
-        other => other.to_string(),
-    }
+    let mut projected = schema.clone();
+    projected
+        .fields
+        .retain(|field| columns.iter().any(|(name, _)| name == field.name.as_str()));
+    super::entities::resolve_relation_displays_with_policy(
+        ctx.forge,
+        ctx.policy_store,
+        &projected,
+        visible,
+        ctx.claims,
+        ctx.tenant_config,
+        ctx.record_access_policy.as_deref(),
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use schema_forge_core::types::{
-        Annotation, ExportFlatten, ExportFormat as EF, FieldAnnotation, FieldDefinition, FieldName,
-        FieldType, SchemaId, SchemaName, TextConstraints,
+        Annotation, DynamicValue, ExportFlatten, ExportFormat as EF, FieldAnnotation,
+        FieldDefinition, FieldName, FieldType, SchemaId, SchemaName, TextConstraints,
     };
     use std::collections::BTreeMap;
 

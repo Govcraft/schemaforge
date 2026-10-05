@@ -53,8 +53,10 @@ jobs:
       - name: Run storage concurrency cases
         run: cargo nextest run -p schema-forge-backend -p schema-forge-postgres --run-ignored all --no-fail-fast
       - name: Prepare disposable HTTP namespace
+        if: ${{ !cancelled() }}
         run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA conditional_http'
       - name: Run complete runtime and schema suites
+        if: ${{ !cancelled() }}
         run: cargo nextest run -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl --features schema-forge-acton/postgres,schema-forge-acton/graphql --no-fail-fast
       - name: Run HTTP authorization and concurrency cases
         if: ${{ !cancelled() }}

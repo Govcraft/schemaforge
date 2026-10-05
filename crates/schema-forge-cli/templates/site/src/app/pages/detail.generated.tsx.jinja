@@ -16,20 +16,26 @@ import { Link } from "react-router-dom"
 import { AttachmentDownload, type FileAttachment } from "@/components/ui/file-upload"
 {%- endif %}
 import type { {{ entity.pascal }} } from "@/generated/entity-types"
+{%- if entity.detail_uses_formatter %}
 import { formatFieldValue } from "@/generated/formatters"
+{%- endif %}
 
+{% if entity.fields %}
 function specNum(n: number): string {
   return String(n).padStart(2, "0")
 }
+{% endif %}
 
+{% if entity.detail_uses_is_empty %}
 function isEmpty(v: unknown): boolean {
   if (v === null || v === undefined) return true
   if (typeof v === "string" && v.trim() === "") return true
   if (Array.isArray(v) && v.length === 0) return true
   return false
 }
+{% endif %}
 
-export function {{ entity.pascal }}DetailRows({ data }: { data: {{ entity.pascal }} }) {
+export function {{ entity.pascal }}DetailRows({% if entity.detail_uses_data %}{ data }{% else %}_props{% endif %}: { data: {{ entity.pascal }} }) {
   return (
     <>
 {%- for f in entity.fields %}

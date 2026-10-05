@@ -23,6 +23,7 @@ pub async fn run(
     let mut total_errors = 0usize;
     let mut all_file_results: Vec<serde_json::Value> = Vec::new();
     let mut had_errors = false;
+    let mut all_schemas = Vec::new();
 
     for file in &files {
         let source_text = std::fs::read_to_string(file).map_err(|e| CliError::Io {
@@ -47,6 +48,8 @@ pub async fn run(
                     let printed = schema_forge_dsl::print_all(&schemas);
                     println!("{printed}");
                 }
+
+                all_schemas.extend(schemas);
 
                 if output.mode == OutputMode::Json {
                     all_file_results.push(serde_json::json!({
@@ -88,6 +91,23 @@ pub async fn run(
                         }
                     }
                 }
+            }
+        }
+    }
+
+    if !had_errors {
+        if let Err(error) =
+            schema_forge_core::inverse_relations::pair_inverse_relations(&mut all_schemas)
+        {
+            had_errors = true;
+            total_errors += 1;
+            if output.mode == OutputMode::Json {
+                all_file_results.push(serde_json::json!({
+                    "file": "(schema batch)", "schemas": 0,
+                    "errors": [{"message": error.to_string()}],
+                }));
+            } else {
+                output.warn(&error.to_string());
             }
         }
     }
