@@ -759,6 +759,8 @@ impl schema_forge_backend::auth::RecordAccessPolicy for ExportTargetPolicy {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_relation_labels_respect_target_schema_row_field_and_operator_access() {
+    use schema_forge_backend::{Entity, EntityStore};
+    use schema_forge_core::types::DynamicValue;
     use schema_forge_acton::authz::{
         PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,
     };
@@ -803,13 +805,21 @@ async fn export_relation_labels_respect_target_schema_row_field_and_operator_acc
     for schema in &schemas {
         provision(&backend, schema).await;
     }
+    let hidden = Entity::new(
+        SchemaName::new("HiddenTarget").unwrap(),
+        std::collections::BTreeMap::from([(
+            "label".into(),
+            DynamicValue::Text("hidden-secret".into()),
+        )]),
+    );
+    backend.create(&hidden).await.unwrap();
     let registry = schemas
         .iter()
         .map(|schema| (schema.name.to_string(), schema.clone()))
         .collect();
     let state = build_state_with_config(backend, registry, SchemaForgeConfig::default()).await;
     let admin = app_with_claims(state.clone(), make_claims(&["platform_admin"]));
-    let mut ids = HashMap::new();
+    let mut ids = HashMap::from([("hidden", hidden.id.to_string())]);
     for (key, schema, fields) in [
         (
             "denied",
@@ -820,11 +830,6 @@ async fn export_relation_labels_respect_target_schema_row_field_and_operator_acc
             "field_denied",
             "FieldTarget",
             serde_json::json!({"label": "field-secret"}),
-        ),
-        (
-            "hidden",
-            "HiddenTarget",
-            serde_json::json!({"label": "hidden-secret"}),
         ),
         (
             "row_denied",
@@ -915,7 +920,10 @@ async fn export_relation_labels_respect_target_schema_row_field_and_operator_acc
         "operator_denied",
     ] {
         assert!(
-            !prepared.display_map.contains_key(field),
+            prepared
+                .display_map
+                .get(field)
+                .is_none_or(|labels| !labels.contains_key(&ids[field])),
             "unauthorized label for {field}"
         );
     }

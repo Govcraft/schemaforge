@@ -429,6 +429,8 @@ async fn nested_fixture(product_role: &str) -> Router {
         .with_config(Config::<SchemaForgeConfig>::default())
         .with_actor::<ForgeActor>()
         .with_actor::<schema_forge_acton::HookDispatchActor>()
+        .with_actor::<schema_forge_acton::ExportJobActor>()
+        .with_actor::<schema_forge_acton::ExportRateLimiter>()
         .build();
     let (tx, rx) = oneshot::channel();
     service
