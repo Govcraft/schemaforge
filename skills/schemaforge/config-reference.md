@@ -18,7 +18,7 @@ Highest priority first:
 url = "ws://localhost:8000"
 namespace = "schemaforge"
 database = "dev"
-# Optional credentials (or set ACTON_SURREALDB_USERNAME / _PASSWORD env vars)
+# Optional credentials (or set ACTON_SURREALDB__USERNAME / ACTON_SURREALDB__PASSWORD env vars)
 # username = "root"
 # password = "..."
 
@@ -131,16 +131,20 @@ By section: `[database]` → PostgreSQL, `[surrealdb]` → SurrealDB. Declaring 
 
 ## Environment Variables
 
-Acton-service-native overrides use the `ACTON_*` prefix (these are the canonical env vars):
+Acton-service-native overrides use the `ACTON_*` prefix and `__` between table
+segments. Single underscores within a field name stay intact, for example
+`ACTON_RATE_LIMIT__PER_USER_RPM`. Unambiguous legacy names still work; ambiguous
+or unresolved compound names fail with a migration error. Framework tables
+reject unknown keys. SchemaForge settings belong under `[schema_forge.*]`.
 
 | Variable | Purpose |
 |----------|---------|
-| `ACTON_DATABASE_URL` | Override `[database].url` (PostgreSQL) |
-| `ACTON_SURREALDB_URL` | Override `[surrealdb].url` |
-| `ACTON_SURREALDB_NAMESPACE` | Override `[surrealdb].namespace` |
-| `ACTON_SURREALDB_DATABASE` | Override `[surrealdb].database` |
-| `ACTON_SURREALDB_USERNAME` | SurrealDB credentials (replaces the removed `SCHEMA_FORGE_DB_USER`) |
-| `ACTON_SURREALDB_PASSWORD` | SurrealDB credentials (replaces the removed `SCHEMA_FORGE_DB_PASS`) |
+| `ACTON_DATABASE__URL` | Override `[database].url` (PostgreSQL) |
+| `ACTON_SURREALDB__URL` | Override `[surrealdb].url` |
+| `ACTON_SURREALDB__NAMESPACE` | Override `[surrealdb].namespace` |
+| `ACTON_SURREALDB__DATABASE` | Override `[surrealdb].database` |
+| `ACTON_SURREALDB__USERNAME` | SurrealDB credentials (replaces the removed `SCHEMA_FORGE_DB_USER`) |
+| `ACTON_SURREALDB__PASSWORD` | SurrealDB credentials (replaces the removed `SCHEMA_FORGE_DB_PASS`) |
 
 Schema-forge CLI-flag aliases (clap `env = "..."` mappings; equivalent to passing the flag):
 
@@ -161,7 +165,7 @@ Schema-forge CLI-flag aliases (clap `env = "..."` mappings; equivalent to passin
 
 - The old hybrid `[database] url = "ws://..."` (URL-scheme-detected) layout is gone — move SurrealDB URLs to `[surrealdb]`, leave `[database]` for PostgreSQL.
 - The `[cli]` section (`default_schema_dir` / `default_policy_dir`) was never read at runtime; remove it.
-- `SCHEMA_FORGE_DB_USER` / `SCHEMA_FORGE_DB_PASS` env vars are removed; use `ACTON_SURREALDB_USERNAME` / `ACTON_SURREALDB_PASSWORD`.
+- `SCHEMA_FORGE_DB_USER` / `SCHEMA_FORGE_DB_PASS` env vars are removed; use `ACTON_SURREALDB__USERNAME` / `ACTON_SURREALDB__PASSWORD`.
 - The bootstrap admin user is now granted `platform_admin` (not `admin`).
 
 ### v0.22.0 (breaking)

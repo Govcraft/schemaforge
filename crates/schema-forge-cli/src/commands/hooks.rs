@@ -319,7 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Kept in step with the workspace's own pin: a hook service validates the
 /// credentials this forge mints, so the two need the same token
 /// implementation. Bump both together.
-const SCAFFOLD_ACTON_SERVICE_VERSION: &str = "0.34.1";
+const SCAFFOLD_ACTON_SERVICE_VERSION: &str = "0.45.0";
 
 fn render_cargo_toml(project_name: &str) -> String {
     format!(

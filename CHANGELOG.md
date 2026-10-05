@@ -7,6 +7,17 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+- Upgrade acton-service to 0.45.0 across the runtime, backends, CLI, and generated
+  hook services. Preserve configured listener binds supplied with canonical
+  `ACTON_SERVICE__BIND` environment variables.
+- Adopt upstream configuration validation: framework tables reject unknown keys;
+  canonical environment names use `__` between table segments. Unambiguous
+  legacy names remain supported, while ambiguous or unresolved compound names
+  produce migration errors.
+- Health and readiness probes bypass rate limiting by default. Anonymous quotas
+  can be configured separately, and governor reports actual remaining capacity
+  with `Retry-After` on rate-limit responses instead of `X-RateLimit-Reset`.
+
 ## [0.46.1] - 2026-09-25
 
 This release includes the changes prepared for v0.46.0. The v0.46.0 source tag
