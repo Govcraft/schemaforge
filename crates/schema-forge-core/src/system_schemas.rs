@@ -34,6 +34,22 @@ schema User {
 }
 "#;
 
+/// External provider subjects linked to local accounts.
+///
+/// The hidden computed key gives both storage backends a table-wide unique
+/// constraint on the pair. Its length prefix prevents delimiter collisions.
+pub const OAUTH_IDENTITY_SCHEMA: &str = r#"
+@system
+schema OAuthIdentity {
+    provider:       text(max: 128) required
+    subject:        text(max: 512) required
+    identity_key:   text(max: 645) required unique @hidden @compute("string(size(provider)) + ':' + provider + subject")
+    user:           -> User required
+    email_at_link:  text(max: 512)
+    linked_at:      datetime
+}
+"#;
+
 /// DSL text for the system TenantMembership schema.
 ///
 /// `role` is a plain role-name string. The role-name → rank mapping lives
@@ -73,6 +89,7 @@ pub fn all_system_schemas() -> Vec<&'static str> {
     vec![
         USER_SCHEMA,
         TENANT_MEMBERSHIP_SCHEMA,
+        OAUTH_IDENTITY_SCHEMA,
         WEBHOOK_SUBSCRIPTION_SCHEMA,
     ]
 }

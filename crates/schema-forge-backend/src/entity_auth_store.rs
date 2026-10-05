@@ -25,13 +25,11 @@ use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use chrono::{DateTime, Utc};
 use schema_forge_core::query::{FieldPath, Filter, Query};
-use schema_forge_core::types::{
-    DynamicValue, EntityId, FieldName, FieldType, IntegerConstraints, SchemaDefinition, SchemaName,
-    TextConstraints,
-};
+use schema_forge_core::types::{DynamicValue, EntityId, FieldType, SchemaDefinition, SchemaName};
 
 use crate::entity::Entity;
 use crate::error::BackendError;
+use crate::oauth_identity::ProviderIdentity;
 use crate::tenant::TenantRef;
 use crate::traits::EntityStore;
 use crate::user_store::{AuthStore, ForgeUser};
@@ -100,6 +98,8 @@ pub struct EntityAuthStore {
     /// case [`AuthStore::list_tenant_memberships`] returns an empty
     /// `Vec`, mirroring the "no memberships configured" path.
     tenant_membership_schema: Option<SchemaDefinition>,
+    oauth_identity_schema: Option<SchemaDefinition>,
+    account_creation: tokio::sync::Mutex<()>,
 }
 
 /// Object-safe variant of [`EntityStore`] for the `Arc<dyn ...>` storage
@@ -137,16 +137,16 @@ pub trait DynEntityStore: Send + Sync {
         &'a self,
         query: &'a Query,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<crate::entity::QueryResult, BackendError>>
-            + Send
-            + 'a>,
+        Box<
+            dyn std::future::Future<Output = Result<crate::entity::QueryResult, BackendError>>
+                + Send
+                + 'a,
+        >,
     >;
     fn count<'a>(
         &'a self,
         query: &'a Query,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<usize, BackendError>> + Send + 'a>,
-    >;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<usize, BackendError>> + Send + 'a>>;
 }
 
 /// Blanket adapter that wraps any concrete [`EntityStore`] in
@@ -196,18 +196,19 @@ where
         &'a self,
         query: &'a Query,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<crate::entity::QueryResult, BackendError>>
-            + Send
-            + 'a>,
+        Box<
+            dyn std::future::Future<Output = Result<crate::entity::QueryResult, BackendError>>
+                + Send
+                + 'a,
+        >,
     > {
         Box::pin(EntityStore::query(self, query))
     }
     fn count<'a>(
         &'a self,
         query: &'a Query,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<usize, BackendError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<usize, BackendError>> + Send + 'a>>
+    {
         Box::pin(EntityStore::count(self, query))
     }
 }
@@ -233,6 +234,8 @@ impl EntityAuthStore {
             user_schema,
             role_rank_resolver,
             tenant_membership_schema: None,
+            oauth_identity_schema: None,
+            account_creation: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -250,6 +253,22 @@ impl EntityAuthStore {
         );
         self.tenant_membership_schema = Some(schema);
         self
+    }
+
+    /// Attach the system identity schema for external sign-in links.
+    pub fn with_oauth_identity_schema(mut self, schema: SchemaDefinition) -> Self {
+        debug_assert_eq!(schema.name.as_str(), "OAuthIdentity");
+        self.oauth_identity_schema = Some(schema);
+        self
+    }
+
+    fn identity_schema(&self) -> Result<&SchemaDefinition, BackendError> {
+        self.oauth_identity_schema
+            .as_ref()
+            .ok_or_else(|| BackendError::Internal {
+                message: "OAuthIdentity schema not attached; external identities unavailable"
+                    .into(),
+            })
     }
 
     /// Returns the password_hash field type from the User schema, used by
@@ -278,8 +297,13 @@ impl EntityAuthStore {
                 FieldPath::single(USERNAME_FIELD),
                 DynamicValue::Text(username.to_string()),
             ))
-            .with_limit(1);
+            .with_limit(2);
         let result = self.store.query(&query).await?;
+        if result.entities.len() > 1 {
+            return Err(BackendError::Internal {
+                message: "ambiguous User email; authentication refused".into(),
+            });
+        }
         Ok(result.entities.into_iter().next())
     }
 
@@ -320,7 +344,7 @@ impl EntityAuthStore {
         username: &str,
         roles: &[String],
         display_name: &str,
-        password_hash: String,
+        password_hash: Option<String>,
     ) -> Entity {
         let role_rank = compute_role_rank(roles, |r| (self.role_rank_resolver)(r));
 
@@ -343,10 +367,12 @@ impl EntityAuthStore {
             DynamicValue::Integer(role_rank),
         );
         fields.insert(ACTIVE_FIELD.to_string(), DynamicValue::Boolean(true));
-        fields.insert(
-            PASSWORD_HASH_FIELD.to_string(),
-            DynamicValue::Text(password_hash),
-        );
+        if let Some(password_hash) = password_hash {
+            fields.insert(
+                PASSWORD_HASH_FIELD.to_string(),
+                DynamicValue::Text(password_hash),
+            );
+        }
 
         Entity::new(self.user_schema_name().clone(), fields)
     }
@@ -457,11 +483,10 @@ impl AuthStore for EntityAuthStore {
     }
 
     async fn list_users(&self) -> Result<Vec<ForgeUser>, BackendError> {
-        let query = Query::new(self.user_schema.id.clone())
-            .with_sort(
-                FieldPath::single(USERNAME_FIELD),
-                schema_forge_core::query::SortOrder::Ascending,
-            );
+        let query = Query::new(self.user_schema.id.clone()).with_sort(
+            FieldPath::single(USERNAME_FIELD),
+            schema_forge_core::query::SortOrder::Ascending,
+        );
         let result = self.store.query(&query).await?;
         Ok(result
             .entities
@@ -488,15 +513,128 @@ impl AuthStore for EntityAuthStore {
         roles: &[String],
         display_name: &str,
     ) -> Result<(), BackendError> {
+        let _guard = self.account_creation.lock().await;
         if self.find_entity_by_username(username).await?.is_some() {
             return Err(BackendError::QueryError {
                 message: format!("user '{username}' already exists"),
             });
         }
         let hash = Self::hash_password(password)?;
-        let entity = self.build_user_entity(username, roles, display_name, hash);
+        let entity = self.build_user_entity(username, roles, display_name, Some(hash));
         self.store.create(&entity).await?;
         Ok(())
+    }
+
+    async fn create_user_without_password(
+        &self,
+        username: &str,
+        roles: &[String],
+        display_name: &str,
+    ) -> Result<(), BackendError> {
+        let _guard = self.account_creation.lock().await;
+        if self.find_entity_by_username(username).await?.is_some() {
+            return Err(BackendError::QueryError {
+                message: format!("user '{username}' already exists"),
+            });
+        }
+        let entity = self.build_user_entity(username, roles, display_name, None);
+        self.store.create(&entity).await?;
+        Ok(())
+    }
+
+    async fn find_user_by_identity(
+        &self,
+        identity: &ProviderIdentity,
+    ) -> Result<Option<ForgeUser>, BackendError> {
+        let schema = self.identity_schema()?;
+        let query = Query::new(schema.id.clone())
+            .with_filter(Filter::eq(
+                FieldPath::single("identity_key"),
+                DynamicValue::Text(identity.storage_key()),
+            ))
+            .with_limit(2);
+        let rows = self.store.query(&query).await?.entities;
+        if rows.len() > 1 {
+            return Err(BackendError::Internal {
+                message: "ambiguous OAuth identity; authentication refused".into(),
+            });
+        }
+        let Some(link) = rows.first() else {
+            return Ok(None);
+        };
+        let Some(DynamicValue::Ref(user_id)) = link.field("user") else {
+            return Err(BackendError::Internal {
+                message: "OAuth identity has no User reference".into(),
+            });
+        };
+        match self.store.get(self.user_schema_name(), user_id).await {
+            Ok(entity) => Ok(Some(self.entity_to_forge_user(&entity))),
+            Err(BackendError::EntityNotFound { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn link_identity(
+        &self,
+        username: &str,
+        identity: &ProviderIdentity,
+        email: &str,
+    ) -> Result<(), BackendError> {
+        let schema = self.identity_schema()?;
+        let user = self
+            .find_entity_by_username(username)
+            .await?
+            .ok_or_else(|| BackendError::EntityNotFound {
+                schema: "User".into(),
+                entity_id: username.into(),
+            })?;
+        let fields = std::collections::BTreeMap::from([
+            (
+                "provider".into(),
+                DynamicValue::Text(identity.provider.to_string()),
+            ),
+            (
+                "subject".into(),
+                DynamicValue::Text(identity.subject.to_string()),
+            ),
+            (
+                "identity_key".into(),
+                DynamicValue::Text(identity.storage_key()),
+            ),
+            ("user".into(), DynamicValue::Ref(user.id)),
+            ("email_at_link".into(), DynamicValue::Text(email.into())),
+            ("linked_at".into(), DynamicValue::DateTime(Utc::now())),
+        ]);
+        self.store
+            .create(&Entity::new(schema.name.clone(), fields))
+            .await?;
+        Ok(())
+    }
+
+    async fn list_identities(&self, username: &str) -> Result<Vec<ProviderIdentity>, BackendError> {
+        let Some(schema) = &self.oauth_identity_schema else {
+            return Ok(Vec::new());
+        };
+        let Some(user) = self.find_entity_by_username(username).await? else {
+            return Ok(Vec::new());
+        };
+        let query = Query::new(schema.id.clone()).with_filter(Filter::eq(
+            FieldPath::single("user"),
+            DynamicValue::Ref(user.id),
+        ));
+        let rows = self.store.query(&query).await?.entities;
+        let mut identities = rows
+            .iter()
+            .map(|row| {
+                let provider = extract_text(row, "provider").unwrap_or_default();
+                let subject = extract_text(row, "subject").unwrap_or_default();
+                ProviderIdentity::new(provider, subject).map_err(|error| BackendError::Internal {
+                    message: error.to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        identities.sort();
+        Ok(identities)
     }
 
     async fn update_user(
@@ -555,9 +693,7 @@ impl AuthStore for EntityAuthStore {
             Some(e) => e,
             None => return Ok(()),
         };
-        self.store
-            .delete(self.user_schema_name(), &entity.id)
-            .await
+        self.store.delete(self.user_schema_name(), &entity.id).await
     }
 
     async fn change_password(
@@ -570,10 +706,9 @@ impl AuthStore for EntityAuthStore {
             None => return Ok(()),
         };
         let hash = Self::hash_password(new_password)?;
-        entity.fields.insert(
-            PASSWORD_HASH_FIELD.to_string(),
-            DynamicValue::Text(hash),
-        );
+        entity
+            .fields
+            .insert(PASSWORD_HASH_FIELD.to_string(), DynamicValue::Text(hash));
         self.store.update(&entity).await?;
         Ok(())
     }
@@ -627,12 +762,13 @@ impl AuthStore for EntityAuthStore {
         // Resolve the user's EntityId so the membership row references the
         // actual `User` entity — the `user` field is a typed `-> User` ref,
         // and `list_tenant_memberships` filters on `DynamicValue::Ref(id)`.
-        let user_entity = self.find_entity_by_username(username).await?.ok_or_else(|| {
-            BackendError::EntityNotFound {
+        let user_entity = self
+            .find_entity_by_username(username)
+            .await?
+            .ok_or_else(|| BackendError::EntityNotFound {
                 schema: "User".to_string(),
                 entity_id: username.to_string(),
-            }
-        })?;
+            })?;
 
         let mut fields: std::collections::BTreeMap<String, DynamicValue> =
             std::collections::BTreeMap::new();
@@ -657,11 +793,7 @@ impl AuthStore for EntityAuthStore {
         Ok(())
     }
 
-    async fn record_login(
-        &self,
-        username: &str,
-        at: DateTime<Utc>,
-    ) -> Result<(), BackendError> {
+    async fn record_login(&self, username: &str, at: DateTime<Utc>) -> Result<(), BackendError> {
         let mut entity = match self.find_entity_by_username(username).await? {
             Some(e) => e,
             // Idempotent on a missing row: a delete-mid-login race shouldn't
@@ -677,17 +809,6 @@ impl AuthStore for EntityAuthStore {
     }
 }
 
-// Suppress dead-code warnings for unused FieldType / FieldName / etc.
-// imports — these are surfaced by the helper module so callers can
-// build the User schema with the exact type signature expected.
-#[allow(dead_code)]
-const _USED_TYPES: () = {
-    let _ = std::mem::size_of::<FieldName>();
-    let _ = std::mem::size_of::<FieldType>();
-    let _ = std::mem::size_of::<TextConstraints>();
-    let _ = std::mem::size_of::<IntegerConstraints>();
-};
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,7 +816,8 @@ mod tests {
     use std::sync::Mutex;
 
     use schema_forge_core::types::{
-        FieldDefinition, FieldModifier, SchemaId, SchemaName, TextConstraints,
+        FieldDefinition, FieldModifier, FieldName, IntegerConstraints, SchemaId, SchemaName,
+        TextConstraints,
     };
 
     /// Tiny in-memory entity store implementing both [`EntityStore`] and
@@ -735,13 +857,12 @@ mod tests {
             let id = id.clone();
             async move {
                 let rows = self.rows.lock().unwrap();
-                rows.iter()
-                    .find(|e| e.id == id)
-                    .cloned()
-                    .ok_or_else(|| BackendError::EntityNotFound {
+                rows.iter().find(|e| e.id == id).cloned().ok_or_else(|| {
+                    BackendError::EntityNotFound {
                         schema: schema_name,
                         entity_id: id.as_str().to_string(),
-                    })
+                    }
+                })
             }
         }
 
@@ -862,10 +983,7 @@ mod tests {
                     vec![FieldModifier::Required],
                     vec![],
                 ),
-                FieldDefinition::new(
-                    FieldName::new(ACTIVE_FIELD).unwrap(),
-                    FieldType::Boolean,
-                ),
+                FieldDefinition::new(FieldName::new(ACTIVE_FIELD).unwrap(), FieldType::Boolean),
                 FieldDefinition::with_annotations(
                     FieldName::new(PASSWORD_HASH_FIELD).unwrap(),
                     FieldType::Text(TextConstraints::unconstrained()),
@@ -878,9 +996,7 @@ mod tests {
         .unwrap()
     }
 
-    fn store_with_ranks(
-        ranks: &'static [(&'static str, i64)],
-    ) -> EntityAuthStore {
+    fn store_with_ranks(ranks: &'static [(&'static str, i64)]) -> EntityAuthStore {
         let mem: Arc<dyn DynEntityStore> = Arc::new(MemStore::new());
         EntityAuthStore::new(
             mem,
@@ -895,13 +1011,135 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn passwordless_account_refuses_password_until_first_password_is_set() {
+        let store = store_with_ranks(&[("member", 10)]);
+        store
+            .create_user_without_password("alice", &["member".into()], "Alice")
+            .await
+            .unwrap();
+        let entity = store.get_user_entity("alice").await.unwrap().unwrap();
+        assert!(entity.field(PASSWORD_HASH_FIELD).is_none());
+        assert_eq!(
+            store.get_user("alice").await.unwrap().unwrap().role_rank,
+            10
+        );
+        assert!(store
+            .validate_credentials("alice", "")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .validate_credentials("alice", "anything")
+            .await
+            .unwrap()
+            .is_none());
+        store
+            .change_password("alice", "first secret")
+            .await
+            .unwrap();
+        assert!(store
+            .validate_credentials("alice", "first secret")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn passwordless_creation_does_not_replace_an_existing_account() {
+        let store = store_with_ranks(&[]);
+        store
+            .create_user("alice", "secret", &["admin".into()], "Original")
+            .await
+            .unwrap();
+        assert!(store
+            .create_user_without_password("alice", &["member".into()], "Replacement")
+            .await
+            .is_err());
+        let user = store
+            .validate_credentials("alice", "secret")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(user.roles, ["admin"]);
+        assert_eq!(user.display_name.as_deref(), Some("Original"));
+    }
+
+    #[tokio::test]
+    async fn external_identity_resolves_exact_pair_and_survives_email_change() {
+        let schema = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("OAuthIdentity").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("provider").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![],
+        )
+        .unwrap();
+        let store = store_with_ranks(&[]).with_oauth_identity_schema(schema);
+        store
+            .create_user_without_password("alice", &["member".into()], "Alice")
+            .await
+            .unwrap();
+        let identity = ProviderIdentity::new("github", "123").unwrap();
+        assert!(store
+            .find_user_by_identity(&identity)
+            .await
+            .unwrap()
+            .is_none());
+        store
+            .link_identity("alice", &identity, "old@example.com")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .find_user_by_identity(&identity)
+                .await
+                .unwrap()
+                .unwrap()
+                .username,
+            "alice"
+        );
+        assert!(store
+            .find_user_by_identity(&ProviderIdentity::new("google", "123").unwrap())
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(store.list_identities("alice").await.unwrap(), [identity]);
+        assert!(store.list_identities("missing").await.unwrap().is_empty());
+        assert!(store
+            .link_identity(
+                "missing",
+                &ProviderIdentity::new("github", "456").unwrap(),
+                "missing@example.com"
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn missing_identity_schema_fails_closed() {
+        let store = store_with_ranks(&[]);
+        let identity = ProviderIdentity::new("github", "123").unwrap();
+        assert!(store.find_user_by_identity(&identity).await.is_err());
+        assert!(store
+            .link_identity("alice", &identity, "alice@example.com")
+            .await
+            .is_err());
+        assert!(store.list_identities("alice").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn create_then_validate_succeeds_with_correct_password() {
         let store = store_with_ranks(&[("admin", 1000)]);
         store
             .create_user("alice", "supersecret", &["admin".into()], "Alice")
             .await
             .unwrap();
-        let validated = store.validate_credentials("alice", "supersecret").await.unwrap();
+        let validated = store
+            .validate_credentials("alice", "supersecret")
+            .await
+            .unwrap();
         assert!(validated.is_some());
         let user = validated.unwrap();
         assert_eq!(user.username, "alice");
@@ -924,7 +1162,10 @@ mod tests {
     #[tokio::test]
     async fn validate_returns_none_for_unknown_user() {
         let store = store_with_ranks(&[]);
-        let validated = store.validate_credentials("ghost", "anything").await.unwrap();
+        let validated = store
+            .validate_credentials("ghost", "anything")
+            .await
+            .unwrap();
         assert!(validated.is_none());
     }
 
@@ -936,7 +1177,10 @@ mod tests {
             .await
             .unwrap();
         store.toggle_user_active("alice").await.unwrap();
-        let validated = store.validate_credentials("alice", "supersecret").await.unwrap();
+        let validated = store
+            .validate_credentials("alice", "supersecret")
+            .await
+            .unwrap();
         assert!(validated.is_none());
     }
 
@@ -1093,12 +1337,8 @@ mod tests {
         let mem = Arc::new(MemStore::new());
         let mem_dyn: Arc<dyn DynEntityStore> = mem.clone();
         let tm_schema = tenant_membership_schema();
-        let auth = EntityAuthStore::new(
-            mem_dyn,
-            user_schema(),
-            Arc::new(|_role: &str| Some(0)),
-        )
-        .with_tenant_membership_schema(tm_schema.clone());
+        let auth = EntityAuthStore::new(mem_dyn, user_schema(), Arc::new(|_role: &str| Some(0)))
+            .with_tenant_membership_schema(tm_schema.clone());
         (auth, mem, tm_schema)
     }
 
@@ -1180,12 +1420,9 @@ mod tests {
             .unwrap()
             .unwrap();
         for (kind, id) in &[("Organization", "org-a"), ("Organization", "org-b")] {
-            EntityStore::create(
-                mem.as_ref(),
-                &make_tm_row(&tm_schema, &alice.id, kind, id),
-            )
-            .await
-            .unwrap();
+            EntityStore::create(mem.as_ref(), &make_tm_row(&tm_schema, &alice.id, kind, id))
+                .await
+                .unwrap();
         }
 
         let memberships = auth.list_tenant_memberships("alice").await.unwrap();
@@ -1209,11 +1446,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let bob = auth
-            .find_entity_by_username("bob")
-            .await
-            .unwrap()
-            .unwrap();
+        let bob = auth.find_entity_by_username("bob").await.unwrap().unwrap();
 
         EntityStore::create(
             mem.as_ref(),
@@ -1280,12 +1513,10 @@ mod tests {
 
     #[test]
     fn compute_role_rank_picks_max() {
-        let ranks: BTreeMap<&str, i64> =
-            BTreeMap::from([("manager", 500), ("admin", 1000)]);
-        let rank = compute_role_rank(
-            &["manager".into(), "admin".into()],
-            |r| ranks.get(r).copied(),
-        );
+        let ranks: BTreeMap<&str, i64> = BTreeMap::from([("manager", 500), ("admin", 1000)]);
+        let rank = compute_role_rank(&["manager".into(), "admin".into()], |r| {
+            ranks.get(r).copied()
+        });
         assert_eq!(rank, 1000);
     }
 
