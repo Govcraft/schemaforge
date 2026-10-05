@@ -7,6 +7,11 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+- Render every line of multiline hook intent as a Rust doc comment, preserving
+  paragraphs and trimming outer blank lines so generated handlers compile.
+- Verify that generated hook services, the CLI, and the runtime share the same
+  acton-service dependency version.
+
 - Upgrade acton-service to 0.45.0 across the runtime, backends, CLI, and generated
   hook services. Preserve configured listener binds supplied with canonical
   `ACTON_SERVICE__BIND` environment variables.

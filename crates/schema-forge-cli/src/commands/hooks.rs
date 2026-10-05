@@ -823,7 +823,11 @@ fn render_impl_stub(h: &SchemaHooks) -> String {
     for (event, intent) in &h.events {
         let method = event_to_method(*event);
         let method_snake = event.as_str();
-        s.push_str(&format!("    /// {intent}\n"));
+        for line in intent.trim().lines() {
+            s.push_str("    /// ");
+            s.push_str(line.trim_end());
+            s.push('\n');
+        }
         s.push_str(&format!(
             "    async fn {method_snake}(&self, request: Request<{pascal}{method}Request>) -> Result<Response<{pascal}{method}Response>, Status> {{\n",
             pascal = h.pascal,
