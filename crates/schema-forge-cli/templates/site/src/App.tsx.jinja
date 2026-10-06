@@ -133,7 +133,7 @@ function Sidebar({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => 
     queryKey: ["schemas"],
     queryFn: () => listSchemas(),
   })
-  const inviteRoles = useQuery({ queryKey: ["invite-roles"], queryFn: listInviteRoles, retry: false })
+  const inviteRoles = useQuery({ queryKey: ["invite-roles"], queryFn: listInviteRoles, retry: false, meta: { suppressGlobalError: true } })
   const appSchemas = (schemas ?? []).filter((s: SchemaResponse) => !isSystemSchema(s))
 
   const isActive = (prefix: string) =>

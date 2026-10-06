@@ -6,6 +6,8 @@ async function session(page: Page) {
     sessionStorage.setItem("schemaforge.token_expires_at", new Date(Date.now() + 60 * 60 * 1000).toISOString())
     sessionStorage.setItem("schemaforge.roles", JSON.stringify(["member"]))
   })
+  // The shell probes invitation capabilities independently of entity access.
+  await page.route("**/api/v1/forge/users/roles", route => route.fulfill({ status: 403, json: { error: "forbidden" } }))
   await page.route("**/api/v1/forge/auth/me", route => route.fulfill({ json: {
     user_id: "member", roles: ["member"], tenant_chain: [], active_tenant: null,
   } }))

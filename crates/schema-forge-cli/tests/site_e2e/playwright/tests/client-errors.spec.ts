@@ -10,6 +10,8 @@ async function session(page: Page, entityResponse?: (route: Route) => Promise<vo
       sessionStorage.setItem("schemaforge.active_tenant", "Org:org-a")
     }
   })
+  // The shell probes invitation capabilities independently of entity access.
+  await page.route("**/api/v1/forge/users/roles", route => route.fulfill({ status: 403, json: { error: "forbidden" } }))
   await page.route("**/api/v1/forge/auth/me", async route => {
     const active = route.request().headers()["x-active-tenant"]
     await route.fulfill({ json: {
@@ -39,6 +41,9 @@ test("multi-membership tenant picker scopes the entity list after switching", as
   await page.getByRole("combobox", { name: "Switch active tenant" }).selectOption("Org:org-b")
   await expect(page.getByText("Company for Org:org-b", { exact: true })).toBeVisible()
   await expect(page.getByText("Company for Org:org-a", { exact: true })).toHaveCount(0)
+  await expect(page.getByRole("link", { name: "Invite user", exact: true })).toHaveCount(0)
+  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0)
+  expect(await page.evaluate(() => sessionStorage.getItem("schemaforge.token"))).toBe("test-token")
 })
 
 test("request headers preserve explicit tenant overrides and refresh retries", async ({ page }) => {
