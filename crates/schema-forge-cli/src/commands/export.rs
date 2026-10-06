@@ -111,6 +111,14 @@ async fn run_openapi(
         );
     }
 
+    #[cfg(feature = "sse")]
+    paths.insert(format!("{}/schemas/{{schema}}/events", args.base_path), serde_json::json!({"get": {
+        "summary": "Subscribe to authorized committed entity changes",
+        "description": "Opt-in authenticated stream. Equality filters use known readable schema fields. No replay; refetch on reconnect. Last-Event-ID is ignored.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "schema", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "X-Active-Tenant", "in": "header", "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "entity.created, entity.updated, entity.deleted; closed requires reconnect/refetch", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "400": {"description": "Invalid equality filter or active tenant"}, "401": {"description": "Bearer authentication required"}, "403": {"description": "Read or tenant membership denied"}, "404": {"description": "Events disabled or schema unknown"}, "429": {"description": "Connection limit reached"}}
+    }}));
     add_login_schema_and_path(&mut paths, &mut components_schemas, &args.base_path);
     #[cfg(feature = "oauth")]
     add_oauth_paths(&mut paths, &args.base_path);
@@ -125,6 +133,7 @@ async fn run_openapi(
         "paths": paths,
         "components": {
             "schemas": components_schemas,
+            "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "PASETO"}},
         }
     });
 

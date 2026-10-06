@@ -762,7 +762,7 @@ pub(crate) fn internal_error_response(message: String) -> Response {
     tracing::error!(error = %message, "login endpoint internal error");
     let body = serde_json::json!({
         "error": "internal_error",
-        "message": message,
+        "message": "The authentication operation could not be completed.",
     });
     (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }
@@ -1032,5 +1032,18 @@ mod tests {
         // active_tenant is null (not omitted) when there's no resolved tenant.
         let none_body = serde_json::json!({ "active_tenant": Option::<ActiveTenant>::None });
         assert!(none_body["active_tenant"].is_null());
+    }
+    #[tokio::test]
+    async fn internal_login_errors_hide_storage_diagnostics() {
+        use http_body_util::BodyExt;
+        let response = internal_error_response(
+            "postgres://private-user:password@private-host database diagnostic".into(),
+        );
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "internal_error");
+        assert!(!body.to_string().contains("private"));
+        assert!(!body.to_string().contains("password"));
     }
 }

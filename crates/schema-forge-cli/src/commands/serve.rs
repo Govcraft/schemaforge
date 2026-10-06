@@ -430,6 +430,27 @@ pub async fn run(
         ))
     };
 
+    #[cfg(feature = "sse")]
+    let events_runtime = if svc_config.custom.schema_forge.events.enabled {
+        Some(Arc::new(
+            schema_forge_acton::events::EventsRuntime::new(
+                svc_config.custom.schema_forge.events.clone(),
+                auth_store.clone(),
+                entity_store.clone(),
+            )
+            .map_err(|error| CliError::Config {
+                message: format!("invalid events configuration: {error}"),
+            })?,
+        ))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "sse"))]
+    if svc_config.custom.schema_forge.events.enabled {
+        return Err(CliError::Config {
+            message: "Entity events require a binary built with --features sse".into(),
+        });
+    }
     #[cfg(feature = "oauth")]
     let oauth_runtime = if svc_config.custom.schema_forge.auth.oauth.enabled {
         let providers = svc_config
@@ -613,6 +634,24 @@ pub async fn run(
             message: "ForgeActor initialization failed (channel dropped)".to_string(),
         })?;
 
+    #[cfg(feature = "sse")]
+    if let Some(runtime) = events_runtime {
+        let (tx, rx) = oneshot::channel();
+        forge_handle
+            .send(schema_forge_acton::events::ConfigureEvents {
+                runtime,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        tokio::time::timeout(INIT_FORGE_TIMEOUT, rx)
+            .await
+            .map_err(|_| CliError::Server {
+                message: "Events initialization timed out".into(),
+            })?
+            .map_err(|_| CliError::Server {
+                message: "Events initialization failed".into(),
+            })?;
+    }
     service.serve().await.map_err(|e| CliError::Server {
         message: format!("server error: {e}"),
     })?;

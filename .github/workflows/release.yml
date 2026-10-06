@@ -126,7 +126,7 @@ jobs:
           # Points rust-embed at the verified console bundle (build.rs re-exports
           # it for the `#[folder = "$SCHEMAFORGE_CONSOLE_DIST"]` interpolation).
           SCHEMAFORGE_CONSOLE_DIST: ${{ github.workspace }}/console-dist
-        run: cargo build --locked --release --package schema-forge-cli --no-default-features --features ${{ matrix.backend }},embedded-console
+        run: cargo build --locked --release --package schema-forge-cli --no-default-features --features ${{ matrix.backend }},embedded-console,oauth,sse
 
       - name: Sign and verify Windows binary (Sigstore keyless)
         if: runner.os == 'Windows'
