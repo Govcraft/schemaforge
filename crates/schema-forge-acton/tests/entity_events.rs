@@ -46,12 +46,13 @@ async fn fixture_backend<B: SchemaBackend + EntityStore + 'static>(
     backend: Arc<B>,
     config: EventsConfig,
 ) -> Fixture {
-    fixture_options(backend, config, false).await
+    fixture_options(backend, config, false, false).await
 }
 async fn fixture_options<B: SchemaBackend + EntityStore + 'static>(
     backend: Arc<B>,
     config: EventsConfig,
     tenancy: bool,
+    read_hooks: bool,
 ) -> Fixture {
     let source = format!(
         "{}{}",
@@ -68,10 +69,25 @@ async fn fixture_options<B: SchemaBackend + EntityStore + 'static>(
             secret: text @hidden @compute("'stored-secret'")
             restricted: text @field_access(read: ["admin"], write: ["member"])
             owner: text @owner
+            parent: -> Note
+            children: -> Note[]
+            read_label: text
         }
     "#
     );
-    let note = schema_forge_dsl::parse(&source).unwrap().remove(0);
+    let source = if read_hooks {
+        format!(
+            r#"@hook(before_read) """Authorize read decoration.""" @hook(after_read) """Decorate this read.""" {source}"#
+        )
+    } else {
+        source
+    };
+    let mut note = schema_forge_dsl::parse(&source).unwrap().remove(0);
+    note.fields
+        .iter_mut()
+        .find(|field| field.name.as_str() == "children")
+        .unwrap()
+        .derived_from = Some(schema_forge_core::types::FieldName::new("parent").unwrap());
     let user = schema_forge_dsl::parse(system_schemas::USER_SCHEMA)
         .unwrap()
         .remove(0);
@@ -162,8 +178,40 @@ async fn fixture_options<B: SchemaBackend + EntityStore + 'static>(
     ));
     let entity_store: Arc<dyn schema_forge_backend::DynEntityStore> = backend.clone();
     let auth_store: Arc<dyn DynAuthStore> = store;
+    let mut service_config = Config::<SchemaForgeConfig>::default();
+    let dispatcher = Arc::new(schema_forge_acton::hooks::MockHookDispatcher::new());
+    if read_hooks {
+        use schema_forge_acton::hooks::{HookBinding, HookOutcome};
+        use schema_forge_core::types::HookEvent;
+        service_config.custom.schema_forge.hooks.enabled = true;
+        service_config.custom.schema_forge.hooks.bindings =
+            [HookEvent::BeforeRead, HookEvent::AfterRead]
+                .into_iter()
+                .map(|event| HookBinding {
+                    schema: "Note".into(),
+                    event,
+                    endpoint: "http://test-hook.invalid".into(),
+                    timeout_ms: None,
+                    required: true,
+                    descriptor_path: None,
+                })
+                .collect();
+        dispatcher
+            .respond_before(
+                "Note",
+                HookEvent::AfterRead,
+                HookOutcome {
+                    modified_fields: Some(std::collections::BTreeMap::from([(
+                        "read_label".into(),
+                        schema_forge_core::types::DynamicValue::Text("decorated".into()),
+                    )])),
+                    ..Default::default()
+                },
+            )
+            .await;
+    }
     let service = ServiceBuilder::new()
-        .with_config(Config::<SchemaForgeConfig>::default())
+        .with_config(service_config)
         .with_actor::<ForgeActor>()
         .build();
     let handle = service.state().actor::<ForgeActor>().unwrap();
@@ -177,7 +225,7 @@ async fn fixture_options<B: SchemaBackend + EntityStore + 'static>(
             backend: backend.clone(),
             tenant_config: tenant_config.clone(),
             record_access_policy: None,
-            hook_dispatcher: None,
+            hook_dispatcher: read_hooks.then_some(dispatcher),
             storage_registry: StorageRegistry::default(),
             policy_store: Some(policy_store),
             custom_policies_dir: None,
@@ -316,7 +364,7 @@ async fn change(body: &mut Body) -> (String, serde_json::Value) {
         }
     }
 }
-async fn exercise_crud(f: Fixture) {
+async fn exercise_crud(f: &Fixture) {
     let mut body = connect(&f.app, "").await;
     let created = json(
         request(
@@ -329,21 +377,31 @@ async fn exercise_crud(f: Fixture) {
     )
     .await;
     let path = format!("/schemas/Note/entities/{}", created["id"].as_str().unwrap());
-    let detail = json(
-        request(
-            &f.app,
-            "GET",
-            &format!("{path}?resolve=false"),
-            serde_json::Value::Null,
-        )
-        .await,
+    let detail_response = request(
+        &f.app,
+        "GET",
+        &format!("{path}?resolve=false"),
+        serde_json::Value::Null,
     )
     .await;
+    assert_eq!(detail_response.status(), StatusCode::OK);
+    let bytes = detail_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let detail_json = std::str::from_utf8(&bytes).unwrap();
+    let detail: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let (frame, event) = change(&mut body).await;
     assert!(frame.contains("event: entity.created"));
     assert!(frame.contains(event["event_id"].as_str().unwrap()));
     assert_eq!(event["actor"], "alice");
     assert_eq!(event["entity"], detail);
+    assert!(
+        frame.contains(&format!("\"entity\":{detail_json}")),
+        "SSE entity must preserve GET serialization"
+    );
     assert!(event["entity"]["fields"].get("secret").is_none());
     assert!(event["entity"]["fields"].get("restricted").is_none());
     for method in ["PUT", "PATCH"] {
@@ -386,26 +444,73 @@ async fn exercise_crud(f: Fixture) {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn surreal_crud_events_equal_authorized_get() {
-    exercise_crud(fixture(enabled()).await).await;
+    exercise_crud(&fixture(enabled()).await).await;
 }
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated SCHEMAFORGE_TEST_POSTGRES_URL; creates Note and User tables"]
 async fn postgres_crud_events_equal_authorized_get() {
     let url = std::env::var("SCHEMAFORGE_TEST_POSTGRES_URL").unwrap();
-    exercise_crud(
-        fixture_backend(
-            Arc::new(
-                schema_forge_postgres::PgBackend::connect(&url)
-                    .await
-                    .unwrap(),
-            ),
-            enabled(),
+    let backend = Arc::new(
+        schema_forge_postgres::PgBackend::connect(&url)
+            .await
+            .unwrap(),
+    );
+    let f = fixture_backend(backend.clone(), enabled()).await;
+    backend
+        .prepare_record_revisions(&schema_forge_core::types::SchemaName::new("Note").unwrap())
+        .await
+        .unwrap();
+    exercise_crud(&f).await;
+    let mut body = connect(&f.app, "").await;
+    let fields = serde_json::json!({"title":"Intent create", "category":"books"});
+    let receipt = json(
+        request(
+            &f.app,
+            "POST",
+            "/schemas/Note/create-intents",
+            fields.clone(),
         )
         .await,
     )
     .await;
+    let id = receipt["id"].as_str().unwrap();
+    for attempt in 0..2 {
+        let response = f
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/schemas/Note/entities")
+                    .header("content-type", "application/json")
+                    .header("create-intent", id)
+                    .body(Body::from(serde_json::json!({"fields":fields}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if attempt == 0 {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            }
+        );
+        let detail = json(response).await;
+        if attempt == 0 {
+            let (_, event) = change(&mut body).await;
+            assert_eq!(event["entity"], detail);
+            assert_eq!(event["actor"], "alice");
+        }
+    }
+    assert!(
+        frame(&mut body).await.contains("keep-alive"),
+        "reconciliation must not publish a duplicate create"
+    );
 }
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streams_require_authentication_known_schema_and_readable_equality_filters() {
     let f = fixture(enabled()).await;
@@ -595,7 +700,7 @@ async fn membership_removal_closes_stream_and_active_tenant_cannot_be_impersonat
             .await
             .unwrap(),
     );
-    let f = fixture_options(backend, enabled(), true).await;
+    let f = fixture_options(backend, enabled(), true, false).await;
     let response = f
         .app
         .clone()
@@ -732,4 +837,74 @@ async fn concurrent_updates_end_with_the_same_snapshot_as_storage() {
     )
     .await;
     assert_eq!(last, detail);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relation_filters_derived_collections_and_read_hooks_equal_get_projection() {
+    let backend = Arc::new(
+        schema_forge_surrealdb::SurrealBackend::connect_memory("events", "read_projection")
+            .await
+            .unwrap(),
+    );
+    let f = fixture_options(backend, enabled(), false, true).await;
+    let parent = json(
+        request(
+            &f.app,
+            "POST",
+            "/schemas/Note/entities",
+            serde_json::json!({"title":"Parent"}),
+        )
+        .await,
+    )
+    .await;
+    let parent_id = parent["id"].as_str().unwrap();
+    let mut filtered = connect(&f.app, &format!("?parent={parent_id}")).await;
+    let mut all = connect(&f.app, "").await;
+    let child = json(
+        request(
+            &f.app,
+            "POST",
+            "/schemas/Note/entities",
+            serde_json::json!({"title":"Child", "parent":parent_id}),
+        )
+        .await,
+    )
+    .await;
+    let (_, event) = change(&mut filtered).await;
+    let child_path = format!(
+        "/schemas/Note/entities/{}?resolve=false",
+        child["id"].as_str().unwrap()
+    );
+    let detail = json(request(&f.app, "GET", &child_path, serde_json::Value::Null).await).await;
+    assert_eq!(event["entity"], detail);
+    assert_eq!(detail["fields"]["parent"], parent_id);
+    assert_eq!(detail["fields"]["read_label"], "decorated");
+    let _ = change(&mut all).await;
+    let parent_path = format!("/schemas/Note/entities/{parent_id}");
+    let _ = json(
+        request(
+            &f.app,
+            "PATCH",
+            &parent_path,
+            serde_json::json!({"title":"Updated Parent"}),
+        )
+        .await,
+    )
+    .await;
+    let (_, event) = change(&mut all).await;
+    let detail = json(
+        request(
+            &f.app,
+            "GET",
+            &format!("{parent_path}?resolve=false"),
+            serde_json::Value::Null,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(event["entity"], detail);
+    assert_eq!(
+        detail["fields"]["children"],
+        serde_json::json!([child["id"]])
+    );
 }

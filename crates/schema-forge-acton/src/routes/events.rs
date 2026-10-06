@@ -74,6 +74,26 @@ async fn filters(
     }
     Ok(result)
 }
+fn visible_value_matches(value: Option<&DynamicValue>, expected: &DynamicValue) -> bool {
+    match (value, expected) {
+        // The list parser deliberately leaves relation IDs as text; GET exposes
+        // each stored Ref as the same bare ID, so compare that visible identity.
+        (Some(DynamicValue::Ref(id)), DynamicValue::Text(expected)) => id.as_str() == expected,
+        (Some(value), expected) => value == expected,
+        _ => false,
+    }
+}
+#[derive(serde::Serialize)]
+struct SubscriberEvent<'a> {
+    event_id: &'a str,
+    event_type: &'a str,
+    schema: &'a str,
+    entity_id: &'a str,
+    timestamp: &'a str,
+    actor: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entity: Option<entities::EntityResponse>,
+}
 struct StreamState {
     state: AppState<SchemaForgeConfig>,
     runtime: Arc<EventsRuntime>,
@@ -211,22 +231,29 @@ impl StreamState {
                 Err(_) => return Some(self.close("stream_error")),
             };
             if !self.filters.iter().all(|(name, value)| {
-                response.fields.contains_key(name) && visible.fields.get(name) == Some(value)
+                response.fields.contains_key(name)
+                    && visible_value_matches(visible.fields.get(name), value)
             }) {
                 continue;
             }
-            let mut data = serde_json::json!({ "event_id": snapshot.event_id, "event_type": snapshot.event_type, "schema": snapshot.schema, "entity_id": snapshot.entity_id.as_str(), "timestamp": snapshot.timestamp, "actor": snapshot.actor });
-            if snapshot.event_type != "entity.deleted" {
-                data["entity"] = match serde_json::to_value(response) {
-                    Ok(v) => v,
-                    Err(_) => return Some(self.close("stream_error")),
-                };
-            }
+            let data = SubscriberEvent {
+                event_id: &snapshot.event_id,
+                event_type: &snapshot.event_type,
+                schema: &snapshot.schema,
+                entity_id: snapshot.entity_id.as_str(),
+                timestamp: &snapshot.timestamp,
+                actor: snapshot.actor.as_deref(),
+                entity: (snapshot.event_type != "entity.deleted").then_some(response),
+            };
             return Some(
-                Event::default()
+                match Event::default()
                     .id(&snapshot.event_id)
                     .event(&snapshot.event_type)
-                    .data(data.to_string()),
+                    .json_data(&data)
+                {
+                    Ok(event) => event,
+                    Err(_) => self.close("stream_error"),
+                },
             );
         }
     }

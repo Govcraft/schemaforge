@@ -92,6 +92,7 @@ impl CommittedSnapshot {
 #[derive(Debug, Default)]
 pub(crate) struct ActorEvents {
     runtime: Option<Arc<EventsRuntime>>,
+    configured: bool,
     connections: HashMap<ConnectionId, (String, Weak<()>)>,
 }
 /// Configure once after InitForge, before serving requests.
@@ -164,12 +165,17 @@ pub(crate) async fn send<M: ActonMessage + Clone + std::fmt::Debug>(
 }
 pub(crate) fn configure_actor(actor: &mut ManagedActor<Idle, ForgeActor>) {
     actor.mutate_on::<ConfigureEvents>(|actor, ctx| {
-        actor.model.events.runtime = ctx
-            .message()
-            .runtime
-            .config
-            .enabled
-            .then(|| ctx.message().runtime.clone());
+        if !actor.model.events.configured {
+            actor.model.events.runtime = ctx
+                .message()
+                .runtime
+                .config
+                .enabled
+                .then(|| ctx.message().runtime.clone());
+            actor.model.events.configured = true;
+        } else {
+            tracing::warn!("EventsRuntime already configured; preserving the process broadcaster");
+        }
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             reply.send(()).await;
@@ -237,15 +243,28 @@ pub(crate) fn configure_actor(actor: &mut ManagedActor<Idle, ForgeActor>) {
                                 // Capture the actual pre-delete record inside the serialized commit.
                                 match backend.get(&previous.schema, &previous.id).await {
                                     Ok(snapshot) => envelope.notification.deleted = Some(snapshot),
-                                    Err(error) => tracing::warn!(%error, "pre-delete snapshot unavailable"),
+                                    Err(error) => {
+                                        tracing::warn!(%error, "pre-delete snapshot unavailable; no event will be published");
+                                        envelope.notification.deleted = None;
+                                    },
                                 }
                             }
                         }
                         let result = ($operation)(backend.clone(), request.clone()).await;
                         if let Ok(value) = &result {
-                            if let Some(entity) =
+                            if let Some(mut entity) =
                                 ($snapshot)(value, request, &envelope.notification)
                             {
+                                if $kind == "created" {
+                                    match backend.get(&entity.schema, &entity.id).await {
+                                        Ok(stored) => entity = stored,
+                                        Err(error) => {
+                                            tracing::warn!(%error, "committed create snapshot unavailable; no event will be published");
+                                            envelope.mutation.reply.send(result).await;
+                                            return;
+                                        }
+                                    }
+                                }
                                 if let (Some(runtime), Some(schema)) =
                                     (runtime, schemas.get(entity.schema.as_str()))
                                 {

@@ -2997,7 +2997,8 @@ pub async fn create_entity(
 
     if let Some(intent) = intent {
         let changed_fields: Vec<_> = entity.fields.keys().cloned().collect();
-        let receipt = super::create_intents::commit(&state, intent, entity).await?;
+        let receipt =
+            super::create_intents::commit(&state, intent, entity, claims.as_ref()).await?;
         if receipt.created {
             super::audit::log_forge_event(&state, claims.as_ref(), &headers, "forge.entity.created", acton_service::audit::AuditSeverity::Informational, serde_json::json!({"schema":schema,"intent_id":receipt.id.as_str(),"changed_fields":changed_fields,"entity_id":receipt.entity_id.as_ref().map(|id|id.as_str())})).await;
         }
@@ -3505,7 +3506,7 @@ pub(crate) async fn project_read_snapshot(
         None
     };
 
-    // before_read hook (blocking; no fields yet — entity has not been fetched).
+    // before_read hook (blocking, with an empty field view before read projection).
     if let Some(ref dispatcher) = read_hook_dispatcher {
         let mut empty_fields = BTreeMap::new();
         apply_read_hook(
