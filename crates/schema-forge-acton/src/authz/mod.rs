@@ -17,7 +17,8 @@
 //!   ([`Claims`], [`SchemaDefinition`], [`Entity`]) into Cedar entities,
 //!   actions, and requests.
 //! - [`engine`] — [`authorize`] and the field-level [`authorize_field`]
-//!   entry points. Both run audit logging on every decision.
+//!   entry points. Both log every decision through `tracing`; neither
+//!   writes to the audit store.
 //! - [`loader`] — disk loader for `policies/custom/*.cedar` and
 //!   `policies/role_ranks.toml`.
 //! - [`namespace`] — string constants for the `Forge::` Cedar namespace

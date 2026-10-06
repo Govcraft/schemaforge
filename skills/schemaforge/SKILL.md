@@ -78,7 +78,7 @@ anything that is *infrastructure* rather than *schema semantics* — do this fir
 | gRPC transport (`grpc`): tonic/prost, health, reflection, token auth + Cedar authz on RPCs | Hook *dispatch* semantics and the `@hook` annotation model |
 | TLS, mutual TLS, client-cert verification, credential rotation | — |
 | Rate limiting, resilience (circuit breaker, bulkhead), security headers, request IDs, CORS | — |
-| Audit (BLAKE3 hash chain, syslog/OTLP export, HTTP audit middleware) | Which domain events are worth auditing |
+| Audit (BLAKE3 hash chain, syslog export, opt-in OTLP log export via `audit.otlp_logs_enabled`, HTTP audit middleware) | Which domain events are worth auditing |
 | Health/readiness probes, app-defined checks, graceful shutdown, metrics (OTLP push and Prometheus scrape) | Schema-apply and migration readiness semantics |
 | Pagination primitives, repository/handlers patterns, background worker | Query IR, filter translation, per-backend SQL/SurrealQL codegen |
 

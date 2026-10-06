@@ -132,6 +132,13 @@ fn generate_emits_an_authenticated_service() {
         !main_rs.contains("Server::builder()"),
         "a bare tonic Server bypasses every auth layer:\n{main_rs}"
     );
+    // `GrpcServicesBuilder::build` is generic over the state type since
+    // acton-service 0.46.0, so nothing else pins `Config`'s type parameter
+    // and a bare `Config::load()` fails to compile (E0283).
+    assert!(
+        main_rs.contains("let config = Config::<()>::load()?;"),
+        "scaffold must name its config type:\n{main_rs}"
+    );
     // Reflection is auth-exempt, so enabling it would publish the hook message
     // definitions — and therefore the entity field names — unauthenticated.
     // Matched as a builder call, not as a substring — the scaffold's comments

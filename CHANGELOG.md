@@ -7,6 +7,23 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+### Changed
+
+- Build the server, backends, CLI, and generated hook services on acton-service
+  0.46.0. Audit records reach ordinary logs (console, journald, and OTLP log
+  exporters) only with `[audit] otlp_logs_enabled = true`, which defaults to
+  `false`. Before, every audit event was logged at `info` with its subject and
+  client IP whatever the setting. Storage and syslog export are unchanged, and
+  so are the Cedar decision lines under the `schema_forge_acton::authz` tracing
+  target. The privacy fix is upstream: reported in Govcraft/acton-service#172
+  and fixed in Govcraft/acton-service#174.
+- `hooks generate` scaffolds load `Config::<()>::load()`. acton-service 0.46.0
+  made `GrpcServicesBuilder::build` generic over the state type, so a bare
+  `Config::load()` no longer compiles (E0283). Existing hook services moving
+  their `acton-service` pin to 0.46.0 to match the forge need the same one-line
+  change in `src/main.rs`; additive regeneration leaves that line alone, and
+  `--regenerate` rewrites the whole file.
+
 ### Fixed
 
 - `schemaforge policies validate` now checks custom policies against the

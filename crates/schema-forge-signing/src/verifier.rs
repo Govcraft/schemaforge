@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::error::VerifyError;
 
 /// What a verifier returns when a signature is accepted. Carried into
-/// audit logs so an operator can replay "who signed schema X."
+/// verification reports so an operator can answer "who signed schema X."
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedIdentity {
     /// Stable string discriminating the verifier kind (`"ed25519"`,
@@ -33,7 +33,7 @@ pub struct VerifiedIdentity {
 /// Network IO is permitted only when explicitly opted into by the
 /// trust-policy variant (e.g., cosign-keyless online mode).
 pub trait SchemaVerifier: Send + Sync {
-    /// Stable name used in error reasons and audit lines.
+    /// Stable name used in error reasons and verification reports.
     fn name(&self) -> &str;
 
     /// Stable kind string (matches [`VerifiedIdentity::kind`]).
