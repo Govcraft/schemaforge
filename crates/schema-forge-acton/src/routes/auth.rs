@@ -371,6 +371,13 @@ pub(crate) async fn emit_login_result(
     }
 }
 
+/// The stored account a token speaks for. Login mints `sub = "user:<username>"`,
+/// while the auth store, the Cedar principal, and ownership all key on the bare
+/// username. Refresh, `/auth/me`, and entity streams re-read the account here.
+pub(crate) fn account_username(claims: &Claims) -> &str {
+    crate::authz::adapters::user_id_from_sub(&claims.sub)
+}
+
 /// `POST /auth/refresh` — exchange a still-valid bearer token for a fresh
 /// one with a new 1-hour expiry.
 ///
@@ -392,10 +399,7 @@ pub async fn refresh(
         return unauthorized_response();
     };
 
-    let username = claims
-        .username
-        .clone()
-        .unwrap_or_else(|| claims.sub.trim_start_matches("user:").to_string());
+    let username = account_username(&claims).to_owned();
 
     // Re-read the User row on every refresh — no claim copy-forward. A row
     // mutated since the original login (e.g., role change, client_org
@@ -489,10 +493,7 @@ pub async fn me(
         return unauthorized_response();
     };
 
-    let username = claims
-        .username
-        .clone()
-        .unwrap_or_else(|| claims.sub.trim_start_matches("user:").to_string());
+    let username = account_username(&claims).to_owned();
 
     // Re-read live state (roles/active/memberships), same contract as refresh:
     // a grant, revocation, or deactivation since login takes effect here.
@@ -841,6 +842,21 @@ pub fn auth_routes_with_password_login(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_username_maps_the_login_subject_to_the_stored_account() {
+        let claims = |sub: &str| -> Claims {
+            serde_json::from_value(serde_json::json!({
+                "sub": sub, "roles": [], "perms": [], "exp": 9_999_999_999_u64
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            account_username(&claims("user:solo@example.gov")),
+            "solo@example.gov"
+        );
+        assert_eq!(account_username(&claims("alice")), "alice");
+    }
 
     #[test]
     fn build_login_claims_sets_subject_and_roles() {

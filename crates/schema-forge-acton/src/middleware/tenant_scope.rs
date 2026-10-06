@@ -106,7 +106,7 @@ where
         return next.run(request.into()).await;
     };
 
-    if claims.has_role(PLATFORM_ADMIN_ROLE) {
+    if !is_tenant_scoped(&claims) {
         // Platform admin bypasses tenancy. Pass claims through unmodified.
         return next.run(request.into()).await;
     }
@@ -248,21 +248,37 @@ fn select_active_tenant<'a, B>(
         .ok_or(TenantScopeRefusal::NotInMemberships)
 }
 
-/// Add only the selected membership's role, without changing global account roles.
+/// Whether this middleware scopes the caller to an active tenant.
+///
+/// Platform administrators bypass tenancy: their claims reach the handlers
+/// exactly as login minted them, so their `tenant_chain` is the flat
+/// membership set rather than an active-tenant walk, and no membership role
+/// is projected. Anything that re-derives the per-request claims (the live
+/// event-stream identity check) must apply the same rule.
+pub(crate) fn is_tenant_scoped(claims: &Claims) -> bool {
+    !claims.has_role(PLATFORM_ADMIN_ROLE)
+}
+
+/// Scoped roles the selected membership contributes to the request.
 /// The reserved platform administrator role cannot originate in a membership.
-pub(crate) fn add_active_membership_role(claims: &mut Claims, active: &TenantRef) {
-    let roles: Vec<schema_forge_backend::user_store::TenantRole> =
-        claims.custom_claim_as("tenant_roles").unwrap_or_default();
-    for membership in roles
+pub(crate) fn active_membership_roles<'a>(
+    tenant_roles: &'a [schema_forge_backend::user_store::TenantRole],
+    active: &'a TenantRef,
+) -> impl Iterator<Item = &'a str> + 'a {
+    tenant_roles
         .iter()
-        .filter(|membership| membership.tenant == *active)
-    {
-        let role = &membership.role;
-        if !role.is_empty()
-            && role != PLATFORM_ADMIN_ROLE
-            && !claims.roles.iter().any(|existing| existing == role)
-        {
-            claims.roles.push(role.clone());
+        .filter(move |membership| membership.tenant == *active)
+        .map(|membership| membership.role.as_str())
+        .filter(|role| !role.is_empty() && *role != PLATFORM_ADMIN_ROLE)
+}
+
+/// Add only the selected membership's role, without changing global account roles.
+pub(crate) fn add_active_membership_role(claims: &mut Claims, active: &TenantRef) {
+    let tenant_roles: Vec<schema_forge_backend::user_store::TenantRole> =
+        claims.custom_claim_as("tenant_roles").unwrap_or_default();
+    for role in active_membership_roles(&tenant_roles, active) {
+        if !claims.roles.iter().any(|existing| existing == role) {
+            claims.roles.push(role.to_owned());
         }
     }
 }
