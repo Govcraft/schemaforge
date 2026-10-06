@@ -7678,7 +7678,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-acton"
-version = "0.47.0"
+version = "0.47.1"
 dependencies = [
  "acton-service",
  "arc-swap",
@@ -7736,7 +7736,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-backend"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "acton-service",
  "argon2",
@@ -7767,7 +7767,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.49.0"
+version = "0.49.1"
 dependencies = [
  "acton-service",
  "assert_cmd",
@@ -7860,7 +7860,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-mssql"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "acton-service",
  "bb8",

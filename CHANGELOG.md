@@ -7,6 +7,8 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.49.1] - 2026-10-06
+
 ### Changed
 
 - Pull requests select affected component checks. Version-only release preparation
