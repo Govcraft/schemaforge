@@ -32,11 +32,7 @@ pub fn dynamic_to_surreal(value: &DynamicValue) -> SurrealValue {
         DynamicValue::Integer(i) => (*i).into_value(),
         DynamicValue::Float(f) => (*f).into_value(),
         DynamicValue::Boolean(b) => (*b).into_value(),
-        DynamicValue::DateTime(dt) => {
-            // Store as ISO 8601 string — the literal serializer in backend.rs
-            // will wrap it with d'...' for SurrealQL datetime fields.
-            dt.to_rfc3339().into_value()
-        }
+        DynamicValue::DateTime(dt) => SurrealValue::Datetime((*dt).into()),
         DynamicValue::Duration(d) => {
             timedelta_to_surreal_duration(d).map_or(SurrealValue::None, SurrealValue::Duration)
         }
