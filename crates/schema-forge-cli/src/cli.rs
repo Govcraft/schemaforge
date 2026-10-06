@@ -890,8 +890,10 @@ pub struct PolicyRegenerateArgs {
 ///
 /// Compiles the Cedar schema + generated policies + every `*.cedar` file
 /// under `--custom-dir` into a `PolicyStore` and runs strict-mode
-/// validation. Exits non-zero on any error so CI / pre-deploy hooks can
-/// gate releases on a passing bundle.
+/// validation. Like `serve`, the bundle covers the built-in system schemas
+/// (User, TenantMembership, OAuthIdentity, WebhookSubscription) alongside
+/// the project's own. Exits non-zero on any error so CI / pre-deploy hooks
+/// can gate releases on a passing bundle.
 #[derive(Args)]
 pub struct PolicyValidateArgs {
     /// Directories to scan for SchemaForge `.sf` schema files.
