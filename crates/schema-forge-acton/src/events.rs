@@ -296,7 +296,10 @@ pub(crate) fn configure_actor(actor: &mut ManagedActor<Idle, ForgeActor>) {
     write_handler!(
         CreateEntity,
         |b: Arc<dyn crate::state::DynForgeBackend>, m: CreateEntity| async move {
-            b.create(&m.entity).await
+            match &m.membership {
+                Some(membership) => b.create_with_membership(&m.entity, membership).await,
+                None => b.create(&m.entity).await,
+            }
         },
         |v: &Entity, _: &CreateEntity, _: &Notification| Some(v.clone()),
         "created"
@@ -338,7 +341,13 @@ pub(crate) fn configure_actor(actor: &mut ManagedActor<Idle, ForgeActor>) {
     write_handler!(
         ProcessCreateIntent,
         |b: Arc<dyn crate::state::DynForgeBackend>, m: ProcessCreateIntent| async move {
-            b.create_intent(&m.request).await
+            match &m.membership {
+                Some(membership) => {
+                    b.create_intent_with_membership(&m.request, membership)
+                        .await
+                }
+                None => b.create_intent(&m.request).await,
+            }
         },
         |v: &schema_forge_backend::create_intent::CreateIntentReceipt,
          m: &ProcessCreateIntent,

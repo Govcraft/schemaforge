@@ -26,13 +26,17 @@ use std::sync::Mutex;
 
 /// `[schema_forge.email]` section of `config.toml`.
 ///
-/// Disabled by default: a deployment that never sends mail carries no SMTP
-/// configuration and the invite endpoints that require delivery fail closed
-/// with [`EmailError::NotConfigured`] rather than silently dropping messages.
+/// SMTP is disabled by default. Link delivery needs only a public base URL;
+/// SMTP mode returns [`EmailError::NotConfigured`] when the transport is
+/// disabled, allowing the endpoint to return the stored invitation link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailConfig {
-    /// Master switch. When `false`, no transport is constructed and any flow
-    /// that needs to send mail is refused with a clear error.
+    /// Invitation delivery mode. Link mode bypasses SMTP regardless of enabled.
+    #[serde(default)]
+    pub delivery: EmailDelivery,
+
+    /// SMTP switch. Link delivery does not construct or use SMTP, regardless
+    /// of this value. Disabled SMTP reports a recoverable delivery failure.
     #[serde(default)]
     pub enabled: bool,
 
@@ -74,6 +78,7 @@ pub struct EmailConfig {
 impl Default for EmailConfig {
     fn default() -> Self {
         Self {
+            delivery: EmailDelivery::default(),
             enabled: false,
             host: None,
             port: default_smtp_port(),
@@ -84,6 +89,49 @@ impl Default for EmailConfig {
             public_base_url: None,
         }
     }
+}
+
+impl EmailConfig {
+    /// Validate link delivery's shareable public URL. SMTP retains its existing
+    /// relative-link fallback when no public URL is configured.
+    pub fn validate_link_delivery(&self) -> Result<(), EmailError> {
+        if self.delivery != EmailDelivery::Link {
+            return Ok(());
+        }
+        let invalid = || {
+            EmailError::InvalidConfig(
+            "link delivery requires an absolute http(s) public_base_url without credentials, query, or fragment".into(),
+        )
+        };
+        let raw = self.public_base_url.as_deref().ok_or_else(invalid)?;
+        let url = reqwest::Url::parse(raw).map_err(|_| invalid())?;
+        let explicit_origin = raw.split_once("://").is_some_and(|(scheme, rest)| {
+            scheme.eq_ignore_ascii_case(url.scheme()) && !rest.starts_with('/')
+        });
+        if !explicit_origin
+            || raw.trim() != raw
+            || !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+
+/// How an invitation reaches its recipient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailDelivery {
+    /// Send via the configured SMTP transport.
+    #[default]
+    Smtp,
+    /// Return a shareable accept link without sending email.
+    Link,
 }
 
 fn default_smtp_port() -> u16 {
@@ -257,7 +305,10 @@ impl InMemoryEmailSender {
 
     /// Snapshot of every message handed to [`EmailSender::send`] so far.
     pub fn sent(&self) -> Vec<EmailMessage> {
-        self.sent.lock().expect("email recorder mutex poisoned").clone()
+        self.sent
+            .lock()
+            .expect("email recorder mutex poisoned")
+            .clone()
     }
 }
 
@@ -311,6 +362,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn link_delivery_requires_shareable_absolute_url() {
+        for base in [
+            None,
+            Some("/local"),
+            Some("https:example.gov"),
+            Some("https:///example.gov"),
+            Some(" https://example.gov"),
+            Some("ftp://example.gov"),
+            Some("https://u:p@example.gov"),
+            Some("https://example.gov?query=1"),
+            Some("https://example.gov#fragment"),
+        ] {
+            let config = EmailConfig {
+                delivery: EmailDelivery::Link,
+                public_base_url: base.map(str::to_string),
+                ..Default::default()
+            };
+            assert!(config.validate_link_delivery().is_err(), "{base:?}");
+        }
+        let config = EmailConfig {
+            delivery: EmailDelivery::Link,
+            public_base_url: Some("https://example.gov/app/".into()),
+            ..Default::default()
+        };
+        assert!(!config.enabled);
+        assert!(config.validate_link_delivery().is_ok());
+        assert!(EmailConfig::default().validate_link_delivery().is_ok());
+    }
+
+    #[test]
+    fn delivery_deserialization_is_explicit_and_defaults_to_smtp() {
+        let default: EmailConfig = toml::from_str("").unwrap();
+        assert_eq!(default.delivery, EmailDelivery::Smtp);
+        let link: EmailConfig = toml::from_str("delivery = 'link'").unwrap();
+        assert_eq!(link.delivery, EmailDelivery::Link);
+        assert!(toml::from_str::<EmailConfig>("delivery = 'unknown'").is_err());
+    }
+
+    #[test]
     fn config_defaults_to_disabled_smtps() {
         let cfg = EmailConfig::default();
         assert!(!cfg.enabled);
@@ -346,7 +436,10 @@ mod tests {
         assert_eq!(email.host.as_deref(), Some("mail.govcraft.ai"));
         assert_eq!(email.tls, EmailTls::Implicit);
         assert!(email.password.is_none());
-        assert_eq!(email.public_base_url.as_deref(), Some("https://app.agency.gov"));
+        assert_eq!(
+            email.public_base_url.as_deref(),
+            Some("https://app.agency.gov")
+        );
     }
 
     #[test]

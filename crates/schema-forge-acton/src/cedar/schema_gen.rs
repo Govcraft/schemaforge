@@ -185,6 +185,16 @@ fn write_schema_actions(out: &mut String, schema: &SchemaDefinition) -> Result<(
     context: {{ resource_is_placeholder: Bool }},
 }};\n"
     )?;
+    if name == "User" {
+        writeln!(
+            out,
+            "action InviteUser appliesTo {{
+    principal: [Forge::Principal],
+    resource: [User],
+    context: {{ resource_is_placeholder: Bool }},
+}};\n"
+        )?;
+    }
     Ok(())
 }
 

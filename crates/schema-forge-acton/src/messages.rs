@@ -205,6 +205,8 @@ pub struct UpdateTenantConfig {
 #[derive(Clone, Debug)]
 pub struct CreateEntity {
     pub entity: Entity,
+    /// Optional membership committed in the same transaction as the root.
+    pub membership: Option<Entity>,
     pub reply: ReplyChannel<Result<Entity, BackendError>>,
 }
 
@@ -387,6 +389,8 @@ pub struct DeleteEntityIf {
 #[derive(Clone, Debug)]
 pub struct ProcessCreateIntent {
     pub request: schema_forge_backend::create_intent::CreateIntentRequest,
+    /// Optional membership committed with the entity and receipt.
+    pub membership: Option<Entity>,
     pub reply: ReplyChannel<
         Result<
             schema_forge_backend::create_intent::CreateIntentReceipt,

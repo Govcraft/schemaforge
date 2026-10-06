@@ -32,7 +32,7 @@ use crate::error::BackendError;
 use crate::oauth_identity::ProviderIdentity;
 use crate::tenant::TenantRef;
 use crate::traits::EntityStore;
-use crate::user_store::{AuthStore, ForgeUser};
+use crate::user_store::{AuthStore, ForgeUser, TenantRole};
 
 const USERNAME_FIELD: &str = "email";
 const PASSWORD_HASH_FIELD: &str = "password_hash";
@@ -377,6 +377,32 @@ impl EntityAuthStore {
         Entity::new(self.user_schema_name().clone(), fields)
     }
 
+    async fn tenant_membership_entities(
+        &self,
+        username: &str,
+    ) -> Result<Vec<Entity>, BackendError> {
+        // Tenancy not configured for this deployment — return empty.
+        // The login handler treats "0 memberships + tenancy enabled" as
+        // a 401; with no schema attached we don't know whether tenancy
+        // is enabled, so we leave that decision to the caller.
+        let Some(tm_schema) = self.tenant_membership_schema.as_ref() else {
+            return Ok(Vec::new());
+        };
+
+        // Resolve the user's EntityId first; without the row there are
+        // no memberships to read regardless of the TenantMembership
+        // table's contents.
+        let Some(user_entity) = self.find_entity_by_username(username).await? else {
+            return Ok(Vec::new());
+        };
+
+        let query = Query::new(tm_schema.id.clone()).with_filter(Filter::eq(
+            FieldPath::single(TM_USER_FIELD),
+            DynamicValue::Ref(user_entity.id.clone()),
+        ));
+        Ok(self.store.query(&query).await?.entities)
+    }
+
     /// Compile-time hint for which User schema fields the auth store
     /// touches. Surfaced via [`Self::user_schema_field_names`] so a
     /// future migration command can validate the deployed schema before
@@ -717,30 +743,22 @@ impl AuthStore for EntityAuthStore {
         &self,
         username: &str,
     ) -> Result<Vec<TenantRef>, BackendError> {
-        // Tenancy not configured for this deployment — return empty.
-        // The login handler treats "0 memberships + tenancy enabled" as
-        // a 401; with no schema attached we don't know whether tenancy
-        // is enabled, so we leave that decision to the caller.
-        let Some(tm_schema) = self.tenant_membership_schema.as_ref() else {
-            return Ok(Vec::new());
-        };
+        let entities = self.tenant_membership_entities(username).await?;
+        Ok(entities.iter().filter_map(entity_to_tenant_ref).collect())
+    }
 
-        // Resolve the user's EntityId first; without the row there are
-        // no memberships to read regardless of the TenantMembership
-        // table's contents.
-        let Some(user_entity) = self.find_entity_by_username(username).await? else {
-            return Ok(Vec::new());
-        };
-
-        let query = Query::new(tm_schema.id.clone()).with_filter(Filter::eq(
-            FieldPath::single(TM_USER_FIELD),
-            DynamicValue::Ref(user_entity.id.clone()),
-        ));
-        let result = self.store.query(&query).await?;
-        Ok(result
-            .entities
+    async fn list_tenant_roles(&self, username: &str) -> Result<Vec<TenantRole>, BackendError> {
+        let entities = self.tenant_membership_entities(username).await?;
+        Ok(entities
             .iter()
-            .filter_map(entity_to_tenant_ref)
+            .filter_map(|entity| {
+                let tenant = entity_to_tenant_ref(entity)?;
+                let role = extract_text(entity, TM_ROLE_FIELD)?;
+                if role.trim().is_empty() || role == "platform_admin" {
+                    return None;
+                }
+                Some(TenantRole { tenant, role })
+            })
             .collect())
     }
 
@@ -1362,6 +1380,62 @@ mod tests {
             DynamicValue::Text(tenant_id.to_string()),
         );
         Entity::new(tm_schema.name.clone(), fields)
+    }
+
+    #[tokio::test]
+    async fn tenant_roles_preserve_scope_and_ignore_legacy_empty_and_platform_grants() {
+        let (auth, mem, tm) = store_with_tm();
+        auth.create_user("alice", "secret123", &[], "Alice")
+            .await
+            .unwrap();
+        auth.create_user("bob", "secret123", &[], "Bob")
+            .await
+            .unwrap();
+        for (username, tenant, role) in [
+            ("alice", "org-owner", Some("owner")),
+            ("alice", "org-member", Some("member")),
+            ("alice", "org-legacy", None),
+            ("alice", "org-empty", Some(" ")),
+            ("alice", "org-platform", Some("platform_admin")),
+            ("bob", "org-bob", Some("owner")),
+        ] {
+            let user = auth
+                .find_entity_by_username(username)
+                .await
+                .unwrap()
+                .unwrap();
+            let mut row = make_tm_row(&tm, &user.id, "Organization", tenant);
+            if let Some(role) = role {
+                row.fields
+                    .insert(TM_ROLE_FIELD.into(), DynamicValue::Text(role.into()));
+            }
+            EntityStore::create(mem.as_ref(), &row).await.unwrap();
+        }
+        let roles = auth.list_tenant_roles("alice").await.unwrap();
+        assert_eq!(roles.len(), 2);
+        assert!(roles
+            .iter()
+            .any(|grant| grant.tenant.entity_id == "org-owner" && grant.role == "owner"));
+        assert!(roles
+            .iter()
+            .any(|grant| grant.tenant.entity_id == "org-member" && grant.role == "member"));
+        assert_eq!(
+            auth.list_tenant_memberships("alice").await.unwrap().len(),
+            5
+        );
+        assert!(auth.list_tenant_roles("ghost").await.unwrap().is_empty());
+        assert!(auth
+            .get_user("alice")
+            .await
+            .unwrap()
+            .unwrap()
+            .roles
+            .is_empty());
+        assert!(store_with_ranks(&[])
+            .list_tenant_roles("alice")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

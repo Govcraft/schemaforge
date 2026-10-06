@@ -21,6 +21,16 @@ pub struct ForgeUser {
     pub role_rank: i64,
 }
 
+/// A role granted only within the referenced tenant.
+/// Older memberships without a role remain represented by `TenantRef` alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TenantRole {
+    /// Tenant receiving the grant.
+    pub tenant: TenantRef,
+    /// Role applied only while this tenant is active.
+    pub role: String,
+}
+
 /// Storage-agnostic trait for user authentication and management.
 ///
 /// Implementations handle:
@@ -150,6 +160,15 @@ pub trait AuthStore: Send + Sync {
         &self,
         username: &str,
     ) -> impl Future<Output = Result<Vec<TenantRef>, BackendError>> + Send;
+
+    /// List explicitly assigned tenant roles without granting global roles.
+    /// Stores without scoped-role support return an empty set.
+    fn list_tenant_roles(
+        &self,
+        _username: &str,
+    ) -> impl Future<Output = Result<Vec<TenantRole>, BackendError>> + Send {
+        async { Ok(Vec::new()) }
+    }
 
     /// Stamp the user's `last_login` field to `at`.
     ///

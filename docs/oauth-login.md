@@ -93,7 +93,16 @@ but is never used to attach a new provider to an existing account. A matching
 email without a link returns 409; an administrator must arrange that link.
 Existing links continue to resolve if a provider's verified email changes.
 
-For open signup, new accounts receive `default_roles`. Invitation-only signup
+For open signup, new accounts receive `default_roles`. With tenancy enabled,
+configure `[schema_forge.tenancy.default_tenant]` with the root `schema`, an
+existing root entity's TypeID in `id`, and a scoped membership `role` (default:
+`member`). The membership is written before login completes. Startup rejects
+open signup without this default, an invalid root, an unregistered or
+`platform_admin` membership role, or a missing target entity. A `creator_role`
+setting alone does not provide the membership needed for first login. See
+[tenant isolation](tenant-isolation.md) for configuration and creator grants.
+
+Invitation-only signup
 without an invite returns 403. An invite must still be pending and unexpired,
 and its stored PASETO is cryptographically reverified. Its signed email must
 match the provider's verified email. Signed role and tenant claims determine the

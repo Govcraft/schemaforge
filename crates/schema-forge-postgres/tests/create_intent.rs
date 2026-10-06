@@ -20,6 +20,9 @@ use schema_forge_postgres::PgBackend;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::Barrier;
 
+#[path = "../../schema-forge-backend/tests/support/creator_membership.rs"]
+mod creator_membership;
+
 fn definition() -> SchemaDefinition {
     SchemaDefinition::new(
         SchemaId::new(),
@@ -88,6 +91,8 @@ async fn atomic_create_receipts() {
 }
 
 async fn exercise(backend: Arc<PgBackend>) {
+    creator_membership::exercise(backend.as_ref()).await;
+    atomic_creator_intents(backend.as_ref()).await;
     let mut schema = definition();
     schema.fields[0]
         .modifiers
@@ -300,4 +305,102 @@ async fn exercise(backend: Arc<PgBackend>) {
             .await,
         Err(CreateIntentError::SchemaChanged)
     ));
+}
+
+async fn atomic_creator_intents(backend: &PgBackend) {
+    let user_schema = SchemaName::new("User").unwrap();
+    let user = backend
+        .create(&Entity::new(
+            user_schema,
+            BTreeMap::from([(
+                "email".into(),
+                DynamicValue::Text("intent-owner@example.org".into()),
+            )]),
+        ))
+        .await
+        .unwrap();
+    let root = creator_membership::root("intent root");
+    let scope = CreateIntentScope {
+        principal: user.id.to_string(),
+        tenant: String::new(),
+        schema: backend
+            .load_schema_metadata(&root.schema)
+            .await
+            .unwrap()
+            .unwrap(),
+    };
+    let fingerprint = CreateFingerprint::parse("c".repeat(64)).unwrap();
+    let pending = backend
+        .create_intent(&CreateIntentRequest::Reserve {
+            scope: scope.clone(),
+            fingerprint: fingerprint.clone(),
+        })
+        .await
+        .unwrap();
+    let commit = CreateIntentRequest::Commit {
+        scope: scope.clone(),
+        id: pending.id.clone(),
+        fingerprint,
+        entity: root.clone(),
+    };
+    let read = CreateIntentRequest::Read {
+        scope,
+        id: pending.id,
+    };
+    let grant = creator_membership::membership(&root, &user);
+    // Occupy this membership ID so the failure occurs after inserting the root.
+    backend.create(&grant).await.unwrap();
+    assert!(backend
+        .create_intent_with_membership(&commit, &grant)
+        .await
+        .is_err());
+    assert!(backend.get(&root.schema, &root.id).await.is_err());
+    assert!(backend
+        .create_intent(&read)
+        .await
+        .unwrap()
+        .entity_id
+        .is_none());
+    let revisions: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM _schema_entity_revisions WHERE schema_name=$1 AND entity_id=$2",
+    )
+    .bind(root.schema.as_str())
+    .bind(root.id.as_str())
+    .fetch_one(backend.pool())
+    .await
+    .unwrap();
+    assert_eq!(revisions, 0);
+    backend.delete(&grant.schema, &grant.id).await.unwrap();
+    let receipt = backend
+        .create_intent_with_membership(&commit, &grant)
+        .await
+        .unwrap();
+    assert!(receipt.created);
+    assert_eq!(receipt.entity_id, Some(root.id.clone()));
+    let revision = backend
+        .get_versioned(&grant.schema, &grant.id)
+        .await
+        .unwrap()
+        .revision;
+    // Even newly minted retry IDs must reconcile without creating another grant.
+    let retry_grant = creator_membership::membership(&root, &user);
+    let replay = backend
+        .create_intent_with_membership(&commit, &retry_grant)
+        .await
+        .unwrap();
+    assert!(!replay.created);
+    assert_eq!(replay.entity_id, receipt.entity_id);
+    assert!(backend
+        .get(&retry_grant.schema, &retry_grant.id)
+        .await
+        .is_err());
+    assert_eq!(
+        backend
+            .get_versioned(&grant.schema, &grant.id)
+            .await
+            .unwrap()
+            .revision,
+        revision
+    );
+    backend.get_versioned(&root.schema, &root.id).await.unwrap();
 }

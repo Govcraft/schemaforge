@@ -281,7 +281,7 @@ impl LoginContext<'_> {
         {
             return Err(refusal.into_response());
         }
-        let claims = match build_login_claims(
+        let mut claims = match build_login_claims(
             &user.username,
             &user.roles,
             user_entity.as_ref(),
@@ -298,6 +298,14 @@ impl LoginContext<'_> {
                 )))
             }
         };
+        let tenant_roles = self
+            .auth_store
+            .list_tenant_roles(&user.username)
+            .await
+            .map_err(|error| internal_error_response(format!("auth store error: {error}")))?;
+        project_tenant_roles(&mut claims, &tenant_roles).map_err(|error| {
+            internal_error_response(format!("failed to build tenant role claims: {error}"))
+        })?;
         let token = self
             .generator
             .generate_token_with_expiry(&claims, LOGIN_TOKEN_LIFETIME)
@@ -422,7 +430,7 @@ pub async fn refresh(
         return refusal.into_response();
     }
 
-    let next_claims = match build_login_claims(
+    let mut next_claims = match build_login_claims(
         &user.username,
         &user.roles,
         user_entity.as_ref(),
@@ -433,6 +441,14 @@ pub async fn refresh(
         Err(BuildLoginClaimsError::NullRequired(_)) => return unauthorized_response(),
         Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
     };
+
+    let tenant_roles = match auth_store.list_tenant_roles(&user.username).await {
+        Ok(roles) => roles,
+        Err(error) => return internal_error_response(format!("auth store error: {error}")),
+    };
+    if let Err(error) = project_tenant_roles(&mut next_claims, &tenant_roles) {
+        return internal_error_response(format!("failed to build tenant role claims: {error}"));
+    }
 
     let token = match generator.generate_token_with_expiry(&next_claims, LOGIN_TOKEN_LIFETIME) {
         Ok(t) => t,
@@ -597,6 +613,17 @@ async fn emit_token_refresh(
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-testable)
 // ---------------------------------------------------------------------------
+
+fn project_tenant_roles(
+    claims: &mut Claims,
+    roles: &[schema_forge_backend::user_store::TenantRole],
+) -> Result<(), serde_json::Error> {
+    // Reserve this signed claim for durable membership roles, even when empty.
+    claims
+        .custom
+        .insert("tenant_roles".into(), serde_json::to_value(roles)?);
+    Ok(())
+}
 
 /// Build the PASETO claims for a successful login.
 ///

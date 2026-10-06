@@ -30,6 +30,7 @@ use schema_forge_acton::{
         oauth::{oauth_routes, OAuthLoginServices, OAuthRuntime},
     },
     state::DynAuthStore,
+    tenancy_config::DefaultTenant,
 };
 use schema_forge_backend::{
     invite_store::{
@@ -38,7 +39,11 @@ use schema_forge_backend::{
     tenant::TenantConfig,
     EntityAuthStore, EntityStore, SchemaBackend,
 };
-use schema_forge_core::{migration::DiffEngine, system_schemas, types::SchemaName};
+use schema_forge_core::{
+    migration::DiffEngine,
+    system_schemas,
+    types::{EntityId, SchemaName},
+};
 use schema_forge_surrealdb::SurrealBackend;
 use serde_json::{json, Value};
 use tempfile::NamedTempFile;
@@ -83,6 +88,7 @@ struct Options {
     state_ttl: u64,
     code_ttl: u64,
     tenancy: bool,
+    default_tenant: Option<DefaultTenant>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -106,6 +112,7 @@ impl Default for Options {
             state_ttl: 600,
             code_ttl: 60,
             tenancy: false,
+            default_tenant: None,
         }
     }
 }
@@ -204,7 +211,8 @@ async fn fixture(options: Options) -> Fixture {
             Arc::new(MemoryOAuthStateManager::new(options.state_ttl)),
             Arc::new(MemoryOAuthStateManager::new(options.code_ttl)),
         )
-        .unwrap(),
+        .unwrap()
+        .with_default_tenant(options.default_tenant.clone()),
     );
     let mut config = Config::<SchemaForgeConfig>::default();
     config.custom.schema_forge.auth.oauth = options.settings.clone();
@@ -544,10 +552,80 @@ async fn password_login_can_be_disabled_and_missing_membership_refuses_oauth() {
 }
 
 #[tokio::test]
+async fn open_signup_adds_default_membership_before_issuing_tenant_session() {
+    let tenant_id = EntityId::new("organization");
+    let fixture = fixture(Options {
+        tenancy: true,
+        default_tenant: Some(DefaultTenant {
+            schema: SchemaName::new("Organization").unwrap(),
+            id: tenant_id.clone(),
+            role: "owner".into(),
+        }),
+        ..Default::default()
+    })
+    .await;
+    let state = start(&fixture.app, None).await;
+    let code = login_code(callback(&fixture.app, &state).await);
+    let result = body(
+        request(
+            &fixture.app,
+            "POST",
+            "/auth/oauth/exchange",
+            Some(json!({"code": code})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(result["roles"], json!(["member"]));
+    let claims = fixture
+        .services
+        .validator
+        .validate_token(result["token"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        claims.custom["tenant_chain"],
+        json!([{"schema": "Organization", "entity_id": tenant_id.as_str()}])
+    );
+    assert_eq!(
+        claims.custom["tenant_roles"],
+        json!([{"tenant": {"schema": "Organization", "entity_id": tenant_id.as_str()}, "role": "owner"}])
+    );
+    let memberships = fixture
+        .store
+        .list_tenant_memberships("alice@example.com")
+        .await
+        .unwrap();
+    assert_eq!(memberships.len(), 1);
+    assert_eq!(memberships[0].schema, "Organization");
+    assert_eq!(memberships[0].entity_id, tenant_id.as_str());
+    let schema = fixture
+        .backend
+        .load_schema_metadata(&SchemaName::new("TenantMembership").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = fixture
+        .backend
+        .query(&schema_forge_core::query::Query::new(schema.id))
+        .await
+        .unwrap();
+    assert_eq!(rows.entities.len(), 1);
+    assert_eq!(
+        rows.entities[0].fields["role"],
+        schema_forge_core::types::DynamicValue::Text("owner".into())
+    );
+}
+
+#[tokio::test]
 async fn invitation_signed_claims_override_mutable_columns_and_consumption_is_last() {
     let mut options = Options::default();
     options.settings.signup = SignupPolicy::InviteOnly;
     options.tenancy = true;
+    options.default_tenant = Some(DefaultTenant {
+        schema: SchemaName::new("Organization").unwrap(),
+        id: EntityId::new("organization"),
+        role: "member".into(),
+    });
     let fixture = fixture(options).await;
     let minted = mint_invite_token(
         &fixture.services.generator,

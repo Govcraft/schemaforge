@@ -77,6 +77,10 @@ pub struct SchemaForgeSettings {
     #[serde(default)]
     pub auth: crate::oauth_config::AuthSettings,
 
+    /// Tenant creator and open-signup membership grants.
+    #[serde(default)]
+    pub tenancy: crate::tenancy_config::TenancySettings,
+
     /// Signed-schema enforcement. The CLI builds a
     /// [`schema_forge_signing::VerifyPolicy`] from this section before
     /// loading any `.schema` file, so on-disk tampering and
@@ -188,6 +192,7 @@ impl Default for SchemaForgeSettings {
             email: crate::email::EmailConfig::default(),
             authz: AuthzConfig::default(),
             auth: crate::oauth_config::AuthSettings::default(),
+            tenancy: crate::tenancy_config::TenancySettings::default(),
             signing: SigningConfig::default(),
             client: ClientConfig::default(),
             site: SiteBrandingConfig::default(),
@@ -221,6 +226,7 @@ mod tests {
                 email: crate::email::EmailConfig::default(),
                 authz: AuthzConfig::default(),
                 auth: crate::oauth_config::AuthSettings::default(),
+                tenancy: crate::tenancy_config::TenancySettings::default(),
                 signing: SigningConfig::default(),
                 client: ClientConfig::default(),
                 site: SiteBrandingConfig::default(),

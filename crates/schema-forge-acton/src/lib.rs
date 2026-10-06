@@ -27,6 +27,7 @@ pub mod shared_auth;
 pub mod state;
 pub mod storage;
 pub mod system;
+pub mod tenancy_config;
 pub mod webhook;
 
 pub use access::{PLATFORM_ADMIN_ROLE, PUBLIC_ROLE};

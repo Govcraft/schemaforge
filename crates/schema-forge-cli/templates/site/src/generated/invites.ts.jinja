@@ -8,7 +8,8 @@ export type InviteRequest = {
   tenant_type?: string
   tenant_id?: string
 }
-export type InviteResponse = { invite_id: string; email: string; expires_at: string }
+export type StoredInvite = { invite_id: string; accept_url: string }
+export type InviteResponse = StoredInvite & { email: string; expires_at: string; delivery: "smtp" | "link" }
 export type Role = { name: string; rank: number }
 export type Tenant = { id: string; label: string }
 
@@ -60,6 +61,14 @@ export async function acceptInvite(body: { invite_id: string; password: string; 
     throw new ApiError(response.status, parsed, raw)
   }
   return response.json() as Promise<{ email: string }>
+}
+
+/** Recover a persisted invitation from the SMTP failure response. */
+export function storedInviteFromError(error: unknown): StoredInvite | undefined {
+  if (!(error instanceof ApiError) || error.status !== 502 || typeof error.body !== "object" || error.body === null) return undefined
+  const body = error.body as { error?: unknown; invite_id?: unknown; accept_url?: unknown }
+  if (body.error !== "invite_delivery_failed" || typeof body.invite_id !== "string" || !body.invite_id || typeof body.accept_url !== "string" || !body.accept_url) return undefined
+  return { invite_id: body.invite_id, accept_url: body.accept_url }
 }
 
 export function inviteError(error: unknown, context: "send" | "accept" = "send"): string {
