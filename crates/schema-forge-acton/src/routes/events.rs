@@ -1,5 +1,6 @@
 //! Authenticated change streams with live identity checks and canonical read projection.
 use super::{
+    auth::account_username,
     entities,
     query_params::{parse_filter_key, parse_filter_params, FilterOp},
 };
@@ -114,11 +115,6 @@ struct StreamState {
     done: bool,
     ticker: tokio::time::Interval,
 }
-/// The auth-store key for a stream principal. Login mints `sub = "user:<username>"`
-/// while the store, the Cedar principal, and ownership all use the bare username.
-fn stream_username(claims: &Claims) -> &str {
-    crate::authz::adapters::user_id_from_sub(&claims.sub)
-}
 /// Roles the request claims must still carry: the account's current global
 /// roles plus, for a tenant-scoped caller, the active membership's current
 /// scoped role, exactly as `tenant_scope` projects them.
@@ -146,7 +142,7 @@ impl StreamState {
         if self.claims.exp <= chrono::Utc::now().timestamp() {
             return false;
         }
-        let username = stream_username(&self.claims);
+        let username = account_username(&self.claims);
         let user = match self.runtime.auth_store.get_user(username).await {
             Ok(Some(user)) if user.active => user,
             Ok(None) if !self.local_account && self.effective_chain.is_empty() => return true,
@@ -338,7 +334,7 @@ pub async fn subscribe(
     let filters = filters(&state, &schema, &claims, &params).await?;
     let local_account = runtime
         .auth_store
-        .get_user(stream_username(&claims))
+        .get_user(account_username(&claims))
         .await
         .map_err(ForgeError::from)?
         .is_some();
@@ -418,15 +414,6 @@ mod tests {
             "sub": sub, "roles": roles, "perms": [], "exp": 9_999_999_999_u64
         }))
         .unwrap()
-    }
-
-    #[test]
-    fn stream_username_matches_the_login_subject_to_the_stored_account() {
-        assert_eq!(
-            stream_username(&claims("user:solo@example.gov", &[])),
-            "solo@example.gov"
-        );
-        assert_eq!(stream_username(&claims("alice", &[])), "alice");
     }
 
     #[test]
