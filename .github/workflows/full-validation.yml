@@ -70,14 +70,17 @@ jobs:
     uses: ./.github/workflows/component-checks.yml
     with:
       component: runtime
+  cli:
+    if: github.event_name == 'workflow_dispatch' || inputs.cli
+    uses: ./.github/workflows/component-checks.yml
+    with:
+      component: cli
   postgres:
     if: github.event_name == 'workflow_dispatch' || inputs.postgres
     uses: ./.github/workflows/postgres-conditional.yml
   surrealdb:
-    if: github.event_name == 'workflow_dispatch' || inputs.surrealdb || inputs.cli
+    if: github.event_name == 'workflow_dispatch' || inputs.surrealdb
     uses: ./.github/workflows/surrealdb-runtime.yml
-    with:
-      cli-only: ${{ inputs.cli && !inputs.surrealdb }}
   mssql:
     if: github.event_name == 'workflow_dispatch' || inputs.mssql
     uses: ./.github/workflows/mssql-integration.yml
@@ -91,7 +94,7 @@ jobs:
       candidate-server: ${{ github.event_name == 'workflow_dispatch' || inputs.site-candidate-server }}
   passed:
     name: Validation passed
-    needs: [metadata, tooling, runtime, postgres, surrealdb, mssql, cel, site]
+    needs: [metadata, tooling, runtime, cli, postgres, surrealdb, mssql, cel, site]
     if: always()
     runs-on: ubuntu-24.04
     steps:

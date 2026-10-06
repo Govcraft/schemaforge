@@ -8,7 +8,7 @@ import sys
 
 from select_checks import SUITES
 
-VALIDATION_JOBS = ("metadata", "tooling", "runtime", "postgres", "surrealdb", "mssql", "cel", "site")
+VALIDATION_JOBS = ("metadata", "tooling", "runtime", "cli", "postgres", "surrealdb", "mssql", "cel", "site")
 
 
 def check_required(jobs):
@@ -32,8 +32,6 @@ def check_validation(jobs, inputs, manual=False):
                 failures.append(f"{name}: missing or invalid boolean input")
     for name in VALIDATION_JOBS:
         selected = manual or name == "metadata" or inputs.get(name) is True
-        if name == "surrealdb":
-            selected = selected or inputs.get("cli") is True
         result = jobs.get(name, {}).get("result")
         if selected and result != "success":
             failures.append(f"{name}: selected job {result or 'missing'}")

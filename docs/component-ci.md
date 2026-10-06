@@ -17,7 +17,7 @@ toolchains, and CI policy changes select the complete suite.
 | Documentation | Metadata, CI policy tests, formatting |
 | Package versions and changelog only | Metadata, CI policy tests, formatting |
 | Code generation or site templates | Portable tooling and generated-site browser smoke |
-| Ordinary CLI command | Portable tooling and default-backend CLI integration |
+| Ordinary CLI command | Portable tooling and server CLI tests without a database engine |
 | Runtime route | Portable runtime, PostgreSQL, SurrealDB, browser smoke |
 | PostgreSQL backend | PostgreSQL and portable runtime |
 | SurrealDB backend | SurrealDB and browser smoke |
@@ -55,6 +55,7 @@ backend feature selections continue to produce the complete executable.
 ```sh
 cargo nextest run -p schema-forge-codegen -p schema-forge-config
 cargo nextest run -p schema-forge-cli --no-default-features
+cargo nextest run -p schema-forge-cli --no-default-features --features server,oauth,sse
 cargo clippy -p schema-forge-cli --no-default-features --all-targets -- -D warnings
 cargo run -p schema-forge-cli --no-default-features -- site generate --help
 ```
@@ -109,7 +110,7 @@ a candidate tooling binary from another commit.
 - `ci.yml` selects components, calls validation, and reports `Required CI`.
 - `full-validation.yml` runs selected reusable suites and rejects failed or
   unexpectedly skipped selected jobs. Its inputs default to full validation.
-- `component-checks.yml` runs portable tooling or runtime tests and lints, plus tooling doctests.
+- `component-checks.yml` runs portable tooling, runtime, or server CLI tests and lints, plus tooling doctests.
 - `postgres-conditional.yml`, `surrealdb-runtime.yml`, and `mssql-integration.yml`
   validate real backend graphs independently.
 - `site-e2e.yml` validates generation and browser behavior.

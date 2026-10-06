@@ -39,9 +39,20 @@ class GateTests(unittest.TestCase):
             with self.subTest(result=result):
                 self.assertTrue(check_validation(self.results(tooling=result), self.inputs()))
 
-    def test_cli_selection_requires_surrealdb_consumer(self):
+    def test_cli_selection_requires_portable_cli_but_allows_surrealdb_skip(self):
         self.assertTrue(check_validation(self.results(), self.inputs(cli=True)))
-        self.assertEqual(check_validation(self.results(surrealdb="success"), self.inputs(cli=True)), [])
+        self.assertEqual(check_validation(self.results(cli="success"), self.inputs(cli=True)), [])
+        self.assertTrue(check_validation(self.results(surrealdb="success"), self.inputs(cli=True)))
+
+    def test_selected_cli_failed_skipped_or_cancelled_jobs_fail(self):
+        for result in ("failure", "skipped", "cancelled"):
+            with self.subTest(result=result):
+                self.assertTrue(check_validation(self.results(cli=result), self.inputs(cli=True)))
+
+    def test_full_backend_selection_still_requires_surrealdb(self):
+        inputs = self.inputs(cli=True, surrealdb=True)
+        self.assertTrue(check_validation(self.results(cli="success"), inputs))
+        self.assertEqual(check_validation(self.results(cli="success", surrealdb="success"), inputs), [])
 
     def test_metadata_always_required(self):
         for result in ("failure", "skipped", "cancelled"):
