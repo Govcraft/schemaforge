@@ -182,6 +182,7 @@ when {{ resource has "_tenant" && principal in resource["_tenant"] }};
         TokenGenerationConfig::default(),
     ));
     let app = forge_routes()
+        .merge(schema_forge_acton::routes::auth::auth_routes())
         .layer(Extension(auth_store))
         .layer(Extension(invite_store))
         .layer(Extension(email_sender))
