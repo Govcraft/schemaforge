@@ -119,9 +119,23 @@ mod tests {
     #[test]
     fn rejects_cedar_keywords() {
         for kw in [
-            "permit", "forbid", "principal", "action", "resource", "context",
-            "when", "unless", "if", "then", "else", "in", "has", "like", "is",
-            "true", "false",
+            "permit",
+            "forbid",
+            "principal",
+            "action",
+            "resource",
+            "context",
+            "when",
+            "unless",
+            "if",
+            "then",
+            "else",
+            "in",
+            "has",
+            "like",
+            "is",
+            "true",
+            "false",
         ] {
             let err = FieldName::new(kw).unwrap_err();
             assert!(
@@ -133,11 +147,14 @@ mod tests {
 
     #[test]
     fn permits_field_names_that_contain_keywords_as_substrings() {
-        for ok in ["principal_id", "is_active", "has_access", "in_progress", "action_type"] {
-            assert!(
-                FieldName::new(ok).is_ok(),
-                "should permit field name {ok}"
-            );
+        for ok in [
+            "principal_id",
+            "is_active",
+            "has_access",
+            "in_progress",
+            "action_type",
+        ] {
+            assert!(FieldName::new(ok).is_ok(), "should permit field name {ok}");
         }
     }
 }

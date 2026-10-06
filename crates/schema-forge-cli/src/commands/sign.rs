@@ -57,12 +57,7 @@ pub async fn run(
 
     let signer = build_signer(&args, output)?;
 
-    let report = sign_directory(
-        &manifest_dir,
-        &files,
-        &signer,
-        manifest_filename.as_deref(),
-    )?;
+    let report = sign_directory(&manifest_dir, &files, &signer, manifest_filename.as_deref())?;
 
     if args.print_pubkey {
         emit_pubkey_advice(&signer, args.ssh_principal.as_deref(), output)?;
@@ -229,7 +224,8 @@ fn seed_from_os_rng() -> [u8; 32] {
     // platform for production SchemaForge builds today (the FIPS
     // requirements mean Linux + AWS-LC), so the simple read is fine.
     let mut f = std::fs::File::open("/dev/urandom").expect("open /dev/urandom");
-    f.read_exact(&mut buf).expect("read 32 bytes from /dev/urandom");
+    f.read_exact(&mut buf)
+        .expect("read 32 bytes from /dev/urandom");
     buf
 }
 
@@ -313,7 +309,11 @@ fn emit_report(output: &OutputContext, report: &SignReport) {
         }
         OutputMode::Plain => {
             for s in &report.signed {
-                println!("{}\t{}", s.schema_path.display(), s.signature_path.display());
+                println!(
+                    "{}\t{}",
+                    s.schema_path.display(),
+                    s.signature_path.display()
+                );
             }
             println!("manifest\t{}", report.manifest_path.display());
         }

@@ -633,18 +633,48 @@ fn render_proto(h: &SchemaHooks) -> Result<String, CliError> {
 fn file_hook_fields(event: HookEvent) -> &'static [FileHookField] {
     match event {
         HookEvent::BeforeUpload => &[
-            FileHookField { name: "field_name", required: true },
-            FileHookField { name: "file_name", required: true },
-            FileHookField { name: "mime_type", required: true },
-            FileHookField { name: "file_size", required: true, /* int64 */ },
+            FileHookField {
+                name: "field_name",
+                required: true,
+            },
+            FileHookField {
+                name: "file_name",
+                required: true,
+            },
+            FileHookField {
+                name: "mime_type",
+                required: true,
+            },
+            FileHookField {
+                name: "file_size",
+                required: true, /* int64 */
+            },
         ],
         HookEvent::AfterUpload | HookEvent::OnScanComplete => &[
-            FileHookField { name: "field_name", required: true },
-            FileHookField { name: "object_key", required: true },
-            FileHookField { name: "mime_type", required: true },
-            FileHookField { name: "file_size", required: true },
-            FileHookField { name: "status", required: true },
-            FileHookField { name: "download_url", required: false },
+            FileHookField {
+                name: "field_name",
+                required: true,
+            },
+            FileHookField {
+                name: "object_key",
+                required: true,
+            },
+            FileHookField {
+                name: "mime_type",
+                required: true,
+            },
+            FileHookField {
+                name: "file_size",
+                required: true,
+            },
+            FileHookField {
+                name: "status",
+                required: true,
+            },
+            FileHookField {
+                name: "download_url",
+                required: false,
+            },
         ],
         _ => &[],
     }
@@ -1338,7 +1368,10 @@ mod tests {
         );
         let s = schema(
             "Opportunity",
-            vec![field("period_of_performance", FieldType::Composite(vec![inner]))],
+            vec![field(
+                "period_of_performance",
+                FieldType::Composite(vec![inner]),
+            )],
         );
         let fields = scalar_proto_fields(&s).unwrap();
         assert_eq!(fields.len(), 1);

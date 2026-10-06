@@ -19,10 +19,7 @@ pub enum ConstraintViolation {
     /// An `integer(max: N)` field received a larger value.
     IntegerAboveMax { value: i64, max: i64 },
     /// An `enum(...)` field received a string that is not one of its variants.
-    NotAnEnumVariant {
-        value: String,
-        allowed: Vec<String>,
-    },
+    NotAnEnumVariant { value: String, allowed: Vec<String> },
     /// A `bytes(max: N)` field received more than `max` bytes.
     BytesTooLarge { len: usize, max: usize },
 }

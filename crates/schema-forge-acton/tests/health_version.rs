@@ -12,8 +12,6 @@
 //! with `meta_routes()` mounted under `/api/v1/forge/`, wrapped by the
 //! SchemaForge health middleware, then state-attached via `ServiceBuilder`.
 
-#![cfg(feature = "surrealdb")]
-
 use std::sync::Arc;
 
 use acton_service::config::Config;
@@ -26,8 +24,7 @@ use http_body_util::BodyExt;
 use schema_forge_acton::config::SchemaForgeConfig;
 use schema_forge_acton::routes::meta_routes;
 use schema_forge_acton::{
-    schema_forge_health_middleware, MetaInfo, SCHEMA_FORGE_ACTON_VERSION,
-    SCHEMA_FORGE_SERVICE_NAME,
+    schema_forge_health_middleware, MetaInfo, SCHEMA_FORGE_ACTON_VERSION, SCHEMA_FORGE_SERVICE_NAME,
 };
 use tower::ServiceExt;
 
@@ -66,9 +63,7 @@ async fn build_router() -> Router {
 
     // Apply the SchemaForge health middleware so `GET /health` reports
     // the schema-forge-acton crate version (issue #55).
-    let stateful = stateful.layer(axum::middleware::from_fn(
-        schema_forge_health_middleware,
-    ));
+    let stateful = stateful.layer(axum::middleware::from_fn(schema_forge_health_middleware));
 
     // The middleware reports `SCHEMA_FORGE_SERVICE_NAME` from a constant —
     // it doesn't read `Config.service.name`. We set it here anyway so the

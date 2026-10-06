@@ -236,7 +236,10 @@ async fn demo_system_schemas_seeded_at_startup() {
         "Permission schema must not exist — Cedar policies own permissions"
     );
     assert_eq!(schemas.len(), 4);
-    assert!(names.contains(&"OAuthIdentity"), "OAuthIdentity schema should be seeded");
+    assert!(
+        names.contains(&"OAuthIdentity"),
+        "OAuthIdentity schema should be seeded"
+    );
 
     // Verify system schemas are protected from deletion
     let user_schema = schemas.iter().find(|s| s.name.as_str() == "User").unwrap();

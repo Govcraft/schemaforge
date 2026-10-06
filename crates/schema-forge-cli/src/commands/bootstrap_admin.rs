@@ -45,7 +45,10 @@ pub async fn run(
     let svc_config = load_svc_config(global)?;
     let db_params = resolve_db_params(&svc_config)?;
 
-    output.status(&format!("Connecting to backend at {}…", db_params.redacted_url()));
+    output.status(&format!(
+        "Connecting to backend at {}…",
+        db_params.redacted_url()
+    ));
     let connected = connect(&db_params).await?;
 
     let role_ranks = schema_forge_acton::authz::RoleRanks::from_toml_file(&args.role_ranks)

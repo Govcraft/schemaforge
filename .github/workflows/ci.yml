@@ -1,129 +1,69 @@
 name: CI
-
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * *'
   workflow_dispatch:
-
 permissions:
   contents: read
-  pull-requests: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
-    name: Detect relevant changes
+    name: Select affected components
     runs-on: ubuntu-24.04
     outputs:
-      postgres: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.postgres == 'true' }}
-      mssql: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.mssql == 'true' }}
-      cel: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.cel == 'true' }}
-      site: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.site == 'true' }}
+      tooling: ${{ steps.select.outputs.tooling }}
+      runtime: ${{ steps.select.outputs.runtime }}
+      cli: ${{ steps.select.outputs.cli }}
+      postgres: ${{ steps.select.outputs.postgres }}
+      surrealdb: ${{ steps.select.outputs.surrealdb }}
+      mssql: ${{ steps.select.outputs.mssql }}
+      cel: ${{ steps.select.outputs.cel }}
+      site: ${{ steps.select.outputs.site }}
     steps:
-      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
-        id: filter
-        if: github.event_name == 'pull_request'
+      - uses: actions/checkout@v6
         with:
-          filters: |
-            postgres:
-              - 'crates/**'
-              - 'Cargo.lock'
-              - 'Cargo.toml'
-              - 'rust-toolchain.toml'
-              - '.cargo/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/postgres-conditional.yml'
-            mssql:
-              - 'crates/schema-forge-mssql/**'
-              - 'crates/schema-forge-core/**'
-              - 'crates/schema-forge-backend/**'
-              - 'crates/schema-forge-cli/Cargo.toml'
-              - 'crates/schema-forge-acton/Cargo.toml'
-              - 'Cargo.lock'
-              - 'Cargo.toml'
-              - 'rust-toolchain.toml'
-              - '.cargo/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/mssql-integration.yml'
-            cel:
-              - 'crates/schema-forge-cel/**'
-              - 'crates/schema-forge-core/**'
-              - 'Cargo.lock'
-              - 'Cargo.toml'
-              - 'rust-toolchain.toml'
-              - '.cargo/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/cel-kani.yml'
-            site:
-              - 'crates/schema-forge-cli/templates/site/**'
-              - 'crates/schema-forge-cli/src/commands/site/**'
-              - 'crates/schema-forge-cli/tests/site_e2e/**'
-              - 'crates/schema-forge-acton/**'
-              - 'crates/schema-forge-core/**'
-              - 'crates/schema-forge-dsl/**'
-              - 'crates/schema-forge-surrealdb/**'
-              - 'crates/schema-forge-backend/**'
-              - 'Cargo.lock'
-              - 'Cargo.toml'
-              - 'rust-toolchain.toml'
-              - '.cargo/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/site-e2e.yml'
-
-  postgres:
+          fetch-depth: 0
+      - name: Select checks
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
+        run: |
+          args=(--head HEAD)
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            args+=(--base "$BASE_REVISION")
+          else
+            args+=(--full)
+          fi
+          python3 scripts/ci/select_checks.py "${args[@]}"
+  validation:
     needs: changes
-    if: needs.changes.outputs.postgres == 'true'
-    uses: ./.github/workflows/postgres-conditional.yml
-
-  mssql:
-    needs: changes
-    if: needs.changes.outputs.mssql == 'true'
-    uses: ./.github/workflows/mssql-integration.yml
-
-  cel:
-    needs: changes
-    if: needs.changes.outputs.cel == 'true'
-    uses: ./.github/workflows/cel-kani.yml
-
-  site:
-    needs: changes
-    if: needs.changes.outputs.site == 'true'
-    uses: ./.github/workflows/site-e2e.yml
-
+    uses: ./.github/workflows/full-validation.yml
+    with:
+      tooling: ${{ needs.changes.outputs.tooling == 'true' }}
+      runtime: ${{ needs.changes.outputs.runtime == 'true' }}
+      cli: ${{ needs.changes.outputs.cli == 'true' }}
+      postgres: ${{ needs.changes.outputs.postgres == 'true' }}
+      surrealdb: ${{ needs.changes.outputs.surrealdb == 'true' }}
+      mssql: ${{ needs.changes.outputs.mssql == 'true' }}
+      cel: ${{ needs.changes.outputs.cel == 'true' }}
+      site: ${{ needs.changes.outputs.site == 'true' }}
+      base: ${{ github.event.pull_request.base.sha || '' }}
+      site-candidate-server: ${{ needs.changes.outputs.runtime == 'true' || needs.changes.outputs.cli == 'true' || needs.changes.outputs.surrealdb == 'true' || needs.changes.outputs.postgres == 'true' || needs.changes.outputs.mssql == 'true' }}
   required:
     name: Required CI
-    needs: [changes, postgres, mssql, cel, site]
+    needs: [changes, validation]
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      - name: Verify every relevant suite passed
+      - uses: actions/checkout@v6
+      - name: Require selection and validation to succeed
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import sys
-
-          jobs = json.loads(os.environ["NEEDS_JSON"])
-          if jobs["changes"]["result"] != "success":
-              sys.exit("Change detection did not succeed")
-
-          failed = []
-          for suite in ("postgres", "mssql", "cel", "site"):
-              relevant = jobs["changes"]["outputs"].get(suite)
-              result = jobs[suite]["result"]
-              if relevant not in ("true", "false"):
-                  failed.append(f"{suite}: missing change detection output")
-              elif relevant == "true" and result != "success":
-                  failed.append(f"{suite}: {result}")
-              elif relevant == "false" and result not in ("success", "skipped"):
-                  failed.append(f"{suite}: {result}")
-              print(f"{suite}: relevant={relevant}, result={result}")
-
-          if failed:
-              sys.exit("Required CI failed: " + "; ".join(failed))
-          PY
+        run: python3 scripts/ci/check_results.py required

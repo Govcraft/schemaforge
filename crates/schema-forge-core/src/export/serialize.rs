@@ -342,7 +342,10 @@ mod tests {
 
     #[test]
     fn cell_null_is_empty() {
-        assert_eq!(to_cell(&DynamicValue::Null, &CellOptions::new(), &NoDisplay), "");
+        assert_eq!(
+            to_cell(&DynamicValue::Null, &CellOptions::new(), &NoDisplay),
+            ""
+        );
     }
 
     #[test]
@@ -370,7 +373,11 @@ mod tests {
     #[test]
     fn cell_boolean() {
         assert_eq!(
-            to_cell(&DynamicValue::Boolean(true), &CellOptions::new(), &NoDisplay),
+            to_cell(
+                &DynamicValue::Boolean(true),
+                &CellOptions::new(),
+                &NoDisplay
+            ),
             "true"
         );
     }
@@ -417,7 +424,10 @@ mod tests {
     #[test]
     fn ndjson_bytes_always_base64() {
         let v = DynamicValue::Bytes(b"hello".to_vec());
-        assert_eq!(to_ndjson(&v, &NoDisplay), JsonValue::String("aGVsbG8=".into()));
+        assert_eq!(
+            to_ndjson(&v, &NoDisplay),
+            JsonValue::String("aGVsbG8=".into())
+        );
     }
 
     // ---- relation one ----
@@ -426,9 +436,7 @@ mod tests {
     fn cell_relation_one_uses_resolved_display() {
         let rid = id("user");
         let target = rid.clone();
-        let resolver = move |q: &EntityId| {
-            (q == &target).then(|| "Ada Lovelace".to_string())
-        };
+        let resolver = move |q: &EntityId| (q == &target).then(|| "Ada Lovelace".to_string());
         let v = DynamicValue::Ref(rid);
         assert_eq!(to_cell(&v, &CellOptions::new(), &resolver), "Ada Lovelace");
     }
@@ -437,7 +445,10 @@ mod tests {
     fn cell_relation_one_falls_back_to_id() {
         let rid = id("user");
         let v = DynamicValue::Ref(rid.clone());
-        assert_eq!(to_cell(&v, &CellOptions::new(), &NoDisplay), rid.to_string());
+        assert_eq!(
+            to_cell(&v, &CellOptions::new(), &NoDisplay),
+            rid.to_string()
+        );
     }
 
     #[test]
@@ -507,7 +518,10 @@ mod tests {
         let mut m = BTreeMap::new();
         m.insert("k".to_string(), DynamicValue::Text("v".into()));
         let v = DynamicValue::Map(m);
-        assert_eq!(to_cell(&v, &CellOptions::new(), &NoDisplay), "{\"k\":\"v\"}");
+        assert_eq!(
+            to_cell(&v, &CellOptions::new(), &NoDisplay),
+            "{\"k\":\"v\"}"
+        );
     }
 
     #[test]
@@ -550,7 +564,10 @@ mod tests {
     #[test]
     fn cell_json_object_is_compact() {
         let v = DynamicValue::Json(serde_json::json!({ "a": [1, 2] }));
-        assert_eq!(to_cell(&v, &CellOptions::new(), &NoDisplay), "{\"a\":[1,2]}");
+        assert_eq!(
+            to_cell(&v, &CellOptions::new(), &NoDisplay),
+            "{\"a\":[1,2]}"
+        );
     }
 
     #[test]
@@ -641,7 +658,11 @@ mod tests {
     #[test]
     fn csv_record_round_trips_rendered_cells() {
         let cells = [
-            to_cell(&DynamicValue::Text("hello, world".into()), &CellOptions::new(), &NoDisplay),
+            to_cell(
+                &DynamicValue::Text("hello, world".into()),
+                &CellOptions::new(),
+                &NoDisplay,
+            ),
             to_cell(&DynamicValue::Integer(42), &CellOptions::new(), &NoDisplay),
         ];
         let record = csv_record(&cells).unwrap();
@@ -689,7 +710,11 @@ mod tests {
     #[test]
     fn xlsx_non_finite_float_falls_back_to_text() {
         assert_eq!(
-            to_xlsx_cell(&DynamicValue::Float(f64::NAN), &CellOptions::new(), &NoDisplay),
+            to_xlsx_cell(
+                &DynamicValue::Float(f64::NAN),
+                &CellOptions::new(),
+                &NoDisplay
+            ),
             XlsxCell::Text("NaN".to_string())
         );
     }
@@ -697,7 +722,11 @@ mod tests {
     #[test]
     fn xlsx_boolean_is_native() {
         assert_eq!(
-            to_xlsx_cell(&DynamicValue::Boolean(true), &CellOptions::new(), &NoDisplay),
+            to_xlsx_cell(
+                &DynamicValue::Boolean(true),
+                &CellOptions::new(),
+                &NoDisplay
+            ),
             XlsxCell::Boolean(true)
         );
     }

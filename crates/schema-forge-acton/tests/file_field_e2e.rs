@@ -39,8 +39,7 @@ fn e2e_config() -> Option<StorageConfig> {
     let access = env::var("SCHEMAFORGE_E2E_S3_ACCESS_KEY").ok()?;
     let secret = env::var("SCHEMAFORGE_E2E_S3_SECRET_KEY").ok()?;
     let bucket = env::var("SCHEMAFORGE_E2E_S3_BUCKET").ok()?;
-    let region =
-        env::var("SCHEMAFORGE_E2E_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let region = env::var("SCHEMAFORGE_E2E_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
 
     let mut backends = HashMap::new();
     backends.insert(
@@ -63,12 +62,7 @@ fn e2e_config() -> Option<StorageConfig> {
 }
 
 fn unique_key(field: &str, filename: &str) -> String {
-    format!(
-        "tests/{}/{}-{}",
-        field,
-        uuid::Uuid::now_v7(),
-        filename
-    )
+    format!("tests/{}/{}-{}", field, uuid::Uuid::now_v7(), filename)
 }
 
 async fn setup_client() -> S3Client {

@@ -1,11 +1,17 @@
 mod cli;
 mod commands;
+#[cfg(feature = "server")]
+mod config;
+#[cfg(not(feature = "server"))]
+#[path = "config_tooling.rs"]
 mod config;
 #[allow(unused_assignments)]
 mod diagnostic;
 mod error;
+#[cfg(feature = "server")]
 mod http;
 mod output;
+#[cfg(any(feature = "server", test))]
 mod progress;
 
 use clap::Parser;
@@ -16,7 +22,10 @@ async fn main() {
     // subsystem (sqlx, reqwest, tonic, surrealdb) constructs a client
     // config. Under the `fips` feature this provider is backed by the
     // FIPS-validated AWS-LC C library.
+    #[cfg(feature = "server")]
     schema_forge_acton::crypto::install_default_crypto_provider();
+    #[cfg(not(feature = "server"))]
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let cli = cli::Cli::parse();
     let output = output::OutputContext::from_global(&cli.global);
@@ -24,24 +33,36 @@ async fn main() {
     let result = match cli.command {
         cli::Commands::Init(args) => commands::init::run(args, &cli.global, &output).await,
         cli::Commands::Parse(args) => commands::parse::run(args, &cli.global, &output).await,
+        #[cfg(feature = "server")]
         cli::Commands::Apply(args) => commands::apply::run(args, &cli.global, &output).await,
+        #[cfg(feature = "server")]
         cli::Commands::Migrate(args) => commands::migrate::run(args, &cli.global, &output).await,
+        #[cfg(feature = "server")]
         cli::Commands::Serve(args) => commands::serve::run(args, &cli.global, &output).await,
+        #[cfg(feature = "server")]
         cli::Commands::Export { command } => {
             commands::export::run(command, &cli.global, &output).await
         }
+        #[cfg(feature = "server")]
         cli::Commands::Inspect(args) => commands::inspect::run(args, &cli.global, &output).await,
+        #[cfg(feature = "server")]
         cli::Commands::Policies { command } => {
             commands::policies::run(command, &cli.global, &output).await
         }
+        #[cfg(feature = "server")]
         cli::Commands::Token { command } => commands::token::run(command, &output).await,
-        cli::Commands::Entity { command } => commands::entity::run(command, &cli.global, &output).await,
+        #[cfg(feature = "server")]
+        cli::Commands::Entity { command } => {
+            commands::entity::run(command, &cli.global, &output).await
+        }
+        #[cfg(feature = "server")]
         cli::Commands::Login(args) => commands::login::run(args, &cli.global, &output).await,
         cli::Commands::Completions(args) => commands::completions::run(args),
         cli::Commands::Hooks { command } => {
             commands::hooks::run(command, &cli.global, &output).await
         }
         cli::Commands::Site { command } => commands::site::run(command, &cli.global, &output).await,
+        #[cfg(feature = "server")]
         cli::Commands::BootstrapAdmin(args) => {
             commands::bootstrap_admin::run(args, &cli.global, &output).await
         }

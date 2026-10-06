@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+#[cfg(feature = "server")]
 use schema_forge_backend::BackendError;
 use schema_forge_dsl::DslError;
 use schema_forge_signing::{SigningError, VerifyError};
@@ -51,6 +52,7 @@ pub enum CliError {
 
     /// Backend connection/query errors.
     #[error("backend error: {0}")]
+    #[cfg(feature = "server")]
     Backend(#[from] BackendError),
 
     /// IO errors (file not found, permission denied).
@@ -66,6 +68,7 @@ pub enum CliError {
 
     /// User cancelled operation.
     #[error("operation cancelled")]
+    #[cfg(any(feature = "server", test))]
     Cancelled,
 
     /// Schema file or directory not found.
@@ -74,6 +77,7 @@ pub enum CliError {
 
     /// Schema not found in backend.
     #[error("schema '{name}' not found")]
+    #[cfg(feature = "server")]
     SchemaNotFound { name: String },
 
     /// Directory already exists (init without --force).
@@ -82,14 +86,17 @@ pub enum CliError {
 
     /// Non-TTY requires --force for destructive operations.
     #[error("destructive changes require --force in non-interactive mode; for field renames declare @renamed_from(\"old_name\") to preserve data")]
+    #[cfg(feature = "server")]
     RequiresForce,
 
     /// Noninteractive migration preflight reports every destructive step.
     #[error("destructive changes require --force in non-interactive mode; no schemas were applied:\n{details}\nFor field renames declare @renamed_from(\"old_name\") to preserve data")]
+    #[cfg(feature = "server")]
     RequiresForceBatch { details: String },
 
     /// HTTP server errors.
     #[error("server error: {message}")]
+    #[cfg(any(feature = "server", test))]
     Server { message: String },
 
     /// A non-success response from the entity REST API. Carries the HTTP
@@ -99,6 +106,7 @@ pub enum CliError {
     /// `details` and an actionable tip — so `Display` can render it
     /// verbatim. `status` and `kind` drive the exit code and JSON output.
     #[error("{message}")]
+    #[cfg(any(feature = "server", test))]
     Http {
         status: u16,
         kind: String,
@@ -110,6 +118,7 @@ pub enum CliError {
     /// [`CliError::Http`] (the server answered) and from
     /// [`BackendError::ConnectionError`] (a direct database connection).
     #[error("connection error: {message}")]
+    #[cfg(any(feature = "server", test))]
     Connection { message: String },
 
     /// Schema-signature verification rejected the input. Wraps the
@@ -154,13 +163,18 @@ impl CliError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::Parse { .. } => ExitCode::ParseError,
+            #[cfg(feature = "server")]
             Self::Backend(BackendError::ConnectionError { .. }) => ExitCode::ConnectionError,
+            #[cfg(feature = "server")]
             Self::Backend(BackendError::MigrationFailed { .. }) => ExitCode::MigrationError,
+            #[cfg(feature = "server")]
             Self::Backend(_) => ExitCode::GeneralError,
             Self::Config { .. } | Self::NoSchemaFiles { .. } | Self::Signing { .. } => {
                 ExitCode::InvalidArguments
             }
+            #[cfg(any(feature = "server", test))]
             Self::Server { .. } => ExitCode::ServerError,
+            #[cfg(any(feature = "server", test))]
             Self::Http { status, .. } => match status {
                 401 => ExitCode::AuthFailed,
                 403 => ExitCode::Forbidden,
@@ -168,15 +182,18 @@ impl CliError {
                 500..=599 => ExitCode::ServerError,
                 _ => ExitCode::GeneralError,
             },
+            #[cfg(any(feature = "server", test))]
             Self::Connection { .. } => ExitCode::ConnectionError,
             Self::VerificationFailed { .. } => ExitCode::VerificationFailed,
-            Self::Io { .. }
-            | Self::Cancelled
-            | Self::SchemaNotFound { .. }
-            | Self::DirectoryExists { .. }
-            | Self::RequiresForce
-            | Self::RequiresForceBatch { .. }
-            | Self::Other(_) => ExitCode::GeneralError,
+            Self::Io { .. } | Self::DirectoryExists { .. } | Self::Other(_) => {
+                ExitCode::GeneralError
+            }
+            #[cfg(any(feature = "server", test))]
+            Self::Cancelled => ExitCode::GeneralError,
+            #[cfg(feature = "server")]
+            Self::SchemaNotFound { .. } | Self::RequiresForce | Self::RequiresForceBatch { .. } => {
+                ExitCode::GeneralError
+            }
         }
     }
 
@@ -194,6 +211,7 @@ impl CliError {
                     "errors": error_list,
                 })
             }
+            #[cfg(feature = "server")]
             Self::Backend(e) => serde_json::json!({
                 "error": "backend_error",
                 "message": e.to_string(),
@@ -207,10 +225,12 @@ impl CliError {
                 "error": "config_error",
                 "message": message,
             }),
+            #[cfg(any(feature = "server", test))]
             Self::Server { message } => serde_json::json!({
                 "error": "server_error",
                 "message": message,
             }),
+            #[cfg(any(feature = "server", test))]
             Self::Http {
                 status,
                 kind,
@@ -220,6 +240,7 @@ impl CliError {
                 "message": message,
                 "status": status,
             }),
+            #[cfg(any(feature = "server", test))]
             Self::Connection { message } => serde_json::json!({
                 "error": "connection_error",
                 "message": message,
@@ -236,6 +257,19 @@ impl CliError {
                 "error": "error",
                 "message": other.to_string(),
             }),
+        }
+    }
+}
+
+impl From<schema_forge_codegen::error::GenerationError> for CliError {
+    fn from(error: schema_forge_codegen::error::GenerationError) -> Self {
+        match error {
+            schema_forge_codegen::error::GenerationError::Io { path, source } => {
+                Self::Io { path, source }
+            }
+            schema_forge_codegen::error::GenerationError::Config { message } => {
+                Self::Config { message }
+            }
         }
     }
 }
@@ -257,6 +291,7 @@ mod tests {
         assert_eq!(err.exit_code(), ExitCode::ParseError);
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn backend_connection_error_exit_code() {
         let err = CliError::Backend(BackendError::ConnectionError {
@@ -265,6 +300,7 @@ mod tests {
         assert_eq!(err.exit_code(), ExitCode::ConnectionError);
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn backend_migration_error_exit_code() {
         let err = CliError::Backend(BackendError::MigrationFailed {
@@ -312,6 +348,7 @@ mod tests {
         assert!(err.to_string().contains("test.schema"));
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn display_backend_error() {
         let err = CliError::Backend(BackendError::SchemaNotFound {
@@ -344,6 +381,7 @@ mod tests {
         assert!(json["errors"].is_array());
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn to_json_backend_error() {
         let err = CliError::Backend(BackendError::ConnectionError {

@@ -47,9 +47,12 @@ lettre = { version = "0.11.22", default-features = false, features = ["tokio1-ru
 schema-forge-cel = { version = "0.12.0", path = "../schema-forge-cel" }
 rust_xlsxwriter = { version = "0.95.0", features = ["chrono"] }
 zip = "8.6.0"
+schema-forge-config = { version = "0.1.0", path = "../schema-forge-config" }
 
 
 [features]
+# Real database contract suites are opt-in; portable tests need no database engine.
+test-surrealdb = ["dep:schema-forge-surrealdb"]
 sse = ["acton-service/sse"]
 oauth = ["acton-service/oauth"]
 surrealdb = ["acton-service/surrealdb", "dep:schema-forge-surrealdb"]
@@ -61,7 +64,6 @@ graphql = ["dep:async-graphql", "dep:async-graphql-axum"]
 fips = ["dep:aws-lc-rs"]
 
 [dev-dependencies]
-schema-forge-surrealdb = { path = "../schema-forge-surrealdb" }
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5" }
 http-body-util = "0.1"
@@ -74,3 +76,83 @@ calamine = "0.35.0"
 prost-build = "0.14.3"
 tonic-build = "0.14"
 tonic-prost-build = "0.14"
+
+[[test]]
+name = "auth_demo"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "auth_login"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "conditional_entities"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "create_intents"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "creator_membership"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "cross_entity_reads"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "entity_events"
+required-features = ["test-surrealdb", "sse"]
+
+[[test]]
+name = "export_async_integration"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "export_integration"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "file_authorization"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "graphql_tenants"
+required-features = ["test-surrealdb", "graphql"]
+
+[[test]]
+name = "graphql_writes"
+required-features = ["test-surrealdb", "graphql"]
+
+[[test]]
+name = "hooks_integration"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "integration"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "invitations"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "oauth_login"
+required-features = ["test-surrealdb", "oauth"]
+
+[[test]]
+name = "oauth_storage"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "policy_preflight"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "relation_read_authorization"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "users"
+required-features = ["test-surrealdb"]

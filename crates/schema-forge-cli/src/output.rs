@@ -119,6 +119,7 @@ impl OutputContext {
     }
 
     /// Whether to show progress spinners.
+    #[cfg(any(feature = "server", test))]
     pub fn show_progress(&self) -> bool {
         !self.quiet && self.mode == OutputMode::Human && Term::stderr().is_term()
     }
@@ -135,8 +136,11 @@ mod tests {
             verbose,
             quiet,
             no_color,
+            #[cfg(feature = "server")]
             db_url: None,
+            #[cfg(feature = "server")]
             db_ns: None,
+            #[cfg(feature = "server")]
             db_name: None,
             trust_policy: None,
             no_verify: false,

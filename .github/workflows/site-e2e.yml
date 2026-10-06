@@ -1,46 +1,59 @@
 name: Site E2E
-
 on:
   workflow_call:
+    inputs:
+      candidate-server:
+        type: boolean
+        default: true
   workflow_dispatch:
-
+permissions:
+  contents: read
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+  # Update together after a successful release, retaining the verified asset hash.
+  SITE_SERVER_VERSION: v0.49.0
+  SITE_SERVER_SHA256: 5759efb311a0381b58d383cdd7077057d9c10e4af2fc42c34e1dd803c3cf6656
 jobs:
   smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-
-    env:
-      CARGO_TERM_COLOR: always
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-
-      - name: Install system build dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.97.1
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: site-${{ inputs.candidate-server && 'candidate' || 'tooling' }}
+      - uses: pnpm/action-setup@v4
         with:
           version: 10
-
-      - name: Install Node
-        uses: actions/setup-node@v6
+      - uses: actions/setup-node@v6
         with:
-          node-version: "20"
-
-      - name: Build schemaforge binary
-        run: cargo build --package schema-forge-cli --bin schemaforge
-
-      - name: Run site e2e smoke
+          node-version: "22"
+      - name: Build candidate generator
+        run: |
+          cargo build --locked --package schema-forge-cli --bin schemaforge --no-default-features
+          mkdir -p target/site-ci
+          cp target/debug/schemaforge target/site-ci/generator
+          echo "GENERATOR_BIN=$GITHUB_WORKSPACE/target/site-ci/generator" >> "$GITHUB_ENV"
+      - name: Build candidate server
+        if: github.event_name == 'workflow_dispatch' || inputs.candidate-server
+        run: |
+          cargo build --locked --package schema-forge-cli --bin schemaforge
+          echo "SERVER_BIN=$GITHUB_WORKSPACE/target/debug/schemaforge" >> "$GITHUB_ENV"
+      - name: Download pinned validated server
+        if: github.event_name != 'workflow_dispatch' && !inputs.candidate-server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset="schemaforge-${SITE_SERVER_VERSION}-x86_64-unknown-linux-gnu-surrealdb.tar.gz"
+          gh release download "$SITE_SERVER_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir target/site-ci
+          echo "$SITE_SERVER_SHA256  target/site-ci/$asset" | sha256sum --check --strict
+          tar -xzf "target/site-ci/$asset" -C target/site-ci
+          echo "SERVER_BIN=$GITHUB_WORKSPACE/target/site-ci/schemaforge" >> "$GITHUB_ENV"
+      - name: Run generated app build, lint, and browser smoke
         run: ./crates/schema-forge-cli/tests/site_e2e/run.sh
-
-      - name: Upload Playwright artifacts on failure
+      - name: Upload browser artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
@@ -50,8 +63,7 @@ jobs:
             crates/schema-forge-cli/tests/site_e2e/playwright/test-results
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: Upload complete server logs on failure
+      - name: Upload server logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:

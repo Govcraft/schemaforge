@@ -36,8 +36,8 @@ use schema_forge_core::types::{
     DynamicValue, EntityId, FieldType, FileAccess, FileAttachment, FileConstraints, FileStatus,
     HookEvent, SchemaDefinition, SchemaName,
 };
-use std::str::FromStr;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use tokio::sync::oneshot;
 use tracing::{debug, instrument};
 use uuid::Uuid;
@@ -319,7 +319,10 @@ pub async fn mint_upload_url(
         .presign_put(&key, &body.mime, None)
         .await
         .map_err(|e| ForgeError::Internal {
-            message: format!("failed to presign upload for bucket '{}': {e}", ctx.constraints.bucket),
+            message: format!(
+                "failed to presign upload for bucket '{}': {e}",
+                ctx.constraints.bucket
+            ),
         })?;
 
     let expires_at = Utc::now() + chrono::Duration::seconds(presigned.expires_in_secs as i64);
@@ -412,7 +415,10 @@ pub async fn confirm_upload(
             message: format!("HeadObject failed for '{}': {e}", body.key),
         })?
         .ok_or_else(|| ForgeError::ValidationFailed {
-            details: vec![format!("no object at key '{}' — upload did not complete", body.key)],
+            details: vec![format!(
+                "no object at key '{}' — upload did not complete",
+                body.key
+            )],
         })?;
 
     if head.size > ctx.constraints.max_size_bytes {
@@ -425,7 +431,11 @@ pub async fn confirm_upload(
     }
     let observed_mime = head.content_type.unwrap_or_default();
     if !observed_mime.is_empty()
-        && !ctx.constraints.mime_allowlist.iter().any(|m| m.matches(&observed_mime))
+        && !ctx
+            .constraints
+            .mime_allowlist
+            .iter()
+            .any(|m| m.matches(&observed_mime))
     {
         return Err(ForgeError::ValidationFailed {
             details: vec![format!(
@@ -468,10 +478,7 @@ pub async fn confirm_upload(
     // Fire `after_upload` detached — runs under HookDispatchActor supervision.
     // Carries a freshly minted short-TTL presigned GET so the scanner hook can
     // read bytes directly from S3 without streaming through the runtime.
-    let download_url = client
-        .presign_get(&attachment.key, None)
-        .await
-        .ok();
+    let download_url = client.presign_get(&attachment.key, None).await.ok();
     fire_file_after_hook(
         &state,
         &ctx.schema,
@@ -697,9 +704,7 @@ pub async fn scan_complete(
             current.size,
             Some(current.key.clone()),
             Some(current.status.as_str().to_string()),
-            body.reason
-                .as_ref()
-                .map(|r| format!("reason:{r}")),
+            body.reason.as_ref().map(|r| format!("reason:{r}")),
         ),
     )
     .await;
@@ -953,9 +958,7 @@ async fn load_file_context(
             reply: ReplyChannel::new(tx),
         })
         .await;
-    let entity = ask_forge(rx)
-        .await?
-        .map_err(ForgeError::from)?;
+    let entity = ask_forge(rx).await?.map_err(ForgeError::from)?;
 
     let (tx, rx) = oneshot::channel();
     forge
@@ -1005,7 +1008,11 @@ fn validate_upload_request(
             details: vec!["mime must not be empty".into()],
         });
     }
-    if !constraints.mime_allowlist.iter().any(|m| m.matches(&req.mime)) {
+    if !constraints
+        .mime_allowlist
+        .iter()
+        .any(|m| m.matches(&req.mime))
+    {
         return Err(ForgeError::ValidationFailed {
             details: vec![format!(
                 "mime '{}' not in allowlist for this field",
@@ -1333,7 +1340,10 @@ async fn fire_file_after_hook(
                 .await;
         }
         None => {
-            debug!(?event, "HookDispatchActor not registered; after-hook dropped");
+            debug!(
+                ?event,
+                "HookDispatchActor not registered; after-hook dropped"
+            );
         }
     }
 }

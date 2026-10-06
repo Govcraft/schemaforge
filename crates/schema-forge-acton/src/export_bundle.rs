@@ -80,11 +80,7 @@ pub fn blob_member_name(field: &str, entity_id: &str, filename: &str) -> String 
 /// when the archive is later extracted (zip-slip). Falls back to `blob` when
 /// nothing usable remains.
 fn sanitize_archive_segment(name: &str) -> String {
-    let last = name
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(name)
-        .trim();
+    let last = name.rsplit(['/', '\\']).next().unwrap_or(name).trim();
     if last.is_empty() || last == "." || last == ".." {
         "blob".to_string()
     } else {
@@ -132,8 +128,7 @@ pub fn collect_file_blob_refs(
                 if attachment.status != FileStatus::Available {
                     continue;
                 }
-                let member_name =
-                    blob_member_name(field_name, entity.id.as_str(), &attachment.key);
+                let member_name = blob_member_name(field_name, entity.id.as_str(), &attachment.key);
                 refs.push(FileBlobRef {
                     key: attachment.key,
                     member_name,
@@ -387,7 +382,10 @@ mod tests {
             "e1",
             vec![
                 ("title", DynamicValue::Text("t1".into())),
-                ("attachment", attachment_value("blobs/a.png", FileStatus::Available)),
+                (
+                    "attachment",
+                    attachment_value("blobs/a.png", FileStatus::Available),
+                ),
             ],
         );
         // The canonical entity id (EntityId::new normalizes the input) drives the

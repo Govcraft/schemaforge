@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use acton_service::auth::tokens::ClaimsBuilder;
+use schema_forge_acton::authz::authorize;
 use schema_forge_acton::authz::namespace::ActionVerb;
 use schema_forge_acton::authz::principal_claims::{
     PrincipalClaimConfigEntry, PrincipalClaimMappings, PrincipalClaimSourceConfig,
@@ -31,7 +32,6 @@ use schema_forge_acton::authz::principal_claims::{
 };
 use schema_forge_acton::authz::role_ranks::RoleRanks;
 use schema_forge_acton::authz::store::{PolicyStore, PolicyStoreSnapshot};
-use schema_forge_acton::authz::authorize;
 use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::{
     Annotation, Cardinality, DynamicValue, EntityId, FieldDefinition, FieldName, FieldType,
@@ -128,10 +128,7 @@ fn document_with_org(org: &str) -> Entity {
 fn user_entity_with_org(org: &str) -> Entity {
     let mut fields = BTreeMap::new();
     fields.insert("email".to_string(), DynamicValue::Text("alice@x".into()));
-    fields.insert(
-        "client_org_id".to_string(),
-        DynamicValue::Text(org.into()),
-    );
+    fields.insert("client_org_id".to_string(), DynamicValue::Text(org.into()));
     Entity::new(SchemaName::new("User").unwrap(), fields)
 }
 
@@ -270,7 +267,10 @@ fn required_source_with_null_user_field_returns_null_required_error() {
     let user = Entity::new(SchemaName::new("User").unwrap(), user_fields);
 
     let err = login_claims("alice", &user, &mappings).expect_err("required+null must error");
-    assert!(matches!(err, PrincipalClaimsError::NullRequiredUserField { .. }));
+    assert!(matches!(
+        err,
+        PrincipalClaimsError::NullRequiredUserField { .. }
+    ));
 }
 
 #[test]

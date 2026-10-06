@@ -1,0 +1,28 @@
+name: Rust CI setup
+description: Install prerequisites, restore a component cache, and install prebuilt nextest
+inputs:
+  cache-key:
+    description: Component and feature graph identifier
+    required: true
+  packages:
+    description: System prerequisites
+    default: protobuf-compiler libkrb5-dev
+runs:
+  using: composite
+  steps:
+    - name: Install system prerequisites
+      shell: bash
+      env:
+        BUILD_PACKAGES: ${{ inputs.packages }}
+      run: |
+        read -r -a packages <<< "$BUILD_PACKAGES"
+        sudo apt-get update
+        sudo apt-get install -y "${packages[@]}"
+    - uses: dtolnay/rust-toolchain@1.97.1
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        cache-on-failure: true
+    - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+      with:
+        tool: cargo-nextest@0.9.146

@@ -229,10 +229,7 @@ pub enum DslError {
 
     /// An `@export(...)` annotation omitted a required parameter (`formats` or
     /// `max_rows`).
-    MissingExportParam {
-        param: &'static str,
-        span: Span,
-    },
+    MissingExportParam { param: &'static str, span: Span },
 
     /// An `@exportable(flatten: ...)` annotation used a flatten hint that is not
     /// in the canonical vocabulary (currently only `json`).

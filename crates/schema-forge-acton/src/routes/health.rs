@@ -21,11 +21,11 @@
 //! override (e.g. through `Config.service.version` or a builder method).
 //! Tracked as SchemaForge issue #55.
 
-use axum::Json;
 use axum::extract::Request;
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::Serialize;
 
 /// `schema-forge-acton` crate version, stamped at compile time.

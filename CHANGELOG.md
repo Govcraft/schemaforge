@@ -9,6 +9,17 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- Pull requests select affected component checks. Version-only release preparation
+  uses metadata validation; main, nightly, and release tags run full validation.
+  Release packaging waits for tests of the tagged commit. CI installs prebuilt
+  nextest and separates PostgreSQL from SurrealDB checks.
+- Site generation and generated-file primitives live in `schema-forge-codegen`,
+  with site branding types in `schema-forge-config`. The CLI supports a tooling-only
+  `--no-default-features` build; backend builds retain the complete executable.
+- Portable runtime tests no longer compile SurrealDB. Real database integration
+  tests are enabled explicitly with `test-surrealdb`. Generator-only browser smoke
+  tests use a pinned validated server; full validation tests the candidate server.
+
 - Build the server, backends, CLI, and generated hook services on acton-service
   0.46.0. Audit records reach ordinary logs (console, journald, and OTLP log
   exporters) only with `[audit] otlp_logs_enabled = true`, which defaults to

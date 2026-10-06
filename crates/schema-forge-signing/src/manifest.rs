@@ -133,9 +133,7 @@ impl Manifest {
         for file in disk_files {
             let rel = relativise_for_verify(manifest_dir, file)?;
             if !listed.contains(rel.as_str()) {
-                return Err(VerifyError::FileNotInManifest {
-                    path: file.clone(),
-                });
+                return Err(VerifyError::FileNotInManifest { path: file.clone() });
             }
         }
 
@@ -184,9 +182,7 @@ fn relativise_for_verify(base: &Path, target: &Path) -> Result<String, VerifyErr
 }
 
 fn relativise_inner(base: &Path, target: &Path) -> Result<String, String> {
-    let base = base
-        .canonicalize()
-        .unwrap_or_else(|_| base.to_path_buf());
+    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
     let target = target
         .canonicalize()
         .unwrap_or_else(|_| target.to_path_buf());
@@ -304,9 +300,7 @@ mod tests {
         write(&dir.path().join("b.schema"), b"B");
         let files = vec![dir.path().join("a.schema"), dir.path().join("b.schema")];
         let manifest = Manifest::build(dir.path(), &files).unwrap();
-        manifest
-            .validate_against_disk(dir.path(), &files)
-            .unwrap();
+        manifest.validate_against_disk(dir.path(), &files).unwrap();
     }
 
     #[test]

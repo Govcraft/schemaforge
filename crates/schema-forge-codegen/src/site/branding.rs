@@ -3,12 +3,12 @@
 use std::path::Path;
 
 use heck::{ToKebabCase, ToTitleCase};
-use schema_forge_acton::config::SiteBrandingConfig;
+use schema_forge_config::SiteBrandingConfig;
 use schema_forge_core::types::{Annotation, SchemaDefinition, TenantKind};
 use serde::Serialize;
 
-use crate::cli::{GlobalOpts, SiteGenerateArgs};
-use crate::error::CliError;
+use super::SiteOptions;
+use crate::error::GenerationError;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Branding {
@@ -23,11 +23,10 @@ pub struct Branding {
 
 impl Branding {
     pub fn resolve(
-        args: &SiteGenerateArgs,
+        args: &SiteOptions,
         config: &SiteBrandingConfig,
-        global: &GlobalOpts,
         schemas: &[SchemaDefinition],
-    ) -> Result<Self, CliError> {
+    ) -> Result<Self, GenerationError> {
         let name = args
             .name
             .clone()
@@ -51,7 +50,7 @@ impl Branding {
                     .unwrap_or_else(|| "Application".into())
             });
         if name.trim().is_empty() || name.chars().any(char::is_control) {
-            return Err(CliError::Config {
+            return Err(GenerationError::Config {
                 message: "site name must be nonempty and contain no control characters".into(),
             });
         }
@@ -60,8 +59,8 @@ impl Branding {
             .as_ref()
             .or(config.title_suffix.as_ref())
             .unwrap_or(&name);
-        let config_base = global
-            .config
+        let config_base = args
+            .config_path
             .as_deref()
             .and_then(Path::parent)
             .unwrap_or(Path::new("."));
@@ -91,8 +90,8 @@ impl Branding {
     }
 }
 
-fn json_string(value: &str) -> Result<String, CliError> {
-    serde_json::to_string(value).map_err(|error| CliError::Config {
+fn json_string(value: &str) -> Result<String, GenerationError> {
+    serde_json::to_string(value).map_err(|error| GenerationError::Config {
         message: format!("failed to encode site branding: {error}"),
     })
 }
@@ -101,7 +100,7 @@ fn read_asset(
     flag: Option<&Path>,
     configured: Option<&Path>,
     config_base: &Path,
-) -> Result<Option<String>, CliError> {
+) -> Result<Option<String>, GenerationError> {
     let Some(path) = flag
         .map(Path::to_path_buf)
         .or_else(|| configured.map(|path| config_base.join(path)))
@@ -112,14 +111,14 @@ fn read_asset(
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
     {
-        return Err(CliError::Config {
+        return Err(GenerationError::Config {
             message: format!("site branding asset {} must be an SVG file", path.display()),
         });
     }
     let contents =
-        std::fs::read_to_string(&path).map_err(|source| CliError::Io { path, source })?;
+        std::fs::read_to_string(&path).map_err(|source| GenerationError::Io { path, source })?;
     if !contents.contains("<svg") {
-        return Err(CliError::Config {
+        return Err(GenerationError::Config {
             message: "site branding asset must contain an SVG document".into(),
         });
     }

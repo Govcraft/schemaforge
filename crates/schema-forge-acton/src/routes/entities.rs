@@ -2995,12 +2995,14 @@ pub async fn create_entity(
         ActionVerb::Create,
     )?;
 
-    let membership = super::creator_membership::prepare(&state, &schema_def, &entity, claims.as_ref()).await?;
+    let membership =
+        super::creator_membership::prepare(&state, &schema_def, &entity, claims.as_ref()).await?;
 
     if let Some(intent) = intent {
         let changed_fields: Vec<_> = entity.fields.keys().cloned().collect();
         let receipt =
-            super::create_intents::commit(&state, intent, entity, claims.as_ref(), membership).await?;
+            super::create_intents::commit(&state, intent, entity, claims.as_ref(), membership)
+                .await?;
         if receipt.created {
             super::audit::log_forge_event(&state, claims.as_ref(), &headers, "forge.entity.created", acton_service::audit::AuditSeverity::Informational, serde_json::json!({"schema":schema,"intent_id":receipt.id.as_str(),"changed_fields":changed_fields,"entity_id":receipt.entity_id.as_ref().map(|id|id.as_str())})).await;
         }

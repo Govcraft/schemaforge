@@ -48,9 +48,9 @@ jobs:
             --certificate-identity-regexp '^https://github\.com/Govcraft/schemaforge-console/\.github/workflows/release\.yml@' \
             SHA256SUMS
 
-      - name: Build native Windows MSSQL binary
+      - name: Check native Windows MSSQL binary
         run: >-
-          cargo build --package schema-forge-cli --bin schemaforge
+          cargo check --locked --package schema-forge-cli --bin schemaforge
           --no-default-features --features mssql
 
   sql-server:
@@ -78,8 +78,9 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Install nextest
-        run: cargo install cargo-nextest --locked
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: cargo-nextest@0.9.146
 
       - name: Run SQL Server integration test
         env:

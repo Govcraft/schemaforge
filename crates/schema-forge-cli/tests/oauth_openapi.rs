@@ -1,3 +1,4 @@
+#![cfg(feature = "server")]
 //! Export the public redirect contract without depending on a running forge.
 #[test]
 fn export_reuses_login_response_and_only_lists_compiled_oauth_routes() {

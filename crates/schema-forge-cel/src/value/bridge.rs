@@ -282,10 +282,7 @@ mod tests {
         let c = dynamic_to_cel(&d).unwrap();
         assert_eq!(
             c,
-            CelValue::List(vec![
-                CelValue::Int(1),
-                CelValue::String("two".to_string())
-            ])
+            CelValue::List(vec![CelValue::Int(1), CelValue::String("two".to_string())])
         );
         // Inverse comes back as an Array of the same values.
         assert_eq!(cel_to_dynamic(&c).unwrap(), d);

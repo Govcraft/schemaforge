@@ -122,8 +122,7 @@ source   = { user_field = "client_org_id" }
 
     let parsed_once: SchemaForgeConfig =
         toml::from_str(toml_input).expect("first parse must succeed");
-    let re_emitted =
-        toml::to_string(&parsed_once).expect("re-serialisation must succeed");
+    let re_emitted = toml::to_string(&parsed_once).expect("re-serialisation must succeed");
     let parsed_twice: SchemaForgeConfig =
         toml::from_str(&re_emitted).expect("re-parse of re-emitted TOML must succeed");
 
@@ -157,5 +156,8 @@ type = "string"
         .principal_claims
         .get("client_org_id")
         .expect("mapping present");
-    assert!(entry.source.is_none(), "no source declared → source is None");
+    assert!(
+        entry.source.is_none(),
+        "no source declared → source is None"
+    );
 }

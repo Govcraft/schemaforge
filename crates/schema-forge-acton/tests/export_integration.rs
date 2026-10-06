@@ -219,10 +219,7 @@ fn non_export_schema() -> SchemaDefinition {
     .unwrap()
 }
 
-async fn provision(
-    backend: &Arc<SurrealBackend>,
-    schema: &SchemaDefinition,
-) {
+async fn provision(backend: &Arc<SurrealBackend>, schema: &SchemaDefinition) {
     let plan = schema_forge_core::migration::DiffEngine::create_new(schema);
     backend
         .apply_migration(&schema.name, &plan.steps)
@@ -267,8 +264,7 @@ async fn seeded_app_with_config(
     let admin = app_with_claims(state.clone(), make_claims(&["platform_admin"]));
     let path = format!("/schemas/{}/entities", schema.name.as_str());
     for row in rows {
-        let (status, json) =
-            json_request(&admin, Method::POST, &path, Some(row.clone())).await;
+        let (status, json) = json_request(&admin, Method::POST, &path, Some(row.clone())).await;
         assert_eq!(status, StatusCode::CREATED, "seed failed: {json}");
     }
 
@@ -295,7 +291,12 @@ async fn csv_export_streams_only_exportable_columns() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK, "body: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "body: {}",
+        String::from_utf8_lossy(&body)
+    );
     assert!(ctype.starts_with("text/csv"), "content-type: {ctype}");
     let text = String::from_utf8(body).unwrap();
     let header = text.lines().next().unwrap();
@@ -310,9 +311,8 @@ async fn csv_export_streams_only_exportable_columns() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ndjson_export_streams_id_and_exportable_columns() {
-    let rows = [
-        serde_json::json!({ "fields": { "name": "Ada", "notes": "vip", "secret": "SSN-111" } }),
-    ];
+    let rows =
+        [serde_json::json!({ "fields": { "name": "Ada", "notes": "vip", "secret": "SSN-111" } })];
     let app = seeded_app(export_schema(100), &rows, &["platform_admin"]).await;
 
     let (status, ctype, body) = raw_request(
@@ -323,7 +323,12 @@ async fn ndjson_export_streams_id_and_exportable_columns() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK, "body: {}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "body: {}",
+        String::from_utf8_lossy(&body)
+    );
     assert_eq!(ctype, "application/x-ndjson", "content-type: {ctype}");
     let text = String::from_utf8(body).unwrap();
     let line = text.lines().next().unwrap();
@@ -336,9 +341,8 @@ async fn ndjson_export_streams_id_and_exportable_columns() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_requested_fields_narrow_to_intersection() {
-    let rows = [
-        serde_json::json!({ "fields": { "name": "Ada", "notes": "vip", "secret": "SSN-111" } }),
-    ];
+    let rows =
+        [serde_json::json!({ "fields": { "name": "Ada", "notes": "vip", "secret": "SSN-111" } })];
     let app = seeded_app(export_schema(100), &rows, &["platform_admin"]).await;
 
     // Caller asks for `secret` (not exportable) and `name` (exportable).
@@ -652,9 +656,8 @@ async fn requesting_only_non_exportable_fields_is_denied() {
     // A caller asking exclusively for a readable-but-not-@exportable field is a
     // denied path (audited as `no_exportable_fields_requested`), not a silent
     // id-only stream. `secret` is readable but never exportable.
-    let rows = [
-        serde_json::json!({ "fields": { "name": "Ada", "notes": "n", "secret": "SSN-111" } }),
-    ];
+    let rows =
+        [serde_json::json!({ "fields": { "name": "Ada", "notes": "n", "secret": "SSN-111" } })];
     let app = seeded_app(export_schema(100), &rows, &["platform_admin"]).await;
 
     let (status, json) = json_request(
@@ -673,9 +676,8 @@ async fn requesting_only_non_exportable_fields_is_denied() {
 async fn partial_non_exportable_request_still_narrows_and_succeeds() {
     // Asking for one exportable (`name`) and one non-exportable (`secret`) field
     // is NOT a denial — it narrows to the exportable intersection and streams.
-    let rows = [
-        serde_json::json!({ "fields": { "name": "Ada", "notes": "n", "secret": "SSN-111" } }),
-    ];
+    let rows =
+        [serde_json::json!({ "fields": { "name": "Ada", "notes": "n", "secret": "SSN-111" } })];
     let app = seeded_app(export_schema(100), &rows, &["platform_admin"]).await;
 
     let (status, _ct, body) = raw_request(
@@ -759,12 +761,12 @@ impl schema_forge_backend::auth::RecordAccessPolicy for ExportTargetPolicy {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn export_relation_labels_respect_target_schema_row_field_and_operator_access() {
-    use schema_forge_backend::{Entity, EntityStore};
-    use schema_forge_core::types::DynamicValue;
     use schema_forge_acton::authz::{
         PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,
     };
     use schema_forge_acton::routes::export::{materialize_export, prepare_export, ExportContext};
+    use schema_forge_backend::{Entity, EntityStore};
+    use schema_forge_core::types::DynamicValue;
 
     let schemas = schema_forge_dsl::parse(
         r#"

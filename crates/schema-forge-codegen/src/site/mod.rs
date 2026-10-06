@@ -1,189 +1,99 @@
-//! `schema-forge site` subcommand: generate a Vite + React + Tailwind + shadcn
-//! project from a schema definition.
-//!
-//! v1 generator — produces pages for every non-system schema in the schema
-//! directory, with shared generated code (types, Zod validators, API client,
-//! route manifest) and per-entity pages. `--schema NAME` narrows generation
-//! to a single schema for debugging or partial regen.
-
+//! Generate React sites independently of the CLI and server runtime.
 mod branding;
 mod context;
 mod mapping;
 mod render;
 mod vendor;
-
+use self::context::{EntityView, PageContext, SchemaMeta, SiteContext};
+use self::render::SiteRenderer;
+use crate::codegen::{FilePlan, WriteMode};
+use crate::error::GenerationError;
+use heck::ToKebabCase;
+use schema_forge_config::SiteBrandingConfig;
+use schema_forge_core::types::SchemaDefinition;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use heck::ToKebabCase;
-use schema_forge_core::types::SchemaDefinition;
-
-use crate::cli::{GlobalOpts, SiteCommands, SiteGenerateArgs};
-use crate::commands::codegen::{
-    check_plan, write_plan, FilePlan, SentinelKind, WriteMode, WriteOptions,
-};
-use crate::commands::parse::parse_all_schemas_with_global;
-use crate::error::CliError;
-use crate::output::OutputContext;
-
-use self::context::{EntityView, PageContext, SchemaMeta, SiteContext};
-use self::render::SiteRenderer;
-
-/// Generator identifier embedded in markers and the manifest.
-const GENERATOR: &str = "site";
-
-/// Top-level dispatch for `schema-forge site ...`.
-pub async fn run(
-    command: SiteCommands,
-    global: &GlobalOpts,
-    output: &OutputContext,
-) -> Result<(), CliError> {
-    match command {
-        SiteCommands::Generate(args) => generate(args, global, output),
-    }
+/// Inputs for rendering a site. Paths are resolved only at the asset/template I/O boundaries.
+#[derive(Debug, Clone, Default)]
+pub struct SiteOptions {
+    pub schema_dir: PathBuf,
+    pub schema: Option<String>,
+    pub name: Option<String>,
+    pub title_suffix: Option<String>,
+    pub logo: Option<PathBuf>,
+    pub logo_on_dark: Option<PathBuf>,
+    pub favicon: Option<PathBuf>,
+    pub templates_dir: Option<PathBuf>,
+    pub accessibility_contact: Option<String>,
+    pub config_path: Option<PathBuf>,
 }
 
-fn generate(
-    args: SiteGenerateArgs,
-    global: &GlobalOpts,
-    output: &OutputContext,
-) -> Result<(), CliError> {
-    output.status(&format!(
-        "Scanning schemas in {}...",
-        args.schema_dir.display()
-    ));
-    let schemas =
-        parse_all_schemas_with_global(std::slice::from_ref(&args.schema_dir), global, output)?;
+/// Rendered file plan and nonfatal unsupported-field diagnostics.
+pub struct SitePlan {
+    pub files: Vec<FilePlan>,
+    pub warnings: Vec<String>,
+    pub entity_count: usize,
+}
 
-    if schemas.is_empty() {
-        return Err(CliError::Config {
-            message: format!(
-                "no schemas found in {} — nothing to generate",
-                args.schema_dir.display()
-            ),
-        });
-    }
-
-    // Filter: drop system schemas (internal control-plane tables like
-    // Theme / Workflow) and, if --schema was passed, narrow to that one.
-    let targets = pick_target_schemas(&schemas, args.schema.as_deref())?;
-    for def in &targets {
-        output.status(&format!("  target: {}", def.name.as_str()));
-    }
-
-    let config = crate::config::load_svc_config(global)?;
-    let branding =
-        branding::Branding::resolve(&args, &config.custom.schema_forge.site, global, &schemas)?;
+/// Render validated schemas into a file plan, without writing output files.
+pub fn plan_site(
+    schemas: &[SchemaDefinition],
+    args: &SiteOptions,
+    config: &SiteBrandingConfig,
+) -> Result<SitePlan, GenerationError> {
+    let targets = pick_target_schemas(schemas, args.schema.as_deref())?;
+    let branding = branding::Branding::resolve(args, config, schemas)?;
     let slug: String = branding
         .name
         .to_kebab_case()
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
         .collect();
-    let slug = slug.trim_matches('-').to_string();
+    let slug = slug.trim_matches('-');
     let project_name = if slug.is_empty() {
-        "application".into()
+        "application".to_owned()
     } else {
-        slug
+        slug.to_owned()
     };
-
-    // Build a catalog of every known schema so mapping can resolve
-    // relation targets (display field, kebab slug) even when the target
-    // itself isn't being rendered in this run.
     let catalog: BTreeMap<String, SchemaMeta> = schemas
         .iter()
         .map(|def| (def.name.as_str().to_string(), SchemaMeta::from_schema(def)))
         .collect();
-
-    // Project each schema into an EntityView. Drop entities with zero
-    // v0-supported fields so we never emit a broken page.
-    let mut entities: Vec<EntityView> = Vec::with_capacity(targets.len());
-    for def in &targets {
-        let ev = EntityView::from_schema(def, &catalog, output)?;
-        if ev.fields.is_empty() {
-            output.warn(&format!(
-                "site: skipping schema `{}` — no supported fields",
-                def.name.as_str(),
+    let mut warnings = Vec::new();
+    let mut entities = Vec::new();
+    for def in targets {
+        let entity = EntityView::from_schema(def, &catalog, &mut warnings)?;
+        if entity.fields.is_empty() {
+            warnings.push(format!(
+                "site: skipping schema `{}`: no supported fields",
+                def.name.as_str()
             ));
-            continue;
+        } else {
+            entities.push(entity);
         }
-        entities.push(ev);
     }
-
     if entities.is_empty() {
-        return Err(CliError::Config {
-            message: "no schemas have any v0-supported fields — everything was \
-                 skipped. v1 supports: Text, RichText, Integer, Float, \
-                 Boolean, DateTime, Enum, Json, Relation(One|Many), \
-                 Array(scalar|enum), Composite."
-                .to_string(),
+        return Err(GenerationError::Config {
+            message: format!("{}\nno schemas have any v0-supported fields: everything was skipped. v1 supports: Text, RichText, Integer, Float, Boolean, DateTime, Enum, Json, Relation(One|Many), Array(scalar|enum), Composite.", warnings.join("\n")),
         });
     }
-
     let ctx = SiteContext {
         branding,
-        project_name: project_name.clone(),
+        project_name,
         entities,
         accessibility_contact: args.accessibility_contact.clone(),
     };
-
     let templates_dir = args.templates_dir.clone().or_else(|| {
-        let default = PathBuf::from("site-templates");
-        default.is_dir().then_some(default)
+        let path = PathBuf::from("site-templates");
+        path.is_dir().then_some(path)
     });
-    if let Some(ref dir) = templates_dir {
-        output.status(&format!("Using template overrides from {}", dir.display()));
-    }
     let renderer = SiteRenderer::new(templates_dir)?;
-    let plan = build_plan(&ctx, &renderer)?;
-
-    let options = WriteOptions {
-        generator: GENERATOR,
-        sentinel_kind: SentinelKind::Site,
-        force_user_files: args.force_user_files,
-        force_init: args.force_init,
-    };
-
-    if args.check {
-        let report = check_plan(&args.out_dir, &plan, options)?;
-        if report.is_clean() {
-            output.success("site generator is idempotent — no drift");
-            return Ok(());
-        }
-        for p in &report.differing {
-            output.status(&format!("~ {} (differs)", p.display()));
-        }
-        for p in &report.missing {
-            output.status(&format!("- {} (missing)", p.display()));
-        }
-        for p in &report.orphaned {
-            output.status(&format!("! {} (orphaned)", p.display()));
-        }
-        return Err(CliError::Config {
-            message: format!(
-                "check failed: {} differing, {} missing, {} orphaned",
-                report.differing.len(),
-                report.missing.len(),
-                report.orphaned.len(),
-            ),
-        });
-    }
-
-    write_plan(&args.out_dir, &plan, options)?;
-
-    output.success(&format!(
-        "React site scaffold written to {} ({} entities)",
-        args.out_dir.display(),
-        ctx.entities.len(),
-    ));
-    output.status("  Next steps:");
-    output.status(&format!(
-        "    cd {} && pnpm install && pnpm build",
-        args.out_dir.display()
-    ));
-    output.status("    pnpm dev  # local preview");
-
-    Ok(())
+    Ok(SitePlan {
+        files: build_plan(&ctx, &renderer)?,
+        warnings,
+        entity_count: ctx.entities.len(),
+    })
 }
 
 /// Choose which schemas to generate pages for.
@@ -196,13 +106,13 @@ fn generate(
 fn pick_target_schemas<'a>(
     schemas: &'a [SchemaDefinition],
     wanted: Option<&str>,
-) -> Result<Vec<&'a SchemaDefinition>, CliError> {
+) -> Result<Vec<&'a SchemaDefinition>, GenerationError> {
     match wanted {
         Some(name) => {
             let found = schemas
                 .iter()
                 .find(|s| s.name.as_str() == name)
-                .ok_or_else(|| CliError::Config {
+                .ok_or_else(|| GenerationError::Config {
                     message: format!(
                         "schema `{name}` not found. Available: {}",
                         schemas
@@ -213,7 +123,7 @@ fn pick_target_schemas<'a>(
                     ),
                 })?;
             if found.is_system() {
-                return Err(CliError::Config {
+                return Err(GenerationError::Config {
                     message: format!(
                         "schema `{name}` is a @system schema; system schemas \
                          are excluded from the site generator."
@@ -225,7 +135,7 @@ fn pick_target_schemas<'a>(
         None => {
             let all: Vec<&SchemaDefinition> = schemas.iter().filter(|s| !s.is_system()).collect();
             if all.is_empty() {
-                return Err(CliError::Config {
+                return Err(GenerationError::Config {
                     message: "every schema in the directory is @system; \
                               nothing to generate."
                         .to_string(),
@@ -238,7 +148,10 @@ fn pick_target_schemas<'a>(
 
 /// Build the flat [`FilePlan`] list describing every file the site generator
 /// wants to produce. Pure function — no I/O beyond template rendering.
-fn build_plan(ctx: &SiteContext, renderer: &SiteRenderer) -> Result<Vec<FilePlan>, CliError> {
+fn build_plan(
+    ctx: &SiteContext,
+    renderer: &SiteRenderer,
+) -> Result<Vec<FilePlan>, GenerationError> {
     let mut plan: Vec<FilePlan> = Vec::with_capacity(32 + 3 * ctx.entities.len());
 
     // ---- Project-root user files (Preserve: scaffold once) ----
@@ -540,7 +453,7 @@ mod tests {
     fn pick_target_errors_on_unknown_name() {
         let s = vec![employee_schema()];
         let err = pick_target_schemas(&s, Some("Nope")).unwrap_err();
-        assert!(matches!(err, CliError::Config { .. }));
+        assert!(matches!(err, GenerationError::Config { .. }));
     }
 
     fn opportunity_schema_with_enum_colors() -> SchemaDefinition {
@@ -580,13 +493,8 @@ mod tests {
         let schema = opportunity_schema_with_enum_colors();
         let mut catalog = BTreeMap::new();
         catalog.insert("Opportunity".to_string(), SchemaMeta::from_schema(&schema));
-        let output = crate::output::OutputContext {
-            mode: crate::output::OutputMode::Plain,
-            verbose: 0,
-            quiet: true,
-            use_color: false,
-        };
-        let entity = EntityView::from_schema(&schema, &catalog, &output).unwrap();
+        let mut warnings = Vec::new();
+        let entity = EntityView::from_schema(&schema, &catalog, &mut warnings).unwrap();
         let page_ctx = PageContext {
             project_name: "demo".to_string(),
             entity,
@@ -669,13 +577,8 @@ mod tests {
         let schema = schema_with_list_hints();
         let mut catalog = BTreeMap::new();
         catalog.insert("Opportunity".to_string(), SchemaMeta::from_schema(&schema));
-        let output = crate::output::OutputContext {
-            mode: crate::output::OutputMode::Plain,
-            verbose: 0,
-            quiet: true,
-            use_color: false,
-        };
-        let entity = EntityView::from_schema(&schema, &catalog, &output).unwrap();
+        let mut warnings = Vec::new();
+        let entity = EntityView::from_schema(&schema, &catalog, &mut warnings).unwrap();
 
         // title had no explicit hint but is the @display field → promoted to primary.
         let title = entity.fields.iter().find(|f| f.leaf == "title").unwrap();
@@ -777,13 +680,8 @@ mod tests {
         let schema = document_schema_with_file();
         let mut catalog = BTreeMap::new();
         catalog.insert("Document".to_string(), SchemaMeta::from_schema(&schema));
-        let output = crate::output::OutputContext {
-            mode: crate::output::OutputMode::Plain,
-            verbose: 0,
-            quiet: true,
-            use_color: false,
-        };
-        EntityView::from_schema(&schema, &catalog, &output).unwrap()
+        let mut warnings = Vec::new();
+        EntityView::from_schema(&schema, &catalog, &mut warnings).unwrap()
     }
 
     #[test]
@@ -856,7 +754,7 @@ mod tests {
             .form_fields
             .iter()
             .any(|field| field.leaf == "attachment" && field.kind == "file"));
-        let validators = include_str!("../../../templates/site/src/generated/zod-schemas.ts.jinja");
+        let validators = include_str!("../../templates/site/src/generated/zod-schemas.ts.jinja");
         let payload_normalizer = validators
             .split("export function normalizeFormPayload(")
             .nth(1)
@@ -950,5 +848,52 @@ mod tests {
             !sortable_block.contains("\"attachment\""),
             "hidden file field must be excluded from SORTABLE_FIELDS"
         );
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    #[test]
+    fn plan_renders_multiple_entities_and_keeps_custom_pages_user_owned() {
+        let schemas = schema_forge_dsl::parse(
+            "schema Invoice { number: text required } schema Department { name: text required }",
+        )
+        .expect("valid schemas");
+        let plan = plan_site(
+            &schemas,
+            &SiteOptions {
+                name: Some("Acme".into()),
+                ..SiteOptions::default()
+            },
+            &SiteBrandingConfig::default(),
+        )
+        .expect("render site");
+        assert_eq!(plan.entity_count, 2);
+        assert!(plan.warnings.is_empty());
+        assert!(plan.files.iter().any(|file| file.relative_path
+            == std::path::Path::new("src/app/pages/invoice/edit.tsx")
+            && file.mode == WriteMode::Preserve));
+        assert!(plan.files.iter().any(|file| file.relative_path
+            == std::path::Path::new("src/app/pages/department/edit.generated.tsx")
+            && file.mode == WriteMode::Owned));
+    }
+
+    #[test]
+    fn unknown_requested_schema_reports_available_names() {
+        let schemas = schema_forge_dsl::parse("schema Invoice { number: text required }")
+            .expect("valid schema");
+        let error = plan_site(
+            &schemas,
+            &SiteOptions {
+                schema: Some("Missing".into()),
+                ..SiteOptions::default()
+            },
+            &SiteBrandingConfig::default(),
+        )
+        .err()
+        .expect("unknown schema");
+        assert!(error.to_string().contains("Available: Invoice"));
     }
 }

@@ -75,9 +75,8 @@ pub async fn run_refresh(
         .await
         .map_err(|e| CliError::Other(format!("TUF fetch failed: {e}")))?;
 
-    let json = serde_json::to_vec_pretty(&trusted_root).map_err(|e| {
-        CliError::Other(format!("serialising trust root to JSON failed: {e}"))
-    })?;
+    let json = serde_json::to_vec_pretty(&trusted_root)
+        .map_err(|e| CliError::Other(format!("serialising trust root to JSON failed: {e}")))?;
 
     if let Some(parent) = args.output.parent() {
         if !parent.as_os_str().is_empty() {
@@ -114,12 +113,7 @@ pub async fn run_refresh(
             }));
         }
         OutputMode::Plain => {
-            println!(
-                "{}\t{}\t{}",
-                args.output.display(),
-                args.instance,
-                summary,
-            );
+            println!("{}\t{}\t{}", args.output.display(), args.instance, summary,);
         }
     }
 
@@ -162,10 +156,7 @@ pub async fn run_inspect(
 fn inspect_loaded(root: &TrustedRoot) -> String {
     let fulcio = root.fulcio_certs().map(|c| c.len()).unwrap_or(0);
     let rekor = root.rekor_keys().map(|k| k.len()).unwrap_or(0);
-    let tsa = root
-        .tsa_certs_with_validity()
-        .map(|t| t.len())
-        .unwrap_or(0);
+    let tsa = root.tsa_certs_with_validity().map(|t| t.len()).unwrap_or(0);
     format!("fulcio_certs={fulcio} rekor_keys={rekor} tsa_certs={tsa}")
 }
 
@@ -174,13 +165,11 @@ fn load_from_path(path: &Path) -> Result<TrustedRoot, CliError> {
         path: path.to_path_buf(),
         source,
     })?;
-    TrustedRoot::from_json(&bytes)
-        .map_err(|e| CliError::from(SigningError::InvalidPolicy {
-            message: format!(
-                "trust root at {} failed to parse: {e}",
-                path.display(),
-            ),
-        }))
+    TrustedRoot::from_json(&bytes).map_err(|e| {
+        CliError::from(SigningError::InvalidPolicy {
+            message: format!("trust root at {} failed to parse: {e}", path.display(),),
+        })
+    })
 }
 
 #[cfg(test)]
@@ -218,10 +207,8 @@ mod tests {
         // sigstore-trust-root parses by default. It has multiple
         // Fulcio certs and at least one Rekor key — empty counts here
         // would indicate the parser silently dropped data.
-        let root = TrustedRoot::from_json(
-            sigstore_trust_root::SIGSTORE_PRODUCTION_TRUSTED_ROOT,
-        )
-        .unwrap();
+        let root =
+            TrustedRoot::from_json(sigstore_trust_root::SIGSTORE_PRODUCTION_TRUSTED_ROOT).unwrap();
         let summary = inspect_loaded(&root);
         assert!(summary.contains("fulcio_certs="));
         assert!(summary.contains("rekor_keys="));

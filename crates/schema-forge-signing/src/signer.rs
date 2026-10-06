@@ -315,10 +315,7 @@ impl DirectorySigner for CosignKeylessSigner {
             .arg(&input_path)
             .output()
             .map_err(|source| SigningError::SignFailed {
-                message: format!(
-                    "spawning `{} sign-blob` failed: {source}",
-                    self.cosign_bin,
-                ),
+                message: format!("spawning `{} sign-blob` failed: {source}", self.cosign_bin,),
             })?;
 
         if !output.status.success() {
@@ -474,7 +471,9 @@ mod tests {
     #[test]
     fn ssh_signer_advertises_pubkey_for_allowed_signers() {
         let signer = test_ssh_signer();
-        let line = signer.allowed_signers_line(Some("ops@example.com")).unwrap();
+        let line = signer
+            .allowed_signers_line(Some("ops@example.com"))
+            .unwrap();
         assert!(line.starts_with("ops@example.com ssh-ed25519 "));
     }
 
@@ -544,18 +543,12 @@ mod tests {
         // Build an allowed_signers verifier from the signer's pubkey,
         // then verify the artefacts produced just above.
         let allowed = signer.allowed_signers_line(Some("test-principal")).unwrap();
-        let v = crate::verifiers::ssh::SshAllowedSignersVerifier::from_text("ops", &allowed)
-            .unwrap();
+        let v =
+            crate::verifiers::ssh::SshAllowedSignersVerifier::from_text("ops", &allowed).unwrap();
         let sig_bytes = std::fs::read(crate::verifiers::ed25519::signature_path_for(&f)).unwrap();
         let file_bytes = std::fs::read(&f).unwrap();
-        let id = crate::verifier::SchemaVerifier::verify(
-            &v,
-            &f,
-            &file_bytes,
-            &sig_bytes,
-            None,
-        )
-        .unwrap();
+        let id =
+            crate::verifier::SchemaVerifier::verify(&v, &f, &file_bytes, &sig_bytes, None).unwrap();
         assert_eq!(id.kind, "ssh-allowed-signers");
         assert!(id.name.contains("test-principal"));
     }

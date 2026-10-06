@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use schema_forge_core::query::{Filter, FieldPath, Query};
+use schema_forge_core::query::{FieldPath, Filter, Query};
 use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaName};
 use serde::{Deserialize, Serialize};
 
@@ -174,8 +174,7 @@ pub trait InviteStore: Send + Sync {
     /// Mark an invitation consumed at `at`. Idempotent at the storage layer;
     /// callers enforce single-use by checking [`ForgeInvitation::is_acceptable`]
     /// before calling.
-    async fn mark_consumed(&self, id: &EntityId, at: DateTime<Utc>)
-        -> Result<(), BackendError>;
+    async fn mark_consumed(&self, id: &EntityId, at: DateTime<Utc>) -> Result<(), BackendError>;
 }
 
 /// [`InviteStore`] backed by the internal `ForgeInvitation` entity table.
@@ -226,11 +225,7 @@ impl InviteStore for EntityInviteStore {
         Ok(result.entities.iter().find_map(entity_to_invitation))
     }
 
-    async fn mark_consumed(
-        &self,
-        id: &EntityId,
-        at: DateTime<Utc>,
-    ) -> Result<(), BackendError> {
+    async fn mark_consumed(&self, id: &EntityId, at: DateTime<Utc>) -> Result<(), BackendError> {
         let mut entity = self.store.get(self.schema_name(), id).await?;
         entity.fields.insert(
             F_STATUS.to_string(),
@@ -250,15 +245,16 @@ impl InviteStore for EntityInviteStore {
 // ---------------------------------------------------------------------------
 
 fn text_field(value: Option<String>) -> Option<DynamicValue> {
-    value
-        .filter(|s| !s.is_empty())
-        .map(DynamicValue::Text)
+    value.filter(|s| !s.is_empty()).map(DynamicValue::Text)
 }
 
 fn build_invitation_entity(schema: &SchemaName, invite: &NewInvitation) -> Entity {
     let mut fields: std::collections::BTreeMap<String, DynamicValue> =
         std::collections::BTreeMap::new();
-    fields.insert(F_EMAIL.to_string(), DynamicValue::Text(invite.email.clone()));
+    fields.insert(
+        F_EMAIL.to_string(),
+        DynamicValue::Text(invite.email.clone()),
+    );
     if let Some(v) = text_field(invite.display_name.clone()) {
         fields.insert(F_DISPLAY_NAME.to_string(), v);
     }
@@ -272,7 +268,10 @@ fn build_invitation_entity(schema: &SchemaName, invite: &NewInvitation) -> Entit
         fields.insert(F_ROLE.to_string(), v);
     }
     fields.insert(F_JTI.to_string(), DynamicValue::Text(invite.jti.clone()));
-    fields.insert(F_TOKEN.to_string(), DynamicValue::Text(invite.token.clone()));
+    fields.insert(
+        F_TOKEN.to_string(),
+        DynamicValue::Text(invite.token.clone()),
+    );
     fields.insert(
         F_STATUS.to_string(),
         DynamicValue::Text(InviteStatus::Pending.as_str().to_string()),
@@ -351,7 +350,11 @@ mod tests {
 
     #[test]
     fn status_roundtrips() {
-        for s in [InviteStatus::Pending, InviteStatus::Consumed, InviteStatus::Revoked] {
+        for s in [
+            InviteStatus::Pending,
+            InviteStatus::Consumed,
+            InviteStatus::Revoked,
+        ] {
             assert_eq!(InviteStatus::parse(s.as_str()), Some(s));
         }
         assert_eq!(InviteStatus::parse("bogus"), None);
@@ -378,7 +381,10 @@ mod tests {
     fn missing_required_field_yields_none() {
         let schema = SchemaName::new("ForgeInvitation").unwrap();
         let mut fields = std::collections::BTreeMap::new();
-        fields.insert(F_EMAIL.to_string(), DynamicValue::Text("a@b.gov".to_string()));
+        fields.insert(
+            F_EMAIL.to_string(),
+            DynamicValue::Text("a@b.gov".to_string()),
+        );
         // No jti/token/status.
         let entity = Entity::new(schema.clone(), fields);
         assert!(entity_to_invitation(&entity).is_none());

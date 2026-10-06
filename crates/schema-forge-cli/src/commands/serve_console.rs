@@ -179,7 +179,10 @@ mod tests {
     fn strip_mount_maps_console_prefix_to_spa_path() {
         assert_eq!(strip_mount("/console"), "/");
         assert_eq!(strip_mount("/console/"), "/");
-        assert_eq!(strip_mount("/console/assets/app-abc123.js"), "/assets/app-abc123.js");
+        assert_eq!(
+            strip_mount("/console/assets/app-abc123.js"),
+            "/assets/app-abc123.js"
+        );
         assert_eq!(strip_mount("/console/Contact/abc"), "/Contact/abc");
     }
 

@@ -153,19 +153,26 @@ fn generate_emits_an_authenticated_service() {
     // Load with the framework so its strict config validation also covers
     // generated tables. Token and gRPC sections must be active, not comments.
     let config_path = out_dir.join("config.toml");
-    let config = acton_service::config::Config::<()>::load_from(config_path.to_str().unwrap())
-        .expect("scaffold must emit valid framework configuration");
-    assert!(
-        matches!(
-            config.token,
-            Some(acton_service::config::TokenConfig::Paseto(_))
-        ),
-        "scaffold must configure PASETO token auth"
-    );
-    assert!(
-        config.grpc.is_some_and(|grpc| grpc.enabled),
-        "scaffold must enable gRPC or ServiceBuilder refuses the build"
-    );
+    let contents = fs::read_to_string(&config_path).expect("generated configuration");
+    let parsed: toml::Value = toml::from_str(&contents).expect("valid generated TOML");
+    assert_eq!(parsed["grpc"]["enabled"].as_bool(), Some(true));
+    assert_eq!(parsed["token"]["format"].as_str(), Some("paseto"));
+    #[cfg(feature = "server")]
+    {
+        let config = acton_service::config::Config::<()>::load_from(config_path.to_str().unwrap())
+            .expect("scaffold must emit valid framework configuration");
+        assert!(
+            matches!(
+                config.token,
+                Some(acton_service::config::TokenConfig::Paseto(_))
+            ),
+            "scaffold must configure PASETO token auth"
+        );
+        assert!(
+            config.grpc.is_some_and(|grpc| grpc.enabled),
+            "scaffold must enable gRPC or ServiceBuilder refuses the build"
+        );
+    }
 }
 
 #[test]
@@ -738,8 +745,8 @@ schema Deployment { name: text required }
         ),
         "after-change intent must remain inside its doc comment:\n{source}"
     );
-    let prompt = fs::read_to_string(out_dir.join("src/hooks/deployment/after_change.prompt.md"))
-        .unwrap();
+    let prompt =
+        fs::read_to_string(out_dir.join("src/hooks/deployment/after_change.prompt.md")).unwrap();
     assert!(prompt.contains("On update: reconcile state transitions."));
     assert!(prompt.contains("Keep `name` stable."));
 }

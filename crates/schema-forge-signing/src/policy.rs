@@ -225,7 +225,8 @@ impl VerifyPolicy {
                 },
             })?;
 
-        let manifest_signer = self.verify_with_any(&manifest_path, &manifest_bytes, &manifest_sig)?;
+        let manifest_signer =
+            self.verify_with_any(&manifest_path, &manifest_bytes, &manifest_sig)?;
 
         let manifest = Manifest::from_bytes(&manifest_path, &manifest_bytes).map_err(|e| {
             VerifyError::UntrustedSigner {
@@ -266,14 +267,16 @@ impl VerifyPolicy {
         // Pinned hash check first — even if the per-file signature
         // verifies, mismatched content means someone signed *different*
         // bytes than the manifest pins (replay / out-of-band edit).
-        let rel = relative_path(manifest_dir, file).ok_or_else(|| VerifyError::FileNotInManifest {
-            path: file.to_path_buf(),
-        })?;
-        let expected = manifest.pinned_hash(&rel).ok_or_else(|| {
-            VerifyError::FileNotInManifest {
+        let rel =
+            relative_path(manifest_dir, file).ok_or_else(|| VerifyError::FileNotInManifest {
                 path: file.to_path_buf(),
-            }
-        })?;
+            })?;
+        let expected =
+            manifest
+                .pinned_hash(&rel)
+                .ok_or_else(|| VerifyError::FileNotInManifest {
+                    path: file.to_path_buf(),
+                })?;
         let actual = sha256_hex(&file_bytes);
         if expected != actual {
             return Err(VerifyError::HashMismatch {
@@ -618,7 +621,8 @@ mod tests {
             trusted_signers: vec![TrustedSigner::CosignKeyless {
                 name: Some("release-pipeline".into()),
                 issuer: "https://token.actions.githubusercontent.com".into(),
-                subject_pattern: "https://github.com/example/repo/.github/workflows/*@refs/tags/v*".into(),
+                subject_pattern: "https://github.com/example/repo/.github/workflows/*@refs/tags/v*"
+                    .into(),
             }],
             manifest_filename: None,
             trust_root_bundle: None,
@@ -676,7 +680,10 @@ mod tests {
         // exists but unparseable) is acceptable here — the contract
         // is "fail loud."
         assert!(
-            matches!(err, SigningError::Io { .. } | SigningError::InvalidPolicy { .. }),
+            matches!(
+                err,
+                SigningError::Io { .. } | SigningError::InvalidPolicy { .. }
+            ),
             "expected Io or InvalidPolicy, got {err:?}",
         );
     }
@@ -774,10 +781,8 @@ mod tests {
         use crate::signer::DirectorySigner;
         use crate::verifiers::ed25519::signature_path_for;
 
-        let cosign_blob: &[u8] =
-            include_bytes!("../test_data/cosign-v3-blob.txt");
-        let cosign_bundle: &str =
-            include_str!("../test_data/cosign-v3-blob.sigstore.json");
+        let cosign_blob: &[u8] = include_bytes!("../test_data/cosign-v3-blob.txt");
+        let cosign_bundle: &str = include_str!("../test_data/cosign-v3-blob.sigstore.json");
 
         let dir = tempdir().unwrap();
         // Schema file content == the cosign fixture's signed blob, so
@@ -793,9 +798,7 @@ mod tests {
         std::fs::write(&manifest_path, &manifest_bytes).unwrap();
 
         let manifest_signer = Ed25519Signer::from_seed_bytes(&[0xAB; 32]);
-        let manifest_sig = manifest_signer
-            .sign_to_sig_bytes(&manifest_bytes)
-            .unwrap();
+        let manifest_sig = manifest_signer.sign_to_sig_bytes(&manifest_bytes).unwrap();
         std::fs::write(signature_path_for(&manifest_path), manifest_sig).unwrap();
 
         let cfg = SigningConfig {

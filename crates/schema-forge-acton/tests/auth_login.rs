@@ -60,9 +60,15 @@ async fn seeded_auth_store() -> Arc<dyn DynAuthStore> {
     let resolver: schema_forge_backend::entity_auth_store::RoleRankResolver =
         Arc::new(|_role: &str| None);
     let store = EntityAuthStore::new(entity_store, user_schema, resolver);
-    AuthStore::create_user(&store, "admin", "dev", &["admin".to_string()], "Administrator")
-        .await
-        .expect("seed admin user");
+    AuthStore::create_user(
+        &store,
+        "admin",
+        "dev",
+        &["admin".to_string()],
+        "Administrator",
+    )
+    .await
+    .expect("seed admin user");
     Arc::new(store)
 }
 
@@ -119,8 +125,7 @@ async fn login_app_with(
     tenant_config: Option<schema_forge_backend::tenant::TenantConfig>,
 ) -> (Router, NamedTempFile, Arc<dyn DynAuthStore>) {
     let (generator, key_tmp) = build_test_generator();
-    let principal_claims =
-        Arc::new(schema_forge_acton::authz::PrincipalClaimMappings::default());
+    let principal_claims = Arc::new(schema_forge_acton::authz::PrincipalClaimMappings::default());
     let tenant_layer: Arc<Option<schema_forge_backend::tenant::TenantConfig>> =
         Arc::new(tenant_config);
     let router = auth_routes()
@@ -235,7 +240,10 @@ async fn login_success_stamps_last_login_on_user_row() {
 async fn seeded_auth_store_with_memberships(
     n_memberships: usize,
     roles: &[&str],
-) -> (Arc<dyn DynAuthStore>, schema_forge_backend::tenant::TenantConfig) {
+) -> (
+    Arc<dyn DynAuthStore>,
+    schema_forge_backend::tenant::TenantConfig,
+) {
     use schema_forge_backend::traits::SchemaBackend;
     use schema_forge_backend::{DynEntityStore, Entity};
     use schema_forge_core::migration::DiffEngine;
@@ -258,10 +266,9 @@ async fn seeded_auth_store_with_memberships(
         .expect("store User schema metadata");
 
     // Migrate TenantMembership schema.
-    let mut parsed_tm = schema_forge_dsl::parse(
-        schema_forge_core::system_schemas::TENANT_MEMBERSHIP_SCHEMA,
-    )
-    .expect("TENANT_MEMBERSHIP_SCHEMA parses");
+    let mut parsed_tm =
+        schema_forge_dsl::parse(schema_forge_core::system_schemas::TENANT_MEMBERSHIP_SCHEMA)
+            .expect("TENANT_MEMBERSHIP_SCHEMA parses");
     let tm_schema = parsed_tm.pop().expect("one TenantMembership schema");
     let tm_plan = DiffEngine::create_new(&tm_schema);
     backend
@@ -292,10 +299,9 @@ async fn seeded_auth_store_with_memberships(
     )
     .unwrap();
 
-    let tenant_config = schema_forge_backend::tenant::TenantConfig::from_schemas(
-        std::slice::from_ref(&org_schema),
-    )
-    .unwrap();
+    let tenant_config =
+        schema_forge_backend::tenant::TenantConfig::from_schemas(std::slice::from_ref(&org_schema))
+            .unwrap();
     assert!(tenant_config.is_enabled());
 
     let backend = Arc::new(backend);
@@ -370,8 +376,7 @@ fn decode_tenant_chain(
 
 #[tokio::test]
 async fn login_emits_tenant_chain_for_single_membership_user() {
-    let (store, tenant_config) =
-        seeded_auth_store_with_memberships(1, &["member"]).await;
+    let (store, tenant_config) = seeded_auth_store_with_memberships(1, &["member"]).await;
     let (app, key_tmp, _store) = login_app_with(store, Some(tenant_config)).await;
     let (status, body) = post_login(app, r#"{"username":"alice","password":"dev"}"#).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -384,8 +389,7 @@ async fn login_emits_tenant_chain_for_single_membership_user() {
 
 #[tokio::test]
 async fn login_emits_full_membership_set_for_multi_membership_user() {
-    let (store, tenant_config) =
-        seeded_auth_store_with_memberships(2, &["member"]).await;
+    let (store, tenant_config) = seeded_auth_store_with_memberships(2, &["member"]).await;
     let (app, key_tmp, _store) = login_app_with(store, Some(tenant_config)).await;
     let (status, body) = post_login(app, r#"{"username":"alice","password":"dev"}"#).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -399,8 +403,7 @@ async fn login_emits_full_membership_set_for_multi_membership_user() {
 
 #[tokio::test]
 async fn login_refuses_zero_memberships_when_tenancy_enabled() {
-    let (store, tenant_config) =
-        seeded_auth_store_with_memberships(0, &["member"]).await;
+    let (store, tenant_config) = seeded_auth_store_with_memberships(0, &["member"]).await;
     let (app, _key, _store) = login_app_with(store, Some(tenant_config)).await;
     let (status, body) = post_login(app, r#"{"username":"alice","password":"dev"}"#).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
@@ -411,8 +414,7 @@ async fn login_refuses_zero_memberships_when_tenancy_enabled() {
 
 #[tokio::test]
 async fn login_allows_platform_admin_with_zero_memberships() {
-    let (store, tenant_config) =
-        seeded_auth_store_with_memberships(0, &["platform_admin"]).await;
+    let (store, tenant_config) = seeded_auth_store_with_memberships(0, &["platform_admin"]).await;
     let (app, key_tmp, _store) = login_app_with(store, Some(tenant_config)).await;
     let (status, body) = post_login(app, r#"{"username":"alice","password":"dev"}"#).await;
     assert_eq!(status, StatusCode::OK, "body: {body}");

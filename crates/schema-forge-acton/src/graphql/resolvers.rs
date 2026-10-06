@@ -619,6 +619,9 @@ mod tests {
         };
         let gql_err = forge_error_to_gql(err);
         assert_eq!(extension_code(&gql_err).as_deref(), Some("INTERNAL_ERROR"));
-        assert_eq!(gql_err.message, "The server could not complete the operation");
+        assert_eq!(
+            gql_err.message,
+            "The server could not complete the operation"
+        );
     }
 }

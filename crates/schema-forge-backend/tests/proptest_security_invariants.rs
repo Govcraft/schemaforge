@@ -31,8 +31,8 @@ use schema_forge_core::types::{
 /// Pool of valid snake_case field names. Picking from a fixed pool keeps the
 /// strategies simple and ensures the entity / schema can share field names.
 const FIELD_NAME_POOL: &[&str] = &[
-    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
-    "india", "juliet", "kilo", "lima", "mike", "november",
+    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet",
+    "kilo", "lima", "mike", "november",
 ];
 
 /// Strategy: pick a non-empty subset of field names from `FIELD_NAME_POOL`
@@ -53,12 +53,7 @@ fn schema_strategy() -> impl Strategy<Value = Vec<(String, bool)>> {
             let len = fields.len();
             (Just(fields), proptest::collection::vec(any::<bool>(), len))
         })
-        .prop_map(|(fields, hidden_mask)| {
-            fields
-                .into_iter()
-                .zip(hidden_mask)
-                .collect::<Vec<_>>()
-        })
+        .prop_map(|(fields, hidden_mask)| fields.into_iter().zip(hidden_mask).collect::<Vec<_>>())
 }
 
 fn build_schema(fields_with_hidden: &[(String, bool)]) -> SchemaDefinition {
@@ -191,8 +186,9 @@ proptest! {
 // `compute_role_rank`
 // ---------------------------------------------------------------------------
 
-const ROLE_NAME_POOL: &[&str] =
-    &["member", "manager", "admin", "auditor", "viewer", "operator"];
+const ROLE_NAME_POOL: &[&str] = &[
+    "member", "manager", "admin", "auditor", "viewer", "operator",
+];
 
 /// Strategy: a rank table mapping a subset of role names to small positive
 /// ranks (avoiding `i64::MAX` which is reserved for `platform_admin`).

@@ -32,14 +32,12 @@ pub trait ExportArtifactStore: Send + Sync + std::fmt::Debug {
     /// Write `bytes` under `key` with the given `content_type`. Overwrites any
     /// object already at that key (export keys embed a fresh job id, so this is
     /// effectively write-once).
-    async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str)
-        -> Result<(), StorageError>;
+    async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<(), StorageError>;
 
     /// Mint a presigned GET URL for `key`, valid for at most `ttl_secs` seconds
     /// (the backend clamps to its own ceiling). Pass `None` for the backend
     /// default TTL.
-    async fn presign_get(&self, key: &str, ttl_secs: Option<u64>)
-        -> Result<String, StorageError>;
+    async fn presign_get(&self, key: &str, ttl_secs: Option<u64>) -> Result<String, StorageError>;
 
     /// Read the full object at `key` into memory.
     ///
@@ -55,20 +53,11 @@ pub trait ExportArtifactStore: Send + Sync + std::fmt::Debug {
 
 #[async_trait]
 impl ExportArtifactStore for S3Client {
-    async fn put(
-        &self,
-        key: &str,
-        bytes: Vec<u8>,
-        content_type: &str,
-    ) -> Result<(), StorageError> {
+    async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<(), StorageError> {
         S3Client::put_object(self, key, bytes, content_type).await
     }
 
-    async fn presign_get(
-        &self,
-        key: &str,
-        ttl_secs: Option<u64>,
-    ) -> Result<String, StorageError> {
+    async fn presign_get(&self, key: &str, ttl_secs: Option<u64>) -> Result<String, StorageError> {
         S3Client::presign_get(self, key, ttl_secs).await
     }
 
@@ -99,8 +88,8 @@ impl StorageRegistry {
     pub async fn from_config(config: &StorageConfig) -> Result<Self, StorageError> {
         let mut backends = HashMap::with_capacity(config.backends.len());
         for (name, cfg) in &config.backends {
-            let client = S3Client::from_backend_config(name, cfg, config.default_presign_ttl_secs)
-                .await?;
+            let client =
+                S3Client::from_backend_config(name, cfg, config.default_presign_ttl_secs).await?;
             backends.insert(name.clone(), Arc::new(client));
         }
         Ok(Self {

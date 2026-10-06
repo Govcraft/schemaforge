@@ -420,11 +420,8 @@ forbid (
 
     #[test]
     fn output_parses_as_cedar_schema() {
-        let src = generate_cedar_schema(&[
-            contact_schema(),
-            employee_schema_with_field_access(),
-        ])
-        .unwrap();
+        let src = generate_cedar_schema(&[contact_schema(), employee_schema_with_field_access()])
+            .unwrap();
         let result = cedar_policy::Schema::from_cedarschema_str(&src);
         assert!(
             result.is_ok(),
@@ -515,8 +512,8 @@ forbid (
             principal_claims: &principal_claims_for_test(),
         };
         let schema_src = generate_cedar_schema_with_inputs(inputs).unwrap();
-        let (schema, _warnings) = cedar_policy::Schema::from_cedarschema_str(&schema_src)
-            .expect("schema must parse");
+        let (schema, _warnings) =
+            cedar_policy::Schema::from_cedarschema_str(&schema_src).expect("schema must parse");
 
         // A custom policy that reads the operator-supplied attribute, guarded
         // with `has` so strict mode is happy.

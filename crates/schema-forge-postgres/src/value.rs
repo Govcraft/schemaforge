@@ -1119,7 +1119,10 @@ mod tests {
             DynamicValue::Text("docs/Entity/01HX/file.pdf".into()),
         );
         map.insert("size".to_string(), DynamicValue::Integer(1024));
-        map.insert("mime".to_string(), DynamicValue::Text("application/pdf".into()));
+        map.insert(
+            "mime".to_string(),
+            DynamicValue::Text("application/pdf".into()),
+        );
         map.insert("status".to_string(), DynamicValue::Text("available".into()));
         assert!(
             bind_dynamic_value(&mut args, &DynamicValue::Composite(map), None).is_ok(),

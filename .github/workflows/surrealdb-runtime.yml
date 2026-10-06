@@ -1,0 +1,35 @@
+name: SurrealDB runtime and CLI
+on:
+  workflow_call:
+    inputs:
+      cli-only:
+        type: boolean
+        default: false
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: surrealdb-extensions
+      - name: Test affected SurrealDB consumers
+        env:
+          CLI_ONLY: ${{ inputs.cli-only }}
+        run: |
+          packages=(-p schema-forge-cli)
+          features=schema-forge-cli/oauth,schema-forge-cli/sse
+          if [[ "$CLI_ONLY" != true ]]; then
+            packages+=(-p schema-forge-acton -p schema-forge-surrealdb)
+            features+=,schema-forge-acton/test-surrealdb
+          fi
+          cargo nextest run --locked "${packages[@]}" --features "$features" --no-fail-fast
+          cargo clippy --locked "${packages[@]}" --features "$features" --all-targets -- -D warnings

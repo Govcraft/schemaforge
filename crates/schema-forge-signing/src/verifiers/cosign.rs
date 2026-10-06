@@ -182,12 +182,11 @@ impl SchemaVerifier for CosignKeylessVerifier {
         // `policy::verify_with_any` uses as a "try the next verifier"
         // signal — so an ed25519 `.sig` flowing past this verifier
         // doesn't surface as a confusing cosign error.
-        let bundle_str = std::str::from_utf8(signature).map_err(|e| {
-            VerifyError::MalformedSignature {
+        let bundle_str =
+            std::str::from_utf8(signature).map_err(|e| VerifyError::MalformedSignature {
                 path: file_path.to_path_buf(),
                 message: format!("cosign-keyless: signature is not valid UTF-8: {e}"),
-            }
-        })?;
+            })?;
 
         if !bundle_str.trim_start().starts_with('{') {
             return Err(VerifyError::MalformedSignature {
@@ -196,23 +195,24 @@ impl SchemaVerifier for CosignKeylessVerifier {
             });
         }
 
-        let bundle = Bundle::from_json(bundle_str).map_err(|e| VerifyError::MalformedSignature {
-            path: file_path.to_path_buf(),
-            message: format!("cosign-keyless: not a valid Sigstore Bundle: {e}"),
-        })?;
+        let bundle =
+            Bundle::from_json(bundle_str).map_err(|e| VerifyError::MalformedSignature {
+                path: file_path.to_path_buf(),
+                message: format!("cosign-keyless: not a valid Sigstore Bundle: {e}"),
+            })?;
 
         let policy = VerificationPolicy::default().require_issuer(self.issuer.clone());
 
         let verifier = SigstoreVerifier::new(&self.trusted_root);
-        let result = verifier
-            .verify(file_bytes, &bundle, &policy)
-            .map_err(|e| VerifyError::UntrustedSigner {
+        let result = verifier.verify(file_bytes, &bundle, &policy).map_err(|e| {
+            VerifyError::UntrustedSigner {
                 path: file_path.to_path_buf(),
                 reason: format!(
                     "cosign-keyless: verification failed against trust anchor '{}': {e}",
                     self.name,
                 ),
-            })?;
+            }
+        })?;
 
         let identity = result.identity.ok_or_else(|| VerifyError::UntrustedSigner {
             path: file_path.to_path_buf(),
@@ -339,12 +339,8 @@ mod tests {
         // `https://github.com/login/oauth`). It verifies against the
         // production trust root because the cert chain + Rekor entry
         // are preserved in the bundle.
-        let v = CosignKeylessVerifier::new(
-            "fixture",
-            "https://github.com/login/oauth",
-            "*",
-        )
-        .unwrap();
+        let v =
+            CosignKeylessVerifier::new("fixture", "https://github.com/login/oauth", "*").unwrap();
         let id = v
             .verify(
                 Path::new("blob.txt"),
@@ -423,8 +419,8 @@ mod tests {
         // sigstore-verify catches via the rekor-hashedrekord
         // consistency step (the bundle pins the digest of the
         // original blob).
-        let v = CosignKeylessVerifier::new("fixture", "https://github.com/login/oauth", "*")
-            .unwrap();
+        let v =
+            CosignKeylessVerifier::new("fixture", "https://github.com/login/oauth", "*").unwrap();
         let tampered = b"this is not the content that was signed";
         let err = v
             .verify(
@@ -451,9 +447,9 @@ mod tests {
         assert!(v.subject_glob.is_match(
             "https://github.com/org/repo/.github/workflows/release.yml@refs/tags/v0.42.0"
         ));
-        assert!(!v.subject_glob.is_match(
-            "https://github.com/org/repo/.github/workflows/release.yml@refs/heads/main"
-        ));
+        assert!(!v
+            .subject_glob
+            .is_match("https://github.com/org/repo/.github/workflows/release.yml@refs/heads/main"));
         assert!(!v.subject_glob.is_match(
             "https://github.com/other/repo/.github/workflows/release.yml@refs/tags/v0.42.0"
         ));
