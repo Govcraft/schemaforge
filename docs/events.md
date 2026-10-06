@@ -86,9 +86,11 @@ stream changes; clients should refetch and reconnect only after resolving them.
 
 Live account status, roles, tenant membership and the effective tenant hierarchy
 are checked on connection, before each queued change, and at most every five
-seconds while idle. A changed active scope ends the stream with a final generic
-`closed` event; no membership record payload is exposed. Policy changes apply to
-subsequent projections. Tokens expiring also end their streams.
+seconds while idle. Platform administrators bypass tenant scope, so only their
+account status and roles are rechecked. A changed active scope ends the stream
+with a final generic `closed` event; no membership record payload is exposed.
+Policy changes apply to subsequent projections. Tokens expiring also end their
+streams.
 
 There is no replay buffer, cross-process delivery, or durable outbox. Only
 mutations through the shared REST/GraphQL entity handlers and create-intent commit

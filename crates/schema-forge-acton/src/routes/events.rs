@@ -4,11 +4,12 @@ use super::{
     query_params::{parse_filter_key, parse_filter_params, FilterOp},
 };
 use crate::{
-    access::{check_schema_access, AccessAction, OptionalClaims, PLATFORM_ADMIN_ROLE},
+    access::{check_schema_access, AccessAction, OptionalClaims},
     config::SchemaForgeConfig,
     error::ForgeError,
     events::{self, CommittedSnapshot, EventsRuntime, Subscribe, Subscription},
     messages::{GetSchema, GetTenantConfig, ReplyChannel},
+    middleware::tenant_scope,
     ForgeActor,
 };
 use acton_service::{
@@ -23,12 +24,17 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::stream;
-use schema_forge_backend::{Entity, TenantRef};
+use schema_forge_backend::{user_store::TenantRole, Entity, TenantRef};
 use schema_forge_core::{
     query::Filter,
     types::{DynamicValue, SchemaDefinition},
 };
-use std::{collections::HashMap, convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    convert::Infallible,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::oneshot;
 
 fn invalid_filter() -> ForgeError {
@@ -108,59 +114,63 @@ struct StreamState {
     done: bool,
     ticker: tokio::time::Interval,
 }
+/// The auth-store key for a stream principal. Login mints `sub = "user:<username>"`
+/// while the store, the Cedar principal, and ownership all use the bare username.
+fn stream_username(claims: &Claims) -> &str {
+    crate::authz::adapters::user_id_from_sub(&claims.sub)
+}
+/// Roles the request claims must still carry: the account's current global
+/// roles plus, for a tenant-scoped caller, the active membership's current
+/// scoped role, exactly as `tenant_scope` projects them.
+fn expected_roles<'a>(
+    global: &'a [String],
+    tenant_roles: &'a [TenantRole],
+    active: Option<&'a TenantRef>,
+) -> BTreeSet<&'a str> {
+    let mut roles: BTreeSet<&str> = global.iter().map(String::as_str).collect();
+    if let Some(active) = active {
+        roles.extend(tenant_scope::active_membership_roles(tenant_roles, active));
+    }
+    roles
+}
 impl StreamState {
+    /// The active tenant the middleware scoped this request to, if any.
+    /// Platform administrators bypass tenant scope, so their `tenant_chain`
+    /// is the login-time membership set and names no active tenant.
+    fn active_tenant(&self) -> Option<&TenantRef> {
+        self.effective_chain
+            .last()
+            .filter(|_| tenant_scope::is_tenant_scoped(&self.claims))
+    }
     async fn identity_valid(&self) -> bool {
         if self.claims.exp <= chrono::Utc::now().timestamp() {
             return false;
         }
-        match self.runtime.auth_store.get_user(&self.claims.sub).await {
-            Ok(Some(user)) if user.active => {
-                let mut expected = self.claims.clone();
-                expected.roles = user.roles;
-                if let Some(active) = self.effective_chain.last() {
-                    let Ok(roles) = self
-                        .runtime
-                        .auth_store
-                        .list_tenant_roles(&self.claims.sub)
-                        .await
-                    else {
-                        return false;
-                    };
-                    let Ok(value) = serde_json::to_value(roles) else {
-                        return false;
-                    };
-                    expected.custom.insert("tenant_roles".into(), value);
-                    crate::middleware::tenant_scope::add_active_membership_role(
-                        &mut expected,
-                        active,
-                    );
-                }
-                if expected
-                    .roles
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>()
-                    != self
-                        .claims
-                        .roles
-                        .iter()
-                        .collect::<std::collections::BTreeSet<_>>()
-                {
-                    return false;
-                }
-            }
+        let username = stream_username(&self.claims);
+        let user = match self.runtime.auth_store.get_user(username).await {
+            Ok(Some(user)) if user.active => user,
             Ok(None) if !self.local_account && self.effective_chain.is_empty() => return true,
             _ => return false,
+        };
+        let active = self.active_tenant();
+        let tenant_roles = match active {
+            Some(_) => match self.runtime.auth_store.list_tenant_roles(username).await {
+                Ok(roles) => roles,
+                Err(_) => return false,
+            },
+            None => Vec::new(),
+        };
+        let current: BTreeSet<&str> = self.claims.roles.iter().map(String::as_str).collect();
+        if expected_roles(&user.roles, &tenant_roles, active) != current {
+            return false;
         }
-        let Some(leaf) = self.effective_chain.last() else {
+        let Some(leaf) = active else {
             return true;
         };
-        if self.claims.has_role(PLATFORM_ADMIN_ROLE) {
-            return true;
-        }
         let Ok(memberships) = self
             .runtime
             .auth_store
-            .list_tenant_memberships(&self.claims.sub)
+            .list_tenant_memberships(username)
             .await
         else {
             return false;
@@ -183,15 +193,9 @@ impl StreamState {
         let Some(config) = config else {
             return false;
         };
-        match crate::middleware::tenant_scope::walk_to_root(
-            leaf,
-            &config,
-            self.runtime.entity_store.as_ref(),
-        )
-        .await
-        {
+        match tenant_scope::walk_to_root(leaf, &config, self.runtime.entity_store.as_ref()).await {
             Ok(chain) => chain == self.effective_chain,
-            Err(crate::middleware::tenant_scope::WalkError::EntityMissing { .. }) => {
+            Err(tenant_scope::WalkError::EntityMissing { .. }) => {
                 self.effective_chain == vec![leaf.clone()]
             }
             Err(_) => false,
@@ -334,7 +338,7 @@ pub async fn subscribe(
     let filters = filters(&state, &schema, &claims, &params).await?;
     let local_account = runtime
         .auth_store
-        .get_user(&claims.sub)
+        .get_user(stream_username(&claims))
         .await
         .map_err(ForgeError::from)?
         .is_some();
@@ -390,4 +394,74 @@ pub async fn subscribe(
         .headers_mut()
         .insert("x-accel-buffering", "no".parse().expect("static header"));
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::PLATFORM_ADMIN_ROLE;
+
+    fn tenant(id: &str) -> TenantRef {
+        TenantRef {
+            schema: "Organization".into(),
+            entity_id: id.into(),
+        }
+    }
+    fn grant(id: &str, role: &str) -> TenantRole {
+        TenantRole {
+            tenant: tenant(id),
+            role: role.into(),
+        }
+    }
+    fn claims(sub: &str, roles: &[&str]) -> Claims {
+        serde_json::from_value(serde_json::json!({
+            "sub": sub, "roles": roles, "perms": [], "exp": 9_999_999_999_u64
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn stream_username_matches_the_login_subject_to_the_stored_account() {
+        assert_eq!(
+            stream_username(&claims("user:solo@example.gov", &[])),
+            "solo@example.gov"
+        );
+        assert_eq!(stream_username(&claims("alice", &[])), "alice");
+    }
+
+    #[test]
+    fn expected_roles_add_only_the_active_membership_role() {
+        let global = vec!["member".to_owned()];
+        let grants = [
+            grant("alpha", "owner"),
+            grant("beta", "auditor"),
+            grant("alpha", PLATFORM_ADMIN_ROLE),
+        ];
+        let alpha = tenant("alpha");
+        assert_eq!(
+            expected_roles(&global, &grants, Some(&alpha)),
+            BTreeSet::from(["member", "owner"])
+        );
+        assert_eq!(
+            expected_roles(&global, &grants, None),
+            BTreeSet::from(["member"])
+        );
+        let lobby = tenant("lobby");
+        assert_eq!(
+            expected_roles(&global, &grants, Some(&lobby)),
+            BTreeSet::from(["member"])
+        );
+    }
+
+    #[test]
+    fn platform_admins_are_never_tenant_scoped() {
+        assert!(!tenant_scope::is_tenant_scoped(&claims(
+            "user:admin",
+            &[PLATFORM_ADMIN_ROLE]
+        )));
+        assert!(tenant_scope::is_tenant_scoped(&claims(
+            "user:solo",
+            &["member"]
+        )));
+    }
 }

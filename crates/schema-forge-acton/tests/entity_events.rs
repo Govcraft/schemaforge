@@ -259,8 +259,9 @@ async fn fixture_identity_options<B: SchemaBackend + EntityStore + 'static>(
         rx.await.unwrap();
     }
     let anonymous = forge_routes().with_state(service.state().clone());
+    // Login mints `user:<username>`; the auth store is keyed by the bare name.
     let caller = Claims {
-        sub: "alice".into(),
+        sub: "user:alice".into(),
         roles: global_roles,
         perms: vec![],
         exp: 9_999_999_999,
@@ -418,7 +419,7 @@ async fn exercise_crud(f: &Fixture) {
     let (frame, event) = change(&mut body).await;
     assert!(frame.contains("event: entity.created"));
     assert!(frame.contains(event["event_id"].as_str().unwrap()));
-    assert_eq!(event["actor"], "alice");
+    assert_eq!(event["actor"], "user:alice");
     assert_eq!(event["entity"], detail);
     assert!(
         frame.contains(&format!("\"entity\":{detail_json}")),
@@ -524,7 +525,7 @@ async fn postgres_crud_events_equal_authorized_get() {
         if attempt == 0 {
             let (_, event) = change(&mut body).await;
             assert_eq!(event["entity"], detail);
-            assert_eq!(event["actor"], "alice");
+            assert_eq!(event["actor"], "user:alice");
         }
     }
     assert!(
@@ -682,9 +683,7 @@ async fn idle_keep_alive_and_live_account_revocation() {
     let mut body = connect(&f.app, "").await;
     assert!(frame(&mut body).await.contains("keep-alive"));
     f.store.toggle_user_active("alice").await.unwrap();
-    let (frame, event) = change(&mut body).await;
-    assert!(frame.contains("event: closed"));
-    assert_eq!(event["reason"], "authorization_changed");
+    assert_closed(&mut body, "deactivated account").await;
     assert!(body.frame().await.is_none());
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -771,9 +770,7 @@ async fn membership_removal_closes_stream_and_active_tenant_cannot_be_impersonat
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    let (frame, event) = change(&mut body).await;
-    assert!(frame.contains("event: closed"));
-    assert_eq!(event["reason"], "authorization_changed");
+    let event = assert_closed(&mut body, "removed member").await;
     assert!(event.get("entity").is_none());
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -839,9 +836,7 @@ async fn scoped_membership_role_allows_stream_and_role_revocation_closes_it() {
         1
     );
     assert!(f.store.list_tenant_roles("alice").await.unwrap().is_empty());
-    let (frame, event) = change(&mut body).await;
-    assert!(frame.contains("event: closed"));
-    assert_eq!(event["reason"], "authorization_changed");
+    let event = assert_closed(&mut body, "revoked scoped role").await;
     assert!(event.get("entity").is_none());
 }
 
@@ -854,7 +849,7 @@ async fn owner_denial_never_delivers_entity_or_delete_metadata() {
         .oneshot(
             Request::builder()
                 .uri("/schemas/Note/events")
-                .header("x-test-subject", "bob")
+                .header("x-test-subject", "user:bob")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -998,4 +993,402 @@ async fn relation_filters_derived_collections_and_read_hooks_equal_get_projectio
         detail["fields"]["children"],
         serde_json::json!([child["id"]])
     );
+}
+
+// ---------------------------------------------------------------------------
+// Production identity path. Tokens are minted by `POST /auth/login`, verified
+// by the same PASETO middleware `serve` installs, and rewritten by the tenant
+// scope middleware, so the stream sees the real subject (`user:<username>`)
+// and the real per-request tenant claims rather than hand-built ones.
+// ---------------------------------------------------------------------------
+
+const PASSWORD: &str = "correct-horse-battery-staple";
+
+struct LoginFixture {
+    app: Router,
+    store: Arc<dyn DynAuthStore>,
+    backend: Arc<schema_forge_surrealdb::SurrealBackend>,
+    memberships: schema_forge_core::types::SchemaDefinition,
+    lobby: String,
+    alpha: String,
+    beta: String,
+    _key: tempfile::NamedTempFile,
+}
+
+async fn login_fixture(database: &str) -> LoginFixture {
+    use acton_service::{
+        auth::{config::TokenGenerationConfig, tokens::paseto_generator::PasetoGenerator},
+        config::PasetoConfig,
+        middleware::PasetoAuth,
+    };
+    use schema_forge_acton::{
+        authz::{PrincipalClaimMappings, RoleRanks},
+        middleware::tenant_scope::{self, TenantScopeState},
+        routes::auth::auth_routes,
+        SchemaForgeExtension,
+    };
+    use schema_forge_backend::Entity;
+    use schema_forge_core::types::DynamicValue;
+
+    let backend = Arc::new(
+        schema_forge_surrealdb::SurrealBackend::connect_memory("events", database)
+            .await
+            .unwrap(),
+    );
+    let root = schema_forge_dsl::parse(
+        r#"
+        @tenant(root)
+        @access(read: ["owner", "member"], write: ["owner"], delete: ["owner"])
+        schema Organization { name: text required }
+    "#,
+    )
+    .unwrap()
+    .remove(0);
+    backend
+        .apply_migration(&root.name, &DiffEngine::create_new(&root).steps)
+        .await
+        .unwrap();
+    backend.store_schema_metadata(&root).await.unwrap();
+    let ranks = RoleRanks::from_toml_str("[roles]\nmember = 10\nowner = 20").unwrap();
+    let extension = SchemaForgeExtension::builder()
+        .with_backend_arc(backend.clone())
+        .with_role_ranks(ranks.clone())
+        .build()
+        .await
+        .unwrap();
+    let data = extension.state();
+    let schemas = data.registry.list().await;
+    let system = |name: &str| {
+        schemas
+            .iter()
+            .find(|schema| schema.name.as_str() == name)
+            .unwrap()
+            .clone()
+    };
+    let store: Arc<dyn DynAuthStore> = Arc::new(
+        EntityAuthStore::new(
+            backend.clone(),
+            system("User"),
+            Arc::new(move |role| ranks.get(role)),
+        )
+        .with_tenant_membership_schema(system("TenantMembership")),
+    );
+    let mut tenants = Vec::new();
+    for name in ["lobby", "alpha", "beta"] {
+        let org = Entity::new(
+            root.name.clone(),
+            std::collections::BTreeMap::from([("name".into(), DynamicValue::Text(name.into()))]),
+        );
+        EntityStore::create(backend.as_ref(), &org).await.unwrap();
+        tenants.push(org.id.to_string());
+    }
+    let [lobby, alpha, beta] = <[String; 3]>::try_from(tenants).unwrap();
+    // Seeded the way invite acceptance seeds accounts: a password User row plus
+    // TenantMembership rows. `founder` holds the owner membership that
+    // `[schema_forge.tenancy] creator_role` grants the admin who created lobby.
+    let accounts = [
+        ("admin@example.gov", "platform_admin", vec![]),
+        (
+            "founder@example.gov",
+            "platform_admin",
+            vec![(lobby.as_str(), "owner")],
+        ),
+        (
+            "solo@example.gov",
+            "member",
+            vec![(lobby.as_str(), "member")],
+        ),
+        (
+            "multi@example.gov",
+            "member",
+            vec![
+                (lobby.as_str(), "member"),
+                (alpha.as_str(), "owner"),
+                (beta.as_str(), "owner"),
+            ],
+        ),
+    ];
+    for (username, role, memberships) in accounts {
+        store
+            .create_user(username, PASSWORD, &[role.into()], username)
+            .await
+            .unwrap();
+        for (tenant, scoped_role) in memberships {
+            store
+                .add_tenant_membership(username, "Organization", tenant, Some(scoped_role))
+                .await
+                .unwrap();
+        }
+    }
+    let service = ServiceBuilder::new()
+        .with_config(Config::<SchemaForgeConfig>::default())
+        .with_actor::<ForgeActor>()
+        .build();
+    let handle = service.state().actor::<ForgeActor>().unwrap();
+    let (tx, rx) = oneshot::channel();
+    handle
+        .send(InitForge {
+            registry: schemas
+                .iter()
+                .map(|schema| (schema.name.to_string(), schema.clone()))
+                .collect(),
+            backend: data.backend.clone(),
+            tenant_config: data.tenant_config.clone(),
+            record_access_policy: None,
+            hook_dispatcher: None,
+            storage_registry: data.storage_registry.clone(),
+            policy_store: Some(data.policy_store.clone()),
+            custom_policies_dir: None,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    rx.await.unwrap();
+    let (tx, rx) = oneshot::channel();
+    handle
+        .send(ConfigureEvents {
+            runtime: Arc::new(
+                EventsRuntime::new(enabled(), store.clone(), backend.clone()).unwrap(),
+            ),
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    rx.await.unwrap();
+    let key = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(key.path(), [29; 32]).unwrap();
+    let validator = PasetoAuth::new(&PasetoConfig {
+        version: "v4".into(),
+        purpose: "local".into(),
+        key_path: key.path().into(),
+        issuer: None,
+        audience: None,
+        public_paths: vec!["/forge/auth/login".into()],
+    })
+    .unwrap();
+    let generator = Arc::new(PasetoGenerator::with_symmetric_key(
+        [29; 32],
+        TokenGenerationConfig::default(),
+    ));
+    let app = Router::new()
+        .nest(
+            "/forge",
+            forge_routes()
+                .merge(auth_routes())
+                .layer(axum::Extension(store.clone()))
+                .layer(axum::Extension(generator))
+                .layer(axum::Extension(Arc::new(PrincipalClaimMappings::default())))
+                .layer(axum::Extension(Arc::new(data.tenant_config.clone()))),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            TenantScopeState {
+                entity_store: backend.clone(),
+                tenant_config: Arc::new(data.tenant_config.clone()),
+            },
+            tenant_scope::middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            validator,
+            PasetoAuth::middleware,
+        ))
+        .with_state(service.state().clone());
+    LoginFixture {
+        app,
+        store,
+        backend,
+        memberships: system("TenantMembership"),
+        lobby,
+        alpha,
+        beta,
+        _key: key,
+    }
+}
+
+impl LoginFixture {
+    async fn login(&self, username: &str) -> String {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/forge/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"username": username, "password": PASSWORD}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        json(response).await["token"].as_str().unwrap().to_owned()
+    }
+
+    async fn subscribe(&self, token: &str, tenant: Option<&str>) -> axum::response::Response {
+        let mut request = Request::builder()
+            .uri("/forge/schemas/Organization/events")
+            .header("accept", "text/event-stream")
+            .header("authorization", format!("Bearer {token}"));
+        if let Some(tenant) = tenant {
+            request = request.header("x-active-tenant", format!("Organization:{tenant}"));
+        }
+        self.app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// Opens a stream and returns its body after the initial retry frame.
+    async fn open(&self, token: &str, tenant: Option<&str>, caller: &str) -> Body {
+        let response = self.subscribe(token, tenant).await;
+        let status = response.status();
+        let mut body = response.into_body();
+        if status != StatusCode::OK {
+            let bytes = body.collect().await.unwrap().to_bytes();
+            panic!(
+                "{caller} stream (tenant {tenant:?}) refused with {status}: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        assert!(frame(&mut body).await.contains("retry:"));
+        body
+    }
+
+    async fn assert_opens(&self, token: &str, tenant: Option<&str>, caller: &str) {
+        drop(self.open(token, tenant, caller).await);
+    }
+
+    async fn refused(&self, token: &str, tenant: Option<&str>, caller: &str) {
+        let status = self.subscribe(token, tenant).await.status();
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{caller} stream (tenant {tenant:?}) must be refused"
+        );
+    }
+
+    /// Changes or removes one durable membership row behind the caller's token.
+    async fn set_membership(&self, username: &str, tenant: &str, role: Option<&str>) {
+        use schema_forge_core::types::DynamicValue;
+        let user = self.store.get_user_entity(username).await.unwrap().unwrap();
+        let rows = self
+            .backend
+            .query(&schema_forge_core::query::Query::new(
+                self.memberships.id.clone(),
+            ))
+            .await
+            .unwrap()
+            .entities;
+        let mut row = rows
+            .into_iter()
+            .find(|row| {
+                row.field("user") == Some(&DynamicValue::Ref(user.id.clone()))
+                    && row.field("tenant_id") == Some(&DynamicValue::Text(tenant.into()))
+            })
+            .unwrap();
+        match role {
+            Some(role) => {
+                row.fields
+                    .insert("role".into(), DynamicValue::Text(role.into()));
+                EntityStore::update(self.backend.as_ref(), &row)
+                    .await
+                    .unwrap();
+            }
+            None => EntityStore::delete(self.backend.as_ref(), &row.schema, &row.id)
+                .await
+                .unwrap(),
+        }
+    }
+}
+
+async fn assert_closed(body: &mut Body, caller: &str) -> serde_json::Value {
+    // Keep-alives arrive every second, so an unrevoked stream would never time
+    // out inside `frame`; bound the wait for the authorization check instead.
+    let (frame, event) = tokio::time::timeout(Duration::from_secs(10), change(body))
+        .await
+        .unwrap_or_else(|_| panic!("{caller} stream stayed open after revocation"));
+    assert!(
+        frame.contains("event: closed"),
+        "{caller} stream must close, got {frame}"
+    );
+    assert_eq!(event["reason"], "authorization_changed");
+    event
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn login_tokens_open_streams_for_admins_and_tenant_members() {
+    let f = login_fixture("login_open").await;
+    let admin = f.login("admin@example.gov").await;
+    f.assert_opens(&admin, None, "platform admin").await;
+    f.assert_opens(&admin, Some(&f.lobby), "platform admin")
+        .await;
+
+    let founder = f.login("founder@example.gov").await;
+    f.assert_opens(&founder, None, "platform admin with a creator membership")
+        .await;
+    f.assert_opens(
+        &founder,
+        Some(&f.lobby),
+        "platform admin with a creator membership",
+    )
+    .await;
+
+    let solo = f.login("solo@example.gov").await;
+    f.assert_opens(&solo, None, "single-membership member")
+        .await;
+    f.assert_opens(&solo, Some(&f.lobby), "single-membership member")
+        .await;
+
+    let multi = f.login("multi@example.gov").await;
+    for tenant in [&f.lobby, &f.alpha, &f.beta] {
+        f.assert_opens(&multi, Some(tenant), "multi-membership user")
+            .await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn login_streams_close_and_stay_refused_after_membership_changes() {
+    let f = login_fixture("login_memberships").await;
+    let solo = f.login("solo@example.gov").await;
+    let mut stream = f.open(&solo, None, "single-membership member").await;
+    f.set_membership("solo@example.gov", &f.lobby, None).await;
+    assert_closed(&mut stream, "removed member").await;
+    f.refused(&solo, None, "removed member").await;
+    f.refused(&solo, Some(&f.lobby), "removed member").await;
+
+    let multi = f.login("multi@example.gov").await;
+    let mut stream = f
+        .open(&multi, Some(&f.alpha), "multi-membership owner")
+        .await;
+    f.set_membership("multi@example.gov", &f.alpha, Some("member"))
+        .await;
+    assert_closed(&mut stream, "demoted owner").await;
+    f.refused(&multi, Some(&f.alpha), "demoted owner").await;
+    // The unchanged scoped grant behind the same token still authorizes.
+    f.assert_opens(&multi, Some(&f.beta), "multi-membership owner")
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn login_streams_close_and_stay_refused_after_account_changes() {
+    let f = login_fixture("login_accounts").await;
+    let admin = f.login("admin@example.gov").await;
+    let mut stream = f.open(&admin, None, "platform admin").await;
+    f.store
+        .toggle_user_active("admin@example.gov")
+        .await
+        .unwrap();
+    assert_closed(&mut stream, "deactivated admin").await;
+    f.refused(&admin, None, "deactivated admin").await;
+
+    let founder = f.login("founder@example.gov").await;
+    let mut stream = f
+        .open(&founder, None, "platform admin with a creator membership")
+        .await;
+    f.store
+        .update_user("founder@example.gov", &["member".into()], "Founder")
+        .await
+        .unwrap();
+    assert_closed(&mut stream, "demoted admin").await;
+    f.refused(&founder, None, "demoted admin").await;
+    f.refused(&founder, Some(&f.lobby), "demoted admin").await;
 }

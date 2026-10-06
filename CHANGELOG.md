@@ -18,6 +18,14 @@ is pre-1.0; breaking changes bump the **minor** version per
   schema replaces the built-in one, as at startup. JSON and plain output keep
   their fields, and `schema_count` still counts only the project's schemas;
   the human summary also reports the system schemas.
+- Entity event streams accept password and OAuth login tokens. Since 0.48.0 the
+  live identity check looked accounts up by the token subject (`user:<username>`)
+  rather than the stored username, so every tenant member was refused with 403
+  `Stream authorization is no longer valid.`, and streams of accounts without a
+  tenant chain stayed open after deactivation or role changes. Platform
+  administrators who hold tenant memberships are now checked without tenant
+  scope, matching the tenant-scope middleware. Streams still close and stay
+  refused after deactivation, role changes, or membership removal.
 
 ## [0.49.0] - 2026-10-06
 
