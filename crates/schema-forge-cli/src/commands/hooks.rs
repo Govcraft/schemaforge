@@ -319,7 +319,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Kept in step with the workspace's own pin: a hook service validates the
 /// credentials this forge mints, so the two need the same token
 /// implementation. Bump both together.
-const SCAFFOLD_ACTON_SERVICE_VERSION: &str = "0.45.0";
+const SCAFFOLD_ACTON_SERVICE_VERSION: &str = "0.46.0";
 
 fn render_cargo_toml(project_name: &str) -> String {
     format!(
@@ -437,8 +437,10 @@ fn render_main_rs(hooked: &[SchemaHooks]) -> String {
     s.push_str("    // Reads ./config.toml, then $XDG_CONFIG_HOME and /etc; `ACTON_*`\n");
     s.push_str("    // environment variables override the file. The `[grpc]` section must\n");
     s.push_str("    // set `enabled = true` or the build below is refused rather than\n");
-    s.push_str("    // silently serving no RPCs.\n");
-    s.push_str("    let config = Config::load()?;\n\n");
+    s.push_str("    // silently serving no RPCs. The service has no custom config section,\n");
+    s.push_str("    // so it loads `Config<()>`; `GrpcServicesBuilder::build` is generic\n");
+    s.push_str("    // over the state type and cannot infer it.\n");
+    s.push_str("    let config = Config::<()>::load()?;\n\n");
     s.push_str("    // The health service probes whatever dependencies the config declares.\n");
     s.push_str("    let state = AppState::builder().config(config.clone()).build().await?;\n\n");
     s.push_str("    // Reflection is deliberately not enabled: it would publish every\n");
@@ -478,7 +480,7 @@ fn render_config_toml(project_name: &str) -> String {
     format!(
         r#"# Configuration for the {project_name} hook service.
 #
-# Loaded by `Config::load()` in src/main.rs from this file, then from
+# Loaded by `Config::<()>::load()` in src/main.rs from this file, then from
 # $XDG_CONFIG_HOME and /etc. `ACTON_*` environment variables override it.
 
 [service]
