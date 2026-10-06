@@ -383,13 +383,22 @@ async fn atomic_creator_intents(backend: &PgBackend) {
         .unwrap()
         .revision;
     // Even newly minted retry IDs must reconcile without creating another grant.
-    let retry_grant = creator_membership::membership(&root, &user);
+    let retry_root = Entity::new(root.schema.clone(), root.fields.clone());
+    let retry_grant = creator_membership::membership(&retry_root, &user);
+    let mut retry_commit = commit.clone();
+    if let CreateIntentRequest::Commit { entity, .. } = &mut retry_commit {
+        *entity = retry_root.clone();
+    }
     let replay = backend
-        .create_intent_with_membership(&commit, &retry_grant)
+        .create_intent_with_membership(&retry_commit, &retry_grant)
         .await
         .unwrap();
     assert!(!replay.created);
     assert_eq!(replay.entity_id, receipt.entity_id);
+    assert!(backend
+        .get(&retry_root.schema, &retry_root.id)
+        .await
+        .is_err());
     assert!(backend
         .get(&retry_grant.schema, &retry_grant.id)
         .await
