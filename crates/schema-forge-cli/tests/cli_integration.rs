@@ -730,3 +730,133 @@ fn parse_reports_ambiguous_inverse_relations_across_files() {
         ))
         .stdout(predicate::str::contains("\"errors\": 1"));
 }
+
+// ---------------------------------------------------------------------------
+// Policies validate tests
+// ---------------------------------------------------------------------------
+
+/// The tenant-owner invitation policy recommended in
+/// `docs/invitations-reference.md`. It targets the built-in `User` schema and
+/// the `InviteUser` action the daemon generates only for that schema.
+const INVITE_USER_POLICY: &str = r#"permit (
+    principal in Forge::Group::"owner",
+    action == Action::"InviteUser",
+    resource is User
+) when {
+    resource has "_tenant" && principal in resource["_tenant"]
+};
+"#;
+
+/// A tenant owner may read the memberships of their own tenant. It targets
+/// the built-in `TenantMembership` schema.
+const TENANT_MEMBERSHIP_POLICY: &str = r#"permit (
+    principal in Forge::Group::"owner",
+    action in [Action::"ReadTenantMembership", Action::"ListTenantMembership"],
+    resource is TenantMembership
+) when {
+    resource has "_tenant" && principal in resource["_tenant"]
+};
+"#;
+
+/// Lay out a project the way `schemaforge init` does: one user schema (a
+/// tenant root) under `schemas/`, a role hierarchy, and `policy` as the only
+/// file under `policies/custom/`. The project deliberately defines no system
+/// schema, as a real project never does.
+fn scaffold_policy_project(policy: &str) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let schemas = dir.path().join("schemas");
+    let custom = dir.path().join("policies").join("custom");
+    fs::create_dir_all(&schemas).unwrap();
+    fs::create_dir_all(&custom).unwrap();
+    fs::write(
+        schemas.join("organization.schema"),
+        "@tenant(root)\nschema Organization {\n    name: text required\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("policies").join("role_ranks.toml"),
+        "[roles]\nowner = 100\nmember = 10\n",
+    )
+    .unwrap();
+    fs::write(custom.join("custom.cedar"), policy).unwrap();
+    dir
+}
+
+/// Run `policies validate` in `project` exactly as the bug report did, with
+/// the operator's user config directory pointed into the project so a
+/// developer's own configuration cannot leak in.
+fn validate_policies(project: &std::path::Path) -> assert_cmd::assert::Assert {
+    schema_forge()
+        .current_dir(project)
+        .env("XDG_CONFIG_HOME", project)
+        .args([
+            "--format",
+            "json",
+            "policies",
+            "validate",
+            "schemas",
+            "--custom-dir",
+            "policies/custom",
+            "--role-ranks",
+            "policies/role_ranks.toml",
+        ])
+        .assert()
+}
+
+/// Parse the JSON success document `policies validate --format json` prints.
+fn validate_report(assert: &assert_cmd::assert::Assert) -> serde_json::Value {
+    serde_json::from_slice(&assert.get_output().stdout).expect("validate prints JSON on stdout")
+}
+
+#[test]
+fn policies_validate_accepts_custom_invite_user_policy() {
+    let project = scaffold_policy_project(INVITE_USER_POLICY);
+
+    let assert = validate_policies(project.path()).success();
+
+    let report = validate_report(&assert);
+    assert_eq!(report["ok"], true);
+    // The count still describes the operator's schemas, not the built-ins
+    // the bundle adds alongside them.
+    assert_eq!(report["schema_count"], 1);
+}
+
+#[test]
+fn policies_validate_accepts_custom_tenant_membership_policy() {
+    let project = scaffold_policy_project(TENANT_MEMBERSHIP_POLICY);
+
+    let assert = validate_policies(project.path()).success();
+
+    let report = validate_report(&assert);
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["schema_count"], 1);
+}
+
+#[test]
+fn policies_validate_still_rejects_an_action_no_schema_declares() {
+    let project = scaffold_policy_project(
+        r#"permit (
+    principal in Forge::Group::"owner",
+    action == Action::"InviteGhost",
+    resource is User
+);
+"#,
+    );
+
+    let assert = validate_policies(project.path()).failure();
+
+    let error: serde_json::Value = serde_json::from_slice(&assert.get_output().stderr)
+        .expect("validate prints a JSON error document on stderr");
+    let message = error["message"]
+        .as_str()
+        .expect("error message is a string");
+    assert!(
+        message.contains(r#"unrecognized action `Action::"InviteGhost"`"#),
+        "the undeclared action must still be reported. got:\n{message}"
+    );
+    // `User` itself is a known entity type: only the action is wrong.
+    assert!(
+        !message.contains("unrecognized entity type"),
+        "the built-in User schema must be part of the bundle. got:\n{message}"
+    );
+}

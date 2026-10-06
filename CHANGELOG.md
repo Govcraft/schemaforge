@@ -7,6 +7,18 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+### Fixed
+
+- `schemaforge policies validate` now checks custom policies against the
+  built-in system schemas (`User`, `TenantMembership`, `OAuthIdentity`,
+  `WebhookSubscription`), as `serve` does. Policies that reference them,
+  including the tenant-owner `InviteUser` policy in the invitations reference,
+  no longer fail offline with `unrecognized action` or `unrecognized entity
+  type` while compiling in the daemon. A project schema that redefines a system
+  schema replaces the built-in one, as at startup. JSON and plain output keep
+  their fields, and `schema_count` still counts only the project's schemas;
+  the human summary also reports the system schemas.
+
 ## [0.49.0] - 2026-10-06
 
 ### Added

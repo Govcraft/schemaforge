@@ -1,13 +1,18 @@
 use std::fs;
+use std::path::PathBuf;
 
 use schema_forge_acton::authz::role_ranks::RoleRanks;
 use schema_forge_acton::authz::store::PolicyStoreSnapshot;
 use schema_forge_acton::cedar::generate_cedar_policies;
+use schema_forge_core::inverse_relations::pair_inverse_relations;
+use schema_forge_core::system_schemas::all_system_schemas;
+use schema_forge_core::types::SchemaDefinition;
 
 use crate::cli::{
     GlobalOpts, PolicyCommands, PolicyListArgs, PolicyRegenerateArgs, PolicyValidateArgs,
 };
 use crate::commands::parse::parse_all_schemas_with_global;
+use crate::commands::schema_update::merge_schema_definitions;
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
 
@@ -30,11 +35,8 @@ async fn run_list(
     output: &OutputContext,
 ) -> Result<(), CliError> {
     // For list, we need schemas. Parse from default location.
-    let schemas = parse_all_schemas_with_global(
-        &[std::path::PathBuf::from("schemas/")],
-        global,
-        output,
-    )?;
+    let schemas =
+        parse_all_schemas_with_global(&[std::path::PathBuf::from("schemas/")], global, output)?;
 
     for schema in &schemas {
         if let Some(ref filter) = args.schema {
@@ -95,11 +97,8 @@ async fn run_regenerate(
     global: &GlobalOpts,
     output: &OutputContext,
 ) -> Result<(), CliError> {
-    let schemas = parse_all_schemas_with_global(
-        &[std::path::PathBuf::from("schemas/")],
-        global,
-        output,
-    )?;
+    let schemas =
+        parse_all_schemas_with_global(&[std::path::PathBuf::from("schemas/")], global, output)?;
 
     // Create output directory
     fs::create_dir_all(&args.output_dir).map_err(|e| CliError::Io {
@@ -151,10 +150,67 @@ async fn run_regenerate(
     Ok(())
 }
 
+/// The schema set the daemon compiles its Cedar bundle from.
+#[derive(Debug)]
+struct BundleSchemas {
+    /// Every schema in the bundle: the built-in system schemas with the
+    /// operator's schemas merged over them, in the daemon's order.
+    schemas: Vec<SchemaDefinition>,
+    /// How many built-in system schemas the bundle kept, i.e. those no
+    /// operator schema redefines.
+    system_count: usize,
+}
+
+/// Parse the built-in system schemas (User, TenantMembership, OAuthIdentity,
+/// WebhookSubscription) the daemon registers at startup.
+///
+/// Mirrors `SchemaForgeExtension::build_init` on a fresh deployment: every
+/// text from [`all_system_schemas`] goes through the same DSL parser, and the
+/// batch takes the same inverse-relation pairing pass.
+fn parse_system_schemas() -> Result<Vec<SchemaDefinition>, CliError> {
+    let mut schemas = Vec::new();
+    for source in all_system_schemas() {
+        let parsed = schema_forge_dsl::parse(source).map_err(|errors| CliError::Parse {
+            errors,
+            source_text: source.to_string(),
+            file: PathBuf::from("built-in system schema"),
+        })?;
+        schemas.extend(parsed);
+    }
+    pair_inverse_relations(&mut schemas)
+        .map_err(|e| CliError::Other(format!("invalid built-in system schemas: {e}")))?;
+    Ok(schemas)
+}
+
+/// Build the schema set `serve` compiles its Cedar bundle from.
+///
+/// The daemon registers the system schemas, then merges the operator's
+/// parsed schemas over that registry by name with
+/// [`merge_schema_definitions`]. Reusing the same helper keeps the offline
+/// bundle identical to the daemon's, including on a name collision, where
+/// the operator's definition replaces the built-in one.
+fn bundle_schemas(user_schemas: &[SchemaDefinition]) -> Result<BundleSchemas, CliError> {
+    let system = parse_system_schemas()?;
+    let system_count = system
+        .iter()
+        .filter(|builtin| user_schemas.iter().all(|user| user.name != builtin.name))
+        .count();
+    Ok(BundleSchemas {
+        schemas: merge_schema_definitions(system, user_schemas),
+        system_count,
+    })
+}
+
 /// Compile the full Cedar bundle (Cedar schema + generated policies +
 /// custom policies) and run strict-mode validation. The exit code mirrors
 /// the validation result so CI / pre-deploy hooks can gate on a passing
 /// bundle.
+///
+/// The bundle includes the built-in system schemas exactly as the daemon
+/// registers them, so custom policies may reference `User`,
+/// `TenantMembership`, `OAuthIdentity`, `WebhookSubscription`, and their
+/// actions (such as `InviteUser`). Reported schema counts describe the
+/// operator's schemas; the human summary also names the system schemas.
 async fn run_validate(
     args: PolicyValidateArgs,
     global: &GlobalOpts,
@@ -169,9 +225,11 @@ async fn run_validate(
         ))
     })?;
 
+    let bundle = bundle_schemas(&schemas)?;
+
     let custom_dir = args.custom_dir.as_deref();
     let snapshot = PolicyStoreSnapshot::from_schemas(
-        &schemas,
+        &bundle.schemas,
         custom_dir,
         role_ranks,
         // Lint runs without the operator's runtime config; an empty mapping
@@ -205,8 +263,9 @@ async fn run_validate(
         }
         OutputMode::Human => {
             output.success(&format!(
-                "Cedar bundle validated: {} schemas, {} policies, hash {}",
+                "Cedar bundle validated: {} schemas (+{} system), {} policies, hash {}",
                 schemas.len(),
+                bundle.system_count,
                 snapshot.policy_count,
                 &snapshot.policy_hash[..16],
             ));
@@ -218,4 +277,65 @@ async fn run_validate(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(schemas: &[SchemaDefinition]) -> Vec<&str> {
+        schemas.iter().map(|schema| schema.name.as_str()).collect()
+    }
+
+    #[test]
+    fn system_schemas_are_the_four_the_daemon_registers() {
+        let system = parse_system_schemas().expect("built-in schemas parse");
+
+        let mut found = names(&system);
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            [
+                "OAuthIdentity",
+                "TenantMembership",
+                "User",
+                "WebhookSubscription"
+            ]
+        );
+    }
+
+    #[test]
+    fn bundle_adds_every_system_schema_beside_the_operator_schemas() {
+        let user = schema_forge_dsl::parse("schema Contact { name: text required }").unwrap();
+
+        let bundle = bundle_schemas(&user).unwrap();
+
+        assert_eq!(bundle.system_count, 4);
+        assert_eq!(
+            names(&bundle.schemas),
+            [
+                "Contact",
+                "OAuthIdentity",
+                "TenantMembership",
+                "User",
+                "WebhookSubscription"
+            ]
+        );
+    }
+
+    #[test]
+    fn operator_schema_with_a_system_name_replaces_the_builtin_like_serve() {
+        let user = schema_forge_dsl::parse("schema User { nickname: text required }").unwrap();
+
+        let bundle = bundle_schemas(&user).unwrap();
+
+        assert_eq!(bundle.system_count, 3);
+        let users: Vec<_> = bundle
+            .schemas
+            .iter()
+            .filter(|schema| schema.name.as_str() == "User")
+            .collect();
+        assert_eq!(users.len(), 1, "one User definition survives the merge");
+        assert_eq!(users[0], &user[0], "the operator's definition wins");
+    }
 }
