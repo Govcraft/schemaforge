@@ -45,7 +45,7 @@ class ConsumerTests(unittest.TestCase):
         return {key for key, value in classify(paths, **kwargs).items() if value}
 
     def test_docs_only_and_empty_diff(self):
-        self.assertEqual(self.selected(["README.md", "docs/guide.md", "skills/forge/SKILL.md", "docs/assets/demo.png"]), set())
+        self.assertEqual(self.selected(["README.md", "SECURITY.md", "CONTRIBUTING.md", "crates/schema-forge-core/README.md", "crates/schema-forge-cli/tests/site_e2e/README.md", "docs/guide.md", "skills/forge/SKILL.md", "docs/assets/demo.png"]), set())
         self.assertEqual(self.selected([]), set())
 
     def test_source_in_docs_is_not_documentation(self):

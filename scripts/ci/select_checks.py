@@ -189,7 +189,12 @@ def version_only(paths, before, after):
 
 
 def is_documentation(path):
-    if path in ("README.md", "CHANGELOG.md", "LICENSE", "LICENSE-MIT", "LICENSE-APACHE", "AGENTS.md"):
+    if path in ("README.md", "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "CHANGELOG.md", "LICENSE", "LICENSE-MIT", "LICENSE-APACHE", "AGENTS.md"):
+        return True
+    parts = PurePosixPath(path).parts
+    if len(parts) == 3 and parts[0] == "crates" and parts[-1] == "README.md":
+        return True
+    if path == "crates/schema-forge-cli/tests/site_e2e/README.md":
         return True
     extension = PurePosixPath(path).suffix.lower()
     if path.startswith(("docs/", "skills/")) and extension == ".md":
