@@ -54,6 +54,16 @@ async fn fixture_options<B: SchemaBackend + EntityStore + 'static>(
     tenancy: bool,
     read_hooks: bool,
 ) -> Fixture {
+    fixture_identity_options(backend, config, tenancy, read_hooks, false).await
+}
+
+async fn fixture_identity_options<B: SchemaBackend + EntityStore + 'static>(
+    backend: Arc<B>,
+    config: EventsConfig,
+    tenancy: bool,
+    read_hooks: bool,
+    scoped_role: bool,
+) -> Fixture {
     let source = format!(
         "{}{}",
         if tenancy {
@@ -121,7 +131,12 @@ async fn fixture_options<B: SchemaBackend + EntityStore + 'static>(
         store = store.with_tenant_membership_schema(tm.clone());
     }
     let store = Arc::new(store);
-    AuthStore::create_user_without_password(store.as_ref(), "alice", &["member".into()], "Alice")
+    let global_roles = if scoped_role {
+        Vec::new()
+    } else {
+        vec!["member".into()]
+    };
+    AuthStore::create_user_without_password(store.as_ref(), "alice", &global_roles, "Alice")
         .await
         .unwrap();
     let mut chain = Vec::<schema_forge_backend::TenantRef>::new();
@@ -246,7 +261,7 @@ async fn fixture_options<B: SchemaBackend + EntityStore + 'static>(
     let anonymous = forge_routes().with_state(service.state().clone());
     let caller = Claims {
         sub: "alice".into(),
-        roles: vec!["member".into()],
+        roles: global_roles,
         perms: vec![],
         exp: 9_999_999_999,
         iat: None,
@@ -256,7 +271,14 @@ async fn fixture_options<B: SchemaBackend + EntityStore + 'static>(
         email: None,
         username: None,
         custom: if tenancy {
-            HashMap::from([("tenant_chain".into(), serde_json::to_value(chain).unwrap())])
+            HashMap::from([
+                ("tenant_chain".into(), serde_json::to_value(chain).unwrap()),
+                (
+                    "tenant_roles".into(),
+                    serde_json::to_value(auth_store.list_tenant_roles("alice").await.unwrap())
+                        .unwrap(),
+                ),
+            ])
         } else {
             HashMap::new()
         },
@@ -754,6 +776,75 @@ async fn membership_removal_closes_stream_and_active_tenant_cannot_be_impersonat
     assert_eq!(event["reason"], "authorization_changed");
     assert!(event.get("entity").is_none());
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_membership_role_allows_stream_and_role_revocation_closes_it() {
+    let backend = Arc::new(
+        schema_forge_surrealdb::SurrealBackend::connect_memory("events", "scoped_roles")
+            .await
+            .unwrap(),
+    );
+    let f = fixture_identity_options(backend, enabled(), true, false, true).await;
+    assert!(f
+        .store
+        .get_user("alice")
+        .await
+        .unwrap()
+        .unwrap()
+        .roles
+        .is_empty());
+    assert_eq!(
+        f.store.list_tenant_roles("alice").await.unwrap()[0].role,
+        "member"
+    );
+    let mut body = connect(&f.app, "").await;
+    let created = json(
+        request(
+            &f.app,
+            "POST",
+            "/schemas/Note/entities",
+            serde_json::json!({"title": "Scoped role"}),
+        )
+        .await,
+    )
+    .await;
+    let (_, event) = change(&mut body).await;
+    assert_eq!(event["entity"]["id"], created["id"]);
+    assert_eq!(event["entity"]["fields"]["title"], "Scoped role");
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/schemas/TenantMembership/entities/{}",
+                    f.membership.as_ref().unwrap()
+                ))
+                .header("x-test-admin", "1")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"fields": {"role": null}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        f.store
+            .list_tenant_memberships("alice")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(f.store.list_tenant_roles("alice").await.unwrap().is_empty());
+    let (frame, event) = change(&mut body).await;
+    assert!(frame.contains("event: closed"));
+    assert_eq!(event["reason"], "authorization_changed");
+    assert!(event.get("entity").is_none());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn owner_denial_never_delivers_entity_or_delete_metadata() {
     let f = fixture(enabled()).await;

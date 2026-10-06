@@ -45,6 +45,8 @@ pub enum ActionVerb {
     List,
     /// Create a new entity.
     Create,
+    /// Invite a user without granting direct account creation.
+    Invite,
     /// Update an existing entity.
     Update,
     /// Delete an existing entity.
@@ -64,6 +66,7 @@ impl ActionVerb {
             Self::Read => "Read",
             Self::List => "List",
             Self::Create => "Create",
+            Self::Invite => "Invite",
             Self::Update => "Update",
             Self::Delete => "Delete",
             Self::Export => "Export",

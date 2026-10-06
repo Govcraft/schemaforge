@@ -53,7 +53,7 @@ test("operator can invite with only writable tenant choices", async ({ page }) =
   let body: unknown
   await page.route("**/api/v1/forge/auth/invites", async (route) => {
     body = route.request().postDataJSON()
-    await route.fulfill({ status: 201, json: { invite_id: "issued", email: "invitee@example.com", expires_at: "2030-01-01T00:00:00Z" } })
+    await route.fulfill({ status: 201, json: { invite_id: "issued", email: "invitee@example.com", expires_at: "2030-01-01T00:00:00Z", delivery: "smtp", accept_url: "https://app.example.com/invite/accept?invite=issued" } })
   })
   await page.goto("/admin/users/invite")
   await page.getByLabel("Email", { exact: true }).fill("invitee@example.com")
@@ -65,3 +65,34 @@ test("operator can invite with only writable tenant choices", async ({ page }) =
   await expect(page.getByRole("status")).toContainText("Invitation sent to invitee@example.com")
   expect(body).toEqual({ email: "invitee@example.com", role: "member", tenant_type: "Organization", tenant_id: "writable" })
 })
+
+for (const mode of ["link", "failed"] as const) {
+  test(`operator can share a stored invitation after ${mode} delivery`, async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.setItem("schemaforge.token", "owner-session")
+      sessionStorage.setItem("schemaforge.token_expires_at", new Date(Date.now() + 3600000).toISOString())
+    })
+    await page.route("**/api/v1/forge/schemas", (route) => route.fulfill({ json: { schemas: [
+      { name: "User", annotations: [{ annotation: "System" }], permissions: { create: false } },
+    ] } }))
+    await page.route("**/api/v1/forge/users/roles", (route) => route.fulfill({ json: { roles: [{ name: "member", rank: 1 }] } }))
+    await page.route("**/api/v1/forge/auth/me", (route) => route.fulfill({ json: { username: "owner", roles: ["owner"], memberships: [] } }))
+    const acceptUrl = "https://app.example.com/invite/accept?invite=stored-reference"
+    await page.route("**/api/v1/forge/auth/invites", (route) => route.fulfill({
+      status: mode === "link" ? 201 : 502,
+      json: mode === "link"
+        ? { invite_id: "stored-reference", email: "invitee@example.com", expires_at: "2030-01-01T00:00:00Z", delivery: "link", accept_url: acceptUrl }
+        : { error: "invite_delivery_failed", message: "Invitation created, but email delivery failed.", invite_id: "stored-reference", delivery: "failed", accept_url: acceptUrl },
+    }))
+    await page.goto("/admin/users/invite")
+    await expect(page.getByRole("link", { name: "Invite user", exact: true })).toBeVisible()
+    await page.getByLabel("Email", { exact: true }).fill("invitee@example.com")
+    await page.getByRole("button", { name: "Send invitation" }).click()
+    await expect(page.getByRole("status")).toContainText("Share this link with the recipient")
+    await expect(page.getByLabel("Invitation link")).toHaveValue(acceptUrl)
+    await expect(page.getByLabel("Invitation link")).toHaveAttribute("readonly", "")
+    await expect(page.getByRole("button", { name: "Copy link" })).toBeVisible()
+    await expect(page.getByRole("button", { name: "Send invitation" })).toHaveCount(0)
+    await expect(page.getByRole("alert")).toHaveCount(0)
+  })
+}

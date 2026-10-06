@@ -144,7 +144,7 @@ pub async fn run(
         backend_arc.clone(),
         None,
         &storage_config,
-        role_ranks,
+        role_ranks.clone(),
         principal_claims,
         // Validate custom policies against the proposed registry below, not the
         // old registry: a coordinated field/policy rename must be deployable.
@@ -160,6 +160,39 @@ pub async fn run(
     let proposed_schemas =
         super::schema_update::merge_schema_definitions(registry.values().cloned(), &schemas);
     super::schema_update::validate_tenant_hierarchy(&proposed_schemas)?;
+    let proposed_tenants = schema_forge_backend::tenant::TenantConfig::from_schemas(
+        &proposed_schemas,
+    )
+    .map_err(|error| CliError::Config {
+        message: error.to_string(),
+    })?;
+    svc_config
+        .custom
+        .schema_forge
+        .tenancy
+        .validate(
+            &proposed_tenants,
+            &role_ranks,
+            &svc_config.custom.schema_forge.auth.oauth,
+        )
+        .map_err(|error| CliError::Config {
+            message: error.to_string(),
+        })?;
+    if let Some(default) = &svc_config.custom.schema_forge.tenancy.default_tenant {
+        // A fresh root schema has no existing target. Refuse before applying
+        // user DDL rather than creating accounts that cannot complete login.
+        if !registry.contains_key(default.schema.as_str()) {
+            return Err(CliError::Config {
+                message: "default_tenant must reference an existing tenant root entity; apply and seed the root before enabling open signup".into(),
+            });
+        }
+        entity_store
+            .get(&default.schema, &default.id)
+            .await
+            .map_err(|error| CliError::Config {
+                message: format!("cannot load schema_forge.tenancy.default_tenant: {error}"),
+            })?;
+    }
     let prepared_policy = init_data
         .policy_store
         .as_ref()
@@ -417,7 +450,12 @@ pub async fn run(
         email_cfg.password = Some(pw);
     }
     let project_name = &svc_config.custom.schema_forge.project_name;
-    let email_sender: Arc<dyn schema_forge_acton::email::EmailSender> = if email_cfg.enabled {
+    email_cfg.validate_link_delivery().map_err(|error| CliError::Config {
+        message: format!("invalid [schema_forge.email] config: {error}"),
+    })?;
+    let email_sender: Arc<dyn schema_forge_acton::email::EmailSender> = if email_cfg.enabled
+        && email_cfg.delivery == schema_forge_acton::email::EmailDelivery::Smtp {
+
         Arc::new(
             schema_forge_acton::email::SmtpEmailSender::from_config(&email_cfg, project_name)
                 .map_err(|e| CliError::Config {
@@ -467,7 +505,15 @@ pub async fn run(
             )
             .map_err(|error| CliError::Config {
                 message: format!("invalid OAuth configuration: {error}"),
-            })?,
+            })?
+            .with_default_tenant(
+                svc_config
+                    .custom
+                    .schema_forge
+                    .tenancy
+                    .default_tenant
+                    .clone(),
+            ),
         ))
     } else {
         None

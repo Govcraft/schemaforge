@@ -7,6 +7,38 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-06
+
+### Added
+
+- Optional `[schema_forge.tenancy] creator_role` commits a tenant root and its
+  creator's membership atomically on PostgreSQL, SurrealDB, and SQL Server.
+  PostgreSQL create receipts include the membership in the same commit and
+  preserve it when reconciling a request.
+- Scoped membership roles enter signed login and refresh claims and apply only
+  within the selected tenant. Creator grants do not change global account roles.
+  Entity streams recheck scoped roles and close when access is revoked.
+- Independent Cedar `InviteUser` permission lets tenant owners invite without
+  direct user creation or listing permission. The existing role-rank and tenant
+  delegation restrictions still apply. The generated invitation form supports
+  these owners and manual sharing of acceptance links.
+- `[schema_forge.email] delivery = "link"` returns an acceptance URL without
+  SMTP. SMTP failures after persistence return 502 `invite_delivery_failed`
+  with `invite_id` and `accept_url`, so clients can recover the existing invite.
+- Configured `schema_forge.tenancy.default_tenant` assigns new open OAuth
+  signups to an existing tenant root before login completes. Signed invitations
+  retain their configured tenant rather than using this default.
+
+### Changed
+
+- Invitations require an explicit `InviteUser` policy. Existing non-platform
+  inviters granted only `CreateUser` must add this permission; platform
+  administrators retain their existing access.
+- Startup rejects enabled open OAuth signup with tenancy unless a valid,
+  existing default tenant is configured. `creator_role` alone cannot provide
+  the membership needed for a first login. See the tenancy and invitations
+  references for configuration and migration examples.
+
 ## [0.48.0] - 2026-10-05
 
 ### Added

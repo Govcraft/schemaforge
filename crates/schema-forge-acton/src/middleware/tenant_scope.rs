@@ -146,6 +146,7 @@ where
     };
 
     let mut new_claims = claims;
+    add_active_membership_role(&mut new_claims, active);
     match serde_json::to_value(&effective) {
         Ok(v) => {
             new_claims.custom.insert("tenant_chain".to_string(), v);
@@ -245,6 +246,25 @@ fn select_active_tenant<'a, B>(
         .iter()
         .find(|m| m.schema == parsed.0 && m.entity_id == parsed.1)
         .ok_or(TenantScopeRefusal::NotInMemberships)
+}
+
+/// Add only the selected membership's role, without changing global account roles.
+/// The reserved platform administrator role cannot originate in a membership.
+pub(crate) fn add_active_membership_role(claims: &mut Claims, active: &TenantRef) {
+    let roles: Vec<schema_forge_backend::user_store::TenantRole> =
+        claims.custom_claim_as("tenant_roles").unwrap_or_default();
+    for membership in roles
+        .iter()
+        .filter(|membership| membership.tenant == *active)
+    {
+        let role = &membership.role;
+        if !role.is_empty()
+            && role != PLATFORM_ADMIN_ROLE
+            && !claims.roles.iter().any(|existing| existing == role)
+        {
+            claims.roles.push(role.clone());
+        }
+    }
 }
 
 /// Parse a `<schema>:<entity_id>` header value.
@@ -403,6 +423,27 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+
+    #[test]
+    fn membership_roles_only_apply_to_the_selected_tenant_and_never_platform_admin() {
+        let mut claims: Claims = serde_json::from_value(serde_json::json!({
+            "sub":"alice", "roles":["member"], "perms":[], "exp":9999999999_u64,
+            "tenant_roles":[
+                {"tenant":{"schema":"Organization","entity_id":"a"},"role":"owner"},
+                {"tenant":{"schema":"Organization","entity_id":"b"},"role":"admin"},
+                {"tenant":{"schema":"Organization","entity_id":"a"},"role":"platform_admin"}
+            ]
+        }))
+        .unwrap();
+        add_active_membership_role(&mut claims, &membership("Organization", "a"));
+        assert_eq!(claims.roles, vec!["member", "owner"]);
+        add_active_membership_role(&mut claims, &membership("Organization", "a"));
+        assert_eq!(claims.roles, vec!["member", "owner"]);
+        let mut other = claims.clone();
+        other.roles = vec!["member".into()];
+        add_active_membership_role(&mut other, &membership("Organization", "b"));
+        assert_eq!(other.roles, vec!["member", "admin"]);
+    }
 
     fn membership(schema: &str, id: &str) -> TenantRef {
         TenantRef {

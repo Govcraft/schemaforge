@@ -110,6 +110,35 @@ pub trait EntityStore: Send + Sync {
         async { Err(crate::create_intent::CreateIntentError::Unsupported) }
     }
 
+    /// Atomically commit a create intent together with creator membership.
+    /// Committed receipts reconcile without inserting another membership.
+    fn create_intent_with_membership(
+        &self,
+        _request: &crate::create_intent::CreateIntentRequest,
+        _membership: &Entity,
+    ) -> impl Future<
+        Output = Result<
+            crate::create_intent::CreateIntentReceipt,
+            crate::create_intent::CreateIntentError,
+        >,
+    > + Send {
+        async { Err(crate::create_intent::CreateIntentError::Unsupported) }
+    }
+
+    /// Create a tenant root and its creator membership in one transaction.
+    /// Adapters must fail without writing if atomic creation is unsupported.
+    fn create_with_membership(
+        &self,
+        _entity: &Entity,
+        _membership: &Entity,
+    ) -> impl Future<Output = Result<Entity, BackendError>> + Send {
+        async {
+            Err(BackendError::QueryError {
+                message: "atomic creator membership is unsupported by this backend".into(),
+            })
+        }
+    }
+
     /// Read an entity and opaque revision from a single consistent snapshot.
     /// Unsupported backends must not synthesize revisions from ordinary reads.
     fn get_versioned(
@@ -248,6 +277,82 @@ pub trait EntityStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct UnsupportedStore(std::sync::atomic::AtomicUsize);
+
+    impl EntityStore for UnsupportedStore {
+        async fn create(&self, entity: &Entity) -> Result<Entity, BackendError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(entity.clone())
+        }
+        async fn get(&self, _: &SchemaName, _: &EntityId) -> Result<Entity, BackendError> {
+            panic!("unsupported atomic operation must not read")
+        }
+        async fn update(&self, _: &Entity) -> Result<Entity, BackendError> {
+            panic!("unsupported atomic operation must not update")
+        }
+        async fn delete(&self, _: &SchemaName, _: &EntityId) -> Result<(), BackendError> {
+            panic!("unsupported atomic operation must not compensate")
+        }
+        async fn query(&self, _: &Query) -> Result<QueryResult, BackendError> {
+            panic!("unsupported atomic operation must not query")
+        }
+        async fn count(&self, _: &Query) -> Result<usize, BackendError> {
+            panic!("unsupported atomic operation must not count")
+        }
+        async fn aggregate(
+            &self,
+            _: &AggregateQuery,
+        ) -> Result<Vec<AggregateResult>, BackendError> {
+            panic!("unsupported atomic operation must not aggregate")
+        }
+    }
+
+    #[tokio::test]
+    async fn unsupported_creator_membership_never_performs_partial_writes() {
+        use crate::create_intent::{
+            CreateIntentError, CreateIntentId, CreateIntentRequest, CreateIntentScope,
+        };
+        use schema_forge_core::types::SchemaId;
+        let store = UnsupportedStore(std::sync::atomic::AtomicUsize::new(0));
+        let schema = SchemaName::new("Organization").unwrap();
+        let entity = Entity::new(schema.clone(), std::collections::BTreeMap::new());
+        let membership = Entity::new(
+            SchemaName::new("TenantMembership").unwrap(),
+            std::collections::BTreeMap::new(),
+        );
+        assert!(store
+            .create_with_membership(&entity, &membership)
+            .await
+            .is_err());
+        let request = CreateIntentRequest::Read {
+            scope: CreateIntentScope {
+                principal: "owner".into(),
+                tenant: String::new(),
+                schema: SchemaDefinition::new(
+                    SchemaId::new(),
+                    schema,
+                    vec![schema_forge_core::types::FieldDefinition::new(
+                        FieldName::new("name").unwrap(),
+                        schema_forge_core::types::FieldType::Text(
+                            schema_forge_core::types::TextConstraints::unconstrained(),
+                        ),
+                    )],
+                    vec![],
+                )
+                .unwrap(),
+            },
+            id: CreateIntentId::fresh(),
+        };
+        assert_eq!(
+            store
+                .create_intent_with_membership(&request, &membership)
+                .await
+                .unwrap_err(),
+            CreateIntentError::Unsupported
+        );
+        assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
 
     // Compile-time verification that traits have the correct bounds.
     // These functions are never called -- they just verify the trait is object-safe enough

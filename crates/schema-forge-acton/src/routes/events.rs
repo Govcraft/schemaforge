@@ -114,7 +114,40 @@ impl StreamState {
             return false;
         }
         match self.runtime.auth_store.get_user(&self.claims.sub).await {
-            Ok(Some(user)) if user.active && user.roles == self.claims.roles => {}
+            Ok(Some(user)) if user.active => {
+                let mut expected = self.claims.clone();
+                expected.roles = user.roles;
+                if let Some(active) = self.effective_chain.last() {
+                    let Ok(roles) = self
+                        .runtime
+                        .auth_store
+                        .list_tenant_roles(&self.claims.sub)
+                        .await
+                    else {
+                        return false;
+                    };
+                    let Ok(value) = serde_json::to_value(roles) else {
+                        return false;
+                    };
+                    expected.custom.insert("tenant_roles".into(), value);
+                    crate::middleware::tenant_scope::add_active_membership_role(
+                        &mut expected,
+                        active,
+                    );
+                }
+                if expected
+                    .roles
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    != self
+                        .claims
+                        .roles
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                {
+                    return false;
+                }
+            }
             Ok(None) if !self.local_account && self.effective_chain.is_empty() => return true,
             _ => return false,
         }

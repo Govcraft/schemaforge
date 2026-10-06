@@ -5,7 +5,7 @@ use schema_forge_backend::{
         CreateFingerprint, CreateIntentError as Error, CreateIntentId, CreateIntentReceipt,
         CreateIntentRequest, CreateIntentScope, ADMISSION_SECONDS, RECOVERY_SECONDS,
     },
-    BackendError,
+    BackendError, Entity,
 };
 use schema_forge_core::types::EntityId;
 use sqlx::{postgres::PgRow, Row};
@@ -58,6 +58,15 @@ impl PgBackend {
     pub(crate) async fn process_create_intent(
         &self,
         request: &CreateIntentRequest,
+    ) -> Result<CreateIntentReceipt, Error> {
+        self.process_create_intent_with_membership(request, None)
+            .await
+    }
+
+    pub(crate) async fn process_create_intent_with_membership(
+        &self,
+        request: &CreateIntentRequest,
+        membership: Option<&Entity>,
     ) -> Result<CreateIntentReceipt, Error> {
         let mut tx = self.pool().begin().await.map_err(storage)?;
         sqlx::query("SET LOCAL lock_timeout = '3s'")
@@ -121,9 +130,35 @@ impl PgBackend {
                         if entity.schema != scope.schema.name {
                             return Err(Error::Invalid);
                         }
+                        if let Some(membership) = membership {
+                            let user =
+                                schema_forge_backend::onboarding::validate_creator_membership(
+                                    entity, membership,
+                                )?;
+                            Self::require_membership_user(&mut tx, user).await?;
+                        }
                         let created =
                             Self::insert_with_revision(&mut tx, entity, Some(&scope.schema))
                                 .await?;
+                        if let Some(membership) = membership {
+                            let definition: Option<serde_json::Value> = sqlx::query_scalar(
+                                "SELECT definition FROM _schema_metadata WHERE name=$1 FOR SHARE",
+                            )
+                            .bind(membership.schema.as_str())
+                            .fetch_optional(&mut *tx)
+                            .await
+                            .map_err(storage)?;
+                            let definition = definition
+                                .map(
+                                    serde_json::from_value::<
+                                        schema_forge_core::types::SchemaDefinition,
+                                    >,
+                                )
+                                .transpose()
+                                .map_err(|_| Error::Invalid)?;
+                            Self::insert_with_revision(&mut tx, membership, definition.as_ref())
+                                .await?;
+                        }
                         sqlx::query("UPDATE _schema_create_intents SET entity_id=$2 WHERE id=$1")
                             .bind(id.as_str())
                             .bind(created.entity.id.as_str())

@@ -284,6 +284,24 @@ impl PgBackend {
         Ok(())
     }
 
+    pub(crate) async fn require_membership_user(
+        connection: &mut sqlx::PgConnection,
+        user: &EntityId,
+    ) -> Result<(), BackendError> {
+        let exists = sqlx::query("SELECT id FROM \"User\" WHERE id=$1 FOR KEY SHARE")
+            .bind(user.as_str())
+            .fetch_optional(connection)
+            .await
+            .map_err(|error| map_write_error(error, "User", "verify membership user"))?;
+        if exists.is_none() {
+            return Err(BackendError::EntityNotFound {
+                schema: "User".into(),
+                entity_id: user.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) async fn insert_with_revision(
         connection: &mut sqlx::PgConnection,
         entity: &Entity,
@@ -817,6 +835,41 @@ impl EntityStore for PgBackend {
         schema_forge_backend::create_intent::CreateIntentError,
     > {
         self.process_create_intent(request).await
+    }
+
+    async fn create_intent_with_membership(
+        &self,
+        request: &schema_forge_backend::create_intent::CreateIntentRequest,
+        membership: &Entity,
+    ) -> Result<
+        schema_forge_backend::create_intent::CreateIntentReceipt,
+        schema_forge_backend::create_intent::CreateIntentError,
+    > {
+        self.process_create_intent_with_membership(request, Some(membership))
+            .await
+    }
+
+    async fn create_with_membership(
+        &self,
+        entity: &Entity,
+        membership: &Entity,
+    ) -> Result<Entity, BackendError> {
+        let user =
+            schema_forge_backend::onboarding::validate_creator_membership(entity, membership)?;
+        let schema = self.load_schema_metadata(&entity.schema).await?;
+        let membership_schema = self.load_schema_metadata(&membership.schema).await?;
+        let mut tx = self.pool.begin().await.map_err(|error| {
+            map_write_error(error, entity.schema.as_str(), "begin creator membership")
+        })?;
+        Self::require_membership_user(&mut tx, user).await?;
+        let created = Self::insert_with_revision(&mut tx, entity, schema.as_ref())
+            .await?
+            .entity;
+        Self::insert_with_revision(&mut tx, membership, membership_schema.as_ref()).await?;
+        tx.commit().await.map_err(|error| {
+            map_write_error(error, entity.schema.as_str(), "commit creator membership")
+        })?;
+        Ok(created)
     }
 
     async fn create(&self, entity: &Entity) -> Result<Entity, BackendError> {

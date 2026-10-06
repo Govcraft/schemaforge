@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod auth;
 pub mod create_intents;
+mod creator_membership;
 pub mod entities;
 #[cfg(feature = "sse")]
 pub mod events;

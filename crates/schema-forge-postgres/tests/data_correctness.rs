@@ -52,3 +52,13 @@ where
     admin.close().await;
     result.unwrap();
 }
+
+#[path = "../../schema-forge-backend/tests/support/creator_membership.rs"]
+mod creator_membership;
+
+#[tokio::test]
+#[ignore = "requires SCHEMAFORGE_TEST_POSTGRES_URL with CREATE SCHEMA privilege"]
+async fn creator_membership_is_atomic() {
+    with_database(|backend| async move { creator_membership::exercise(backend.as_ref()).await })
+        .await;
+}

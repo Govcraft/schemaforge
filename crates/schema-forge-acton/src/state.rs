@@ -209,6 +209,39 @@ pub trait DynEntityStore: Send + Sync {
         Box::pin(async { Err(schema_forge_backend::create_intent::CreateIntentError::Unsupported) })
     }
 
+    /// Atomically create a tenant root and its creator membership.
+    fn create_with_membership<'a>(
+        &'a self,
+        _entity: &'a Entity,
+        _membership: &'a Entity,
+    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + Sync + 'a>> {
+        Box::pin(async {
+            Err(BackendError::QueryError {
+                message: "backend does not support atomic creator membership".into(),
+            })
+        })
+    }
+
+    /// Atomically commit a create receipt together with creator membership.
+    fn create_intent_with_membership<'a>(
+        &'a self,
+        _request: &'a schema_forge_backend::create_intent::CreateIntentRequest,
+        _membership: &'a Entity,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        schema_forge_backend::create_intent::CreateIntentReceipt,
+                        schema_forge_backend::create_intent::CreateIntentError,
+                    >,
+                > + Send
+                + Sync
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(schema_forge_backend::create_intent::CreateIntentError::Unsupported) })
+    }
+
     /// Read a record and its storage revision, if supported.
     fn get_versioned<'a>(
         &'a self,
@@ -350,6 +383,37 @@ impl<T: EntityStore + 'static> DynEntityStore for T {
         >,
     > {
         Box::pin(SyncFuture::new(EntityStore::create_intent(self, request)))
+    }
+
+    fn create_with_membership<'a>(
+        &'a self,
+        entity: &'a Entity,
+        membership: &'a Entity,
+    ) -> Pin<Box<dyn Future<Output = Result<Entity, BackendError>> + Send + Sync + 'a>> {
+        Box::pin(SyncFuture::new(EntityStore::create_with_membership(
+            self, entity, membership,
+        )))
+    }
+
+    fn create_intent_with_membership<'a>(
+        &'a self,
+        request: &'a schema_forge_backend::create_intent::CreateIntentRequest,
+        membership: &'a Entity,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        schema_forge_backend::create_intent::CreateIntentReceipt,
+                        schema_forge_backend::create_intent::CreateIntentError,
+                    >,
+                > + Send
+                + Sync
+                + 'a,
+        >,
+    > {
+        Box::pin(SyncFuture::new(EntityStore::create_intent_with_membership(
+            self, request, membership,
+        )))
     }
 
     fn get_versioned<'a>(
@@ -618,6 +682,24 @@ pub trait DynAuthStore: Send + Sync {
         username: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<TenantRef>, BackendError>> + Send + 'a>>;
 
+    /// Read scoped membership roles for signed login claims.
+    fn list_tenant_roles<'a>(
+        &'a self,
+        _username: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Vec<schema_forge_backend::user_store::TenantRole>,
+                        BackendError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
     /// Grant the user a tenant membership. See
     /// [`schema_forge_backend::user_store::AuthStore::add_tenant_membership`].
     fn add_tenant_membership<'a>(
@@ -772,6 +854,23 @@ impl<T: AuthStore + 'static> DynAuthStore for T {
         username: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<TenantRef>, BackendError>> + Send + 'a>> {
         Box::pin(AuthStore::list_tenant_memberships(self, username))
+    }
+
+    fn list_tenant_roles<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Vec<schema_forge_backend::user_store::TenantRole>,
+                        BackendError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(AuthStore::list_tenant_roles(self, username))
     }
 
     fn add_tenant_membership<'a>(

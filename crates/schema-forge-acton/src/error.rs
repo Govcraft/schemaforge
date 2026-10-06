@@ -62,6 +62,11 @@ pub enum ForgeError {
     HookAborted { reason: String },
     /// A required lifecycle hook timed out or was unreachable. Maps to 503.
     HookUnavailable { message: String },
+    /// Invitation persisted, but SMTP delivery failed. Maps to 502.
+    InviteDeliveryFailed {
+        invite_id: String,
+        accept_url: String,
+    },
     /// Internal error. Maps to 500.
     Internal { message: String },
 }
@@ -133,6 +138,9 @@ impl fmt::Display for ForgeError {
             Self::HookUnavailable { message } => {
                 write!(f, "required hook unavailable: {message}")
             }
+            Self::InviteDeliveryFailed { .. } => {
+                write!(f, "Invitation created, but email delivery failed. Share the accept link to complete onboarding.")
+            }
             Self::Internal { message } => {
                 write!(f, "internal error: {message}")
             }
@@ -157,7 +165,9 @@ impl ForgeError {
             | Self::InvalidQuery { .. } => StatusCode::BAD_REQUEST,
             Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             Self::Forbidden { .. } => StatusCode::FORBIDDEN,
-            Self::BackendUnavailable { .. } => StatusCode::BAD_GATEWAY,
+            Self::BackendUnavailable { .. } | Self::InviteDeliveryFailed { .. } => {
+                StatusCode::BAD_GATEWAY
+            }
             Self::ExportDeferred { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::ExportTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -188,6 +198,7 @@ impl ForgeError {
             Self::RateLimited { .. } => "rate_limited",
             Self::HookAborted { .. } => "hook_aborted",
             Self::HookUnavailable { .. } => "hook_unavailable",
+            Self::InviteDeliveryFailed { .. } => "invite_delivery_failed",
             Self::Internal { .. } => "internal_error",
         }
     }
@@ -210,6 +221,16 @@ impl IntoResponse for ForgeError {
     fn into_response(self) -> Response {
         let status = self.status_code();
         let body = match &self {
+            Self::InviteDeliveryFailed {
+                invite_id,
+                accept_url,
+            } => serde_json::json!({
+                "error": self.error_kind(),
+                "message": self.client_message(),
+                "invite_id": invite_id,
+                "accept_url": accept_url,
+                "delivery": "failed",
+            }),
             Self::Conflict { reason, message } => serde_json::json!({
                 "error": "conflict",
                 "reason": reason,

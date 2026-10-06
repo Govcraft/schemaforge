@@ -4,6 +4,9 @@ mod migration_renames;
 #[path = "../../schema-forge-backend/tests/support/data_correctness.rs"]
 mod data_correctness;
 
+#[path = "../../schema-forge-backend/tests/support/creator_membership.rs"]
+mod creator_membership;
+
 use std::collections::BTreeMap;
 
 use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
@@ -62,6 +65,7 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
         .expect("list initialized metadata")
         .is_empty());
 
+    creator_membership::exercise(&backend).await;
     sparse_updates_preserve_other_fields_and_explicit_null(&backend).await;
     atomic_metadata_failure_rolls_back_rename(&backend).await;
     exercises_backend_contract(&backend).await;

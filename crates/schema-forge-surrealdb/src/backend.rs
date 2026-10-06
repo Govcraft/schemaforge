@@ -705,6 +705,54 @@ fn parse_and_sanitize_definition(
 }
 
 impl EntityStore for SurrealBackend {
+    async fn create_with_membership(
+        &self,
+        entity: &Entity,
+        membership: &Entity,
+    ) -> Result<Entity, BackendError> {
+        let user =
+            schema_forge_backend::onboarding::validate_creator_membership(entity, membership)?;
+        let root_fields = self.build_field_assignments(entity).await?;
+        let membership_fields = self.build_field_assignments(membership).await?;
+        let create = |record: &Entity, fields: &str| {
+            let suffix = if fields.is_empty() {
+                String::new()
+            } else {
+                format!(" SET {fields}")
+            };
+            format!("CREATE {}:`{}`{suffix};", record.schema, record.id)
+        };
+        let sql = format!(
+            "BEGIN TRANSACTION; \
+             IF !record::exists(User:`{user}`) {{ THROW 'membership user does not exist'; }}; \
+             {} {} COMMIT TRANSACTION;",
+            create(entity, &root_fields),
+            create(membership, &membership_fields),
+        );
+        let mut response = self.execute_raw(&sql).await?.check().map_err(|error| {
+            reclassify_unique_violation(
+                BackendError::QueryError {
+                    message: error.to_string(),
+                },
+                entity.schema.as_str(),
+            )
+        })?;
+        // BEGIN and the User existence check precede the root's CREATE result.
+        let value: surrealdb::types::Value =
+            response.take(2).map_err(|error| BackendError::QueryError {
+                message: error.to_string(),
+            })?;
+        let root = match value {
+            surrealdb::types::Value::Array(rows) => rows.into_inner().into_iter().next(),
+            surrealdb::types::Value::None | surrealdb::types::Value::Null => None,
+            root => Some(root),
+        }
+        .ok_or_else(|| BackendError::Internal {
+            message: "atomic root creation returned no entity".into(),
+        })?;
+        surreal_row_to_entity(&entity.schema, &root)
+    }
+
     async fn create(&self, entity: &Entity) -> Result<Entity, BackendError> {
         let table = entity.schema.as_str();
         let id_str = entity.id.as_str();

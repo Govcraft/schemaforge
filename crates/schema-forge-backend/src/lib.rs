@@ -26,3 +26,6 @@ pub mod conditional;
 
 /// Optional durable create reconciliation types.
 pub mod create_intent;
+
+/// Validation for atomic tenant creator membership.
+pub mod onboarding;

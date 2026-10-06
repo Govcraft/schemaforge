@@ -142,6 +142,7 @@ forbid (
         Action::"ReadUser",
         Action::"ListUser",
         Action::"CreateUser",
+        Action::"InviteUser",
         Action::"UpdateUser",
         Action::"DeleteUser"
     ],

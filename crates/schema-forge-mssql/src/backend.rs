@@ -343,6 +343,38 @@ impl SchemaBackend for MssqlBackend {
 }
 
 impl EntityStore for MssqlBackend {
+    async fn create_with_membership(
+        &self,
+        entity: &Entity,
+        membership: &Entity,
+    ) -> Result<Entity, BackendError> {
+        let user =
+            schema_forge_backend::onboarding::validate_creator_membership(entity, membership)?;
+        let root_data = serde_json::to_string(&entity.fields).map_err(json_error)?;
+        let membership_data = serde_json::to_string(&membership.fields).map_err(json_error)?;
+        let statements = format!(
+            "IF NOT EXISTS (SELECT 1 FROM [User] WITH (UPDLOCK, HOLDLOCK) WHERE [id]=@P1) THROW 50003, 'membership user does not exist', 1; \
+             INSERT INTO {} ([id], [data]) VALUES (@P2, @P3); \
+             INSERT INTO {} ([id], [data]) VALUES (@P4, @P5);",
+            quote(entity.schema.as_str()), quote(membership.schema.as_str()),
+        );
+        let mut connection = connection(&self.pool).await?;
+        connection
+            .execute(
+                transaction_batch(&statements),
+                &[
+                    &user.as_str(),
+                    &entity.id.as_str(),
+                    &root_data.as_str(),
+                    &membership.id.as_str(),
+                    &membership_data.as_str(),
+                ],
+            )
+            .await
+            .map_err(query_error)?;
+        Ok(entity.clone())
+    }
+
     async fn create(&self, entity: &Entity) -> Result<Entity, BackendError> {
         let data = serde_json::to_string(&entity.fields).map_err(json_error)?;
         let sql = format!(

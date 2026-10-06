@@ -44,6 +44,7 @@ use crate::{
     invite::verify_invite_token,
     oauth_config::{OAuthSettings, SignupPolicy},
     state::DynAuthStore,
+    tenancy_config::DefaultTenant,
 };
 
 const STATE_TTL_SECS: u64 = 600;
@@ -80,6 +81,7 @@ pub struct OAuthRuntime {
     states: Arc<dyn OAuthStateManager>,
     login_codes: Arc<dyn OAuthStateManager>,
     provisioning: Mutex<()>,
+    default_tenant: Option<DefaultTenant>,
 }
 
 impl OAuthRuntime {
@@ -110,6 +112,7 @@ impl OAuthRuntime {
             states: Arc::new(MemoryOAuthStateManager::new(STATE_TTL_SECS)),
             login_codes: Arc::new(MemoryOAuthStateManager::new(LOGIN_CODE_TTL_SECS)),
             provisioning: Mutex::new(()),
+            default_tenant: None,
         })
     }
 
@@ -137,7 +140,15 @@ impl OAuthRuntime {
             states,
             login_codes,
             provisioning: Mutex::new(()),
+            default_tenant: None,
         })
+    }
+
+    /// Set the default root validated by the embedding application's startup.
+    /// Signed invitation grants take precedence over this signup target.
+    pub fn with_default_tenant(mut self, default_tenant: Option<DefaultTenant>) -> Self {
+        self.default_tenant = default_tenant;
+        self
     }
 
     async fn provider<'a>(
@@ -455,6 +466,20 @@ async fn provision_account(
             services
                 .auth_store
                 .add_tenant_membership(email, tenant_type, tenant_id, verified.role.as_deref())
+                .await
+                .map_err(store_error)?;
+        }
+    }
+    if invite.is_none() {
+        if let Some(default) = &runtime.default_tenant {
+            services
+                .auth_store
+                .add_tenant_membership(
+                    email,
+                    default.schema.as_str(),
+                    default.id.as_str(),
+                    Some(&default.role),
+                )
                 .await
                 .map_err(store_error)?;
         }

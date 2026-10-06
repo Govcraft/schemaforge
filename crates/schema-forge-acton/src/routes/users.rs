@@ -486,7 +486,16 @@ pub async fn list_roles(
     let user_schema = fetch_user_schema(&state).await?;
     let policy_store = fetch_policy_store(&state).await?;
 
-    check_schema_access(&policy_store, &user_schema, Some(claims), AccessAction::List)?;
+    let can_list_users = match check_schema_access(
+        &policy_store,
+        &user_schema,
+        Some(claims),
+        AccessAction::List,
+    ) {
+        Ok(()) => true,
+        Err(ForgeError::Forbidden { .. }) => false,
+        Err(error) => return Err(error),
+    };
 
     let snapshot = policy_store.current();
     let caller_is_platform_admin = claims.has_role(PLATFORM_ADMIN_ROLE);
@@ -500,6 +509,49 @@ pub async fn list_roles(
             rank: snapshot.role_ranks.get(name).unwrap_or(0),
         })
         .collect();
+    if !can_list_users {
+        // Invitation-only callers see exactly the role grants Cedar allows
+        // for their active tenant, without receiving general User access.
+        let tenant_chain = claims
+            .custom_claim_as::<Vec<schema_forge_backend::TenantRef>>("tenant_chain")
+            .unwrap_or_default();
+        let mut allowed = Vec::new();
+        for row in rows {
+            let proposed = ForgeUser {
+                username: "_invitation_role_option".into(),
+                roles: vec![row.name.clone()],
+                display_name: None,
+                active: true,
+                role_rank: row.rank,
+            };
+            let mut entity = forge_user_to_user_entity(&proposed, policy_store.as_ref());
+            if let Some(tenant) = tenant_chain.last() {
+                entity.fields.insert(
+                    "_tenant".into(),
+                    DynamicValue::Text(tenant.entity_id.clone()),
+                );
+            }
+            let decision = authorize(
+                &policy_store,
+                Some(claims),
+                ActionVerb::Invite,
+                &user_schema,
+                Some(&entity),
+            )
+            .map_err(|error| ForgeError::Internal {
+                message: format!("authz engine error while listing invitation roles: {error}"),
+            })?;
+            if decision.is_allow() {
+                allowed.push(row);
+            }
+        }
+        if allowed.is_empty() {
+            return Err(ForgeError::Forbidden {
+                message: "access denied to user and invitation role options".into(),
+            });
+        }
+        rows = allowed;
+    }
     rows.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.name.cmp(&b.name)));
 
     let count = rows.len();

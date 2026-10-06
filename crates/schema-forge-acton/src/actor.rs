@@ -452,7 +452,14 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let request = ctx.message().clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(backend) => backend.create_intent(&request.request).await,
+                Some(backend) => match &request.membership {
+                    Some(membership) => {
+                        backend
+                            .create_intent_with_membership(&request.request, membership)
+                            .await
+                    }
+                    None => backend.create_intent(&request.request).await,
+                },
                 None => Err(schema_forge_backend::create_intent::CreateIntentError::Unsupported),
             };
             request.reply.send(result).await;
@@ -462,10 +469,14 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
     actor.act_on::<CreateEntity>(|actor, ctx| {
         let backend = actor.model.backend.clone();
         let entity = ctx.message().entity.clone();
+        let membership = ctx.message().membership.clone();
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
             let result = match backend {
-                Some(b) => b.create(&entity).await,
+                Some(b) => match &membership {
+                    Some(membership) => b.create_with_membership(&entity, membership).await,
+                    None => b.create(&entity).await,
+                },
                 None => {
                     warn!("CreateEntity received but no backend is configured");
                     Err(no_backend_error())

@@ -4,10 +4,9 @@
 //!
 //! - `POST /auth/invites` (authenticated) — an operator invites an address
 //!   into the deployment, optionally scoping the invitee to a tenant and a
-//!   role. The same privilege guards that gate `POST /users` run here, *at
-//!   invite time*, so an invite can never grant access the inviter could not
-//!   grant directly. The minted invitation is persisted and an accept link is
-//!   emailed to the invitee.
+//!   role. Independent `InviteUser` permission and role-grant guards run at
+//!   invite time. The minted invitation is persisted and an accept link is
+//!   emailed or returned for manual sharing, depending on delivery mode.
 //!
 //! - `POST /auth/invites/accept` (public) — the invitee presents the opaque
 //!   `invite_id` from their email plus a chosen password. The server
@@ -53,11 +52,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::instrument;
 
-use crate::access::{check_schema_access, AccessAction, OptionalClaims};
+use crate::access::OptionalClaims;
 use crate::authz::engine::authorize;
 use crate::authz::namespace::ActionVerb;
 use crate::config::SchemaForgeConfig;
-use crate::email::{EmailMessage, EmailSender};
+use crate::email::{EmailDelivery, EmailMessage, EmailSender};
 use crate::error::ForgeError;
 use crate::invite::{mint_invite_token, verify_invite_token, InviteTokenParams};
 use crate::routes::users::{
@@ -108,6 +107,10 @@ pub struct CreateInviteResponse {
     pub email: String,
     /// ISO-8601 UTC expiry.
     pub expires_at: String,
+    /// Transport used, explicitly distinguishing a link from an emailed invite.
+    pub delivery: EmailDelivery,
+    /// Shareable link to the persisted invitation.
+    pub accept_url: String,
 }
 
 /// Request body for `POST /auth/invites/accept`.
@@ -247,12 +250,11 @@ fn validate_invite_tenant(
 
 /// `POST /auth/invites` — issue an invitation.
 ///
-/// Authorization mirrors `POST /users` exactly: schema-level `CreateUser`
-/// access via [`check_schema_access`], the `platform_admin`-grant guard via
-/// [`caller_can_grant_roles`], and the Cedar `role_rank` guard against a
-/// synthetic `User` carrying the proposed role. Running these here means an
-/// invitation can never confer access the inviter lacks the authority to
-/// grant directly.
+/// Authorization evaluates `InviteUser` against a proposed `User` carrying
+/// the granted role rank and target `_tenant`. The concrete check supports
+/// target-specific policies without a placeholder preflight denying them.
+/// `CreateUser` never grants invitation permission. The explicit platform
+/// administrator grant restriction and Cedar role-rank forbid still apply.
 #[instrument(skip_all)]
 pub async fn create_invite(
     State(state): State<AppState<SchemaForgeConfig>>,
@@ -266,13 +268,6 @@ pub async fn create_invite(
     let claims = require_auth(&claims)?;
     let user_schema = fetch_user_schema(&state).await?;
     let policy_store = fetch_policy_store(&state).await?;
-
-    check_schema_access(
-        &policy_store,
-        &user_schema,
-        Some(claims),
-        AccessAction::Create,
-    )?;
 
     validate_email(&body.email)?;
     let forge = state
@@ -313,11 +308,17 @@ pub async fn create_invite(
         active: true,
         role_rank: 0,
     };
-    let proposed_entity = forge_user_to_user_entity(&proposed, policy_store.as_ref());
+    let mut proposed_entity = forge_user_to_user_entity(&proposed, policy_store.as_ref());
+    if let Some(tenant_id) = &body.tenant_id {
+        proposed_entity.fields.insert(
+            "_tenant".into(),
+            schema_forge_core::types::DynamicValue::Text(tenant_id.clone()),
+        );
+    }
     let decision = authorize(
         &policy_store,
         Some(claims),
-        ActionVerb::Create,
+        ActionVerb::Invite,
         &user_schema,
         Some(&proposed_entity),
     )
@@ -334,14 +335,12 @@ pub async fn create_invite(
             Some(serde_json::json!({
                 "action": "create_invite",
                 "proposed_roles": proposed_roles,
-                "reason": "role_rank_guard",
+                "reason": "invite_policy_denied",
             })),
         )
         .await;
         return Err(ForgeError::Forbidden {
-            message: format!(
-                "inviting a user with roles {proposed_roles:?} would exceed caller's role_rank"
-            ),
+            message: format!("access denied for InviteUser with roles {proposed_roles:?}"),
         });
     }
 
@@ -352,6 +351,12 @@ pub async fn create_invite(
         });
     }
 
+    let email_config = &state.config().custom.schema_forge.email;
+    email_config
+        .validate_link_delivery()
+        .map_err(|error| ForgeError::Internal {
+            message: error.to_string(),
+        })?;
     let minted = mint_invite_token(
         &generator,
         &InviteTokenParams {
@@ -381,32 +386,41 @@ pub async fn create_invite(
         })
         .await?;
 
-    // Deliver the accept link. Fail closed: a delivery failure surfaces as a
-    // 5xx so the operator knows the invite did not reach the invitee. The row
-    // stays `Pending`, so the invite can be re-sent once SMTP is healthy.
-    let accept_url = build_accept_url(email_sender.public_base_url(), &invitation.jti);
+    // Persisted links can always be shared. Link mode skips the transport;
+    // an SMTP failure returns the same reference with an explicit failed
+    // delivery outcome, leaving the invitation Pending.
+    let accept_url = build_accept_url(
+        email_config
+            .public_base_url
+            .as_deref()
+            .or_else(|| email_sender.public_base_url()),
+        &invitation.jti,
+    );
     let project_name = &state.config().custom.schema_forge.project_name;
     let message = EmailMessage {
         to: body.email.clone(),
         subject: invite_email_subject(project_name),
         body_text: invite_email_body(project_name, &accept_url),
     };
-    if let Err(e) = email_sender.send(message).await {
-        audit_user(
-            &state,
-            "forge.invite.send_failed",
-            AuditSeverity::Error,
-            &claims.sub,
-            &body.email,
-            Some(serde_json::json!({
-                "invite_id": invitation.jti,
-                "error": e.to_string(),
-            })),
-        )
-        .await;
-        return Err(ForgeError::Internal {
-            message: format!("invitation stored but email delivery failed: {e}"),
-        });
+    if email_config.delivery == EmailDelivery::Smtp {
+        if let Err(e) = email_sender.send(message).await {
+            audit_user(
+                &state,
+                "forge.invite.send_failed",
+                AuditSeverity::Error,
+                &claims.sub,
+                &body.email,
+                Some(serde_json::json!({
+                    "invite_id": invitation.jti,
+                    "error": e.to_string(),
+                })),
+            )
+            .await;
+            return Err(ForgeError::InviteDeliveryFailed {
+                invite_id: invitation.jti,
+                accept_url,
+            });
+        }
     }
 
     audit_user(
@@ -420,6 +434,7 @@ pub async fn create_invite(
             "tenant_type": body.tenant_type,
             "tenant_id": body.tenant_id,
             "role": body.role,
+            "delivery": email_config.delivery,
         })),
     )
     .await;
@@ -430,6 +445,8 @@ pub async fn create_invite(
             invite_id: invitation.jti,
             email: body.email,
             expires_at: minted.expires_at.to_rfc3339(),
+            delivery: email_config.delivery,
+            accept_url,
         }),
     ))
 }

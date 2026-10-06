@@ -31,6 +31,8 @@ pub enum AccessAction {
     List,
     /// Creating new entities (POST).
     Create,
+    /// Inviting a user, independently of direct account creation.
+    Invite,
     /// Updating existing entities (PUT/PATCH).
     Update,
     /// Backwards-compatible alias accepted by the schema-level check; maps
@@ -54,6 +56,7 @@ impl AccessAction {
             Self::Read => ActionVerb::Read,
             Self::List => ActionVerb::List,
             Self::Create | Self::Write => ActionVerb::Create,
+            Self::Invite => ActionVerb::Invite,
             Self::Update => ActionVerb::Update,
             Self::Delete => ActionVerb::Delete,
             Self::Export => ActionVerb::Export,

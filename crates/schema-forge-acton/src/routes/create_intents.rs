@@ -89,12 +89,13 @@ pub(super) async fn process(
     state: &AppState<SchemaForgeConfig>,
     request: CreateIntentRequest,
 ) -> Result<CreateIntentReceipt, ForgeError> {
-    process_with_claims(state, request, None).await
+    process_with_claims(state, request, None, None).await
 }
 async fn process_with_claims(
     state: &AppState<SchemaForgeConfig>,
     request: CreateIntentRequest,
     claims: Option<&Claims>,
+    membership: Option<Entity>,
 ) -> Result<CreateIntentReceipt, ForgeError> {
     let forge = state
         .actor::<ForgeActor>()
@@ -105,6 +106,7 @@ async fn process_with_claims(
         &forge,
         ProcessCreateIntent {
             request,
+            membership,
             reply: ReplyChannel::new(tx),
         },
         &notification,
@@ -341,6 +343,7 @@ pub(super) async fn commit(
     intent: IntentCommit,
     entity: Entity,
     claims: Option<&Claims>,
+    membership: Option<Entity>,
 ) -> Result<CreateIntentReceipt, ForgeError> {
     process_with_claims(
         state,
@@ -351,6 +354,7 @@ pub(super) async fn commit(
             entity,
         },
         claims,
+        membership,
     )
     .await
 }
