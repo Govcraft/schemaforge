@@ -76,10 +76,11 @@ impl Ed25519Verifier {
             path: path.to_path_buf(),
             source,
         })?;
-        let key = VerifyingKey::from_public_key_pem(&pem).map_err(|e| SigningError::InvalidKey {
-            name: name.to_string(),
-            message: format!("PEM parse failed: {e}"),
-        })?;
+        let key =
+            VerifyingKey::from_public_key_pem(&pem).map_err(|e| SigningError::InvalidKey {
+                name: name.to_string(),
+                message: format!("PEM parse failed: {e}"),
+            })?;
         Ok(Self {
             name: name.to_string(),
             key,
@@ -127,7 +128,10 @@ impl SchemaVerifier for Ed25519Verifier {
 /// signature with or without trailing whitespace — sig files written
 /// by `schemaforge sign` add a newline, and tooling that strips it
 /// still works.
-fn decode_signature(file_path: &Path, signature: &[u8]) -> Result<[u8; SIGNATURE_LENGTH], VerifyError> {
+fn decode_signature(
+    file_path: &Path,
+    signature: &[u8],
+) -> Result<[u8; SIGNATURE_LENGTH], VerifyError> {
     let text = std::str::from_utf8(signature).map_err(|e| VerifyError::MalformedSignature {
         path: file_path.to_path_buf(),
         message: format!("signature file is not valid UTF-8: {e}"),

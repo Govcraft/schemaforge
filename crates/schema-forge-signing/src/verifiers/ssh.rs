@@ -323,8 +323,8 @@ fn parse_allowed_signer_line(line: &str) -> Result<AllowedSignerEntry, String> {
         );
     }
 
-    let public_key = PublicKey::from_openssh(cursor)
-        .map_err(|e| format!("invalid OpenSSH public key: {e}"))?;
+    let public_key =
+        PublicKey::from_openssh(cursor).map_err(|e| format!("invalid OpenSSH public key: {e}"))?;
 
     if let (Some(after), Some(before)) = (valid_after, valid_before) {
         if before <= after {
@@ -478,9 +478,7 @@ fn parse_openssh_time(s: &str) -> Result<i64, String> {
         _ => return Err(format!("invalid time component '{time_part}' in '{s}'")),
     };
     let combined = format!("{date_part}{time_padded}");
-    const FMT: &[FormatItem<'_>] = format_description!(
-        "[year][month][day][hour][minute][second]"
-    );
+    const FMT: &[FormatItem<'_>] = format_description!("[year][month][day][hour][minute][second]");
     let dt = PrimitiveDateTime::parse(&combined, FMT)
         .map_err(|e| format!("could not parse '{s}' as YYYYMMDDHHMMSS: {e}"))?;
     let secs = dt.assume_utc().unix_timestamp();
@@ -632,7 +630,8 @@ mod tests {
     #[test]
     fn verify_rejects_unknown_public_key() {
         let pk = test_keypair();
-        let other = PrivateKey::new(Ed25519Keypair::from_seed(&[0x77; 32]).into(), "other").unwrap();
+        let other =
+            PrivateKey::new(Ed25519Keypair::from_seed(&[0x77; 32]).into(), "other").unwrap();
         let allowed = format!("roland@govcraft.ai {}", openssh_pubkey_line(&pk));
         let v = SshAllowedSignersVerifier::from_text("ops", &allowed).unwrap();
         // Sign with the *other* key — pubkey won't match any entry.
@@ -749,10 +748,7 @@ mod tests {
     #[test]
     fn multiple_principals_share_an_entry() {
         let pk = test_keypair();
-        let line = format!(
-            "alice@gov,bob@gov {}",
-            openssh_pubkey_line(&pk)
-        );
+        let line = format!("alice@gov,bob@gov {}", openssh_pubkey_line(&pk));
         let entry = parse_allowed_signer_line(&line).unwrap();
         assert_eq!(entry.principals.len(), 2);
     }

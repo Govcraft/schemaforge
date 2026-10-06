@@ -1,0 +1,107 @@
+name: Full validation
+on:
+  workflow_call:
+    inputs:
+      tooling:
+        type: boolean
+        default: true
+      runtime:
+        type: boolean
+        default: true
+      cli:
+        type: boolean
+        default: true
+      postgres:
+        type: boolean
+        default: true
+      surrealdb:
+        type: boolean
+        default: true
+      mssql:
+        type: boolean
+        default: true
+      cel:
+        type: boolean
+        default: true
+      site:
+        type: boolean
+        default: true
+      site-candidate-server:
+        type: boolean
+        default: true
+      base:
+        type: string
+        default: ''
+      release-tag:
+        type: string
+        default: ''
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  metadata:
+    name: Metadata and CI policy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt
+      - name: Verify policy and metadata
+        env:
+          BASE_REVISION: ${{ inputs.base }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          python3 -m unittest discover -s scripts/ci -p 'test_*.py'
+          args=(--head HEAD)
+          if [[ -n "$BASE_REVISION" ]]; then args+=(--base "$BASE_REVISION"); fi
+          if [[ -n "$RELEASE_TAG" ]]; then args+=(--release-tag "$RELEASE_TAG"); fi
+          python3 scripts/ci/validate_metadata.py "${args[@]}"
+          cargo fmt --all -- --check
+  tooling:
+    if: github.event_name == 'workflow_dispatch' || inputs.tooling
+    uses: ./.github/workflows/component-checks.yml
+    with:
+      component: tooling
+  runtime:
+    if: github.event_name == 'workflow_dispatch' || inputs.runtime
+    uses: ./.github/workflows/component-checks.yml
+    with:
+      component: runtime
+  cli:
+    if: github.event_name == 'workflow_dispatch' || inputs.cli
+    uses: ./.github/workflows/component-checks.yml
+    with:
+      component: cli
+  postgres:
+    if: github.event_name == 'workflow_dispatch' || inputs.postgres
+    uses: ./.github/workflows/postgres-conditional.yml
+  surrealdb:
+    if: github.event_name == 'workflow_dispatch' || inputs.surrealdb
+    uses: ./.github/workflows/surrealdb-runtime.yml
+  mssql:
+    if: github.event_name == 'workflow_dispatch' || inputs.mssql
+    uses: ./.github/workflows/mssql-integration.yml
+  cel:
+    if: github.event_name == 'workflow_dispatch' || inputs.cel
+    uses: ./.github/workflows/cel-kani.yml
+  site:
+    if: github.event_name == 'workflow_dispatch' || inputs.site
+    uses: ./.github/workflows/site-e2e.yml
+    with:
+      candidate-server: ${{ github.event_name == 'workflow_dispatch' || inputs.site-candidate-server }}
+  passed:
+    name: Validation passed
+    needs: [metadata, tooling, runtime, cli, postgres, surrealdb, mssql, cel, site]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require successful selected checks
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          INPUTS_JSON: ${{ toJSON(inputs) }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: python3 scripts/ci/check_results.py validation

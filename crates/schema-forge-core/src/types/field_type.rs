@@ -383,11 +383,17 @@ mod tests {
     #[test]
     fn check_value_integer_half_open_bounds() {
         let min_only = FieldType::Integer(IntegerConstraints::with_min(1));
-        assert_eq!(min_only.check_value(&DynamicValue::Integer(i64::MAX)), Ok(()));
+        assert_eq!(
+            min_only.check_value(&DynamicValue::Integer(i64::MAX)),
+            Ok(())
+        );
         assert!(min_only.check_value(&DynamicValue::Integer(0)).is_err());
 
         let max_only = FieldType::Integer(IntegerConstraints::with_max(5));
-        assert_eq!(max_only.check_value(&DynamicValue::Integer(i64::MIN)), Ok(()));
+        assert_eq!(
+            max_only.check_value(&DynamicValue::Integer(i64::MIN)),
+            Ok(())
+        );
         assert!(max_only.check_value(&DynamicValue::Integer(6)).is_err());
     }
 
@@ -415,7 +421,9 @@ mod tests {
 
     #[test]
     fn check_value_enum_is_case_sensitive() {
-        assert!(alpha_beta().check_value(&DynamicValue::Enum("Alpha".into())).is_err());
+        assert!(alpha_beta()
+            .check_value(&DynamicValue::Enum("Alpha".into()))
+            .is_err());
     }
 
     #[test]
@@ -438,8 +446,7 @@ mod tests {
             Ok(())
         );
         assert_eq!(
-            FieldType::Integer(IntegerConstraints::with_min(10))
-                .check_value(&DynamicValue::Null),
+            FieldType::Integer(IntegerConstraints::with_min(10)).check_value(&DynamicValue::Null),
             Ok(())
         );
     }
@@ -476,7 +483,9 @@ mod tests {
     fn check_value_recurses_into_maps() {
         let ft = FieldType::Map {
             key: Box::new(FieldType::Text(TextConstraints::unconstrained())),
-            value: Box::new(FieldType::Integer(IntegerConstraints::with_range(1, 5).unwrap())),
+            value: Box::new(FieldType::Integer(
+                IntegerConstraints::with_range(1, 5).unwrap(),
+            )),
         };
         let mut ok = std::collections::BTreeMap::new();
         ok.insert("a".to_string(), DynamicValue::Integer(3));

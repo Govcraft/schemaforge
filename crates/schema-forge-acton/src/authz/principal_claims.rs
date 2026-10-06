@@ -727,13 +727,13 @@ fn project_value(
         (UserFieldProjection::RelationOneToString, DynamicValue::Ref(id)) => {
             Some(serde_json::Value::String(id.as_str().to_string()))
         }
-        (UserFieldProjection::RelationManyToSetOfString, DynamicValue::RefArray(ids)) => Some(
-            serde_json::Value::Array(
+        (UserFieldProjection::RelationManyToSetOfString, DynamicValue::RefArray(ids)) => {
+            Some(serde_json::Value::Array(
                 ids.iter()
                     .map(|id| serde_json::Value::String(id.as_str().to_string()))
                     .collect(),
-            ),
-        ),
+            ))
+        }
         // text[] declared as relation array (One inside Array) is handled
         // when the storage layer materialises Refs as a RefArray.
         (UserFieldProjection::RelationManyToSetOfString, DynamicValue::Array(items)) => {
@@ -775,9 +775,9 @@ fn json_matches_type(v: &serde_json::Value, t: PrincipalClaimType) -> bool {
         (PrincipalClaimType::String, serde_json::Value::String(_)) => true,
         (PrincipalClaimType::Long, serde_json::Value::Number(n)) => n.is_i64(),
         (PrincipalClaimType::Bool, serde_json::Value::Bool(_)) => true,
-        (PrincipalClaimType::SetOfString, serde_json::Value::Array(items)) => {
-            items.iter().all(|i| matches!(i, serde_json::Value::String(_)))
-        }
+        (PrincipalClaimType::SetOfString, serde_json::Value::Array(items)) => items
+            .iter()
+            .all(|i| matches!(i, serde_json::Value::String(_))),
         _ => false,
     }
 }
@@ -1021,7 +1021,10 @@ mod tests {
         let mut attrs = HashMap::new();
         let err = mappings.extract_into(&claims, &mut attrs).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("team_ids"), "expected team_ids error, got: {msg}");
+        assert!(
+            msg.contains("team_ids"),
+            "expected team_ids error, got: {msg}"
+        );
     }
 
     #[test]
@@ -1049,12 +1052,12 @@ mod tests {
     // and reject every type outside that vocabulary at config load.
     // ---------------------------------------------------------------------
 
+    use schema_forge_backend::Entity;
     use schema_forge_core::types::{
         Annotation, Cardinality, EnumVariants, FieldAnnotation, FieldDefinition, FieldName,
         FieldType, FileAccess, FileConstraints, FloatConstraints, IntegerConstraints, SchemaId,
         SchemaName, TextConstraints,
     };
-    use schema_forge_backend::Entity;
 
     fn user_schema_with(fields: Vec<FieldDefinition>) -> SchemaDefinition {
         SchemaDefinition::new(
@@ -1126,7 +1129,8 @@ mod tests {
             "password_hash",
             FieldType::Text(TextConstraints::unconstrained()),
         )]);
-        let cfg = config_with_user_field("client_org_id", PrincipalClaimType::String, "password_hash");
+        let cfg =
+            config_with_user_field("client_org_id", PrincipalClaimType::String, "password_hash");
         let mut mappings = PrincipalClaimMappings::from_config(&cfg).unwrap();
         let err = mappings.resolve_user_field_sources(&user).unwrap_err();
         assert!(matches!(err, PrincipalClaimsError::HiddenUserField { .. }));
@@ -1138,10 +1142,7 @@ mod tests {
             ("rt", FieldType::RichText),
             ("js", FieldType::Json),
             ("dt", FieldType::DateTime),
-            (
-                "fl",
-                FieldType::Float(FloatConstraints::unconstrained()),
-            ),
+            ("fl", FieldType::Float(FloatConstraints::unconstrained())),
             (
                 "en",
                 FieldType::Enum(EnumVariants::new(vec!["A".into(), "B".into()]).unwrap()),
@@ -1159,8 +1160,7 @@ mod tests {
         ];
         for (name, ft) in bad {
             let user = user_schema_with(vec![fd(name, ft.clone())]);
-            let cfg =
-                config_with_user_field("client_org_id", PrincipalClaimType::String, name);
+            let cfg = config_with_user_field("client_org_id", PrincipalClaimType::String, name);
             let mut mappings = PrincipalClaimMappings::from_config(&cfg).unwrap();
             let err = mappings.resolve_user_field_sources(&user).unwrap_err();
             assert!(
@@ -1381,11 +1381,8 @@ mod tests {
             "client_org_id",
             FieldType::Text(TextConstraints::unconstrained()),
         )]);
-        let mut cfg = config_with_user_field(
-            "client_org_id",
-            PrincipalClaimType::String,
-            "client_org_id",
-        );
+        let mut cfg =
+            config_with_user_field("client_org_id", PrincipalClaimType::String, "client_org_id");
         cfg.get_mut("client_org_id").unwrap().required = true;
         let mut mappings = PrincipalClaimMappings::from_config(&cfg).unwrap();
         mappings.resolve_user_field_sources(&user).unwrap();

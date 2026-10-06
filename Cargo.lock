@@ -5176,9 +5176,9 @@ dependencies = [
 
 [[package]]
 name = "minijinja"
-version = "2.19.0"
+version = "2.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "805bfd7352166bae857ee569628b52bcd85a1cecf7810861ebceb1686b72b75d"
+checksum = "86886cf6dbf4e614b19c9a1eec9775f021869d7eadde0fc73921a81b90c9b4c9"
 dependencies = [
  "memo-map",
  "serde",
@@ -7709,6 +7709,7 @@ dependencies = [
  "rustls 0.23.45",
  "schema-forge-backend",
  "schema-forge-cel",
+ "schema-forge-config",
  "schema-forge-core",
  "schema-forge-dsl",
  "schema-forge-postgres",
@@ -7722,7 +7723,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
  "tonic",
  "tonic-build",
  "tonic-prost",
@@ -7782,12 +7783,14 @@ dependencies = [
  "indicatif",
  "miette",
  "mime_guess",
- "minijinja",
  "predicates",
  "reqwest 0.13.3",
  "rust-embed",
+ "rustls 0.23.45",
  "schema-forge-acton",
  "schema-forge-backend",
+ "schema-forge-codegen",
+ "schema-forge-config",
  "schema-forge-core",
  "schema-forge-dsl",
  "schema-forge-mssql",
@@ -7806,6 +7809,28 @@ dependencies = [
  "toml 0.8.23",
  "tower",
  "tracing",
+]
+
+[[package]]
+name = "schema-forge-codegen"
+version = "0.1.0"
+dependencies = [
+ "heck 0.5.0",
+ "minijinja",
+ "schema-forge-config",
+ "schema-forge-core",
+ "schema-forge-dsl",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
+name = "schema-forge-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -7846,7 +7871,7 @@ dependencies = [
  "testcontainers",
  "tiberius",
  "tokio",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -7884,7 +7909,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "time",
- "toml 1.1.4+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -10193,9 +10218,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.1.4+spec-1.1.0"
+version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3aace63f4bbcdfc2c965b059de67119c89c4017a70d633be6c104910f67056f5"
+checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
 dependencies = [
  "indexmap 2.14.2",
  "serde_core",

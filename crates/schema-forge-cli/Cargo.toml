@@ -10,10 +10,10 @@ path = "src/main.rs"
 [dependencies]
 schema-forge-core = { path = "../schema-forge-core" }
 schema-forge-dsl = { path = "../schema-forge-dsl" }
-schema-forge-backend = { path = "../schema-forge-backend" }
+schema-forge-backend = { version = "0.21.0", path = "../schema-forge-backend", optional = true }
 schema-forge-surrealdb = { path = "../schema-forge-surrealdb", optional = true }
 schema-forge-postgres = { path = "../schema-forge-postgres", optional = true }
-schema-forge-acton = { path = "../schema-forge-acton" }
+schema-forge-acton = { version = "0.47.0", path = "../schema-forge-acton", optional = true }
 clap = { version = "4", features = ["derive", "env", "string"] }
 clap_complete = "4"
 tokio = { version = "1", features = ["full"] }
@@ -26,10 +26,9 @@ indicatif = "0.17"
 console = "0.15"
 dialoguer = "0.11"
 glob = "0.3"
-axum = { version = "0.8" }
-acton-service = { version = "0.46.0", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth", "crypto-aws-lc-rs", "windows-auth"] }
+axum = { version = "0.8", optional = true }
+acton-service = { version = "0.46.0", default-features = false, features = ["http", "observability", "otel-metrics", "journald", "governor", "resilience", "audit", "openapi", "auth", "crypto-aws-lc-rs", "windows-auth"], optional = true }
 heck = "0.5.0"
-minijinja = { version = "2.19.0", features = ["json"] }
 tracing = "0.1.44"
 schema-forge-signing = { version = "0.1.0", path = "../schema-forge-signing" }
 sigstore-trust-root = { version = "0.7.0", default-features = false, features = ["tuf"] }
@@ -41,23 +40,28 @@ tokio-util = { version = "0.7.18", features = ["io"] }
 schema-forge-mssql = { version = "0.8.1", path = "../schema-forge-mssql", optional = true }
 httpdate = "1.0.3"
 figment = { version = "0.10.19", features = ["env", "toml"] }
+schema-forge-codegen = { version = "0.1.0", path = "../schema-forge-codegen" }
+schema-forge-config = { version = "0.1.0", path = "../schema-forge-config" }
+rustls = { version = "0.23.45", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
 
 [features]
-sse = ["schema-forge-acton/sse", "acton-service/sse"]
-oauth = ["schema-forge-acton/oauth", "acton-service/oauth"]
+# Offline parsing and generation compile without the server dependency graph.
+server = ["dep:schema-forge-backend", "dep:schema-forge-acton", "dep:acton-service", "dep:axum"]
+sse = ["server", "schema-forge-acton/sse", "acton-service/sse"]
+oauth = ["server", "schema-forge-acton/oauth", "acton-service/oauth"]
 default = ["surrealdb"]
-surrealdb = ["dep:schema-forge-surrealdb", "schema-forge-acton/surrealdb", "acton-service/surrealdb"]
-postgres = ["dep:schema-forge-postgres", "schema-forge-acton/postgres", "acton-service/database"]
-mssql = ["dep:schema-forge-mssql", "acton-service/mssql"]
+surrealdb = ["server", "dep:schema-forge-surrealdb", "schema-forge-acton/surrealdb", "acton-service/surrealdb"]
+postgres = ["server", "dep:schema-forge-postgres", "schema-forge-acton/postgres", "acton-service/database"]
+mssql = ["server", "dep:schema-forge-mssql", "acton-service/mssql"]
 # Federal-grade build: routes rustls, sqlx, reqwest, and tonic through
 # aws-lc-rs compiled against the FIPS-validated AWS-LC C library.
 # Requires cmake + a supported toolchain. See README "FIPS builds".
-fips = ["schema-forge-acton/fips"]
+fips = ["server", "schema-forge-acton/fips"]
 # Embed the prebuilt ops console (schemaforge-console `dist`) into the binary so
 # `serve` can host it same-origin at `/`. Off by default to keep dev builds fast
 # and Node-free; release CI turns it on after verifying the signed bundle and
 # pointing SCHEMAFORGE_CONSOLE_DIST at it. See build.rs + commands/serve_console.rs.
-embedded-console = ["dep:rust-embed"]
+embedded-console = ["server", "dep:rust-embed"]
 
 [dev-dependencies]
 assert_cmd = "2"

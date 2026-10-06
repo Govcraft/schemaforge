@@ -83,11 +83,7 @@ fn emit_report(output: &OutputContext, policy: &VerifyPolicy, report: &VerifyRep
         }
         OutputMode::Plain => {
             for f in &report.files {
-                println!(
-                    "{}\t{}",
-                    f.path.display(),
-                    file_outcome_label(&f.outcome)
-                );
+                println!("{}\t{}", f.path.display(), file_outcome_label(&f.outcome));
             }
         }
     }
@@ -110,4 +106,3 @@ fn file_outcome_detail(o: &FileVerifyOutcome) -> String {
         FileVerifyOutcome::Failed { reason } => reason.clone(),
     }
 }
-

@@ -17,12 +17,7 @@
 /// `Forge::Principal`, `Forge::Group`, and `Forge::Schema`. A user-defined
 /// schema named the same as our namespace or one of its types would shadow
 /// SchemaForge's own references during policy evaluation.
-pub const RESERVED_SCHEMA_NAMES: &[&str] = &[
-    "Forge",
-    "SchemaForge",
-    "Principal",
-    "Cedar",
-];
+pub const RESERVED_SCHEMA_NAMES: &[&str] = &["Forge", "SchemaForge", "Principal", "Cedar"];
 
 /// Cedar grammar keywords that cannot appear as Cedar attribute identifiers.
 ///
@@ -72,17 +67,28 @@ mod tests {
         assert_eq!(sorted.len(), original.len());
         let mut deduped = sorted.clone();
         deduped.dedup();
-        assert_eq!(deduped.len(), sorted.len(), "duplicates in reserved schema names");
+        assert_eq!(
+            deduped.len(),
+            sorted.len(),
+            "duplicates in reserved schema names"
+        );
     }
 
     #[test]
     fn field_name_reserved_list_is_sorted_and_unique() {
         let mut sorted: Vec<&str> = RESERVED_FIELD_NAMES.to_vec();
         sorted.sort_unstable();
-        assert_eq!(sorted, RESERVED_FIELD_NAMES, "RESERVED_FIELD_NAMES must be sorted");
+        assert_eq!(
+            sorted, RESERVED_FIELD_NAMES,
+            "RESERVED_FIELD_NAMES must be sorted"
+        );
         let mut deduped = sorted.clone();
         deduped.dedup();
-        assert_eq!(deduped.len(), sorted.len(), "duplicates in reserved field names");
+        assert_eq!(
+            deduped.len(),
+            sorted.len(),
+            "duplicates in reserved field names"
+        );
     }
 
     #[test]
@@ -101,9 +107,23 @@ mod tests {
     #[test]
     fn reserved_field_name_detects_cedar_keywords() {
         for kw in [
-            "permit", "forbid", "principal", "action", "resource", "context",
-            "when", "unless", "if", "then", "else", "in", "has", "like", "is",
-            "true", "false",
+            "permit",
+            "forbid",
+            "principal",
+            "action",
+            "resource",
+            "context",
+            "when",
+            "unless",
+            "if",
+            "then",
+            "else",
+            "in",
+            "has",
+            "like",
+            "is",
+            "true",
+            "false",
         ] {
             assert!(reserved_field_name(kw).is_some(), "{kw} must be reserved");
         }
@@ -111,7 +131,14 @@ mod tests {
 
     #[test]
     fn reserved_field_name_passes_through_normal_fields() {
-        for ok in ["name", "email", "first_name", "created_by", "owner_id", "status"] {
+        for ok in [
+            "name",
+            "email",
+            "first_name",
+            "created_by",
+            "owner_id",
+            "status",
+        ] {
             assert!(reserved_field_name(ok).is_none(), "should permit {ok}");
         }
     }

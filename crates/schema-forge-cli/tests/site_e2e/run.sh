@@ -12,10 +12,10 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+SCRIPT_DIR="$(\cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(\cd "$SCRIPT_DIR/../../../.." && pwd)"
 
-cd "$REPO_ROOT"
+\cd "$REPO_ROOT"
 
 TMP_ROOT="${TMP_ROOT:-$REPO_ROOT/target/site-e2e-$$}"
 SCHEMAS_DIR="$TMP_ROOT/schemas"
@@ -40,11 +40,20 @@ echo "  backend: http://127.0.0.1:$BACKEND_PORT"
 echo "  vite:    http://127.0.0.1:$VITE_PORT"
 echo "==========================================================="
 
-# ---------- build the CLI ----------
-cargo build --package schema-forge-cli --bin schemaforge --quiet
+# Build locally by default. CI supplies the candidate generator and an
+# independently selected server so template PRs do not compile the runtime.
+if [[ -z "${GENERATOR_BIN:-}" ]]; then
+  cargo build --locked --package schema-forge-cli --bin schemaforge --quiet
+  GENERATOR_BIN="$REPO_ROOT/target/debug/schemaforge"
+fi
+SERVER_BIN="${SERVER_BIN:-$GENERATOR_BIN}"
+if [[ ! -x "$GENERATOR_BIN" || ! -x "$SERVER_BIN" ]]; then
+  echo "Generator and server must both be executable" >&2
+  exit 1
+fi
 
 # ---------- generate the site ----------
-./target/debug/schemaforge site generate \
+"$GENERATOR_BIN" site generate \
   --schema-dir "$SITE_SCHEMAS_DIR" \
   --out-dir "$SITE_DIR" \
   --name 'Acme "Operations" & <Review>' \
@@ -53,7 +62,7 @@ cargo build --package schema-forge-cli --bin schemaforge --quiet
 # ---------- backend ----------
 BACKEND_LOG="$TMP_ROOT/backend.log"
 FORGE_ADMIN_USER=admin FORGE_ADMIN_PASSWORD=admin \
-  ./target/debug/schemaforge serve \
+  "$SERVER_BIN" serve \
     --db-url mem:// \
     --schemas "$SCHEMAS_DIR" \
     -H 127.0.0.1 \
@@ -121,7 +130,12 @@ pushd "$PLAYWRIGHT_DIR" >/dev/null
 if [[ ! -d node_modules ]]; then
   pnpm install --frozen-lockfile || pnpm install
 fi
-pnpm exec playwright install --with-deps chromium 2>&1 | tail -3 || true
+if [[ "${CI:-}" == true ]]; then
+  pnpm exec playwright install --with-deps chromium
+else
+  # Local Linux distributions manage their own system browser prerequisites.
+  pnpm exec playwright install chromium
+fi
 BASE_URL="http://127.0.0.1:$VITE_PORT" pnpm exec playwright test
 popd >/dev/null
 

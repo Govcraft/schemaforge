@@ -50,6 +50,7 @@ fn parse_help() {
         .stdout(predicate::str::contains("Parse and validate"));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn apply_help() {
     schema_forge()
@@ -59,6 +60,7 @@ fn apply_help() {
         .stdout(predicate::str::contains("Apply .schema files"));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn migrate_help() {
     schema_forge()
@@ -68,6 +70,7 @@ fn migrate_help() {
         .stdout(predicate::str::contains("Plan and execute"));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn inspect_help() {
     schema_forge()
@@ -77,6 +80,7 @@ fn inspect_help() {
         .stdout(predicate::str::contains("Inspect registered schemas"));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn serve_help() {
     schema_forge()
@@ -86,6 +90,7 @@ fn serve_help() {
         .stdout(predicate::str::contains("Start acton-service"));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn export_openapi_help() {
     schema_forge()
@@ -95,6 +100,7 @@ fn export_openapi_help() {
         .stdout(predicate::str::contains("Export OpenAPI"));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn policies_list_help() {
     schema_forge()
@@ -490,6 +496,7 @@ fn no_subcommand_shows_error() {
 // the operator with the file path, key path, and root cause intact.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "server")]
 #[test]
 fn serve_surfaces_underlying_figment_error_on_malformed_storage_config() {
     let tmp = TempDir::new().unwrap();
@@ -547,6 +554,7 @@ fn no_color_environment_accepts_arbitrary_nonempty_values() {
     }
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn entity_file_clear_dry_run_describes_delete_without_credentials() {
     schema_forge()
@@ -572,6 +580,7 @@ fn entity_file_clear_dry_run_describes_delete_without_credentials() {
         ));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn entity_file_clear_help_explains_retention_and_script_flags() {
     schema_forge()
@@ -583,6 +592,7 @@ fn entity_file_clear_help_explains_retention_and_script_flags() {
         .stdout(predicate::str::contains("--dry-run"));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn entity_file_clear_sends_authenticated_delete_and_reports_retention() {
     use std::io::{Read, Write};
@@ -648,6 +658,7 @@ fn entity_file_clear_sends_authenticated_delete_and_reports_retention() {
     server.join().unwrap();
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn entity_file_clear_requires_yes_in_scripts() {
     schema_forge()
@@ -667,6 +678,7 @@ fn entity_file_clear_requires_yes_in_scripts() {
         .stderr(predicate::str::contains("requires --yes"));
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn help_does_not_disclose_secret_environment_values() {
     for args in [
@@ -699,6 +711,7 @@ fn help_does_not_disclose_secret_environment_values() {
     }
 }
 
+#[cfg(feature = "server")]
 #[test]
 fn serve_rejects_invalid_host_before_connecting() {
     schema_forge()
@@ -738,6 +751,7 @@ fn parse_reports_ambiguous_inverse_relations_across_files() {
 /// The tenant-owner invitation policy recommended in
 /// `docs/invitations-reference.md`. It targets the built-in `User` schema and
 /// the `InviteUser` action the daemon generates only for that schema.
+#[cfg(feature = "server")]
 const INVITE_USER_POLICY: &str = r#"permit (
     principal in Forge::Group::"owner",
     action == Action::"InviteUser",
@@ -749,6 +763,7 @@ const INVITE_USER_POLICY: &str = r#"permit (
 
 /// A tenant owner may read the memberships of their own tenant. It targets
 /// the built-in `TenantMembership` schema.
+#[cfg(feature = "server")]
 const TENANT_MEMBERSHIP_POLICY: &str = r#"permit (
     principal in Forge::Group::"owner",
     action in [Action::"ReadTenantMembership", Action::"ListTenantMembership"],
@@ -762,6 +777,7 @@ const TENANT_MEMBERSHIP_POLICY: &str = r#"permit (
 /// tenant root) under `schemas/`, a role hierarchy, and `policy` as the only
 /// file under `policies/custom/`. The project deliberately defines no system
 /// schema, as a real project never does.
+#[cfg(feature = "server")]
 fn scaffold_policy_project(policy: &str) -> TempDir {
     let dir = TempDir::new().unwrap();
     let schemas = dir.path().join("schemas");
@@ -785,6 +801,7 @@ fn scaffold_policy_project(policy: &str) -> TempDir {
 /// Run `policies validate` in `project` exactly as the bug report did, with
 /// the operator's user config directory pointed into the project so a
 /// developer's own configuration cannot leak in.
+#[cfg(feature = "server")]
 fn validate_policies(project: &std::path::Path) -> assert_cmd::assert::Assert {
     schema_forge()
         .current_dir(project)
@@ -804,11 +821,13 @@ fn validate_policies(project: &std::path::Path) -> assert_cmd::assert::Assert {
 }
 
 /// Parse the JSON success document `policies validate --format json` prints.
+#[cfg(feature = "server")]
 fn validate_report(assert: &assert_cmd::assert::Assert) -> serde_json::Value {
     serde_json::from_slice(&assert.get_output().stdout).expect("validate prints JSON on stdout")
 }
 
 #[test]
+#[cfg(feature = "server")]
 fn policies_validate_accepts_custom_invite_user_policy() {
     let project = scaffold_policy_project(INVITE_USER_POLICY);
 
@@ -822,6 +841,7 @@ fn policies_validate_accepts_custom_invite_user_policy() {
 }
 
 #[test]
+#[cfg(feature = "server")]
 fn policies_validate_accepts_custom_tenant_membership_policy() {
     let project = scaffold_policy_project(TENANT_MEMBERSHIP_POLICY);
 
@@ -833,6 +853,7 @@ fn policies_validate_accepts_custom_tenant_membership_policy() {
 }
 
 #[test]
+#[cfg(feature = "server")]
 fn policies_validate_still_rejects_an_action_no_schema_declares() {
     let project = scaffold_policy_project(
         r#"permit (
@@ -859,4 +880,23 @@ fn policies_validate_still_rejects_an_action_no_schema_declares() {
         !message.contains("unrecognized entity type"),
         "the built-in User schema must be part of the bundle. got:\n{message}"
     );
+}
+
+#[cfg(not(feature = "server"))]
+#[test]
+fn tooling_build_exposes_generation_and_excludes_server_commands() {
+    let mut command = schema_forge();
+    command
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("site"))
+        .stdout(predicates::str::contains("hooks"))
+        .stdout(predicates::str::contains("--db-url").not());
+    let mut command = schema_forge();
+    command
+        .arg("serve")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("unrecognized subcommand"));
 }

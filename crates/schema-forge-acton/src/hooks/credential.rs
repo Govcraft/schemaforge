@@ -137,7 +137,8 @@ mod tests {
     fn credential_lifetime_outlives_the_default_hook_timeout() {
         // A credential that expired mid-dispatch would fail the slowest hooks
         // and only those, which is the hardest kind of failure to diagnose.
-        let default_timeout = Duration::from_millis(u64::from(super::super::DEFAULT_HOOK_TIMEOUT_MS));
+        let default_timeout =
+            Duration::from_millis(u64::from(super::super::DEFAULT_HOOK_TIMEOUT_MS));
         assert!(HOOK_CREDENTIAL_TTL > default_timeout);
     }
 }

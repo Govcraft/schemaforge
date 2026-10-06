@@ -70,7 +70,10 @@ fn validate_strict(schema: &Schema, policy_src: &str) -> Result<(), String> {
 fn principal_entity(client_org_id: Option<&str>) -> Entity {
     let uid = EntityUid::from_str(r#"Forge::Principal::"alice""#).unwrap();
     let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
-    attrs.insert("id".into(), RestrictedExpression::new_string("alice".into()));
+    attrs.insert(
+        "id".into(),
+        RestrictedExpression::new_string("alice".into()),
+    );
     attrs.insert("role_rank".into(), RestrictedExpression::new_long(50));
     attrs.insert(
         "roles".into(),
@@ -180,10 +183,7 @@ when {
     let policy_set: PolicySet = policy_src.parse().unwrap();
 
     let entities = Entities::from_entities(
-        [
-            principal_entity(None),
-            resource_entity("org-other"),
-        ],
+        [principal_entity(None), resource_entity("org-other")],
         Some(&schema),
     )
     .expect("entities");
@@ -281,10 +281,7 @@ when {
     let policy_set: PolicySet = policy_src.parse().unwrap();
 
     let entities = Entities::from_entities(
-        [
-            principal_entity(Some("org-42")),
-            resource_entity("org-42"),
-        ],
+        [principal_entity(Some("org-42")), resource_entity("org-42")],
         Some(&schema),
     )
     .expect("entities");
@@ -312,4 +309,3 @@ fn entities_validation_accepts_well_typed_optional_attribute() {
     Entities::from_entities([principal_entity(Some("org-7"))], Some(&schema))
         .expect("string-typed optional attribute must be accepted by entity validation");
 }
-

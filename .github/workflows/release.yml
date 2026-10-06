@@ -15,7 +15,15 @@ env:
   CONSOLE_VERSION: v0.1.0
 
 jobs:
+  validate:
+    uses: ./.github/workflows/full-validation.yml
+    permissions:
+      contents: read
+    with:
+      release-tag: ${{ github.ref_name }}
+
   build:
+    needs: validate
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -75,6 +83,10 @@ jobs:
 
       - name: Verify Rust toolchain
         run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.backend }}-${{ matrix.target }}
 
       - name: Verify release tag matches CLI version
         shell: bash

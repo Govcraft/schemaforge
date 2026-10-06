@@ -1,4 +1,6 @@
 //! Policies can distinguish preflight placeholders without treating real defaults as synthetic.
+mod support;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -343,27 +345,17 @@ async fn guarded_read_policy_preserves_http_preflight_and_record_denials() {
         state::DynForgeBackend,
         ForgeActor,
     };
-    use schema_forge_core::migration::DiffEngine;
     use tokio::sync::oneshot;
     use tower::ServiceExt;
 
     for required in [false, true] {
         let (schema, store) = fixture(required, GUARDED_FORBID);
-        let backend: Arc<dyn DynForgeBackend> = Arc::new(
-            schema_forge_surrealdb::SurrealBackend::connect_memory("test", "context_http")
-                .await
-                .unwrap(),
-        );
-        let plan = DiffEngine::create_new(&schema);
-        backend
-            .apply_migration(&schema.name, &plan.steps)
-            .await
-            .unwrap();
-        backend.store_schema_metadata(&schema).await.unwrap();
         let visible = record(&schema, Some(true));
         let hidden = record(&schema, Some(false));
-        backend.create(&visible).await.unwrap();
-        backend.create(&hidden).await.unwrap();
+        let backend: Arc<dyn DynForgeBackend> = Arc::new(support::FixtureBackend::new(
+            schema.clone(),
+            vec![visible.clone(), hidden.clone()],
+        ));
         let service = ServiceBuilder::new()
             .with_config(Config::<SchemaForgeConfig>::default())
             .with_actor::<ForgeActor>()
@@ -399,6 +391,10 @@ async fn guarded_read_policy_preserves_http_preflight_and_record_denials() {
             (
                 format!("/schemas/Notice/entities/{}", hidden.id),
                 StatusCode::FORBIDDEN,
+            ),
+            (
+                format!("/schemas/Notice/entities/{}", EntityId::new("notice")),
+                StatusCode::NOT_FOUND,
             ),
         ] {
             let response = app

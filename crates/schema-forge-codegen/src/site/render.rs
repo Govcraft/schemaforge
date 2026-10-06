@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use minijinja::Environment;
 use serde::Serialize;
 
-use crate::error::CliError;
+use crate::error::GenerationError;
 
 include!(concat!(env!("OUT_DIR"), "/embedded_site_templates.rs"));
 
@@ -35,7 +35,7 @@ impl SiteRenderer {
     /// If `override_dir` is `Some`, the loader checks that directory for
     /// `<logical_name>.jinja` before falling back to the embedded defaults.
     /// Unreadable override files fail generation rather than silently falling back.
-    pub fn new(override_dir: Option<PathBuf>) -> Result<Self, CliError> {
+    pub fn new(override_dir: Option<PathBuf>) -> Result<Self, GenerationError> {
         let mut env = Environment::new();
         env.set_loader(move |name: &str| {
             if let Some(ref dir) = override_dir {
@@ -76,11 +76,14 @@ impl SiteRenderer {
     /// Render a registered template against `ctx`, producing the final file
     /// contents (without a marker header — that is added by the codegen
     /// write layer downstream).
-    pub fn render<C: Serialize>(&self, name: &str, ctx: &C) -> Result<String, CliError> {
-        let tmpl = self.env.get_template(name).map_err(|e| CliError::Config {
-            message: format!("site template `{name}` not registered: {e}"),
-        })?;
-        tmpl.render(ctx).map_err(|e| CliError::Config {
+    pub fn render<C: Serialize>(&self, name: &str, ctx: &C) -> Result<String, GenerationError> {
+        let tmpl = self
+            .env
+            .get_template(name)
+            .map_err(|e| GenerationError::Config {
+                message: format!("site template `{name}` not registered: {e}"),
+            })?;
+        tmpl.render(ctx).map_err(|e| GenerationError::Config {
             message: format!("site template `{name}` failed to render: {e}"),
         })
     }

@@ -94,18 +94,12 @@ pub enum TrustedSigner {
     /// Same as `Ed25519` but the key is loaded from a PEM file at
     /// runtime. Easier for operators who manage keys with openssl /
     /// ssh-keygen and don't want to base64 them into TOML by hand.
-    Ed25519PemFile {
-        name: String,
-        path: PathBuf,
-    },
+    Ed25519PemFile { name: String, path: PathBuf },
 
     /// SSH `allowed_signers`-format file. Phase 2 verifier; the variant
     /// is reserved here so config that names it parses cleanly today
     /// (and surfaces an error explaining the verifier isn't enabled yet).
-    SshAllowedSigners {
-        name: String,
-        path: PathBuf,
-    },
+    SshAllowedSigners { name: String, path: PathBuf },
 
     /// Sigstore cosign keyless. Phase 3 verifier; reserved variant.
     CosignKeyless {
@@ -131,7 +125,9 @@ impl TrustedSigner {
             TrustedSigner::Ed25519 { name, .. }
             | TrustedSigner::Ed25519PemFile { name, .. }
             | TrustedSigner::SshAllowedSigners { name, .. } => name,
-            TrustedSigner::CosignKeyless { name, .. } => name.as_deref().unwrap_or("cosign-keyless"),
+            TrustedSigner::CosignKeyless { name, .. } => {
+                name.as_deref().unwrap_or("cosign-keyless")
+            }
         }
     }
 

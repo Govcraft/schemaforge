@@ -1016,7 +1016,10 @@ async fn passing_require_reaches_before_and_after_hooks() {
     );
     assert_eq!(before[0].event, HookEvent::BeforeChange);
     // The before hook sees the rule-validated field set.
-    assert_eq!(before[0].fields.get("age"), Some(&DynamicValue::Integer(21)));
+    assert_eq!(
+        before[0].fields.get("age"),
+        Some(&DynamicValue::Integer(21))
+    );
 
     for _ in 0..50 {
         if !dispatcher.after_calls().await.is_empty() {

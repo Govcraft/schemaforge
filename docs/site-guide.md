@@ -71,7 +71,7 @@ schemaforge site generate
 schemaforge site generate --templates-dir ./my-templates
 ```
 
-Files present in the override directory shadow the binary defaults one-for-one. The loader walks the same relative layout as the bundled templates (e.g. `site-templates/src/app/pages/list.tsx.jinja` overrides `crates/schema-forge-cli/templates/site/src/app/pages/list.tsx.jinja`). Iterate on a `.jinja` file, re-run `schemaforge site generate`, Vite HMR picks up the new `.tsx`. No CLI rebuild needed.
+Files present in the override directory shadow the binary defaults one-for-one. The loader walks the same relative layout as the bundled templates (e.g. `site-templates/src/app/pages/list.tsx.jinja` overrides `crates/schema-forge-codegen/templates/site/src/app/pages/list.tsx.jinja`). Iterate on a `.jinja` file, re-run `schemaforge site generate`, Vite HMR picks up the new `.tsx`. No CLI rebuild needed.
 
 ## Auth bootstrap
 

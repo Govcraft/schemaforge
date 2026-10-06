@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/schema-forge-core",
+    "crates/schema-forge-config",
+    "crates/schema-forge-codegen",
     "crates/schema-forge-dsl",
     "crates/schema-forge-backend",
     "crates/schema-forge-surrealdb",

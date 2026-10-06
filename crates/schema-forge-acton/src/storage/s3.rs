@@ -47,8 +47,7 @@ impl S3Client {
         fallback_ttl_secs: u64,
     ) -> Result<Self, StorageError> {
         let region = Region::new(cfg.region.clone());
-        let mut loader =
-            aws_config::defaults(BehaviorVersion::latest()).region(region.clone());
+        let mut loader = aws_config::defaults(BehaviorVersion::latest()).region(region.clone());
 
         if let (Some(access), Some(secret)) = (&cfg.access_key_id, &cfg.secret_access_key) {
             loader = loader.credentials_provider(Credentials::new(
@@ -191,7 +190,9 @@ impl S3Client {
                 etag: out.e_tag().map(str::to_string),
             })),
             Err(err) => match err {
-                SdkError::ServiceError(svc) if matches!(svc.err(), HeadObjectError::NotFound(_)) => {
+                SdkError::ServiceError(svc)
+                    if matches!(svc.err(), HeadObjectError::NotFound(_)) =>
+                {
                     Ok(None)
                 }
                 other => Err(map_sdk_error(other)),
@@ -213,8 +214,7 @@ impl S3Client {
 
         Ok(ObjectStream {
             content_type: resp.content_type().map(str::to_string),
-            content_length: u64::try_from(resp.content_length().unwrap_or_default())
-                .unwrap_or(0),
+            content_length: u64::try_from(resp.content_length().unwrap_or_default()).unwrap_or(0),
             body: resp.body,
         })
     }

@@ -57,12 +57,7 @@ struct MockStore {
 
 #[async_trait]
 impl ExportArtifactStore for MockStore {
-    async fn put(
-        &self,
-        key: &str,
-        bytes: Vec<u8>,
-        content_type: &str,
-    ) -> Result<(), StorageError> {
+    async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<(), StorageError> {
         self.objects
             .lock()
             .unwrap()
@@ -70,11 +65,7 @@ impl ExportArtifactStore for MockStore {
         Ok(())
     }
 
-    async fn presign_get(
-        &self,
-        key: &str,
-        _ttl_secs: Option<u64>,
-    ) -> Result<String, StorageError> {
+    async fn presign_get(&self, key: &str, _ttl_secs: Option<u64>) -> Result<String, StorageError> {
         if self.objects.lock().unwrap().contains_key(key) {
             Ok(format!("https://mock.example/{key}?sig=abc"))
         } else {
@@ -319,20 +310,36 @@ async fn job_inputs(
     let schema_def = rx.await.unwrap().expect("schema registered");
 
     let (tx, rx) = oneshot::channel();
-    forge.send(GetPolicyStore { reply: ReplyChannel::new(tx) }).await;
+    forge
+        .send(GetPolicyStore {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
     let policy_store = rx.await.unwrap().expect("policy store");
 
     let (tx, rx) = oneshot::channel();
-    forge.send(GetTenantConfig { reply: ReplyChannel::new(tx) }).await;
+    forge
+        .send(GetTenantConfig {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
     let tenant_config = rx.await.unwrap();
 
     let (tx, rx) = oneshot::channel();
     forge
-        .send(GetRecordAccessPolicy { reply: ReplyChannel::new(tx) })
+        .send(GetRecordAccessPolicy {
+            reply: ReplyChannel::new(tx),
+        })
         .await;
     let record_access_policy = rx.await.unwrap();
 
-    (forge, schema_def, policy_store, tenant_config, record_access_policy)
+    (
+        forge,
+        schema_def,
+        policy_store,
+        tenant_config,
+        record_access_policy,
+    )
 }
 
 async fn poll_until_terminal(
@@ -373,7 +380,10 @@ async fn async_job_generates_csv_and_uploads_to_store() {
     let state = seeded_state(export_schema(), &rows).await;
     let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
         job_inputs(&state, "Subject").await;
-    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+    let job_actor = state
+        .actor::<ExportJobActor>()
+        .expect("ExportJobActor")
+        .clone();
 
     let store = Arc::new(MockStore::default());
     let job_id = schema_forge_acton::export_job::new_job_id();
@@ -402,7 +412,12 @@ async fn async_job_generates_csv_and_uploads_to_store() {
     job_actor.send(StartExportJob::new(spec)).await;
     let record = poll_until_terminal(&job_actor, &job_id).await;
 
-    assert_eq!(record.status, ExportJobStatus::Complete, "error: {:?}", record.error);
+    assert_eq!(
+        record.status,
+        ExportJobStatus::Complete,
+        "error: {:?}",
+        record.error
+    );
     assert_eq!(record.row_count, Some(2));
     assert_eq!(record.object_key.as_deref(), Some(object_key.as_str()));
 
@@ -445,7 +460,10 @@ async fn async_job_generates_xlsx_and_uploads_well_formed_workbook() {
     let state = seeded_state(export_schema(), &rows).await;
     let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
         job_inputs(&state, "Subject").await;
-    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+    let job_actor = state
+        .actor::<ExportJobActor>()
+        .expect("ExportJobActor")
+        .clone();
 
     let store = Arc::new(MockStore::default());
     let job_id = schema_forge_acton::export_job::new_job_id();
@@ -528,7 +546,9 @@ async fn async_job_over_cap_fails_without_uploading() {
     // Cap of 1, two rows: the materialize pipeline returns ExportTooLarge, which
     // the actor records as a failed job — and nothing is written to storage.
     let mut schema = export_schema();
-    schema.annotations.retain(|a| !matches!(a, Annotation::Export { .. }));
+    schema
+        .annotations
+        .retain(|a| !matches!(a, Annotation::Export { .. }));
     schema.annotations.push(Annotation::Export {
         formats: vec![ExportFormat::Csv, ExportFormat::Ndjson],
         bundle_files: false,
@@ -542,7 +562,10 @@ async fn async_job_over_cap_fails_without_uploading() {
     let state = seeded_state(schema, &rows).await;
     let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
         job_inputs(&state, "Subject").await;
-    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+    let job_actor = state
+        .actor::<ExportJobActor>()
+        .expect("ExportJobActor")
+        .clone();
 
     let store = Arc::new(MockStore::default());
     let job_id = schema_forge_acton::export_job::new_job_id();
@@ -572,7 +595,10 @@ async fn async_job_over_cap_fails_without_uploading() {
 
     assert_eq!(record.status, ExportJobStatus::Failed);
     assert!(record.error.unwrap().contains("cap"));
-    assert!(store.objects.lock().unwrap().is_empty(), "failed job must not upload");
+    assert!(
+        store.objects.lock().unwrap().is_empty(),
+        "failed job must not upload"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -696,7 +722,10 @@ async fn status_endpoint_returns_completed_job_with_download_url() {
     let state = seeded_state(export_schema(), &rows).await;
     let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
         job_inputs(&state, "Subject").await;
-    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+    let job_actor = state
+        .actor::<ExportJobActor>()
+        .expect("ExportJobActor")
+        .clone();
 
     let store = Arc::new(MockStore::default());
     let job_id = schema_forge_acton::export_job::new_job_id();
@@ -738,7 +767,10 @@ async fn status_endpoint_returns_completed_job_with_download_url() {
     assert_eq!(status, StatusCode::OK, "body: {json}");
     assert_eq!(json["status"], "complete");
     assert_eq!(json["job_id"], job_id);
-    assert!(json["download_url"].as_str().unwrap().starts_with("https://mock.example/"));
+    assert!(json["download_url"]
+        .as_str()
+        .unwrap()
+        .starts_with("https://mock.example/"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -751,7 +783,10 @@ async fn status_endpoint_denies_cross_subject_access() {
     let state = seeded_state(export_schema(), &rows).await;
     let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
         job_inputs(&state, "Subject").await;
-    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+    let job_actor = state
+        .actor::<ExportJobActor>()
+        .expect("ExportJobActor")
+        .clone();
 
     let store = Arc::new(MockStore::default());
     let job_id = schema_forge_acton::export_job::new_job_id();
@@ -805,9 +840,7 @@ async fn status_endpoint_denies_cross_subject_access() {
 
 use schema_forge_backend::entity::Entity;
 use schema_forge_backend::traits::EntityStore;
-use schema_forge_core::types::{
-    DynamicValue, EntityId, FileAccess, FileConstraints, FileStatus,
-};
+use schema_forge_core::types::{DynamicValue, EntityId, FileAccess, FileConstraints, FileStatus};
 use std::collections::BTreeMap;
 
 /// Read an in-memory ZIP archive into `(member_name, bytes)` pairs.
@@ -913,7 +946,10 @@ async fn zip_bundle_without_file_blobs_holds_only_data_member() {
     let state = seeded_doc_state(schema, entities).await;
     let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
         job_inputs(&state, "Doc").await;
-    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+    let job_actor = state
+        .actor::<ExportJobActor>()
+        .expect("ExportJobActor")
+        .clone();
 
     let store = Arc::new(MockStore::default());
     // The blob exists in storage, but with bundle_files=false it must NOT be pulled.
@@ -942,7 +978,12 @@ async fn zip_bundle_without_file_blobs_holds_only_data_member() {
     };
     job_actor.send(StartExportJob::new(spec)).await;
     let record = poll_until_terminal(&job_actor, &job_id).await;
-    assert_eq!(record.status, ExportJobStatus::Complete, "error: {:?}", record.error);
+    assert_eq!(
+        record.status,
+        ExportJobStatus::Complete,
+        "error: {:?}",
+        record.error
+    );
     assert_eq!(record.row_count, Some(1));
 
     let bytes = {
@@ -955,13 +996,20 @@ async fn zip_bundle_without_file_blobs_holds_only_data_member() {
     let members = read_zip_members(&bytes);
     // Only the data member; no files/ blob. The data file still lists the
     // exportable `attachment` file column (its metadata, not the raw bytes).
-    assert_eq!(members.len(), 1, "members: {:?}", members.iter().map(|(n, _)| n).collect::<Vec<_>>());
+    assert_eq!(
+        members.len(),
+        1,
+        "members: {:?}",
+        members.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
     assert_eq!(members[0].0, "Doc.csv");
     let csv = String::from_utf8(members[0].1.clone()).unwrap();
     assert_eq!(csv.lines().next().unwrap(), "title,attachment");
     assert!(csv.contains("First"));
     // With bundle_files=false the raw blob bytes must not appear in the archive.
-    assert!(!members.iter().any(|(_, b)| b.windows(5).any(|w| w == b"BLOB!")));
+    assert!(!members
+        .iter()
+        .any(|(_, b)| b.windows(5).any(|w| w == b"BLOB!")));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -976,7 +1024,10 @@ async fn zip_bundle_with_file_blobs_embeds_available_blob() {
     let state = seeded_doc_state(schema, entities).await;
     let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
         job_inputs(&state, "Doc").await;
-    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+    let job_actor = state
+        .actor::<ExportJobActor>()
+        .expect("ExportJobActor")
+        .clone();
 
     let store = Arc::new(MockStore::default());
     store.seed_object("blobs/d1.txt", b"hello".to_vec(), "text/plain");
@@ -1005,7 +1056,12 @@ async fn zip_bundle_with_file_blobs_embeds_available_blob() {
     };
     job_actor.send(StartExportJob::new(spec)).await;
     let record = poll_until_terminal(&job_actor, &job_id).await;
-    assert_eq!(record.status, ExportJobStatus::Complete, "error: {:?}", record.error);
+    assert_eq!(
+        record.status,
+        ExportJobStatus::Complete,
+        "error: {:?}",
+        record.error
+    );
     assert_eq!(record.row_count, Some(2));
 
     let bytes = {
@@ -1055,7 +1111,10 @@ async fn zip_bundle_skips_non_available_blob() {
     let state = seeded_doc_state(schema, vec![entity]).await;
     let (forge, schema_def, policy_store, tenant_config, record_access_policy) =
         job_inputs(&state, "Doc").await;
-    let job_actor = state.actor::<ExportJobActor>().expect("ExportJobActor").clone();
+    let job_actor = state
+        .actor::<ExportJobActor>()
+        .expect("ExportJobActor")
+        .clone();
 
     let store = Arc::new(MockStore::default());
     // Even though the bytes exist, a quarantined attachment must not be bundled.
@@ -1084,11 +1143,20 @@ async fn zip_bundle_skips_non_available_blob() {
     };
     job_actor.send(StartExportJob::new(spec)).await;
     let record = poll_until_terminal(&job_actor, &job_id).await;
-    assert_eq!(record.status, ExportJobStatus::Complete, "error: {:?}", record.error);
+    assert_eq!(
+        record.status,
+        ExportJobStatus::Complete,
+        "error: {:?}",
+        record.error
+    );
 
     let bytes = {
         let objects = store.objects.lock().unwrap();
-        objects.get(&object_key).expect("artifact uploaded").0.clone()
+        objects
+            .get(&object_key)
+            .expect("artifact uploaded")
+            .0
+            .clone()
     };
     let members = read_zip_members(&bytes);
     // Only the data file; the quarantined blob is excluded.

@@ -6,8 +6,9 @@ use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::query::{FieldPath, Filter, Query, SortOrder};
 use schema_forge_core::types::{
-    Cardinality, DefaultValue, DynamicValue, EntityId, EnumVariants, FieldAnnotation, FieldDefinition,
-    FieldModifier, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName, TextConstraints,
+    Cardinality, DefaultValue, DynamicValue, EntityId, EnumVariants, FieldAnnotation,
+    FieldDefinition, FieldModifier, FieldName, FieldType, SchemaDefinition, SchemaId, SchemaName,
+    TextConstraints,
 };
 use schema_forge_postgres::PgBackend;
 use sqlx::postgres::PgPoolOptions;

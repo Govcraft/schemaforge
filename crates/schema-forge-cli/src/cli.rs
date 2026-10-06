@@ -1,3 +1,4 @@
+#[cfg(feature = "server")]
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -64,14 +65,17 @@ pub struct GlobalOpts {
         env = "SCHEMA_FORGE_DB_URL",
         hide_env_values = true
     )]
+    #[cfg(feature = "server")]
     pub db_url: Option<String>,
 
     /// Database namespace (SurrealDB only) [env: SCHEMA_FORGE_DB_NS]
     #[arg(long = "db-ns", global = true, env = "SCHEMA_FORGE_DB_NS")]
+    #[cfg(feature = "server")]
     pub db_ns: Option<String>,
 
     /// Database name (SurrealDB only) [env: SCHEMA_FORGE_DB_NAME]
     #[arg(long = "db-name", global = true, env = "SCHEMA_FORGE_DB_NAME")]
+    #[cfg(feature = "server")]
     pub db_name: Option<String>,
 
     /// Path to a standalone trust-policy TOML file. Overrides the
@@ -99,30 +103,37 @@ pub enum Commands {
     Parse(ParseArgs),
 
     /// Apply .schema files to a running backend
+    #[cfg(feature = "server")]
     Apply(ApplyArgs),
 
     /// Plan and execute schema migrations
+    #[cfg(feature = "server")]
     Migrate(MigrateArgs),
 
     /// Start acton-service with SchemaForge extension
+    #[cfg(feature = "server")]
     Serve(ServeArgs),
 
     /// Export schemas in various formats
+    #[cfg(feature = "server")]
     Export {
         #[command(subcommand)]
         command: ExportCommands,
     },
 
     /// Inspect registered schemas, entity counts, and indexes
+    #[cfg(feature = "server")]
     Inspect(InspectArgs),
 
     /// Manage Cedar authorization policies
+    #[cfg(feature = "server")]
     Policies {
         #[command(subcommand)]
         command: PolicyCommands,
     },
 
     /// Manage PASETO tokens (generate keys, mint tokens)
+    #[cfg(feature = "server")]
     Token {
         #[command(subcommand)]
         command: TokenCommands,
@@ -135,6 +146,7 @@ pub enum Commands {
     /// deployed server and authenticates with a Bearer PASETO token. Get a
     /// token with `schemaforge login` (credential flow against the server)
     /// or `schemaforge token generate` (offline, from the PASETO key).
+    #[cfg(feature = "server")]
     Entity {
         #[command(subcommand)]
         command: EntityCommands,
@@ -146,6 +158,7 @@ pub enum Commands {
     /// `--password-stdin`), and by default writes the returned token to the
     /// XDG state directory so subsequent `entity` commands pick it up
     /// automatically.
+    #[cfg(feature = "server")]
     Login(LoginArgs),
 
     /// Generate shell completion scripts
@@ -166,6 +179,7 @@ pub enum Commands {
 
     /// Bootstrap the initial `platform_admin` user against the configured
     /// backend. Idempotent: only seeds when the user store is empty.
+    #[cfg(feature = "server")]
     BootstrapAdmin(BootstrapAdminArgs),
 
     /// Sign `.schema` files and produce the directory manifest + per-file
@@ -340,6 +354,7 @@ pub struct VerifyArgs {
 /// chain as `serve`: CLI flag → env → config.toml) and creates a user
 /// holding the `platform_admin` role. Refuses to run when other users
 /// already exist so production deployments don't accidentally double-seed.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct BootstrapAdminArgs {
     /// Username for the bootstrapped platform_admin.
@@ -529,6 +544,7 @@ pub struct HooksDiffArgs {
 }
 
 /// Token management subcommands.
+#[cfg(feature = "server")]
 #[derive(Subcommand)]
 pub enum TokenCommands {
     /// Generate a 32-byte PASETO V4 symmetric key file
@@ -538,6 +554,7 @@ pub enum TokenCommands {
 }
 
 /// Arguments for `schema-forge token init-key`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct InitKeyArgs {
     /// Output path for the key file
@@ -546,6 +563,7 @@ pub struct InitKeyArgs {
 }
 
 /// Arguments for `schema-forge token generate`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct GenerateTokenArgs {
     /// Path to the PASETO symmetric key file
@@ -598,6 +616,7 @@ pub struct GenerateTokenArgs {
 
 /// Parse `key=value` into `(String, String)`. Splits on the first `=` only
 /// so values may contain `=` characters.
+#[cfg(feature = "server")]
 fn parse_kv(raw: &str) -> Result<(String, String), String> {
     let (k, v) = raw
         .split_once('=')
@@ -608,6 +627,7 @@ fn parse_kv(raw: &str) -> Result<(String, String), String> {
     Ok((k.to_string(), v.to_string()))
 }
 
+#[cfg(feature = "server")]
 fn parse_kv_long(raw: &str) -> Result<(String, i64), String> {
     let (k, v) = parse_kv(raw)?;
     let n: i64 = v
@@ -616,6 +636,7 @@ fn parse_kv_long(raw: &str) -> Result<(String, i64), String> {
     Ok((k, n))
 }
 
+#[cfg(feature = "server")]
 fn parse_kv_bool(raw: &str) -> Result<(String, bool), String> {
     let (k, v) = parse_kv(raw)?;
     let b = match v.as_str() {
@@ -630,6 +651,7 @@ fn parse_kv_bool(raw: &str) -> Result<(String, bool), String> {
     Ok((k, b))
 }
 
+#[cfg(feature = "server")]
 fn parse_kv_set_string(raw: &str) -> Result<(String, Vec<String>), String> {
     let (k, v) = parse_kv(raw)?;
     let items: Vec<String> = if v.is_empty() {
@@ -680,6 +702,7 @@ pub struct ParseArgs {
 }
 
 /// Arguments for `schema-forge apply`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct ApplyArgs {
     /// Schema files or directories to apply (default: ./schemas/)
@@ -704,6 +727,7 @@ pub struct ApplyArgs {
 }
 
 /// Arguments for `schema-forge migrate`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct MigrateArgs {
     /// Schema files or directories (default: ./schemas/)
@@ -724,6 +748,7 @@ pub struct MigrateArgs {
 }
 
 /// Arguments for `schema-forge serve`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct ServeArgs {
     /// Allow startup migrations that drop fields or data; use @renamed_from for renames.
@@ -810,6 +835,7 @@ pub struct ServeArgs {
 }
 
 /// Export subcommands.
+#[cfg(feature = "server")]
 #[derive(Subcommand)]
 pub enum ExportCommands {
     /// Export OpenAPI specification
@@ -817,6 +843,7 @@ pub enum ExportCommands {
 }
 
 /// Arguments for `schema-forge export openapi`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct ExportOpenapiArgs {
     /// Output file (default: stdout)
@@ -837,6 +864,7 @@ pub struct ExportOpenapiArgs {
 }
 
 /// Arguments for `schema-forge inspect`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct InspectArgs {
     /// Show a specific schema (omit for all)
@@ -852,6 +880,7 @@ pub struct InspectArgs {
 }
 
 /// Policy subcommands.
+#[cfg(feature = "server")]
 #[derive(Subcommand)]
 pub enum PolicyCommands {
     /// List generated Cedar policies for all or specific schemas
@@ -865,6 +894,7 @@ pub enum PolicyCommands {
 }
 
 /// Arguments for `schema-forge policies list`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct PolicyListArgs {
     /// Show policies for a specific schema
@@ -872,6 +902,7 @@ pub struct PolicyListArgs {
 }
 
 /// Arguments for `schema-forge policies regenerate`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct PolicyRegenerateArgs {
     /// Schema to regenerate policies for (omit for all)
@@ -894,6 +925,7 @@ pub struct PolicyRegenerateArgs {
 /// (User, TenantMembership, OAuthIdentity, WebhookSubscription) alongside
 /// the project's own. Exits non-zero on any error so CI / pre-deploy hooks
 /// can gate releases on a passing bundle.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct PolicyValidateArgs {
     /// Directories to scan for SchemaForge `.sf` schema files.
@@ -932,6 +964,7 @@ pub struct CompletionsArgs {
 /// `SCHEMAFORGE_TOKEN` environment variable, or the cached `login` token —
 /// so it stays out of `ps` output and shell history. (`login` ignores the
 /// token-source fields; it is acquiring a token.)
+#[cfg(feature = "server")]
 #[derive(Args, Debug, Clone)]
 pub struct EntityConnectionArgs {
     /// Base URL of the running instance (e.g. https://forge.agency.gov). The
@@ -970,6 +1003,7 @@ pub struct EntityConnectionArgs {
 }
 
 /// Field input shared by `create`, `replace`, and `patch`.
+#[cfg(feature = "server")]
 #[derive(Args, Debug, Clone)]
 pub struct EntityInputArgs {
     /// Set a field. `--set name=Alice` types the value (numbers and
@@ -989,6 +1023,7 @@ pub struct EntityInputArgs {
 /// `entity` subcommands. Verbs map to HTTP semantics: `replace` is PUT (the
 /// complete entity, required fields enforced) and `patch` is PATCH (a partial
 /// merge).
+#[cfg(feature = "server")]
 #[derive(Subcommand)]
 pub enum EntityCommands {
     /// List entities, optionally filtered, sorted, and paginated.
@@ -1032,6 +1067,7 @@ pub enum EntityCommands {
 /// confirm), and `download` follows the runtime's presigned redirect (or
 /// streamed proxy) to the bytes. `clear` detaches an optional file and retains
 /// its object bytes under the server storage lifecycle policy.
+#[cfg(feature = "server")]
 #[derive(Subcommand)]
 pub enum EntityFileCommands {
     /// Upload a local file to a `file` field via the presigned handshake.
@@ -1047,6 +1083,7 @@ pub enum EntityFileCommands {
 }
 
 /// Arguments for `entity file clear`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityFileClearArgs {
     #[command(flatten)]
@@ -1066,6 +1103,7 @@ pub struct EntityFileClearArgs {
 }
 
 /// Arguments for `entity file upload`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityFileUploadArgs {
     #[command(flatten)]
@@ -1088,6 +1126,7 @@ pub struct EntityFileUploadArgs {
 }
 
 /// Arguments for `entity file download`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityFileDownloadArgs {
     #[command(flatten)]
@@ -1105,6 +1144,7 @@ pub struct EntityFileDownloadArgs {
 }
 
 /// Arguments for `entity list`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityListArgs {
     #[command(flatten)]
@@ -1170,6 +1210,7 @@ pub struct EntityListArgs {
 }
 
 /// Arguments for `entity get`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityGetArgs {
     #[command(flatten)]
@@ -1187,6 +1228,7 @@ pub struct EntityGetArgs {
 }
 
 /// Arguments for `entity create`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityCreateArgs {
     #[command(flatten)]
@@ -1201,6 +1243,7 @@ pub struct EntityCreateArgs {
 }
 
 /// Arguments for `entity replace` (PUT) and `entity patch` (PATCH).
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityWriteArgs {
     #[command(flatten)]
@@ -1217,6 +1260,7 @@ pub struct EntityWriteArgs {
 }
 
 /// Arguments for `entity delete`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityDeleteArgs {
     #[command(flatten)]
@@ -1234,6 +1278,7 @@ pub struct EntityDeleteArgs {
 }
 
 /// Arguments for `entity query`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityQueryArgs {
     #[command(flatten)]
@@ -1268,6 +1313,7 @@ pub struct EntityQueryArgs {
 /// Mirrors `entity query`'s filter/field surface (an export *is* a query with
 /// no page limit) and adds the deliverable `--format`, an `--out` destination,
 /// and `--async` to take and poll the background-job path.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct EntityExportArgs {
     #[command(flatten)]
@@ -1305,6 +1351,7 @@ pub struct EntityExportArgs {
 }
 
 /// Arguments for `schemaforge login`.
+#[cfg(feature = "server")]
 #[derive(Args)]
 pub struct LoginArgs {
     #[command(flatten)]
@@ -1323,7 +1370,7 @@ pub struct LoginArgs {
     pub print_token: bool,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
     use super::*;
     use clap::CommandFactory;

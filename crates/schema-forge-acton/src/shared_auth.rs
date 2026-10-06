@@ -89,10 +89,7 @@ pub async fn bootstrap_admin_with_display_name(
 /// Returns `Ok(())` without mutating the store when:
 /// - `seed` is `false` (the default operator-facing path), or
 /// - the store does not contain exactly one user (idempotence).
-pub async fn bootstrap_demo_users(
-    auth_store: &dyn DynAuthStore,
-    seed: bool,
-) -> Result<(), String> {
+pub async fn bootstrap_demo_users(auth_store: &dyn DynAuthStore, seed: bool) -> Result<(), String> {
     if !seed {
         return Ok(());
     }
@@ -164,7 +161,10 @@ mod tests {
 
     impl FakeAuthStore {
         fn count(&self) -> usize {
-            self.users.lock().expect("FakeAuthStore mutex poisoned").len()
+            self.users
+                .lock()
+                .expect("FakeAuthStore mutex poisoned")
+                .len()
         }
 
         fn usernames(&self) -> Vec<String> {
@@ -192,10 +192,7 @@ mod tests {
             unimplemented!("not used by bootstrap path")
         }
 
-        async fn get_user_entity(
-            &self,
-            _username: &str,
-        ) -> Result<Option<Entity>, BackendError> {
+        async fn get_user_entity(&self, _username: &str) -> Result<Option<Entity>, BackendError> {
             unimplemented!("not used by bootstrap path")
         }
 

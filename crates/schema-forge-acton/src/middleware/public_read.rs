@@ -14,8 +14,7 @@ pub fn allows_missing_credentials(method: &Method, path: &str) -> bool {
         return false;
     };
     let mut segments = rest.split('/');
-    if segments.next().is_none_or(|schema| schema.is_empty())
-        || segments.next() != Some("entities")
+    if segments.next().is_none_or(|schema| schema.is_empty()) || segments.next() != Some("entities")
     {
         return false;
     }

@@ -274,10 +274,7 @@ manager = 500
 member = 100
 "#;
         let ranks = RoleRanks::from_toml_str(toml).unwrap();
-        assert_eq!(
-            ranks.max_rank(&["member".into(), "manager".into()]),
-            500
-        );
+        assert_eq!(ranks.max_rank(&["member".into(), "manager".into()]), 500);
     }
 
     #[test]
@@ -301,9 +298,7 @@ member = 100
         let toml = "[roles]\nmember = 1\n";
         let ranks = RoleRanks::from_toml_str(toml).unwrap();
         let referenced = vec!["member", "manager", "ghost"];
-        let err = ranks
-            .ensure_all_registered(referenced)
-            .unwrap_err();
+        let err = ranks.ensure_all_registered(referenced).unwrap_err();
         match err {
             RoleRanksError::UnregisteredRole { role } => assert_eq!(role, "manager"),
             other => panic!("expected UnregisteredRole, got {other:?}"),

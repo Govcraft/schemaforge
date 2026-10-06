@@ -18,8 +18,6 @@
 //!   `platform_admin` (returns 409 with `reason: "last_platform_admin"`).
 //! - `POST /users/:username/password` allows `platform_admin` OR self.
 
-#![cfg(feature = "surrealdb")]
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -252,14 +250,11 @@ async fn platform_admin_can_create_and_list_users() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_platform_admin_cannot_create_user() {
     let seeded = seed_backend("users_forbidden").await;
-    seeded.auth_store.create_user(
-        "alice",
-        "alicepass",
-        &["sales".to_string()],
-        "Alice",
-    )
-    .await
-    .unwrap();
+    seeded
+        .auth_store
+        .create_user("alice", "alicepass", &["sales".to_string()], "Alice")
+        .await
+        .unwrap();
 
     let app = users_router(seeded, make_claims("user:alice", &["sales"])).await;
     let (status, json) = json_request(
@@ -283,14 +278,16 @@ async fn app_admin_role_does_not_grant_platform_admin_powers() {
     // A user holding only "admin" must NOT be able to hit the platform
     // user-management endpoints — that is the whole point of the rename.
     let seeded = seed_backend("users_app_admin_isolated").await;
-    seeded.auth_store.create_user(
-        "appadmin",
-        "appadminpass",
-        &["admin".to_string()],
-        "App Admin",
-    )
-    .await
-    .unwrap();
+    seeded
+        .auth_store
+        .create_user(
+            "appadmin",
+            "appadminpass",
+            &["admin".to_string()],
+            "App Admin",
+        )
+        .await
+        .unwrap();
 
     let app = users_router(seeded, make_claims("user:appadmin", &["admin"])).await;
     let (status, json) = json_request(&app, Method::GET, "/users", None).await;
@@ -301,14 +298,11 @@ async fn app_admin_role_does_not_grant_platform_admin_powers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn platform_admin_can_delete_non_platform_user() {
     let seeded = seed_backend("users_delete").await;
-    seeded.auth_store.create_user(
-        "alice",
-        "alicepass",
-        &["sales".to_string()],
-        "Alice",
-    )
-    .await
-    .unwrap();
+    seeded
+        .auth_store
+        .create_user("alice", "alicepass", &["sales".to_string()], "Alice")
+        .await
+        .unwrap();
 
     let app = users_router(seeded, make_claims("user:admin", &["platform_admin"])).await;
     let (status, _) = json_request(&app, Method::DELETE, "/users/alice", None).await;
@@ -329,14 +323,11 @@ async fn platform_admin_can_delete_non_platform_user() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn user_can_change_own_password_without_platform_admin() {
     let seeded = seed_backend("users_self_password").await;
-    seeded.auth_store.create_user(
-        "alice",
-        "oldpassword",
-        &["sales".to_string()],
-        "Alice",
-    )
-    .await
-    .unwrap();
+    seeded
+        .auth_store
+        .create_user("alice", "oldpassword", &["sales".to_string()], "Alice")
+        .await
+        .unwrap();
 
     let app = users_router(seeded.clone(), make_claims("user:alice", &["sales"])).await;
     let (status, json) = json_request(
@@ -348,11 +339,15 @@ async fn user_can_change_own_password_without_platform_admin() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body: {json}");
 
-    let ok = seeded.auth_store.validate_credentials("alice", "newpassword")
+    let ok = seeded
+        .auth_store
+        .validate_credentials("alice", "newpassword")
         .await
         .unwrap();
     assert!(ok.is_some(), "expected new password to validate");
-    let stale = seeded.auth_store.validate_credentials("alice", "oldpassword")
+    let stale = seeded
+        .auth_store
+        .validate_credentials("alice", "oldpassword")
         .await
         .unwrap();
     assert!(stale.is_none(), "expected old password to be invalidated");
@@ -361,22 +356,16 @@ async fn user_can_change_own_password_without_platform_admin() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cross_user_password_change_is_forbidden_for_non_platform_admin() {
     let seeded = seed_backend("users_cross_password").await;
-    seeded.auth_store.create_user(
-        "alice",
-        "alicepass",
-        &["sales".to_string()],
-        "Alice",
-    )
-    .await
-    .unwrap();
-    seeded.auth_store.create_user(
-        "bob",
-        "bobpass12",
-        &["sales".to_string()],
-        "Bob",
-    )
-    .await
-    .unwrap();
+    seeded
+        .auth_store
+        .create_user("alice", "alicepass", &["sales".to_string()], "Alice")
+        .await
+        .unwrap();
+    seeded
+        .auth_store
+        .create_user("bob", "bobpass12", &["sales".to_string()], "Bob")
+        .await
+        .unwrap();
 
     let app = users_router(seeded, make_claims("user:alice", &["sales"])).await;
     let (status, json) = json_request(
@@ -392,22 +381,16 @@ async fn cross_user_password_change_is_forbidden_for_non_platform_admin() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn platform_admin_sees_all_users_in_list() {
     let seeded = seed_backend("users_list_platform_visibility").await;
-    seeded.auth_store.create_user(
-        "alice",
-        "alicepass",
-        &["sales".to_string()],
-        "Alice",
-    )
-    .await
-    .unwrap();
-    seeded.auth_store.create_user(
-        "ops",
-        "opspass12",
-        &["platform_admin".to_string()],
-        "Ops",
-    )
-    .await
-    .unwrap();
+    seeded
+        .auth_store
+        .create_user("alice", "alicepass", &["sales".to_string()], "Alice")
+        .await
+        .unwrap();
+    seeded
+        .auth_store
+        .create_user("ops", "opspass12", &["platform_admin".to_string()], "Ops")
+        .await
+        .unwrap();
 
     let app = users_router(seeded, make_claims("user:admin", &["platform_admin"])).await;
     let (status, json) = json_request(&app, Method::GET, "/users", None).await;
@@ -438,14 +421,11 @@ async fn list_filter_hides_platform_admins_from_non_platform_callers() {
     // `routes::users::tests`. The full filter path is exercised by the
     // `platform_admin_sees_all_users_in_list` happy path above.
     let seeded = seed_backend("users_list_hide_platform").await;
-    seeded.auth_store.create_user(
-        "alice",
-        "alicepass",
-        &["sales".to_string()],
-        "Alice",
-    )
-    .await
-    .unwrap();
+    seeded
+        .auth_store
+        .create_user("alice", "alicepass", &["sales".to_string()], "Alice")
+        .await
+        .unwrap();
 
     let app = users_router(seeded, make_claims("user:alice", &["sales"])).await;
     let (status, _) = json_request(&app, Method::GET, "/users", None).await;
@@ -496,14 +476,11 @@ async fn delete_refuses_last_platform_admin() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_allows_when_other_platform_admins_exist() {
     let seeded = seed_backend("users_delete_one_of_many").await;
-    seeded.auth_store.create_user(
-        "ops",
-        "opspass12",
-        &["platform_admin".to_string()],
-        "Ops",
-    )
-    .await
-    .unwrap();
+    seeded
+        .auth_store
+        .create_user("ops", "opspass12", &["platform_admin".to_string()], "Ops")
+        .await
+        .unwrap();
 
     let app = users_router(seeded, make_claims("user:operator", &["platform_admin"])).await;
     let (status, _) = json_request(&app, Method::DELETE, "/users/ops", None).await;
@@ -594,7 +571,10 @@ async fn put_user_can_disable_and_re_enable_active_flag() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
-    assert_eq!(body["active"], false, "PUT response should reflect disabled flag");
+    assert_eq!(
+        body["active"], false,
+        "PUT response should reflect disabled flag"
+    );
 
     let read_back = auth_store.get_user("alice").await.unwrap().unwrap();
     assert!(

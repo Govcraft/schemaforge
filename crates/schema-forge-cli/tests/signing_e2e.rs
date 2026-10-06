@@ -129,11 +129,11 @@ fn parse_fails_under_enforce_when_a_schema_is_tampered() {
         .args(["parse", "schemas"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("verification failed").or(
-            predicate::str::contains("hash mismatch").or(predicate::str::contains(
-                "schemas/user.schema",
-            )),
-        ));
+        .stderr(
+            predicate::str::contains("verification failed")
+                .or(predicate::str::contains("hash mismatch")
+                    .or(predicate::str::contains("schemas/user.schema"))),
+        );
 }
 
 #[test]
@@ -289,10 +289,8 @@ fn append_ssh_trust_anchor(project: &std::path::Path, allowed_signers_path: &std
 fn ssh_sign_then_verify_then_parse_round_trip() {
     let project = scaffold_project("enforce");
     let (key_path, pubkey_line) = write_test_ssh_key(project.path(), "roland@govcraft.ai");
-    let allowed = write_allowed_signers(
-        project.path(),
-        &format!("roland@govcraft.ai {pubkey_line}"),
-    );
+    let allowed =
+        write_allowed_signers(project.path(), &format!("roland@govcraft.ai {pubkey_line}"));
     append_ssh_trust_anchor(project.path(), &allowed);
 
     let schemas = project.path().join("schemas");
@@ -329,10 +327,8 @@ fn ssh_sign_then_verify_then_parse_round_trip() {
 fn ssh_verify_rejects_tampered_schema_under_enforce() {
     let project = scaffold_project("enforce");
     let (key_path, pubkey_line) = write_test_ssh_key(project.path(), "roland@govcraft.ai");
-    let allowed = write_allowed_signers(
-        project.path(),
-        &format!("roland@govcraft.ai {pubkey_line}"),
-    );
+    let allowed =
+        write_allowed_signers(project.path(), &format!("roland@govcraft.ai {pubkey_line}"));
     append_ssh_trust_anchor(project.path(), &allowed);
 
     let schemas = project.path().join("schemas");
@@ -363,16 +359,12 @@ fn ssh_verify_rejects_tampered_schema_under_enforce() {
 fn ssh_verify_rejects_unknown_signer() {
     let project = scaffold_project("enforce");
     // Sign with one key …
-    let (signing_key, _signing_pubkey) =
-        write_test_ssh_key(project.path(), "roland@govcraft.ai");
+    let (signing_key, _signing_pubkey) = write_test_ssh_key(project.path(), "roland@govcraft.ai");
     // … but trust a *different* key.
     let other_kp = Ed25519Keypair::from_seed(&[0x99; 32]);
     let other_pk = PrivateKey::new(other_kp.into(), "ops@govcraft.ai").unwrap();
     let other_pubkey = other_pk.public_key().to_openssh().unwrap();
-    let allowed = write_allowed_signers(
-        project.path(),
-        &format!("ops@govcraft.ai {other_pubkey}"),
-    );
+    let allowed = write_allowed_signers(project.path(), &format!("ops@govcraft.ai {other_pubkey}"));
     append_ssh_trust_anchor(project.path(), &allowed);
 
     let schemas = project.path().join("schemas");
@@ -461,9 +453,7 @@ fn ssh_verify_rejects_when_namespace_not_allowed() {
     // is in `schema-forge-signing@govcraft.ai`, so this entry must not match.
     let allowed = write_allowed_signers(
         project.path(),
-        &format!(
-            "roland@govcraft.ai namespaces=\"file@openssh.com\" {pubkey_line}"
-        ),
+        &format!("roland@govcraft.ai namespaces=\"file@openssh.com\" {pubkey_line}"),
     );
     append_ssh_trust_anchor(project.path(), &allowed);
 
@@ -493,9 +483,7 @@ fn ssh_verify_rejects_expired_entry() {
     // valid-before in the past — entry has expired, must not accept.
     let allowed = write_allowed_signers(
         project.path(),
-        &format!(
-            "roland@govcraft.ai valid-before=\"19991231\" {pubkey_line}"
-        ),
+        &format!("roland@govcraft.ai valid-before=\"19991231\" {pubkey_line}"),
     );
     append_ssh_trust_anchor(project.path(), &allowed);
 

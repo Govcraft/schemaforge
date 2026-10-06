@@ -450,12 +450,14 @@ pub async fn run(
         email_cfg.password = Some(pw);
     }
     let project_name = &svc_config.custom.schema_forge.project_name;
-    email_cfg.validate_link_delivery().map_err(|error| CliError::Config {
-        message: format!("invalid [schema_forge.email] config: {error}"),
-    })?;
+    email_cfg
+        .validate_link_delivery()
+        .map_err(|error| CliError::Config {
+            message: format!("invalid [schema_forge.email] config: {error}"),
+        })?;
     let email_sender: Arc<dyn schema_forge_acton::email::EmailSender> = if email_cfg.enabled
-        && email_cfg.delivery == schema_forge_acton::email::EmailDelivery::Smtp {
-
+        && email_cfg.delivery == schema_forge_acton::email::EmailDelivery::Smtp
+    {
         Arc::new(
             schema_forge_acton::email::SmtpEmailSender::from_config(&email_cfg, project_name)
                 .map_err(|e| CliError::Config {

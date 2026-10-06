@@ -38,14 +38,20 @@ site_e2e/
 
 ## Running in CI
 
-The GitHub Actions workflow `.github/workflows/site-e2e.yml` runs `run.sh` on any PR that touches:
+The CI component selector calls `.github/workflows/site-e2e.yml` for relevant changes, including:
 
-- `crates/schema-forge-cli/templates/site/**`
-- `crates/schema-forge-cli/src/commands/site/**`
+- `crates/schema-forge-codegen/templates/site/**`
+- `crates/schema-forge-cli/src/commands/site.rs`
 - `crates/schema-forge-acton/src/routes/**`
 - `crates/schema-forge-cli/tests/site_e2e/**`
 
-Playwright artifacts (screenshots, traces) are uploaded on failure for post-mortem.
+Generator-only checks build the portable CLI and use a released server pinned by
+version and SHA-256 digest. Runtime changes and full validation compile the
+candidate server. `GENERATOR_BIN` and `SERVER_BIN` can select these executables
+independently for local runs. See [component CI](../../../../docs/component-ci.md)
+for the complete selection and release policy.
+
+Playwright artifacts (screenshots, traces) are uploaded on failure.
 
 ## Spec coverage
 

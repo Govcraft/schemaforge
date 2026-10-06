@@ -11,8 +11,7 @@ use serde::Serialize;
 
 use schema_forge_core::types::{FieldDefinition, SchemaDefinition};
 
-use crate::error::CliError;
-use crate::output::OutputContext;
+use crate::error::GenerationError;
 
 use super::mapping::{field_to_view, FieldMapError};
 
@@ -186,8 +185,8 @@ impl EntityView {
     pub fn from_schema(
         def: &SchemaDefinition,
         catalog: &BTreeMap<String, SchemaMeta>,
-        output: &OutputContext,
-    ) -> Result<Self, CliError> {
+        warnings: &mut Vec<String>,
+    ) -> Result<Self, GenerationError> {
         let name = def.name.as_str();
         let mut fields = Vec::with_capacity(def.fields.len());
         for f in def.fields.iter().filter(|field| !field.is_hidden()) {
@@ -195,9 +194,9 @@ impl EntityView {
                 Ok(v) => fields.push(v),
                 Err(FieldMapError::Unsupported { field, reason }) => {
                     if f.is_required() {
-                        return Err(CliError::Config { message: format!("cannot generate a usable create form: required field {name}.{field} is unsupported: {reason}") });
+                        return Err(GenerationError::Config { message: format!("cannot generate a usable create form: required field {name}.{field} is unsupported: {reason}") });
                     }
-                    output.warn(&format!(
+                    warnings.push(format!(
                         "site: skipping optional field `{name}.{field}`: {reason}"
                     ));
                 }

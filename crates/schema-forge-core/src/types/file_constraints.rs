@@ -340,8 +340,14 @@ mod tests {
             uploaded_at: None,
         };
         let json = serde_json::to_string(&a).unwrap();
-        assert!(!json.contains("checksum"), "checksum should be skipped when None");
-        assert!(!json.contains("uploaded_at"), "uploaded_at should be skipped when None");
+        assert!(
+            !json.contains("checksum"),
+            "checksum should be skipped when None"
+        );
+        assert!(
+            !json.contains("uploaded_at"),
+            "uploaded_at should be skipped when None"
+        );
         let back: FileAttachment = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);
     }

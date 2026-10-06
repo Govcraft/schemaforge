@@ -38,9 +38,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::instrument;
 
-use crate::access::{
-    check_schema_access, AccessAction, OptionalClaims, PLATFORM_ADMIN_ROLE,
-};
+use crate::access::{check_schema_access, AccessAction, OptionalClaims, PLATFORM_ADMIN_ROLE};
 use crate::actor::ForgeActor;
 use crate::authz::engine::authorize;
 use crate::authz::namespace::ActionVerb;
@@ -70,7 +68,9 @@ pub(crate) async fn audit_user(
     target: &str,
     extra: Option<serde_json::Value>,
 ) {
-    let Some(logger) = state.audit_logger() else { return };
+    let Some(logger) = state.audit_logger() else {
+        return;
+    };
     let mut metadata = serde_json::json!({
         "actor": actor,
         "target": target,
@@ -93,7 +93,9 @@ async fn audit_password_changed(
     self_service: bool,
     source: &AuditSource,
 ) {
-    let Some(logger) = state.audit_logger() else { return };
+    let Some(logger) = state.audit_logger() else {
+        return;
+    };
     logger
         .log_auth(
             AuditEventKind::AuthPasswordChanged,
@@ -116,7 +118,10 @@ async fn audit_password_changed(
         AuditSeverity::Notice,
         logger.service_name().into(),
     );
-    event.source = AuditSource { subject: Some(actor.into()), ..source.clone() };
+    event.source = AuditSource {
+        subject: Some(actor.into()),
+        ..source.clone()
+    };
     event.metadata = Some(metadata);
     logger.log(event).await;
 }
@@ -135,7 +140,6 @@ pub(crate) fn require_auth(claims: &Option<Claims>) -> Result<&Claims, ForgeErro
         message: "authentication required".to_string(),
     })
 }
-
 
 /// Fetch the User schema definition from the registry.
 pub(crate) async fn fetch_user_schema(
@@ -217,13 +221,7 @@ pub(crate) fn forge_user_to_user_entity(user: &ForgeUser, store: &PolicyStore) -
     );
     fields.insert(
         "roles".to_string(),
-        DynamicValue::Array(
-            user.roles
-                .iter()
-                .cloned()
-                .map(DynamicValue::Text)
-                .collect(),
-        ),
+        DynamicValue::Array(user.roles.iter().cloned().map(DynamicValue::Text).collect()),
     );
     fields.insert("role_rank".to_string(), DynamicValue::Integer(role_rank));
     fields.insert("active".to_string(), DynamicValue::Boolean(user.active));
@@ -248,14 +246,10 @@ pub(crate) fn caller_can_grant_roles(
     claims: &Claims,
     requested_roles: &[String],
 ) -> Result<(), ForgeError> {
-    let asks_for_platform_admin = requested_roles
-        .iter()
-        .any(|r| r == PLATFORM_ADMIN_ROLE);
+    let asks_for_platform_admin = requested_roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
     if asks_for_platform_admin && !claims.has_role(PLATFORM_ADMIN_ROLE) {
         return Err(ForgeError::Forbidden {
-            message: format!(
-                "only {PLATFORM_ADMIN_ROLE} may grant the {PLATFORM_ADMIN_ROLE} role"
-            ),
+            message: format!("only {PLATFORM_ADMIN_ROLE} may grant the {PLATFORM_ADMIN_ROLE} role"),
         });
     }
     Ok(())
@@ -441,7 +435,12 @@ pub async fn list_users(
     let user_schema = fetch_user_schema(&state).await?;
     let policy_store = fetch_policy_store(&state).await?;
 
-    check_schema_access(&policy_store, &user_schema, Some(claims), AccessAction::List)?;
+    check_schema_access(
+        &policy_store,
+        &user_schema,
+        Some(claims),
+        AccessAction::List,
+    )?;
 
     let users = auth_store.list_users().await?;
     let mut responses: Vec<UserResponse> = Vec::with_capacity(users.len());
@@ -745,8 +744,7 @@ pub async fn delete_user(
         });
     }
 
-    let target_is_platform_admin =
-        target.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
+    let target_is_platform_admin = target.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
     if target_is_platform_admin {
         let all = auth_store.list_users().await?;
         let platform_admin_count = all
@@ -846,10 +844,7 @@ pub async fn update_user(
     }
 
     // Resolve the proposed state. `None` on a field means "keep current".
-    let new_roles: Vec<String> = body
-        .roles
-        .clone()
-        .unwrap_or_else(|| current.roles.clone());
+    let new_roles: Vec<String> = body.roles.clone().unwrap_or_else(|| current.roles.clone());
     let new_display_name: String = body
         .display_name
         .clone()
@@ -904,10 +899,8 @@ pub async fn update_user(
         }
 
         // Last-platform_admin protection: refuse to demote the only one.
-        let was_platform_admin =
-            current.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
-        let still_platform_admin =
-            new_roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
+        let was_platform_admin = current.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
+        let still_platform_admin = new_roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
         if was_platform_admin && !still_platform_admin {
             let all = auth_store.list_users().await?;
             let count = all
@@ -929,8 +922,7 @@ pub async fn update_user(
     // covers the active flag. We only call each store method when its
     // governed field actually changed, so the audit chain entries below
     // distinguish roles/name updates from active-flag toggles.
-    let roles_or_name_changed =
-        body.roles.is_some() || body.display_name.is_some();
+    let roles_or_name_changed = body.roles.is_some() || body.display_name.is_some();
     if roles_or_name_changed {
         auth_store
             .update_user(&username, &new_roles, &new_display_name)
@@ -1000,12 +992,13 @@ pub async fn change_password(
 
     validate_password(&body.password)?;
 
-    let target = auth_store
-        .get_user(&username)
-        .await?
-        .ok_or_else(|| ForgeError::ValidationFailed {
-            details: vec![format!("user '{username}' not found")],
-        })?;
+    let target =
+        auth_store
+            .get_user(&username)
+            .await?
+            .ok_or_else(|| ForgeError::ValidationFailed {
+                details: vec![format!("user '{username}' not found")],
+            })?;
 
     // Self-service path: a user can always change their own password.
     let prefixed = format!("user:{username}");
