@@ -8,7 +8,7 @@ use schema_forge_core::types::SchemaDefinition;
 use crate::error::ForgeError;
 use crate::state::{DynForgeBackend, SchemaRegistry};
 
-/// Seed system schemas (User, TenantMembership, WebhookSubscription) into the
+/// Seed system schemas (User, TenantMembership, OAuthIdentity, WebhookSubscription) into the
 /// database.
 ///
 /// Idempotent: existing schemas are reused. No roles or permissions are
