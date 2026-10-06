@@ -50,6 +50,7 @@ zip = "8.6.0"
 
 
 [features]
+sse = ["acton-service/sse"]
 oauth = ["acton-service/oauth"]
 surrealdb = ["acton-service/surrealdb", "dep:schema-forge-surrealdb"]
 postgres = ["acton-service/database", "dep:schema-forge-postgres"]

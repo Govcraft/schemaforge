@@ -43,6 +43,7 @@ httpdate = "1.0.3"
 figment = { version = "0.10.19", features = ["env", "toml"] }
 
 [features]
+sse = ["schema-forge-acton/sse", "acton-service/sse"]
 oauth = ["schema-forge-acton/oauth", "acton-service/oauth"]
 default = ["surrealdb"]
 surrealdb = ["dep:schema-forge-surrealdb", "schema-forge-acton/surrealdb", "acton-service/surrealdb"]

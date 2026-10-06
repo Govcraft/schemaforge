@@ -130,3 +130,11 @@ the new release is published successfully.
 - PostgreSQL and SurrealDB framework features are mutually exclusive. Keep their
   CI builds separate; the password-login HTTP tests now run with either backend
   selection because their real in-memory storage fixture is a dev dependency.
+
+- #203 ordering decision: the pinned actor concurrently polls `act_on` writes.
+  SSE-aware mutation envelopes use `mutate_on`, perform the backend write and
+  nonblocking snapshot publication before replying. This serializes enabled
+  event writes within this process, survives cancelled HTTP receivers, and avoids
+  waiting for an actor lease that could deadlock its pending-future drain. The
+  disabled path retains existing messages. Connection reservations are actor-owned
+  weak lifetime handles, reclaimed when the stream drops without async Drop sends.
