@@ -7,6 +7,8 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-05
+
 ### Added
 
 - Opt-in authenticated entity SSE streams with canonical GET projection, Cedar
@@ -40,6 +42,21 @@ is pre-1.0; breaking changes bump the **minor** version per
 - Health and readiness probes bypass rate limiting by default. Anonymous quotas
   can be configured separately, and governor reports actual remaining capacity
   with `Retry-After` on rate-limit responses instead of `X-RateLimit-Reset`.
+
+### Migration
+
+- Existing password accounts keep their hashes. Startup seeds the shared
+  `OAuthIdentity` system schema; provision it through the normal schema migration
+  path before enabling OAuth on an existing deployment. OAuth account/invite
+  changes span multiple storage operations; provider/subject uniqueness prevents
+  duplicate linking, while an interrupted signup can require administrator repair.
+- Library users should update acton to 0.46.0, backend to 0.20.0, PostgreSQL and
+  SurrealDB adapters to 0.15.0, and MSSQL to 0.7.0. Core remains compatible at
+  0.19.2. Align directly imported acton-service `Claims` with 0.45.0 and update
+  Rust `SchemaForgeSettings` and `MeResponse` struct literals for their new fields.
+- OAuth and events remain disabled until configured. Release binaries include
+  both features. SSE is process-local, has no replay/outbox, and requires clients
+  to refetch on reconnect. Use canonical `ACTON_SERVICE__...` environment names.
 
 ## [0.46.1] - 2026-09-25
 

@@ -138,3 +138,15 @@ the new release is published successfully.
   waiting for an actor lease that could deadlock its pending-future drain. The
   disabled path retains existing messages. Connection reservations are actor-owned
   weak lifetime handles, reclaimed when the stream drops without async Drop sends.
+
+- #203: ten actual HTTP stream cases passed, including GET-equivalent payloads,
+  hidden/restricted projection, a custom Cedar owner-read refusal, equality
+  filtering, limits/cleanup, slow consumers, keep-alives, live membership removal,
+  active-tenant refusal, and concurrent final-snapshot ordering. The PostgreSQL
+  CRUD stream test also passed in a disposable database. Targeted runtime/CLI
+  Clippy and two exported OpenAPI contracts passed.
+- Authentication errors now retain diagnostics in server logs while returning
+  generic HTTP errors; its focused redaction regression passed.
+- Semver review selects CLI 0.48.0, acton 0.46.0, backend 0.20.0, core 0.19.2,
+  PostgreSQL/SurrealDB 0.15.0, and MSSQL 0.7.0. Default features stay opt-in;
+  release binaries include OAuth/SSE and CI tests each backend separately.
