@@ -449,6 +449,13 @@ See [storage-reference.md](storage-reference.md) for the full upload flow, state
 | POST | `/api/v1/forge/auth/login` | Exchange username+password for a PASETO token. Response body: `{ token, expires_at, roles }`. |
 | POST | `/api/v1/forge/auth/refresh` | Exchange a still-valid bearer for a fresh token (same 1-hour expiry). Same response body as login. Returns 401 if no/expired token. |
 
+Optional `oauth` builds add public provider discovery, start/callback redirects, and a
+60-second single-use code exchange. `[schema_forge.auth.oauth]` controls signup,
+frontend return destinations, and password login. Provider credentials remain in
+`[auth.oauth.providers.<name>]`. Linked provider/subject identities appear in
+`GET /auth/me`. See [OAuth login](../../docs/oauth-login.md) for the redirect
+contract, signed invite grants, passwordless accounts, and configuration.
+
 The React site's `src/lib/auth.ts` stores the token in `sessionStorage`, schedules a silent refresh ~5 minutes before expiry, and retries any 401 once through `/auth/refresh` before bouncing the user back to `/login`.
 
 ### Users (`/api/v1/forge/users`)

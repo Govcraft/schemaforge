@@ -7,6 +7,19 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in OAuth login with audited GitHub, Google, and custom OIDC providers,
+  verified email, signed invitations, durable unique identity links, and a
+  single-use 60-second frontend exchange code. OAuth-created accounts leave
+  the existing optional, hidden `password_hash` null and can set a first
+  password through the existing authorized endpoint.
+- Shared login completion preserves tenant membership requirements, principal
+  claim projection, login timestamps, and PASETO refresh behavior across password
+  and OAuth sign-in. `/auth/me` lists linked provider identities.
+
+### Fixed
+
 - Render every line of multiline hook intent as a Rust doc comment, preserving
   paragraphs and trimming outer blank lines so generated handlers compile.
 - Verify that generated hook services, the CLI, and the runtime share the same

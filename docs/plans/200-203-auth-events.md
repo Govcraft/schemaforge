@@ -47,8 +47,9 @@ Extract a shared `complete_login(context, user, source)` tail for password and
 OAuth login: live membership policy, principal claims, token generation,
 record_login, and success/failure audit. Callback stores a 60-second single-use
 login-code payload and redirects with only that opaque code. Exchange returns
-LoginResponse. `/auth/me` reports linked provider/subject identities. Public-path
-matching must be exact for named routes and bounded provider path segments.
+LoginResponse. `/auth/me` reports linked provider/subject identities. The upstream bearer middleware matches prefixes, so whitelist only the bounded
+`/api/v1/forge/auth/oauth/` namespace. Tenant exemptions recognize exact endpoint
+shapes and validated provider segments.
 
 Test handlers with an injected mock provider and real account storage: redirects,
 provider selection, verified/missing email, state/code reuse and expiry, allowlist
@@ -106,3 +107,26 @@ and publish using the release workflow. Verify the published release, all intend
 archives/signatures/manifests, and smoke-test downloaded Linux binaries with
 feature/config behavior. Complete the goal only when every issue is closed and
 the new release is published successfully.
+
+## Completed increments and focused validation
+
+- #201: multiline stubs preserve paragraphs as doc comments. All 17 hook
+  generation integration tests and targeted CLI Clippy passed; a fresh generated
+  multiline hook project compiled against acton-service 0.45.0.
+- #202: the merged upgrade repaired the scaffold pin. A manifest regression now
+  compares the scaffold, CLI, and runtime pins.
+- #200 storage: validated provider/subject types, passwordless creation, exact
+  link lookup, identity listing, and unique system-schema storage are committed.
+  All 24 account-store tests passed. PostgreSQL and SurrealDB both returned typed
+  UniqueViolation for a second user claiming the same provider/subject pair.
+- The real invite test exposed SurrealDB's timestamp-string heuristic. Native
+  datetime conversion now preserves typed datetimes while RFC3339 text remains
+  text, with a focused regression.
+- #200 HTTP: 24 selected OAuth, password, and identity-storage tests passed,
+  including custom broad-permit resistance, signed invite tampering, default
+  grants, required membership, user-field claims, current-grant refresh,
+  passwordless refusal, disabled routes, state/code expiry and reuse. The CLI
+  OpenAPI integration test and focused runtime/CLI Clippy passed.
+- PostgreSQL and SurrealDB framework features are mutually exclusive. Keep their
+  CI builds separate; the password-login HTTP tests now run with either backend
+  selection because their real in-memory storage fixture is a dev dependency.

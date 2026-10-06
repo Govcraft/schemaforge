@@ -13,6 +13,7 @@ pub mod export_job;
 pub mod export_rate_limit;
 pub mod extension;
 pub mod invite;
+pub mod oauth_config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
 pub mod hooks;

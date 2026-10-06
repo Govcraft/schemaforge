@@ -111,6 +111,10 @@ async fn run_openapi(
         );
     }
 
+    add_login_schema_and_path(&mut paths, &mut components_schemas, &args.base_path);
+    #[cfg(feature = "oauth")]
+    add_oauth_paths(&mut paths, &args.base_path);
+
     let openapi_spec = serde_json::json!({
         "openapi": args.spec_version,
         "info": {
@@ -152,4 +156,57 @@ fn openapi_type_for(field_type: &schema_forge_core::types::FieldType) -> &'stati
         FieldType::Relation { .. } => "string",
         _ => "string",
     }
+}
+
+fn add_login_schema_and_path(
+    paths: &mut serde_json::Map<String, serde_json::Value>,
+    components: &mut serde_json::Map<String, serde_json::Value>,
+    base: &str,
+) {
+    components.insert("LoginResponse".into(), serde_json::json!({
+        "type": "object", "required": ["token", "expires_at", "roles"],
+        "properties": {"token": {"type": "string"}, "expires_at": {"type": "string", "format": "date-time"}, "roles": {"type": "array", "items": {"type": "string"}}}
+    }));
+    paths.insert(format!("{base}/auth/login"), serde_json::json!({"post": {
+        "summary": "Obtain a password session", "security": [],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["username", "password"], "properties": {"username": {"type": "string"}, "password": {"type": "string", "format": "password"}}}}}},
+        "responses": {"200": {"description": "PASETO session", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginResponse"}}}}, "401": {"description": "Invalid credentials"}, "404": {"description": "Password login disabled"}}
+    }}));
+}
+
+#[cfg(feature = "oauth")]
+fn add_oauth_paths(paths: &mut serde_json::Map<String, serde_json::Value>, base: &str) {
+    paths.insert(format!("{base}/auth/oauth/providers"), serde_json::json!({"get": {
+        "summary": "List configured OAuth providers", "security": [], "responses": {"200": {"description": "Configured names", "content": {"application/json": {"schema": {"type": "array", "items": {"type": "string"}}}}}, "404": {"description": "OAuth disabled"}}
+    }}));
+    for (route, summary, parameters) in [
+        (
+            "start",
+            "Redirect to provider authorization",
+            serde_json::json!([
+                {"name": "provider", "in": "path", "required": true, "schema": {"type": "string"}},
+                {"name": "return_to", "in": "query", "required": true, "schema": {"type": "string", "format": "uri"}},
+                {"name": "invite_id", "in": "query", "schema": {"type": "string"}}
+            ]),
+        ),
+        (
+            "callback",
+            "Consume OAuth state and redirect with a login code",
+            serde_json::json!([
+                {"name": "provider", "in": "path", "required": true, "schema": {"type": "string"}},
+                {"name": "code", "in": "query", "required": true, "schema": {"type": "string"}},
+                {"name": "state", "in": "query", "required": true, "schema": {"type": "string"}}
+            ]),
+        ),
+    ] {
+        paths.insert(format!("{base}/auth/oauth/{{provider}}/{route}"), serde_json::json!({"get": {
+            "summary": summary, "security": [], "parameters": parameters,
+            "responses": {"302": {"description": "Redirect with no bearer token in its URL", "headers": {"Location": {"schema": {"type": "string", "format": "uri"}}}}, "400": {"description": "Invalid return target"}, "401": {"description": "Invalid provider identity, state, or invitation"}, "403": {"description": "Invitation required"}, "404": {"description": "Unknown provider or OAuth disabled"}, "409": {"description": "Account or identity already exists"}}
+        }}));
+    }
+    paths.insert(format!("{base}/auth/oauth/exchange"), serde_json::json!({"post": {
+        "summary": "Exchange a single-use login code valid for 60 seconds", "security": [],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["code"], "properties": {"code": {"type": "string"}}}}}},
+        "responses": {"200": {"description": "PASETO session", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginResponse"}}}}, "401": {"description": "Invalid, expired, or consumed code"}, "404": {"description": "OAuth disabled"}}
+    }}));
 }

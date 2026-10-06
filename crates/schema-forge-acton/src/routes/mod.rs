@@ -7,6 +7,8 @@ pub mod files;
 pub mod health;
 pub mod invites;
 pub mod meta;
+#[cfg(feature = "oauth")]
+pub mod oauth;
 pub mod permissions;
 pub mod query_params;
 pub mod schemas;

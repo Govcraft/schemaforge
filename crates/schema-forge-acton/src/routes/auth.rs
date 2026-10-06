@@ -57,7 +57,7 @@ pub struct LoginRequest {
 }
 
 /// Success response body for `POST /auth/login`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginResponse {
     /// The minted PASETO V4 token (prefixed `v4.local.` or `v4.public.`).
     pub token: String,
@@ -130,6 +130,8 @@ pub struct MeResponse {
     /// Operator-declared principal-claim projections (same values baked into
     /// the token at login), for client-side display/branching.
     pub principal_claims: serde_json::Map<String, serde_json::Value>,
+    /// External provider subjects linked to this account.
+    pub identities: Vec<schema_forge_backend::oauth_identity::ProviderIdentity>,
 }
 
 /// Resolve the active tenant from the membership set and an optional
@@ -178,6 +180,11 @@ pub async fn login(
     Extension(tenant_config): Extension<Arc<Option<TenantConfig>>>,
     Json(req): Json<LoginRequest>,
 ) -> Response {
+    if state.config().custom.schema_forge.auth.oauth.enabled
+        && !state.config().custom.schema_forge.auth.oauth.password_login
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let user = match auth_store
         .validate_credentials(&req.username, &req.password)
         .await
@@ -193,72 +200,167 @@ pub async fn login(
         }
     };
 
-    let user_entity = if principal_claims.has_user_field_sources() {
-        match auth_store.get_user_entity(&user.username).await {
-            Ok(Some(e)) => Some(e),
-            Ok(None) => {
-                emit_login_failed(&state, &req.username, &source).await;
-                return unauthorized_response();
+    let context = LoginContext {
+        state: &state,
+        auth_store: auth_store.as_ref(),
+        generator: &generator,
+        principal_claims: &principal_claims,
+        tenant_config: tenant_config.as_ref().as_ref(),
+        source: &source,
+    };
+    match context.complete(&user, LoginSource::Password).await {
+        Ok(body) => (StatusCode::OK, Json(body)).into_response(),
+        Err(response) => response,
+    }
+}
+
+/// Shared final login steps, including live grants and principal projection.
+pub(crate) struct LoginContext<'a> {
+    pub state: &'a AppState<SchemaForgeConfig>,
+    pub auth_store: &'a dyn DynAuthStore,
+    pub generator: &'a PasetoGenerator,
+    pub principal_claims: &'a PrincipalClaimMappings,
+    pub tenant_config: Option<&'a TenantConfig>,
+    pub source: &'a AuditSource,
+}
+
+#[derive(Clone)]
+pub(crate) enum LoginSource {
+    Password,
+    #[cfg(feature = "oauth")]
+    OAuth(String),
+}
+
+impl LoginContext<'_> {
+    pub async fn complete(
+        &self,
+        user: &schema_forge_backend::user_store::ForgeUser,
+        origin: LoginSource,
+    ) -> Result<LoginResponse, Response> {
+        let result = self.build_response(user).await;
+        emit_login_result(
+            self.state,
+            &user.username,
+            self.source,
+            origin,
+            result.is_ok(),
+        )
+        .await;
+        result
+    }
+
+    async fn build_response(
+        &self,
+        user: &schema_forge_backend::user_store::ForgeUser,
+    ) -> Result<LoginResponse, Response> {
+        if !user.active {
+            return Err(unauthorized_response());
+        }
+        let user_entity = if self.principal_claims.has_user_field_sources() {
+            match self.auth_store.get_user_entity(&user.username).await {
+                Ok(Some(entity)) => Some(entity),
+                Ok(None) => {
+                    return Err(unauthorized_response());
+                }
+                Err(error) => {
+                    return Err(internal_error_response(format!(
+                        "auth store error: {error}"
+                    )))
+                }
             }
-            Err(e) => return internal_error_response(format!("auth store error: {e}")),
+        } else {
+            None
+        };
+        let memberships = self
+            .auth_store
+            .list_tenant_memberships(&user.username)
+            .await
+            .map_err(|error| internal_error_response(format!("auth store error: {error}")))?;
+        if let Err(refusal) =
+            enforce_tenant_membership_policy(&memberships, &user.roles, self.tenant_config)
+        {
+            return Err(refusal.into_response());
         }
-    } else {
-        None
-    };
-
-    let memberships = match auth_store.list_tenant_memberships(&user.username).await {
-        Ok(m) => m,
-        Err(e) => return internal_error_response(format!("auth store error: {e}")),
-    };
-
-    if let Err(refusal) =
-        enforce_tenant_membership_policy(&memberships, &user.roles, tenant_config.as_ref().as_ref())
-    {
-        emit_login_failed(&state, &req.username, &source).await;
-        return refusal.into_response();
+        let claims = match build_login_claims(
+            &user.username,
+            &user.roles,
+            user_entity.as_ref(),
+            self.principal_claims,
+            &memberships,
+        ) {
+            Ok(claims) => claims,
+            Err(BuildLoginClaimsError::NullRequired(_)) => {
+                return Err(unauthorized_response());
+            }
+            Err(error) => {
+                return Err(internal_error_response(format!(
+                    "failed to build claims: {error}"
+                )))
+            }
+        };
+        let token = self
+            .generator
+            .generate_token_with_expiry(&claims, LOGIN_TOKEN_LIFETIME)
+            .map_err(|error| {
+                internal_error_response(format!("failed to generate token: {error}"))
+            })?;
+        let issued_at = Utc::now();
+        self.auth_store
+            .record_login(&user.username, issued_at)
+            .await
+            .map_err(|error| {
+                internal_error_response(format!("failed to record last_login: {error}"))
+            })?;
+        let expires_at =
+            issued_at + chrono::Duration::seconds(LOGIN_TOKEN_LIFETIME.as_secs() as i64);
+        Ok(LoginResponse {
+            token,
+            expires_at: expires_at.to_rfc3339(),
+            roles: user.roles.clone(),
+        })
     }
+}
 
-    let claims = match build_login_claims(
-        &user.username,
-        &user.roles,
-        user_entity.as_ref(),
-        &principal_claims,
-        &memberships,
-    ) {
-        Ok(c) => c,
-        Err(BuildLoginClaimsError::NullRequired(_)) => {
-            emit_login_failed(&state, &req.username, &source).await;
-            return unauthorized_response();
+pub(crate) async fn emit_login_result(
+    state: &AppState<SchemaForgeConfig>,
+    username: &str,
+    source: &AuditSource,
+    origin: LoginSource,
+    success: bool,
+) {
+    match origin {
+        LoginSource::Password => {
+            if success {
+                emit_login_success(state, username, source).await;
+            } else {
+                emit_login_failed(state, username, source).await;
+            }
         }
-        Err(e) => return internal_error_response(format!("failed to build claims: {e}")),
-    };
-
-    let token = match generator.generate_token_with_expiry(&claims, LOGIN_TOKEN_LIFETIME) {
-        Ok(t) => t,
-        Err(e) => return internal_error_response(format!("failed to generate token: {e}")),
-    };
-
-    let issued_at = Utc::now();
-
-    // Persist before returning the token. Fails closed: a DB write failure
-    // produces a 500 rather than handing the caller a token without an
-    // audit trail entry. The login handler already proved the row exists
-    // via validate_credentials, so the only realistic failure mode is a
-    // backend outage — in which case 500 is the right answer.
-    if let Err(e) = auth_store.record_login(&user.username, issued_at).await {
-        return internal_error_response(format!("failed to record last_login: {e}"));
+        #[cfg(feature = "oauth")]
+        LoginSource::OAuth(provider) => {
+            if let Some(logger) = state.audit_logger() {
+                let event = acton_service::audit::AuditEvent::new(
+                    if success {
+                        AuditEventKind::AuthLoginSuccess
+                    } else {
+                        AuditEventKind::AuthLoginFailed
+                    },
+                    if success {
+                        AuditSeverity::Informational
+                    } else {
+                        AuditSeverity::Warning
+                    },
+                    logger.service_name().to_owned(),
+                )
+                .with_source(AuditSource {
+                    subject: Some(format!("user:{username}")),
+                    ..source.clone()
+                })
+                .with_metadata(serde_json::json!({"source": format!("oauth:{provider}")}));
+                logger.log(event).await;
+            }
+        }
     }
-
-    emit_login_success(&state, &user.username, &source).await;
-
-    let expires_at = issued_at + chrono::Duration::seconds(LOGIN_TOKEN_LIFETIME.as_secs() as i64);
-
-    let body = LoginResponse {
-        token,
-        expires_at: expires_at.to_rfc3339(),
-        roles: user.roles.clone(),
-    };
-    (StatusCode::OK, Json(body)).into_response()
 }
 
 /// `POST /auth/refresh` — exchange a still-valid bearer token for a fresh
@@ -413,6 +515,10 @@ pub async fn me(
             .and_then(|v| v.to_str().ok()),
     );
 
+    let identities = match auth_store.list_identities(&username).await {
+        Ok(identities) => identities,
+        Err(error) => return internal_error_response(format!("auth store error: {error}")),
+    };
     let body = MeResponse {
         user_id: entity.id.to_string(),
         email: username,
@@ -422,6 +528,7 @@ pub async fn me(
         active_tenant,
         active_tenant_header: ACTIVE_TENANT_HEADER,
         principal_claims: principal_claims_map,
+        identities,
     };
     (StatusCode::OK, Json(body)).into_response()
 }
@@ -642,7 +749,7 @@ impl std::error::Error for BuildLoginClaimsError {
     }
 }
 
-fn unauthorized_response() -> Response {
+pub(crate) fn unauthorized_response() -> Response {
     let body = LoginErrorBody {
         error: "invalid credentials",
         code: "UNAUTHORIZED",
@@ -651,7 +758,7 @@ fn unauthorized_response() -> Response {
     (StatusCode::UNAUTHORIZED, Json(body)).into_response()
 }
 
-fn internal_error_response(message: String) -> Response {
+pub(crate) fn internal_error_response(message: String) -> Response {
     tracing::error!(error = %message, "login endpoint internal error");
     let body = serde_json::json!({
         "error": "internal_error",
@@ -674,9 +781,15 @@ fn internal_error_response(message: String) -> Response {
 /// for multi-membership users.
 pub fn auth_routes(
 ) -> axum::Router<acton_service::state::AppState<crate::config::SchemaForgeConfig>> {
+    auth_routes_with_password_login(true)
+}
+
+/// Build identity routes while omitting password login for OAuth-only services.
+pub fn auth_routes_with_password_login(
+    password_login: bool,
+) -> axum::Router<acton_service::state::AppState<crate::config::SchemaForgeConfig>> {
     use axum::routing::{get, post};
-    axum::Router::new()
-        .route("/auth/login", post(login))
+    let router = axum::Router::new()
         .route("/auth/refresh", post(refresh))
         .route("/auth/me", get(me))
         // Invitations (issue #71). `/auth/invites` is authenticated;
@@ -686,7 +799,12 @@ pub fn auth_routes(
         .route(
             "/auth/invites/accept",
             post(crate::routes::invites::accept_invite),
-        )
+        );
+    if password_login {
+        router.route("/auth/login", post(login))
+    } else {
+        router
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -902,6 +1020,7 @@ mod tests {
             }),
             active_tenant_header: ACTIVE_TENANT_HEADER,
             principal_claims: serde_json::Map::new(),
+            identities: Vec::new(),
         };
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["user_id"], "user_01k");

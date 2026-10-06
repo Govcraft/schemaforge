@@ -69,6 +69,10 @@ pub struct SchemaForgeSettings {
     #[serde(default)]
     pub authz: AuthzConfig,
 
+    /// External sign-in and password login policy.
+    #[serde(default)]
+    pub auth: crate::oauth_config::AuthSettings,
+
     /// Signed-schema enforcement. The CLI builds a
     /// [`schema_forge_signing::VerifyPolicy`] from this section before
     /// loading any `.schema` file, so on-disk tampering and
@@ -178,6 +182,7 @@ impl Default for SchemaForgeSettings {
             export: crate::export_config::ExportSettings::default(),
             email: crate::email::EmailConfig::default(),
             authz: AuthzConfig::default(),
+            auth: crate::oauth_config::AuthSettings::default(),
             signing: SigningConfig::default(),
             client: ClientConfig::default(),
             site: SiteBrandingConfig::default(),
@@ -209,6 +214,7 @@ mod tests {
                 export: crate::export_config::ExportSettings::default(),
                 email: crate::email::EmailConfig::default(),
                 authz: AuthzConfig::default(),
+                auth: crate::oauth_config::AuthSettings::default(),
                 signing: SigningConfig::default(),
                 client: ClientConfig::default(),
                 site: SiteBrandingConfig::default(),
