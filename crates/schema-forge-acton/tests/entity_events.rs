@@ -1266,6 +1266,37 @@ impl LoginFixture {
         );
     }
 
+    /// Renames a tenant root through the entity route, as `token` would.
+    async fn rename(&self, token: &str, tenant: Option<&str>, id: &str, name: &str) {
+        let mut request = Request::builder()
+            .method("PATCH")
+            .uri(format!("/forge/schemas/Organization/entities/{id}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json");
+        if let Some(tenant) = tenant {
+            request = request.header("x-active-tenant", format!("Organization:{tenant}"));
+        }
+        let body = serde_json::json!({"fields": {"name": name}}).to_string();
+        let response = self
+            .app
+            .clone()
+            .oneshot(request.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "rename {id}");
+    }
+
+    /// Waits for the next change on `body` and checks it is an update of `id`.
+    async fn assert_updated(body: &mut Body, id: &str, name: &str, caller: &str) {
+        let (frame, event) = change(body).await;
+        assert!(
+            frame.contains("event: entity.updated"),
+            "{caller} must receive the update, got {frame}"
+        );
+        assert_eq!(event["entity_id"], id, "{caller}");
+        assert_eq!(event["entity"]["fields"]["name"], name, "{caller}");
+    }
+
     /// Changes or removes one durable membership row behind the caller's token.
     async fn set_membership(&self, username: &str, tenant: &str, role: Option<&str>) {
         use schema_forge_core::types::DynamicValue;
@@ -1335,14 +1366,35 @@ async fn login_tokens_open_streams_for_admins_and_tenant_members() {
     let solo = f.login("solo@example.gov").await;
     f.assert_opens(&solo, None, "single-membership member")
         .await;
-    f.assert_opens(&solo, Some(&f.lobby), "single-membership member")
+    let mut solo_stream = f
+        .open(&solo, Some(&f.lobby), "single-membership member")
         .await;
+    f.rename(&founder, None, &f.lobby, "Lobby").await;
+    LoginFixture::assert_updated(
+        &mut solo_stream,
+        &f.lobby,
+        "Lobby",
+        "single-membership member",
+    )
+    .await;
 
     let multi = f.login("multi@example.gov").await;
-    for tenant in [&f.lobby, &f.alpha, &f.beta] {
+    for tenant in [&f.lobby, &f.beta] {
         f.assert_opens(&multi, Some(tenant), "multi-membership user")
             .await;
     }
+    let mut owner_stream = f
+        .open(&multi, Some(&f.alpha), "multi-membership owner")
+        .await;
+    // The scoped owner grant authorizes the write as well as the stream.
+    f.rename(&multi, Some(&f.alpha), &f.alpha, "Alpha").await;
+    LoginFixture::assert_updated(
+        &mut owner_stream,
+        &f.alpha,
+        "Alpha",
+        "multi-membership owner",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
