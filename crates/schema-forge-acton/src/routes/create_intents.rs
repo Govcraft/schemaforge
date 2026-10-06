@@ -93,12 +93,24 @@ pub(super) async fn process(
         .actor::<ForgeActor>()
         .ok_or_else(|| error(CreateIntentError::Unsupported))?;
     let (tx, rx) = oneshot::channel();
-    forge
-        .send(ProcessCreateIntent {
+    let notification = entities::mutation_notification(None, None);
+    #[cfg(feature = "sse")]
+    let notification = crate::events::Notification {
+        subject: match &request {
+            CreateIntentRequest::Commit { scope, .. } => Some(scope.principal.clone()),
+            _ => None,
+        },
+        ..notification
+    };
+    entities::send_mutation(
+        &forge,
+        ProcessCreateIntent {
             request,
             reply: ReplyChannel::new(tx),
-        })
-        .await;
+        },
+        &notification,
+    )
+    .await?;
     tokio::time::timeout(Duration::from_secs(5), rx)
         .await
         .map_err(|_| ForgeError::BackendUnavailable {

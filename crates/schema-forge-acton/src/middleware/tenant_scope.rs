@@ -296,7 +296,7 @@ pub(crate) fn is_tenancy_exempt(path: &str) -> bool {
 
 /// Errors raised during the hierarchy walk.
 #[derive(Debug)]
-enum WalkError {
+pub(crate) enum WalkError {
     /// A leaf or intermediate entity couldn't be found. Treated as
     /// non-fatal by the caller — the effective chain collapses to just
     /// the active leaf.
@@ -325,7 +325,7 @@ impl std::fmt::Display for WalkError {
 /// membership row pointing to a non-tenant schema), returns just the
 /// leaf — the request stays servable but won't unlock anything above
 /// the leaf in Cedar's parent set.
-async fn walk_to_root(
+pub(crate) async fn walk_to_root(
     leaf: &TenantRef,
     tenant_config: &TenantConfig,
     store: &dyn DynEntityStore,

@@ -901,3 +901,8 @@ Platform administrators can use `/api/v1/forge/audit/status`, `/audit/events` an
 Use `@renamed_from("old_name")` on a replacement field to preserve values across a rename. Startup refuses destructive migration plans unless `serve --allow-destructive-migrations` is explicit; runtime schema PUT requires `allow_destructive_migrations: true`. Existing tenancy annotations cannot change through automatic migration because ownership and unique constraints need an explicit data migration. PostgreSQL schema administration reconciles legacy missing relation foreign keys and refuses orphaned references. See [safe schema changes](../../docs/migrations/safe-schema-changes.md).
 
 Field write authorization precedes defaults, computed expressions, rules, and hooks. Required fields are validated after server-supplied values; omitted optional fields bind to null in rules. PUT clears omitted writable optional fields, while PATCH retains partial-update semantics. GraphQL mutations share the same write pipeline. See [rule ordering](../../docs/rule-ordering-reference.md) and [GraphQL writes](../../docs/graphql-writes.md).
+
+Authenticated entity streams are opt-in via the `sse` feature and
+`[schema_forge.events]`. See [Entity events](../../docs/events.md) for the bearer
+fetch reader, active-tenant selection, equality filters, connection bounds,
+canonical read projection, and refetch-on-reconnect contract.

@@ -9,6 +9,11 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Added
 
+- Opt-in authenticated entity SSE streams with canonical GET projection, Cedar
+  and tenant authorization, equality filters, bounded nonblocking delivery,
+  per-user connection limits, keep-alives, live membership revocation, and
+  process-local commit ordering. Supported release binaries include OAuth and
+  SSE support; both remain disabled until configured.
 - Opt-in OAuth login with audited GitHub, Google, and custom OIDC providers,
   verified email, signed invitations, durable unique identity links, and a
   single-use 60-second frontend exchange code. OAuth-created accounts leave

@@ -7,18 +7,19 @@ pub mod conversions;
 pub mod crypto;
 pub mod email;
 pub mod error;
+pub mod events_config;
 pub mod export_bundle;
 pub mod export_config;
 pub mod export_job;
 pub mod export_rate_limit;
 pub mod extension;
-pub mod invite;
-pub mod oauth_config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
 pub mod hooks;
+pub mod invite;
 pub mod messages;
 pub mod middleware;
+pub mod oauth_config;
 pub mod routes;
 pub mod rules;
 pub mod shared;
@@ -45,3 +46,6 @@ pub use routes::{
 pub use state::{
     DynAuthStore, DynEntityStore, DynForgeBackend, DynSchemaBackend, ForgeState, SchemaRegistry,
 };
+
+#[cfg(feature = "sse")]
+pub mod events;

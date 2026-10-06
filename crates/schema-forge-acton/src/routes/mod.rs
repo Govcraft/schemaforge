@@ -2,6 +2,8 @@ pub mod audit;
 pub mod auth;
 pub mod create_intents;
 pub mod entities;
+#[cfg(feature = "sse")]
+pub mod events;
 pub mod export;
 pub mod files;
 pub mod health;
@@ -37,7 +39,7 @@ use crate::config::SchemaForgeConfig;
 /// Auth middleware is applied externally when the state is available
 /// (see [`SchemaForgeExtension::register_routes`]).
 pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
-    Router::new()
+    let router = Router::new()
         // Deployment-wide audit access uses its own platform-admin gate.
         .route("/audit/status", get(audit::status))
         .route("/audit/events", get(audit::events))
@@ -113,5 +115,8 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
             "/users/{username}",
             delete(users::delete_user).put(users::update_user),
         )
-        .route("/users/{username}/password", post(users::change_password))
+        .route("/users/{username}/password", post(users::change_password));
+    #[cfg(feature = "sse")]
+    let router = router.route("/schemas/{schema}/events", get(events::subscribe));
+    router
 }

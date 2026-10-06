@@ -45,6 +45,61 @@ use crate::rules::{
 use schema_forge_core::types::HookEvent;
 use std::sync::Arc;
 
+#[cfg(feature = "sse")]
+use crate::events::Notification;
+#[cfg(not(feature = "sse"))]
+#[derive(Default)]
+pub(super) struct Notification;
+
+pub(super) fn mutation_notification(
+    claims: Option<&Claims>,
+    deleted: Option<&Entity>,
+) -> Notification {
+    #[cfg(feature = "sse")]
+    {
+        Notification {
+            subject: claims.map(|c| c.sub.clone()),
+            deleted: deleted.cloned(),
+            ..Default::default()
+        }
+    }
+    #[cfg(not(feature = "sse"))]
+    {
+        let _ = (claims, deleted);
+        Notification
+    }
+}
+pub(super) async fn send_mutation<
+    M: acton_service::prelude::ActonMessage + Clone + std::fmt::Debug,
+>(
+    forge: &acton_service::prelude::ActorHandle,
+    message: M,
+    notification: &Notification,
+) -> Result<(), ForgeError> {
+    #[cfg(feature = "sse")]
+    {
+        crate::events::send(forge, message, notification).await
+    }
+    #[cfg(not(feature = "sse"))]
+    {
+        let _ = notification;
+        forge.send(message).await;
+        Ok(())
+    }
+}
+fn notification_event(
+    notification: &Notification,
+    fallback: impl FnOnce() -> crate::webhook::WebhookEvent,
+) -> crate::webhook::WebhookEvent {
+    #[cfg(feature = "sse")]
+    if let Some(event) = notification.event.get() {
+        return event.clone();
+    }
+    #[cfg(not(feature = "sse"))]
+    let _ = notification;
+    fallback()
+}
+
 // ---------------------------------------------------------------------------
 // Validation-rule mapping
 // ---------------------------------------------------------------------------
@@ -275,26 +330,33 @@ async fn persist_entity_update(
     forge: &acton_service::prelude::ActorHandle,
     entity: Entity,
     expected: Option<EntityRevision>,
+    notification: &Notification,
 ) -> Result<(Entity, Option<EntityRevision>), ForgeError> {
     if let Some(expected) = expected {
         let (tx, rx) = oneshot::channel();
-        forge
-            .send(UpdateEntityIf {
+        send_mutation(
+            forge,
+            UpdateEntityIf {
                 entity,
                 expected,
                 reply: ReplyChannel::new(tx),
-            })
-            .await;
+            },
+            notification,
+        )
+        .await?;
         let result = ask_forge(rx).await?.map_err(conditional_error)?;
         Ok((result.entity, Some(result.revision)))
     } else {
         let (tx, rx) = oneshot::channel();
-        forge
-            .send(UpdateEntity {
+        send_mutation(
+            forge,
+            UpdateEntity {
                 entity,
                 reply: ReplyChannel::new(tx),
-            })
-            .await;
+            },
+            notification,
+        )
+        .await?;
         Ok((ask_forge(rx).await?.map_err(ForgeError::from)?, None))
     }
 }
@@ -2942,14 +3004,18 @@ pub async fn create_entity(
         return super::create_intents::result(state, schema, claims, headers, &receipt).await;
     }
 
+    let notification = mutation_notification(claims.as_ref(), None);
     // Create entity via actor (supervised backend call)
     let (tx, rx) = oneshot::channel();
-    forge
-        .send(CreateEntity {
+    send_mutation(
+        &forge,
+        CreateEntity {
             entity,
             reply: ReplyChannel::new(tx),
-        })
-        .await;
+        },
+        &notification,
+    )
+    .await?;
     let mut created = ask_forge(rx).await?.map_err(ForgeError::from)?;
 
     // after_change hook — handed off to HookDispatchActor for
@@ -2998,11 +3064,13 @@ pub async fn create_entity(
     .await;
 
     // Webhook: fire notifications
-    let webhook_event = crate::webhook::WebhookEvent::from_create(
-        &schema_def,
-        &created,
-        claims.as_ref().map(|c| c.sub.as_str()),
-    );
+    let webhook_event = notification_event(&notification, || {
+        crate::webhook::WebhookEvent::from_create(
+            &schema_def,
+            &created,
+            claims.as_ref().map(|c| c.sub.as_str()),
+        )
+    });
     dispatch_webhook(&state, &schema_def, webhook_event, "created").await;
 
     Ok((
@@ -3377,6 +3445,53 @@ pub async fn get_entity(
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
+    let (entity, revision) = load_mutation_baseline(&forge, &schema_name, &entity_id, true).await?;
+
+    let (mut response, entity, tenant_config) =
+        project_read_snapshot(&state, &schema_def, entity, claims.as_ref(), &headers).await?;
+    // Resolve relation display fields unless the caller opted out with
+    // `?resolve=false`. Reuses the same batched IN-query path the list
+    // endpoint uses — with a single source entity it's still one query
+    // per target schema, which is cheap.
+    if parse_truthy_flag(&params, "resolve") {
+        let entities_slice = std::slice::from_ref(&entity);
+        let display_map = resolve_relation_displays(
+            &forge,
+            &policy_store,
+            &schema_def,
+            entities_slice,
+            claims.as_ref(),
+            &tenant_config,
+        )
+        .await?;
+        apply_relation_displays(&mut response, &schema_def, &entity, &display_map);
+    }
+
+    Ok((revision_headers(revision.as_ref())?, Json(response)))
+}
+
+/// Authorize the full snapshot, then apply the same GET projection for streams and reads.
+pub(crate) async fn project_read_snapshot(
+    state: &AppState<SchemaForgeConfig>,
+    schema_def: &SchemaDefinition,
+    mut entity: Entity,
+    claims: Option<&Claims>,
+    headers: &HeaderMap,
+) -> Result<
+    (
+        EntityResponse,
+        Entity,
+        Option<schema_forge_backend::tenant::TenantConfig>,
+    ),
+    ForgeError,
+> {
+    let forge = state
+        .actor::<ForgeActor>()
+        .ok_or_else(|| ForgeError::Internal {
+            message: "ForgeActor not registered".into(),
+        })?;
+    let policy_store = fetch_policy_store(state).await?;
+    check_schema_access(&policy_store, schema_def, claims, AccessAction::Read)?;
     // Resolve hook configuration up front. Only fetch the dispatcher when
     // this schema actually declares a read-side hook — keeps the cost
     // zero for the common case where reads are unhooked.
@@ -3397,33 +3512,30 @@ pub async fn get_entity(
             BeforeHookCtx {
                 dispatcher: dispatcher.as_ref(),
                 hooks_config: &hooks_config,
-                schema: &schema_def,
+                schema: schema_def,
                 event: HookEvent::BeforeRead,
                 operation: "read",
-                user: claims.as_ref(),
-                entity_id: Some(entity_id.as_str().to_string()),
+                user: claims,
+                entity_id: Some(entity.id.as_str().to_string()),
             },
             &mut empty_fields,
         )
         .await?;
     }
 
-    let (mut entity, revision) =
-        load_mutation_baseline(&forge, &schema_name, &entity_id, true).await?;
-
     if !authorize(
         &policy_store,
-        claims.as_ref(),
+        claims,
         ActionVerb::Read,
-        &schema_def,
+        schema_def,
         Some(&entity),
     )
     .is_ok_and(|decision| decision.is_allow())
     {
-        super::audit::log_forge_event(&state, claims.as_ref(), &headers, "forge.access.denied", acton_service::audit::AuditSeverity::Warning,
-            serde_json::json!({"schema": schema, "entity_id": id, "action": "read", "reason": "record_access"})).await;
+        super::audit::log_forge_event(state, claims, headers, "forge.access.denied", acton_service::audit::AuditSeverity::Warning,
+            serde_json::json!({"schema": schema_def.name.as_str(), "entity_id": entity.id.as_str(), "action": "read", "reason": "record_access"})).await;
         return Err(ForgeError::Forbidden {
-            message: format!("not authorized to view entity '{id}'"),
+            message: "Not authorized to view this entity.".into(),
         });
     }
 
@@ -3438,13 +3550,13 @@ pub async fn get_entity(
 
     if let Some(ref policy) = record_access_policy {
         let visible = policy
-            .filter_visible_optional(&schema_def, claims.as_ref(), vec![entity.clone()])
+            .filter_visible_optional(schema_def, claims, vec![entity.clone()])
             .await;
         if visible.is_empty() {
-            super::audit::log_forge_event(&state, claims.as_ref(), &headers, "forge.access.denied", acton_service::audit::AuditSeverity::Warning,
-                serde_json::json!({"schema": schema, "entity_id": id, "action": "read", "reason": "record_visibility"})).await;
+            super::audit::log_forge_event(state, claims, headers, "forge.access.denied", acton_service::audit::AuditSeverity::Warning,
+                serde_json::json!({"schema": schema_def.name.as_str(), "entity_id": entity.id.as_str(), "action": "read", "reason": "record_visibility"})).await;
             return Err(ForgeError::Forbidden {
-                message: format!("not authorized to view entity '{id}'"),
+                message: "Not authorized to view this entity.".into(),
             });
         }
     }
@@ -3453,7 +3565,7 @@ pub async fn get_entity(
     // attribute-based Cedar policy (`@owner`, `@tenant`, etc.) sees the
     // full record. Capture before field filtering strips read-restricted
     // fields from the response payload.
-    let perms = entity_permissions(&policy_store, &schema_def, &entity, claims.as_ref());
+    let perms = entity_permissions(&policy_store, schema_def, &entity, claims);
 
     // after_read hook (blocking; runs through the same call_before path
     // so it can patch the response payload — e.g. redact, decorate).
@@ -3462,10 +3574,10 @@ pub async fn get_entity(
             BeforeHookCtx {
                 dispatcher: dispatcher.as_ref(),
                 hooks_config: &hooks_config,
-                schema: &schema_def,
+                schema: schema_def,
                 event: HookEvent::AfterRead,
                 operation: "read",
-                user: claims.as_ref(),
+                user: claims,
                 entity_id: Some(entity.id.as_str().to_string()),
             },
             &mut entity.fields,
@@ -3490,9 +3602,9 @@ pub async fn get_entity(
     populate_derived_collections(
         &forge,
         &policy_store,
-        &schema_def,
+        schema_def,
         &mut single,
-        claims.as_ref(),
+        claims,
         &tenant_config,
     )
     .await?;
@@ -3502,33 +3614,15 @@ pub async fn get_entity(
     filter_entity_fields(
         &policy_store,
         &mut entity,
-        &schema_def,
-        claims.as_ref(),
+        schema_def,
+        claims,
         FieldFilterDirection::Read,
     );
 
-    let mut response = entity_to_response(&entity, &schema_def);
+    let mut response = entity_to_response(&entity, schema_def);
     response.permissions = Some(perms);
 
-    // Resolve relation display fields unless the caller opted out with
-    // `?resolve=false`. Reuses the same batched IN-query path the list
-    // endpoint uses — with a single source entity it's still one query
-    // per target schema, which is cheap.
-    if parse_truthy_flag(&params, "resolve") {
-        let entities_slice = std::slice::from_ref(&entity);
-        let display_map = resolve_relation_displays(
-            &forge,
-            &policy_store,
-            &schema_def,
-            entities_slice,
-            claims.as_ref(),
-            &tenant_config,
-        )
-        .await?;
-        apply_relation_displays(&mut response, &schema_def, &entity, &display_map);
-    }
-
-    Ok((revision_headers(revision.as_ref())?, Json(response)))
+    Ok((response, entity, tenant_config))
 }
 
 /// PUT /schemas/{schema}/entities/{id} -- Update entity.
@@ -3817,7 +3911,9 @@ pub async fn update_entity(
     validate_required_fields(&schema_def, &entity.fields)?;
     check_field_constraints(&schema_def, &entity.fields)?;
 
-    let (mut updated, revision) = persist_entity_update(&forge, entity, expected).await?;
+    let notification = mutation_notification(claims.as_ref(), None);
+    let (mut updated, revision) =
+        persist_entity_update(&forge, entity, expected, &notification).await?;
     let changed_fields = changed_field_names(&existing.fields, &updated.fields);
 
     // after_change hook — handed off to HookDispatchActor for
@@ -3864,11 +3960,13 @@ pub async fn update_entity(
     .await;
 
     // Webhook: fire notifications
-    let webhook_event = crate::webhook::WebhookEvent::from_update(
-        &schema_def,
-        &updated,
-        claims.as_ref().map(|c| c.sub.as_str()),
-    );
+    let webhook_event = notification_event(&notification, || {
+        crate::webhook::WebhookEvent::from_update(
+            &schema_def,
+            &updated,
+            claims.as_ref().map(|c| c.sub.as_str()),
+        )
+    });
     dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
 
     Ok((
@@ -4159,12 +4257,13 @@ pub async fn patch_entity(
 
     // A conditional no-op still reaches storage to compare the authorized
     // baseline atomically, and advances the revision on acceptance.
+    let notification = mutation_notification(claims.as_ref(), None);
     let (mut updated, revision) = if delta.is_empty() && expected.is_none() {
         (existing, None)
     } else {
         let entity = Entity::with_id(entity_id, schema_name, delta);
         check_field_constraints(&schema_def, &entity.fields)?;
-        persist_entity_update(&forge, entity, expected).await?
+        persist_entity_update(&forge, entity, expected, &notification).await?
     };
 
     let changed_fields = changed_field_names(&baseline_fields, &updated.fields);
@@ -4212,11 +4311,13 @@ pub async fn patch_entity(
     .await;
 
     // Webhook: fire notifications
-    let webhook_event = crate::webhook::WebhookEvent::from_update(
-        &schema_def,
-        &updated,
-        claims.as_ref().map(|c| c.sub.as_str()),
-    );
+    let webhook_event = notification_event(&notification, || {
+        crate::webhook::WebhookEvent::from_update(
+            &schema_def,
+            &updated,
+            claims.as_ref().map(|c| c.sub.as_str()),
+        )
+    });
     dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
 
     Ok((
@@ -4339,6 +4440,7 @@ pub async fn delete_entity(
         None
     };
     // Hooks see the same snapshot that passed record authorization.
+    let notification = mutation_notification(claims.as_ref(), Some(&existing));
     let pre_delete_snapshot = Some(existing);
     if let (Some(ref dispatcher), Some(snapshot)) = (&hook_dispatcher, &pre_delete_snapshot) {
         let mut fields = snapshot.fields.clone();
@@ -4359,24 +4461,30 @@ pub async fn delete_entity(
 
     if let Some(expected) = expected {
         let (tx, rx) = oneshot::channel();
-        forge
-            .send(DeleteEntityIf {
+        send_mutation(
+            &forge,
+            DeleteEntityIf {
                 schema: schema_name,
                 id: entity_id,
                 expected,
                 reply: ReplyChannel::new(tx),
-            })
-            .await;
+            },
+            &notification,
+        )
+        .await?;
         ask_forge(rx).await?.map_err(conditional_error)?;
     } else {
         let (tx, rx) = oneshot::channel();
-        forge
-            .send(DeleteEntity {
+        send_mutation(
+            &forge,
+            DeleteEntity {
                 schema: schema_name,
                 id: entity_id,
                 reply: ReplyChannel::new(tx),
-            })
-            .await;
+            },
+            &notification,
+        )
+        .await?;
         ask_forge(rx).await?.map_err(ForgeError::from)?;
     }
 
@@ -4414,11 +4522,13 @@ pub async fn delete_entity(
     .await;
 
     // Webhook: fire notifications
-    let webhook_event = crate::webhook::WebhookEvent::from_delete(
-        &schema,
-        &id,
-        claims.as_ref().map(|c| c.sub.as_str()),
-    );
+    let webhook_event = notification_event(&notification, || {
+        crate::webhook::WebhookEvent::from_delete(
+            &schema,
+            &id,
+            claims.as_ref().map(|c| c.sub.as_str()),
+        )
+    });
     dispatch_webhook(&state, &schema_def, webhook_event, "deleted").await;
 
     Ok(StatusCode::NO_CONTENT)
