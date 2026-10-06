@@ -111,9 +111,7 @@ where
         return next.run(request.into()).await;
     }
 
-    let memberships: Vec<TenantRef> = claims
-        .custom_claim_as("tenant_chain")
-        .unwrap_or_default();
+    let memberships: Vec<TenantRef> = claims.custom_claim_as("tenant_chain").unwrap_or_default();
 
     // Empty memberships means the login handler refused or the user is a
     // platform_admin caught upstream; downstream `_tenant in principal`
@@ -241,8 +239,8 @@ fn select_active_tenant<'a, B>(
         return Err(TenantScopeRefusal::MissingActiveTenant);
     };
 
-    let parsed = parse_active_tenant(header_value)
-        .ok_or(TenantScopeRefusal::InvalidActiveTenant)?;
+    let parsed =
+        parse_active_tenant(header_value).ok_or(TenantScopeRefusal::InvalidActiveTenant)?;
     memberships
         .iter()
         .find(|m| m.schema == parsed.0 && m.entity_id == parsed.1)
@@ -268,11 +266,8 @@ pub(crate) fn parse_active_tenant(s: &str) -> Option<(String, String)> {
 /// wraps the `/forge` nest but sits *under* the `/api/v{n}` version mount, so the
 /// version prefix is already stripped while `/forge` is not — hence `/forge/auth/…`
 /// rather than `/api/v1/forge/auth/…` or a bare `/auth/…`.
-const TENANCY_EXEMPT_PATHS: [&str; 3] = [
-    "/forge/auth/login",
-    "/forge/auth/refresh",
-    "/forge/auth/me",
-];
+const TENANCY_EXEMPT_PATHS: [&str; 3] =
+    ["/forge/auth/login", "/forge/auth/refresh", "/forge/auth/me"];
 
 /// Whether `path` is one of the identity endpoints exempt from tenant scoping.
 ///
@@ -280,23 +275,32 @@ const TENANCY_EXEMPT_PATHS: [&str; 3] = [
 /// unanchored substring check would let a crafted entity path skip tenancy and
 /// reach tenant-scoped data unscoped — e.g. `/forge/Account/forge/auth/x`
 /// (substring), or `/forge/auth/me/../Account/123` (prefix + traversal, should an
-/// upstream proxy fail to normalize it). Only the three known identity routes are
-/// exempt; anything else — including any future `/forge/auth/*` route not listed
-/// here — falls through to normal tenant scoping until explicitly added.
+/// upstream proxy fail to normalize it). Existing identity routes and the exact
+/// OAuth discovery/exchange or validated provider start/callback shapes are
+/// exempt. Other paths fall through to tenant scoping.
 pub(crate) fn is_tenancy_exempt(path: &str) -> bool {
-    TENANCY_EXEMPT_PATHS.contains(&path)
+    if TENANCY_EXEMPT_PATHS.contains(&path) {
+        return true;
+    }
+    let Some(tail) = path.strip_prefix("/forge/auth/oauth/") else {
+        return false;
+    };
+    match tail.split('/').collect::<Vec<_>>().as_slice() {
+        ["providers" | "exchange"] => true,
+        [provider, "start" | "callback"] => {
+            schema_forge_backend::oauth_identity::ProviderName::new(*provider).is_ok()
+        }
+        _ => false,
+    }
 }
 
 /// Errors raised during the hierarchy walk.
 #[derive(Debug)]
-enum WalkError {
+pub(crate) enum WalkError {
     /// A leaf or intermediate entity couldn't be found. Treated as
     /// non-fatal by the caller — the effective chain collapses to just
     /// the active leaf.
-    EntityMissing {
-        schema: String,
-        entity_id: String,
-    },
+    EntityMissing { schema: String, entity_id: String },
     /// Backend errored on a `get`. Treated as fatal (500).
     Backend(schema_forge_backend::error::BackendError),
 }
@@ -321,7 +325,7 @@ impl std::fmt::Display for WalkError {
 /// membership row pointing to a non-tenant schema), returns just the
 /// leaf — the request stays servable but won't unlock anything above
 /// the leaf in Cedar's parent set.
-async fn walk_to_root(
+pub(crate) async fn walk_to_root(
     leaf: &TenantRef,
     tenant_config: &TenantConfig,
     store: &dyn DynEntityStore,
@@ -337,22 +341,23 @@ async fn walk_to_root(
         .iter()
         .find(|l| l.schema.as_str() == current_schema.as_str())
     {
-
         // Reached the root: no parent to walk to.
         let (Some(parent_schema), Some(parent_field)) = (&level.parent, &level.parent_field) else {
             break;
         };
 
         // Fetch the current entity to read its parent reference field.
-        let schema_name = SchemaName::new(&current_schema).map_err(|_| WalkError::EntityMissing {
-            schema: current_schema.clone(),
-            entity_id: current_id.clone(),
-        })?;
-        let entity_id =
-            schema_forge_core::types::EntityId::parse(&current_id).map_err(|_| WalkError::EntityMissing {
+        let schema_name =
+            SchemaName::new(&current_schema).map_err(|_| WalkError::EntityMissing {
                 schema: current_schema.clone(),
                 entity_id: current_id.clone(),
             })?;
+        let entity_id = schema_forge_core::types::EntityId::parse(&current_id).map_err(|_| {
+            WalkError::EntityMissing {
+                schema: current_schema.clone(),
+                entity_id: current_id.clone(),
+            }
+        })?;
 
         let entity = match store.get(&schema_name, &entity_id).await {
             Ok(e) => e,
@@ -422,10 +427,14 @@ mod tests {
     }
 
     #[test]
-    fn tenancy_exempt_matches_only_the_three_identity_paths() {
+    fn tenancy_exempt_matches_identity_and_bounded_oauth_paths() {
         assert!(is_tenancy_exempt("/forge/auth/login"));
         assert!(is_tenancy_exempt("/forge/auth/refresh"));
         assert!(is_tenancy_exempt("/forge/auth/me"));
+        assert!(is_tenancy_exempt("/forge/auth/oauth/providers"));
+        assert!(is_tenancy_exempt("/forge/auth/oauth/exchange"));
+        assert!(is_tenancy_exempt("/forge/auth/oauth/github/start"));
+        assert!(is_tenancy_exempt("/forge/auth/oauth/github/callback"));
     }
 
     #[test]
@@ -438,6 +447,14 @@ mod tests {
         // Prefix-only matches and unknown auth subpaths are not exempt either.
         assert!(!is_tenancy_exempt("/forge/auth/"));
         assert!(!is_tenancy_exempt("/forge/auth/login/extra"));
+        assert!(!is_tenancy_exempt("/forge/auth/oauth/github/start/extra"));
+        assert!(!is_tenancy_exempt("/forge/auth/oauth/../callback"));
+        assert!(!is_tenancy_exempt(
+            "/forge/schemas/Note/auth/oauth/github/start"
+        ));
+        assert!(!is_tenancy_exempt(
+            "/forge/auth/oauth/providers/../../schemas/Note"
+        ));
         assert!(!is_tenancy_exempt("/forge/authxme"));
         // Trailing slash is a distinct path and does not route to the handler.
         assert!(!is_tenancy_exempt("/forge/auth/me/"));
@@ -509,14 +526,17 @@ mod tests {
     /// Build a `TenantConfig` for [Organization (root), Department (child of Organization)]
     /// and a `MemStore` containing a single Department row whose `organization`
     /// ref points at "Organization::org-a".
-    async fn config_with_org_dept_hierarchy() -> (TenantConfig, Arc<crate::middleware::tenant_scope::test_support::MemStore>) {
+    async fn config_with_org_dept_hierarchy() -> (
+        TenantConfig,
+        Arc<crate::middleware::tenant_scope::test_support::MemStore>,
+    ) {
         use crate::middleware::tenant_scope::test_support::MemStore;
         use schema_forge_backend::Entity;
+        use schema_forge_core::types::SchemaDefinition;
         use schema_forge_core::types::{
             Annotation, FieldDefinition, FieldModifier, FieldName, FieldType, SchemaId,
             SchemaName as CoreSchemaName, TenantKind, TextConstraints,
         };
-        use schema_forge_core::types::SchemaDefinition;
 
         let org_schema = SchemaDefinition::new(
             SchemaId::new(),

@@ -1094,11 +1094,11 @@ async fn extension_builder_with_backend_loads_schemas() {
     let builder = SchemaForgeExtension::builder().with_backend(backend);
     let extension = builder.build().await.expect("failed to build extension");
 
-    // Registry should contain exactly the 3 system schemas after seeding.
+    // Registry should contain exactly the four system schemas after seeding.
     // Cedar policies own role and permission definitions, so neither is
     // represented as a database schema.
     let schemas = extension.registry().list().await;
-    assert_eq!(schemas.len(), 3);
+    assert_eq!(schemas.len(), 4);
     let names: Vec<String> = schemas
         .iter()
         .map(|s| s.name.as_str().to_string())
@@ -1106,6 +1106,7 @@ async fn extension_builder_with_backend_loads_schemas() {
     assert!(names.contains(&"User".to_string()));
     assert!(names.contains(&"TenantMembership".to_string()));
     assert!(names.contains(&"WebhookSubscription".to_string()));
+    assert!(names.contains(&"OAuthIdentity".to_string()));
     assert!(!names.contains(&"Role".to_string()));
     assert!(!names.contains(&"Permission".to_string()));
 }

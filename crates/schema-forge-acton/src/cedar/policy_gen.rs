@@ -51,6 +51,9 @@ pub fn generate_global_policies(schemas: &[SchemaDefinition]) -> Vec<CedarPolicy
     if schemas.iter().any(|s| s.name.as_str() == "User") {
         out.push(user_management_role_rank_forbid_policy());
     }
+    if schemas.iter().any(|s| s.name.as_str() == "OAuthIdentity") {
+        out.push(oauth_identity_write_forbid_policy());
+    }
     out
 }
 
@@ -110,6 +113,20 @@ permit (
     principal in Forge::Group::"platform_admin"
 };"#
         .to_string(),
+    }
+}
+
+fn oauth_identity_write_forbid_policy() -> CedarPolicy {
+    CedarPolicy {
+        description: "Only platform administrators may directly mutate external identity links".into(),
+        cedar_text: r#"@id("forge.global.oauth_identity_write_guard")
+forbid (
+    principal,
+    action in [Action::"CreateOAuthIdentity", Action::"UpdateOAuthIdentity", Action::"DeleteOAuthIdentity"],
+    resource
+) unless {
+    principal in Forge::Group::"platform_admin"
+};"#.into(),
     }
 }
 
@@ -870,6 +887,9 @@ mod tests {
             make_access_schema(&["viewer"], &["editor"], &["admin"]),
             make_field_access_schema(),
             make_user_schema(),
+            schema_forge_dsl::parse(schema_forge_core::system_schemas::OAUTH_IDENTITY_SCHEMA)
+                .unwrap()
+                .remove(0),
         ];
 
         let schema_src = crate::cedar::generate_cedar_schema(&schemas).unwrap();

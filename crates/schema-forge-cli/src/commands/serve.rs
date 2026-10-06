@@ -347,6 +347,10 @@ pub async fn run(
     if let Some(acton_service::config::TokenConfig::Paseto(ref mut pc)) = svc_config.token {
         pc.public_paths.push("/api/v1/forge/auth/login".to_string());
         pc.public_paths.push("/api/v1/forge/meta".to_string());
+        // Upstream uses prefix matching. The trailing slash bounds this
+        // namespace and permits unknown/disabled providers to return 404.
+        pc.public_paths
+            .push("/api/v1/forge/auth/oauth/".to_string());
         // The invitee has no token yet; the accept endpoint authenticates by
         // possession of a valid, unconsumed invitation, not a bearer.
         pc.public_paths
@@ -426,6 +430,55 @@ pub async fn run(
         ))
     };
 
+    #[cfg(feature = "sse")]
+    let events_runtime = if svc_config.custom.schema_forge.events.enabled {
+        Some(Arc::new(
+            schema_forge_acton::events::EventsRuntime::new(
+                svc_config.custom.schema_forge.events.clone(),
+                auth_store.clone(),
+                entity_store.clone(),
+            )
+            .map_err(|error| CliError::Config {
+                message: format!("invalid events configuration: {error}"),
+            })?,
+        ))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "sse"))]
+    if svc_config.custom.schema_forge.events.enabled {
+        return Err(CliError::Config {
+            message: "Entity events require a binary built with --features sse".into(),
+        });
+    }
+    #[cfg(feature = "oauth")]
+    let oauth_runtime = if svc_config.custom.schema_forge.auth.oauth.enabled {
+        let providers = svc_config
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.oauth.clone())
+            .ok_or_else(|| CliError::Config {
+                message: "OAuth login requires [auth.oauth.providers] configuration".into(),
+            })?;
+        Some(Arc::new(
+            schema_forge_acton::routes::oauth::OAuthRuntime::from_config(
+                svc_config.custom.schema_forge.auth.oauth.clone(),
+                providers,
+            )
+            .map_err(|error| CliError::Config {
+                message: format!("invalid OAuth configuration: {error}"),
+            })?,
+        ))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "oauth"))]
+    if svc_config.custom.schema_forge.auth.oauth.enabled {
+        return Err(CliError::Config {
+            message: "OAuth login requires a binary built with --features oauth".into(),
+        });
+    }
+
     // 8. Build versioned routes via acton-service for the JSON forge API.
     //    Build a `MetaInfo` snapshot from the resolved DB params + the
     //    login token TTL so `GET /api/v1/forge/meta` can surface honest
@@ -445,17 +498,21 @@ pub async fn run(
     // generator is moved into the route builder.
     let hook_credential: Arc<dyn HookCredentialSource> =
         Arc::new(PasetoHookCredential::new(paseto_generator.clone()));
-    let routes = build_versioned_routes(
-        login_auth_store,
+    let routes = build_versioned_routes(RouteContext {
+        auth_store: login_auth_store,
         paseto_generator,
         paseto_validator,
         invite_store,
         email_sender,
         meta_info,
-        resolved_principal_claims,
-        tenant_config_layer,
+        principal_claims: resolved_principal_claims,
+        tenant_config: tenant_config_layer,
         tenant_scope_state,
-    );
+        password_login: !svc_config.custom.schema_forge.auth.oauth.enabled
+            || svc_config.custom.schema_forge.auth.oauth.password_login,
+        #[cfg(feature = "oauth")]
+        oauth_runtime,
+    });
 
     // LOCAL WORKAROUND for issue #55: `acton-service`'s default `/health`
     // handler reports `env!("CARGO_PKG_VERSION")` of the `acton-service`
@@ -577,6 +634,24 @@ pub async fn run(
             message: "ForgeActor initialization failed (channel dropped)".to_string(),
         })?;
 
+    #[cfg(feature = "sse")]
+    if let Some(runtime) = events_runtime {
+        let (tx, rx) = oneshot::channel();
+        forge_handle
+            .send(schema_forge_acton::events::ConfigureEvents {
+                runtime,
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        tokio::time::timeout(INIT_FORGE_TIMEOUT, rx)
+            .await
+            .map_err(|_| CliError::Server {
+                message: "Events initialization timed out".into(),
+            })?
+            .map_err(|_| CliError::Server {
+                message: "Events initialization failed".into(),
+            })?;
+    }
     service.serve().await.map_err(|e| CliError::Server {
         message: format!("server error: {e}"),
     })?;
@@ -744,6 +819,9 @@ fn build_entity_auth_store(
     if let Some(tm_schema) = init_data.registry.get("TenantMembership").cloned() {
         store = store.with_tenant_membership_schema(tm_schema);
     }
+    if let Some(schema) = init_data.registry.get("OAuthIdentity").cloned() {
+        store = store.with_oauth_identity_schema(schema);
+    }
     Ok(Arc::new(store))
 }
 
@@ -819,8 +897,7 @@ fn build_paseto_generator(
 /// the bundled ops console same-origin at `/` (mounted as the router fallback
 /// by [`mount_console`]); `schemaforge site generate` remains available for a
 /// separately-hosted, per-entity React project.
-#[allow(clippy::too_many_arguments)]
-fn build_versioned_routes(
+struct RouteContext {
     auth_store: Arc<dyn schema_forge_acton::DynAuthStore>,
     paseto_generator: Arc<PasetoGenerator>,
     paseto_validator: Arc<PasetoAuth>,
@@ -830,40 +907,56 @@ fn build_versioned_routes(
     principal_claims: Arc<schema_forge_acton::authz::PrincipalClaimMappings>,
     tenant_config: Arc<Option<schema_forge_backend::tenant::TenantConfig>>,
     tenant_scope_state: schema_forge_acton::middleware::tenant_scope::TenantScopeState,
+    password_login: bool,
+    #[cfg(feature = "oauth")]
+    oauth_runtime: Option<Arc<schema_forge_acton::routes::oauth::OAuthRuntime>>,
+}
+
+fn build_versioned_routes(
+    context: RouteContext,
 ) -> acton_service::service_builder::VersionedRoutes<schema_forge_acton::SchemaForgeConfig> {
-    // Cloned into the add_version closure so the login handler can
-    // extract them via axum::Extension.
-    let auth_store_layer = auth_store;
-    let generator_layer = paseto_generator;
-    let validator_layer = paseto_validator;
-    let invite_store_layer = invite_store;
-    let email_sender_layer = email_sender;
-    let meta_layer = meta_info;
-    let principal_claims_layer = principal_claims;
-    let tenant_config_layer = tenant_config;
     VersionedApiBuilder::<schema_forge_acton::SchemaForgeConfig>::with_config()
         .with_base_path("/api")
         .add_version(ApiVersion::V1, move |router| {
             use axum::Extension;
-            SchemaForgeExtension::versioned_forge_routes(router)
-                // The tenant_scope middleware runs AFTER acton-service's
-                // token middleware (which injects Claims) and BEFORE the
-                // handlers below. Layer order in axum is reverse: the last
-                // `.layer()` runs first on the request, so wire tenant_scope
-                // BEFORE the Extensions block to ensure handlers see the
-                // mutated Claims.
+            let forge = schema_forge_acton::routes::forge_routes()
+                .merge(
+                    schema_forge_acton::routes::auth::auth_routes_with_password_login(
+                        context.password_login,
+                    ),
+                )
+                .merge(schema_forge_acton::routes::meta_routes());
+            #[cfg(feature = "oauth")]
+            let forge = if let Some(runtime) = context.oauth_runtime {
+                let services = schema_forge_acton::routes::oauth::OAuthLoginServices {
+                    auth_store: context.auth_store.clone(),
+                    generator: context.paseto_generator.clone(),
+                    validator: context.paseto_validator.clone(),
+                    invites: context.invite_store.clone(),
+                    principal_claims: context.principal_claims.clone(),
+                    tenant_config: context.tenant_config.clone(),
+                };
+                forge
+                    .merge(schema_forge_acton::routes::oauth::oauth_routes())
+                    .layer(Extension(runtime))
+                    .layer(Extension(services))
+            } else {
+                forge
+            };
+            router
+                .nest("/forge", forge)
                 .layer(axum::middleware::from_fn_with_state(
-                    tenant_scope_state.clone(),
+                    context.tenant_scope_state,
                     schema_forge_acton::middleware::tenant_scope::middleware,
                 ))
-                .layer(Extension(auth_store_layer))
-                .layer(Extension(generator_layer))
-                .layer(Extension(validator_layer))
-                .layer(Extension(invite_store_layer))
-                .layer(Extension(email_sender_layer))
-                .layer(Extension(meta_layer))
-                .layer(Extension(principal_claims_layer))
-                .layer(Extension(tenant_config_layer))
+                .layer(Extension(context.auth_store))
+                .layer(Extension(context.paseto_generator))
+                .layer(Extension(context.paseto_validator))
+                .layer(Extension(context.invite_store))
+                .layer(Extension(context.email_sender))
+                .layer(Extension(context.meta_info))
+                .layer(Extension(context.principal_claims))
+                .layer(Extension(context.tenant_config))
         })
         .build_routes()
 }
@@ -1224,16 +1317,19 @@ mod tests {
             entity_store: entity_store.clone(),
             tenant_config: tenant_config.clone(),
         };
-        let _routes = build_versioned_routes(
+        let _routes = build_versioned_routes(RouteContext {
             auth_store,
-            generator,
-            validator,
+            paseto_generator: generator,
+            paseto_validator: validator,
             invite_store,
             email_sender,
-            meta,
+            meta_info: meta,
             principal_claims,
             tenant_config,
             tenant_scope_state,
-        );
+            password_login: true,
+            #[cfg(feature = "oauth")]
+            oauth_runtime: None,
+        });
     }
 }

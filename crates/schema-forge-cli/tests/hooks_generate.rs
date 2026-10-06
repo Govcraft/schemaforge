@@ -109,6 +109,13 @@ fn generate_emits_an_authenticated_service() {
     let cargo_toml = fs::read_to_string(out_dir.join("Cargo.toml")).unwrap();
     let generated_manifest: toml::Value = toml::from_str(&cargo_toml).unwrap();
     let cli_manifest: toml::Value = toml::from_str(include_str!("../Cargo.toml")).unwrap();
+    let runtime_manifest: toml::Value =
+        toml::from_str(include_str!("../../schema-forge-acton/Cargo.toml")).unwrap();
+    assert_eq!(
+        cli_manifest["dependencies"]["acton-service"]["version"],
+        runtime_manifest["dependencies"]["acton-service"]["version"],
+        "CLI and runtime must use the same token implementation"
+    );
     assert_eq!(
         generated_manifest["dependencies"]["acton-service"]["version"],
         cli_manifest["dependencies"]["acton-service"]["version"],
@@ -680,4 +687,52 @@ fn list_reports_hooks() {
         .arg(&schema_dir)
         .assert()
         .success();
+}
+
+#[test]
+fn generate_multiline_intents_are_rust_doc_comments() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(
+        schema_dir.join("deployment.schema"),
+        r#"@hook(before_change) """
+Validate the deployment.
+Reject an invalid transition.
+"""
+@hook(after_change) """
+Provision or reconcile the tenant's process for this deployment.
+On update: reconcile state transitions.
+
+Keep `name` stable.
+"""
+schema Deployment { name: text required }
+"#,
+    )
+    .unwrap();
+    let out_dir = workdir.path().join("hooks-service");
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+    let source = fs::read_to_string(out_dir.join("src/hooks/deployment.rs")).unwrap();
+    assert!(
+        source.contains(
+            "    /// Validate the deployment.\n    /// Reject an invalid transition.\n    async fn before_change"
+        ),
+        "before-change intent must remain inside its doc comment:\n{source}"
+    );
+    assert!(
+        source.contains(
+            "    /// Provision or reconcile the tenant's process for this deployment.\n    /// On update: reconcile state transitions.\n    /// \n    /// Keep `name` stable.\n    async fn after_change"
+        ),
+        "after-change intent must remain inside its doc comment:\n{source}"
+    );
+    let prompt = fs::read_to_string(out_dir.join("src/hooks/deployment/after_change.prompt.md"))
+        .unwrap();
+    assert!(prompt.contains("On update: reconcile state transitions."));
+    assert!(prompt.contains("Keep `name` stable."));
 }

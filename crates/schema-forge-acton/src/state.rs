@@ -480,6 +480,64 @@ impl<T: DynSchemaBackend + DynEntityStore> DynForgeBackend for T {}
 ///
 /// Same pattern as `DynSchemaBackend`/`DynEntityStore`: boxed futures for dynamic dispatch.
 pub trait DynAuthStore: Send + Sync {
+    /// Create a passwordless account for an external login.
+    fn create_user_without_password<'a>(
+        &'a self,
+        _username: &'a str,
+        _roles: &'a [String],
+        _display_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(BackendError::Internal {
+                message: "auth store does not support OAuth identities".into(),
+            })
+        })
+    }
+
+    /// Resolve a durable external identity, without matching by email.
+    fn find_user_by_identity<'a>(
+        &'a self,
+        _identity: &'a schema_forge_backend::oauth_identity::ProviderIdentity,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ForgeUser>, BackendError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(BackendError::Internal {
+                message: "auth store does not support OAuth identities".into(),
+            })
+        })
+    }
+
+    /// Link an external identity to an existing local account.
+    fn link_identity<'a>(
+        &'a self,
+        _username: &'a str,
+        _identity: &'a schema_forge_backend::oauth_identity::ProviderIdentity,
+        _email: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(async {
+            Err(BackendError::Internal {
+                message: "auth store does not support OAuth identities".into(),
+            })
+        })
+    }
+
+    /// List the authenticated account's external identities.
+    fn list_identities<'a>(
+        &'a self,
+        _username: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Vec<schema_forge_backend::oauth_identity::ProviderIdentity>,
+                        BackendError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
     /// Validate username/password credentials.
     fn validate_credentials<'a>(
         &'a self,
@@ -573,6 +631,53 @@ pub trait DynAuthStore: Send + Sync {
 
 /// Blanket impl: any concrete `AuthStore` automatically implements `DynAuthStore`.
 impl<T: AuthStore + 'static> DynAuthStore for T {
+    fn create_user_without_password<'a>(
+        &'a self,
+        username: &'a str,
+        roles: &'a [String],
+        display_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::create_user_without_password(
+            self,
+            username,
+            roles,
+            display_name,
+        ))
+    }
+
+    fn find_user_by_identity<'a>(
+        &'a self,
+        identity: &'a schema_forge_backend::oauth_identity::ProviderIdentity,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ForgeUser>, BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::find_user_by_identity(self, identity))
+    }
+
+    fn link_identity<'a>(
+        &'a self,
+        username: &'a str,
+        identity: &'a schema_forge_backend::oauth_identity::ProviderIdentity,
+        email: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), BackendError>> + Send + 'a>> {
+        Box::pin(AuthStore::link_identity(self, username, identity, email))
+    }
+
+    fn list_identities<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Vec<schema_forge_backend::oauth_identity::ProviderIdentity>,
+                        BackendError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(AuthStore::list_identities(self, username))
+    }
+
     fn validate_credentials<'a>(
         &'a self,
         username: &'a str,

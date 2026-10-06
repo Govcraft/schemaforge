@@ -7,6 +7,31 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-05
+
+### Added
+
+- Opt-in authenticated entity SSE streams with canonical GET projection, Cedar
+  and tenant authorization, equality filters, bounded nonblocking delivery,
+  per-user connection limits, keep-alives, live membership revocation, and
+  process-local commit ordering. Supported release binaries include OAuth and
+  SSE support; both remain disabled until configured.
+- Opt-in OAuth login with audited GitHub, Google, and custom OIDC providers,
+  verified email, signed invitations, durable unique identity links, and a
+  single-use 60-second frontend exchange code. OAuth-created accounts leave
+  the existing optional, hidden `password_hash` null and can set a first
+  password through the existing authorized endpoint.
+- Shared login completion preserves tenant membership requirements, principal
+  claim projection, login timestamps, and PASETO refresh behavior across password
+  and OAuth sign-in. `/auth/me` lists linked provider identities.
+
+### Fixed
+
+- Render every line of multiline hook intent as a Rust doc comment, preserving
+  paragraphs and trimming outer blank lines so generated handlers compile.
+- Verify that generated hook services, the CLI, and the runtime share the same
+  acton-service dependency version.
+
 - Upgrade acton-service to 0.45.0 across the runtime, backends, CLI, and generated
   hook services. Preserve configured listener binds supplied with canonical
   `ACTON_SERVICE__BIND` environment variables.
@@ -17,6 +42,21 @@ is pre-1.0; breaking changes bump the **minor** version per
 - Health and readiness probes bypass rate limiting by default. Anonymous quotas
   can be configured separately, and governor reports actual remaining capacity
   with `Retry-After` on rate-limit responses instead of `X-RateLimit-Reset`.
+
+### Migration
+
+- Existing password accounts keep their hashes. Startup seeds the shared
+  `OAuthIdentity` system schema; provision it through the normal schema migration
+  path before enabling OAuth on an existing deployment. OAuth account/invite
+  changes span multiple storage operations; provider/subject uniqueness prevents
+  duplicate linking, while an interrupted signup can require administrator repair.
+- Library users should update acton to 0.46.0, backend to 0.20.0, PostgreSQL and
+  SurrealDB adapters to 0.15.0, and MSSQL to 0.7.0. Core remains compatible at
+  0.19.2. Align directly imported acton-service `Claims` with 0.45.0 and update
+  Rust `SchemaForgeSettings` and `MeResponse` struct literals for their new fields.
+- OAuth and events remain disabled until configured. Release binaries include
+  both features. SSE is process-local, has no replay/outbox, and requires clients
+  to refetch on reconnect. Use canonical `ACTON_SERVICE__...` environment names.
 
 ## [0.46.1] - 2026-09-25
 

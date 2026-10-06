@@ -89,16 +89,27 @@ pub(super) async fn process(
     state: &AppState<SchemaForgeConfig>,
     request: CreateIntentRequest,
 ) -> Result<CreateIntentReceipt, ForgeError> {
+    process_with_claims(state, request, None).await
+}
+async fn process_with_claims(
+    state: &AppState<SchemaForgeConfig>,
+    request: CreateIntentRequest,
+    claims: Option<&Claims>,
+) -> Result<CreateIntentReceipt, ForgeError> {
     let forge = state
         .actor::<ForgeActor>()
         .ok_or_else(|| error(CreateIntentError::Unsupported))?;
     let (tx, rx) = oneshot::channel();
-    forge
-        .send(ProcessCreateIntent {
+    let notification = entities::mutation_notification(claims, None);
+    entities::send_mutation(
+        &forge,
+        ProcessCreateIntent {
             request,
             reply: ReplyChannel::new(tx),
-        })
-        .await;
+        },
+        &notification,
+    )
+    .await?;
     tokio::time::timeout(Duration::from_secs(5), rx)
         .await
         .map_err(|_| ForgeError::BackendUnavailable {
@@ -329,8 +340,9 @@ pub(super) async fn commit(
     state: &AppState<SchemaForgeConfig>,
     intent: IntentCommit,
     entity: Entity,
+    claims: Option<&Claims>,
 ) -> Result<CreateIntentReceipt, ForgeError> {
-    process(
+    process_with_claims(
         state,
         CreateIntentRequest::Commit {
             scope: intent.scope,
@@ -338,6 +350,7 @@ pub(super) async fn commit(
             fingerprint: intent.fingerprint,
             entity,
         },
+        claims,
     )
     .await
 }

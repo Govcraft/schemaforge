@@ -40,6 +40,8 @@ mod schema_changes;
 /// After construction via [`ForgeActor::with_backend`], it is always `Some`.
 #[derive(Default)]
 pub struct ForgeActor {
+    #[cfg(feature = "sse")]
+    pub(crate) events: crate::events::ActorEvents,
     pub(crate) registry: HashMap<String, SchemaDefinition>,
     pub(crate) backend: Option<Arc<dyn DynForgeBackend>>,
     pub(crate) tenant_config: Option<TenantConfig>,
@@ -82,6 +84,8 @@ impl ForgeActor {
     /// or set the backend after the actor is spawned via a lifecycle hook.
     pub fn with_backend(backend: Arc<dyn DynForgeBackend>) -> Self {
         Self {
+            #[cfg(feature = "sse")]
+            events: Default::default(),
             registry: HashMap::new(),
             backend: Some(backend),
             tenant_config: None,
@@ -101,6 +105,8 @@ impl ActorExtension for ForgeActor {
         configure_registry_reads(actor);
         configure_registry_mutations(actor);
         configure_backend_operations(actor);
+        #[cfg(feature = "sse")]
+        crate::events::configure_actor(actor);
     }
 
     /// Do not restart this actor.

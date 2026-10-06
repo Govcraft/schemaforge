@@ -988,14 +988,7 @@ fn field_surreal_value_to_literal(value: &surrealdb::types::Value) -> String {
         surrealdb::types::Value::None | surrealdb::types::Value::Null => "NONE".to_string(),
         surrealdb::types::Value::Bool(b) => b.to_string(),
         surrealdb::types::Value::Number(n) => n.to_sql(),
-        surrealdb::types::Value::String(s) => {
-            // Detect ISO 8601 datetime strings and use SurrealQL d'...' literal
-            if chrono::DateTime::parse_from_rfc3339(s.as_str()).is_ok() {
-                format!("d'{}'", s.as_str())
-            } else {
-                value.to_sql()
-            }
-        }
+        surrealdb::types::Value::String(_) => value.to_sql(),
         surrealdb::types::Value::Datetime(dt) => {
             format!("d'{}'", (*dt).into_inner().to_rfc3339())
         }
@@ -1028,6 +1021,27 @@ fn field_surreal_value_to_literal(value: &surrealdb::types::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timestamp_text_stays_text_and_typed_datetime_stays_datetime() {
+        let text = "2026-10-05T23:00:00Z";
+        let value = crate::value::dynamic_to_surreal(
+            &schema_forge_core::types::DynamicValue::Text(text.into()),
+        );
+        let literal = super::field_surreal_value_to_literal(&value);
+        assert!(!literal.starts_with("d'"));
+        assert_eq!(
+            crate::value::surreal_to_dynamic(&value).unwrap(),
+            schema_forge_core::types::DynamicValue::Text(text.into())
+        );
+        let timestamp = chrono::DateTime::parse_from_rfc3339(text)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let typed = schema_forge_core::types::DynamicValue::DateTime(timestamp);
+        let value = crate::value::dynamic_to_surreal(&typed);
+        assert!(super::field_surreal_value_to_literal(&value).starts_with("d'"));
+        assert_eq!(crate::value::surreal_to_dynamic(&value).unwrap(), typed);
+    }
+
     #[test]
     fn rejects_engines_without_supported_transaction_guarantees() {
         assert!(!super::supported_server_version(2, 6, true));

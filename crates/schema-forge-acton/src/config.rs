@@ -41,6 +41,10 @@ pub struct SchemaForgeSettings {
     #[serde(default)]
     pub webhooks: crate::webhook::WebhookConfig,
 
+    /// Authenticated entity event stream bounds.
+    #[serde(default)]
+    pub events: crate::events_config::EventsConfig,
+
     /// Lifecycle hook settings.
     #[serde(default)]
     pub hooks: crate::hooks::HooksConfig,
@@ -68,6 +72,10 @@ pub struct SchemaForgeSettings {
     /// see [`crate::authz::principal_claims`].
     #[serde(default)]
     pub authz: AuthzConfig,
+
+    /// External sign-in and password login policy.
+    #[serde(default)]
+    pub auth: crate::oauth_config::AuthSettings,
 
     /// Signed-schema enforcement. The CLI builds a
     /// [`schema_forge_signing::VerifyPolicy`] from this section before
@@ -173,11 +181,13 @@ impl Default for SchemaForgeSettings {
             route_prefix: default_route_prefix(),
             auto_generate_cedar_policies: false,
             webhooks: crate::webhook::WebhookConfig::default(),
+            events: crate::events_config::EventsConfig::default(),
             hooks: crate::hooks::HooksConfig::default(),
             storage: crate::storage::StorageConfig::default(),
             export: crate::export_config::ExportSettings::default(),
             email: crate::email::EmailConfig::default(),
             authz: AuthzConfig::default(),
+            auth: crate::oauth_config::AuthSettings::default(),
             signing: SigningConfig::default(),
             client: ClientConfig::default(),
             site: SiteBrandingConfig::default(),
@@ -204,11 +214,13 @@ mod tests {
                 route_prefix: "/api/forge".to_string(),
                 auto_generate_cedar_policies: true,
                 webhooks: crate::webhook::WebhookConfig::default(),
+                events: crate::events_config::EventsConfig::default(),
                 hooks: crate::hooks::HooksConfig::default(),
                 storage: crate::storage::StorageConfig::default(),
                 export: crate::export_config::ExportSettings::default(),
                 email: crate::email::EmailConfig::default(),
                 authz: AuthzConfig::default(),
+                auth: crate::oauth_config::AuthSettings::default(),
                 signing: SigningConfig::default(),
                 client: ClientConfig::default(),
                 site: SiteBrandingConfig::default(),

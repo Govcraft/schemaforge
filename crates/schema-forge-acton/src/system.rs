@@ -8,7 +8,7 @@ use schema_forge_core::types::SchemaDefinition;
 use crate::error::ForgeError;
 use crate::state::{DynForgeBackend, SchemaRegistry};
 
-/// Seed system schemas (User, TenantMembership, WebhookSubscription) into the
+/// Seed system schemas (User, TenantMembership, OAuthIdentity, WebhookSubscription) into the
 /// database.
 ///
 /// Idempotent: existing schemas are reused. No roles or permissions are
@@ -215,8 +215,8 @@ mod tests {
     }
 
     #[test]
-    fn all_system_schemas_returns_three() {
-        assert_eq!(system_schemas::all_system_schemas().len(), 3);
+    fn all_system_schemas_returns_four() {
+        assert_eq!(system_schemas::all_system_schemas().len(), 4);
     }
 
     #[test]
@@ -233,6 +233,7 @@ mod tests {
             .collect();
         assert_eq!(parsed[0], "User");
         assert_eq!(parsed[1], "TenantMembership");
-        assert_eq!(parsed[2], "WebhookSubscription");
+        assert_eq!(parsed[2], "OAuthIdentity");
+        assert_eq!(parsed[3], "WebhookSubscription");
     }
 }

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::entity::Entity;
 use crate::error::BackendError;
+use crate::oauth_identity::ProviderIdentity;
 use crate::tenant::TenantRef;
 
 /// A user record (without password_hash).
@@ -69,6 +70,42 @@ pub trait AuthStore: Send + Sync {
         roles: &[String],
         display_name: &str,
     ) -> impl Future<Output = Result<(), BackendError>> + Send;
+
+    /// Create an account that cannot authenticate with a password until one is set.
+    fn create_user_without_password(
+        &self,
+        _username: &str,
+        _roles: &[String],
+        _display_name: &str,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async { Err(oauth_unsupported()) }
+    }
+
+    /// Resolve an exact provider/subject pair. Email never selects a link.
+    fn find_user_by_identity(
+        &self,
+        _identity: &ProviderIdentity,
+    ) -> impl Future<Output = Result<Option<ForgeUser>, BackendError>> + Send {
+        async { Err(oauth_unsupported()) }
+    }
+
+    /// Create an immutable link, relying on a backend unique constraint.
+    fn link_identity(
+        &self,
+        _username: &str,
+        _identity: &ProviderIdentity,
+        _email: &str,
+    ) -> impl Future<Output = Result<(), BackendError>> + Send {
+        async { Err(oauth_unsupported()) }
+    }
+
+    /// List external identities for the authenticated account.
+    fn list_identities(
+        &self,
+        _username: &str,
+    ) -> impl Future<Output = Result<Vec<ProviderIdentity>, BackendError>> + Send {
+        async { Ok(Vec::new()) }
+    }
 
     /// Update a user's roles and display name (does not change password).
     fn update_user(
@@ -147,6 +184,13 @@ pub trait AuthStore: Send + Sync {
         tenant_id: &str,
         role: Option<&str>,
     ) -> impl Future<Output = Result<(), BackendError>> + Send;
+}
+
+/// Fail closed when an existing/custom auth store does not support OAuth.
+pub(crate) fn oauth_unsupported() -> BackendError {
+    BackendError::Internal {
+        message: "auth store does not support OAuth identities".into(),
+    }
 }
 
 #[cfg(test)]

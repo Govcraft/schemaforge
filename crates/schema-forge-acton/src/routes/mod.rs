@@ -2,11 +2,15 @@ pub mod audit;
 pub mod auth;
 pub mod create_intents;
 pub mod entities;
+#[cfg(feature = "sse")]
+pub mod events;
 pub mod export;
 pub mod files;
 pub mod health;
 pub mod invites;
 pub mod meta;
+#[cfg(feature = "oauth")]
+pub mod oauth;
 pub mod permissions;
 pub mod query_params;
 pub mod schemas;
@@ -35,7 +39,7 @@ use crate::config::SchemaForgeConfig;
 /// Auth middleware is applied externally when the state is available
 /// (see [`SchemaForgeExtension::register_routes`]).
 pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
-    Router::new()
+    let router = Router::new()
         // Deployment-wide audit access uses its own platform-admin gate.
         .route("/audit/status", get(audit::status))
         .route("/audit/events", get(audit::events))
@@ -111,5 +115,33 @@ pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
             "/users/{username}",
             delete(users::delete_user).put(users::update_user),
         )
-        .route("/users/{username}/password", post(users::change_password))
+        .route("/users/{username}/password", post(users::change_password));
+    #[cfg(feature = "sse")]
+    let router = router.route("/schemas/{schema}/events", get(events::subscribe));
+    router
+}
+
+#[cfg(all(test, not(feature = "sse")))]
+mod disabled_events_tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn events_route_is_absent_without_compiled_feature() {
+        let app = forge_routes().with_state(AppState::<SchemaForgeConfig>::default());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/schemas/Note/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

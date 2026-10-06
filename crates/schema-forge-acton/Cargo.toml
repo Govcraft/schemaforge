@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-acton"
-version = "0.45.1"
+version = "0.46.0"
 edition = "2021"
 
 [dependencies]
@@ -50,6 +50,8 @@ zip = "8.6.0"
 
 
 [features]
+sse = ["acton-service/sse"]
+oauth = ["acton-service/oauth"]
 surrealdb = ["acton-service/surrealdb", "dep:schema-forge-surrealdb"]
 postgres = ["acton-service/database", "dep:schema-forge-postgres"]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum"]

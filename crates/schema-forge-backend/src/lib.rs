@@ -3,6 +3,7 @@ pub mod entity;
 pub mod entity_auth_store;
 pub mod error;
 pub mod invite_store;
+pub mod oauth_identity;
 pub mod tenant;
 pub mod traits;
 pub mod user_store;

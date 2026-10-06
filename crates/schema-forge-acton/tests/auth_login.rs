@@ -11,8 +11,6 @@
 //! mounting the real middleware here requires the full ServiceBuilder
 //! pipeline, which is the wrong level of fidelity for this file.
 
-#![cfg(feature = "surrealdb")]
-
 use std::sync::Arc;
 
 use acton_service::auth::config::{PasetoGenerationConfig, TokenGenerationConfig};
