@@ -51,7 +51,7 @@ SMTP delivery failures have a recoverable response:
 }
 ```
 
-The invitation remains Pending and its link is valid. Share that link through another channel. Creating a second invitation is unnecessary. SMTP diagnostics stay in server audit logs and are excluded from the response.
+The invitation remains Pending and its link is valid. Share that link through another channel. Creating a second invitation is unnecessary. SMTP diagnostics are stored in the metadata of the `forge.invite.send_failed` audit event and are excluded from the response.
 
 ## Authorization and policy migration
 

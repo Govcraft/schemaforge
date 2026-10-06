@@ -590,7 +590,8 @@ pub async fn clear_file(
 pub struct ScanCompleteRequest {
     /// Terminal status. Must be either `"available"` or `"quarantined"`.
     pub status: String,
-    /// Optional reason to surface in audit logs when quarantining.
+    /// Optional reason, recorded in the `forge.file.scan_complete` audit
+    /// event and the scan hook payload.
     #[serde(default)]
     pub reason: Option<String>,
 }

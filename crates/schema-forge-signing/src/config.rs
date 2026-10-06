@@ -79,7 +79,7 @@ pub enum TrustedSigner {
     /// operator generated out-of-band (see `schemaforge sign
     /// --ed25519-key`).
     Ed25519 {
-        /// Human label, used in verification reports and audit logs.
+        /// Human label, used in verification reports and errors.
         name: String,
 
         /// Public key as base64. Either the raw 32-byte ed25519 public

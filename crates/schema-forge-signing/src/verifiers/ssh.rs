@@ -57,8 +57,8 @@ pub const SSHSIG_NAMESPACE: &str = "schema-forge-signing@govcraft.ai";
 struct AllowedSignerEntry {
     /// Principals declared on this line (comma-separated in source).
     /// Carried into [`VerifiedIdentity::name`] when this entry accepts a
-    /// signature so audit logs name the *signer*, not just the trust
-    /// file.
+    /// signature so verification reports name the *signer*, not just the
+    /// trust file.
     principals: Vec<String>,
 
     /// Allowed namespaces, or `None` for "any". When `Some`, the

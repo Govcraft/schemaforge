@@ -86,7 +86,7 @@ Raw ed25519 public key embedded in the policy. No external files, no network —
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `kind` | string `"ed25519"` | yes | Tag |
-| `name` | string | yes | Operator-chosen label; surfaces in audit logs |
+| `name` | string | yes | Operator-chosen label; shown in `verify` reports and verification errors |
 | `public_key_b64` | string | yes | SPKI base64 (DER-encoded `SubjectPublicKeyInfo`) — the value `--print-pubkey` emits |
 
 ```toml

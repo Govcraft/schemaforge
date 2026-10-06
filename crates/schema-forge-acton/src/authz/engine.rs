@@ -3,8 +3,9 @@
 //! [`authorize`] is the single function every resolver and route handler
 //! calls to make an authorization decision. It builds the Cedar request from
 //! the supplied [`Claims`] / [`SchemaDefinition`] / optional [`Entity`],
-//! evaluates against the current [`PolicyStore`] snapshot, emits an audit
-//! event for the decision, and returns an [`AuthzDecision`].
+//! evaluates against the current [`PolicyStore`] snapshot, logs the decision
+//! through `tracing` (target `schema_forge_acton::authz`; allow at `info`,
+//! deny at `warn`, not the audit store), and returns an [`AuthzDecision`].
 //!
 //! [`authorize_field`] is the per-field variant used by response/request
 //! field filtering, parameterised by [`FieldDirection`].
