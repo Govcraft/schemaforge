@@ -28,7 +28,7 @@ def changed_paths(base, head, repo="."):
 def snapshot(revision, repo="."):
     paths = git("ls-tree", "-r", "--name-only", "-z", revision, repo=repo)
     relevant = [p.decode() for p in paths.split(b"\0") if p and
-                (p.endswith(b"Cargo.toml") or p in (b"Cargo.lock", b"CHANGELOG.md"))]
+                (p.endswith(b"Cargo.toml") or p in (b"Cargo.lock", b"CHANGELOG.md", b".github/workflows/site-e2e.yml"))]
     return {p: git("show", f"{revision}:{p}", repo=repo).decode() for p in relevant}
 
 
@@ -202,6 +202,38 @@ def is_documentation(path):
     return path.startswith("docs/assets/") and extension in (".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif")
 
 
+def normalized_site_server_pin(text):
+    """Compare literal release pins without permitting changes to executable YAML."""
+    pins = {}
+    lines = []
+    for line in text.splitlines(keepends=True):
+        if not line.startswith("  SITE_SERVER_"):
+            lines.append(line)
+            continue
+        match = re.fullmatch(r"  SITE_SERVER_(VERSION|SHA256): ([^\n]+)\n?", line)
+        if not match or match[1] in pins:
+            return None
+        name, value = match.groups()
+        pattern = (r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+                   if name == "VERSION" else r"[a-f0-9]{64}")
+        if not re.fullmatch(pattern, value):
+            return None
+        pins[name] = value
+        lines.append(f"  SITE_SERVER_{name}: <validated-release-pin>\n")
+    if set(pins) != {"VERSION", "SHA256"}:
+        return None
+    return "".join(lines), pins
+
+
+def site_server_pin_only(before, after):
+    path = ".github/workflows/site-e2e.yml"
+    if before is None or after is None or path not in before or path not in after:
+        return False
+    old = normalized_site_server_pin(before[path])
+    new = normalized_site_server_pin(after[path])
+    return old is not None and new is not None and old[0] == new[0] and old[1] != new[1]
+
+
 def classify(paths, before=None, after=None, full=False):
     checks = {name: False for name in SUITES}
     if full:
@@ -213,7 +245,9 @@ def classify(paths, before=None, after=None, full=False):
         return checks
     for path in source_paths:
         suites = None
-        if path.endswith("Cargo.toml") or path == "Cargo.lock":
+        if path == ".github/workflows/site-e2e.yml" and site_server_pin_only(before, after):
+            suites = ("site",)
+        elif path.endswith("Cargo.toml") or path == "Cargo.lock":
             suites = SUITES
         elif path.startswith("crates/schema-forge-codegen/") or path in (
                 "crates/schema-forge-cli/src/commands/site.rs",
