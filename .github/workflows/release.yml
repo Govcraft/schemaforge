@@ -16,6 +16,7 @@ env:
 
 jobs:
   validate:
+    name: Validate release commit
     uses: ./.github/workflows/full-validation.yml
     permissions:
       contents: read
@@ -23,6 +24,7 @@ jobs:
       release-tag: ${{ github.ref_name }}
 
   build:
+    name: Package ${{ matrix.backend }} for ${{ matrix.target }}
     needs: validate
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -183,6 +185,7 @@ jobs:
           path: schemaforge-${{ github.ref_name }}-${{ matrix.target }}-${{ matrix.suffix }}.${{ matrix.archive }}
 
   release:
+    name: Sign checksums and publish release
     needs: build
     runs-on: ubuntu-24.04
     permissions:

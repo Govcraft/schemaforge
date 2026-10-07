@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   scalar-proofs:
+    name: CEL scalar and temporal proofs
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

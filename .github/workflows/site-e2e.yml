@@ -17,6 +17,7 @@ env:
   SITE_SERVER_SHA256: 5759efb311a0381b58d383cdd7077057d9c10e4af2fc42c34e1dd803c3cf6656
 jobs:
   smoke:
+    name: Generated React build, lint, and browser tests
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

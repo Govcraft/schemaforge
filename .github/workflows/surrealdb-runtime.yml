@@ -10,6 +10,7 @@ env:
   CARGO_INCREMENTAL: "0"
 jobs:
   integration:
+    name: SurrealDB storage, runtime, CLI, and GraphQL
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
