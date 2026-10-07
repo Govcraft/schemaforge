@@ -11,6 +11,8 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- Permit token-only service principals to subscribe with a signed tenant chain. Streams revalidate the hierarchy and expiry and retain per-event Cedar filtering and stored-account membership checks.
+
 - Expose each record's intrinsic `id` to Cedar policies, with an empty ID for placeholders. Reserve `id` from schema fields so signed principal claims can safely scope reads to one record.
 - Correct the custom-policy reference to describe concrete Create authorization before write rules and after hooks, including a relation-field forbid example.
 
