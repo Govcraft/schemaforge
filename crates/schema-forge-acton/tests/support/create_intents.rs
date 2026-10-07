@@ -36,6 +36,16 @@ pub async fn fixture_with_backend(
     roles: &[&str],
     prepare_revisions: bool,
 ) -> (Router, String) {
+    fixture_with_policies(backend, owner, roles, prepare_revisions, None).await
+}
+
+pub async fn fixture_with_policies(
+    backend: Arc<dyn DynForgeBackend>,
+    owner: &str,
+    roles: &[&str],
+    prepare_revisions: bool,
+    custom_policies_dir: Option<std::path::PathBuf>,
+) -> (Router, String) {
     let schema = SchemaDefinition::new(
         SchemaId::new(),
         SchemaName::new("Note").unwrap(),
@@ -92,6 +102,20 @@ pub async fn fixture_with_backend(
     DynEntityStore::create(backend.as_ref(), &entity)
         .await
         .unwrap();
+    let policy_store = custom_policies_dir.as_ref().map(|directory| {
+        use schema_forge_acton::authz::{
+            PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,
+        };
+        Arc::new(PolicyStore::new(
+            PolicyStoreSnapshot::from_schemas(
+                std::slice::from_ref(&schema),
+                Some(directory),
+                RoleRanks::empty(),
+                PrincipalClaimMappings::default(),
+            )
+            .unwrap(),
+        ))
+    });
     let service = ServiceBuilder::new()
         .with_config(Config::<SchemaForgeConfig>::default())
         .with_actor::<ForgeActor>()
@@ -108,8 +132,8 @@ pub async fn fixture_with_backend(
             record_access_policy: None,
             hook_dispatcher: None,
             storage_registry: StorageRegistry::default(),
-            policy_store: None,
-            custom_policies_dir: None,
+            policy_store,
+            custom_policies_dir,
             reply: ReplyChannel::new(tx),
         })
         .await;

@@ -28,7 +28,7 @@ use tokio::sync::oneshot;
 pub mod create_intents;
 #[path = "support/postgres.rs"]
 mod postgres;
-use create_intents::{fixture_with_backend, request, request_in_tenant};
+use create_intents::{fixture_with_policies, request, request_in_tenant};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a scoped disposable PostgreSQL URL and SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE=1"]
@@ -43,7 +43,31 @@ async fn postgres_http_create_reconciliation() {
             .await
             .unwrap_or_else(|_| panic!("disposable test database connection failed")),
     );
-    let (app, _) = fixture_with_backend(backend.clone(), "editor", &["editor"], true).await;
+    // @owner controls mutations. This operator policy additionally makes the
+    // committed entity unreadable after ownership changes, which receipts and
+    // reconciliation must honor using the ordinary entity-read authorization.
+    let policy_directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        policy_directory.path().join("owner-read.cedar"),
+        r#"
+        forbid (principal is Forge::Principal, action == Action::"ReadNote", resource is Note)
+        when {
+            !context.resource_is_placeholder &&
+            principal has id &&
+            resource has owner &&
+            resource.owner != principal.id
+        };
+        "#,
+    )
+    .unwrap();
+    let (app, _) = fixture_with_policies(
+        backend.clone(),
+        "editor",
+        &["editor"],
+        true,
+        Some(policy_directory.path().to_path_buf()),
+    )
+    .await;
     let fields = serde_json::json!({"title":"New record"});
     let (status, _, receipt) = request(
         &app,
@@ -94,6 +118,12 @@ async fn postgres_http_create_reconciliation() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["reason"], "create_intent_content_conflict");
     let entity_id = EntityId::parse(entity["id"].as_str().unwrap()).unwrap();
+    let entity_path = format!("/schemas/Note/entities/{entity_id}");
+    let (status, _, readable) =
+        request(&app, &entity_path, "GET", None, serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{readable}");
+    assert_eq!(readable["id"], entity["id"]);
+    assert_eq!(readable["fields"]["owner"], "editor");
     let change = Entity::with_id(
         entity_id.clone(),
         SchemaName::new("Note").unwrap(),
@@ -102,6 +132,9 @@ async fn postgres_http_create_reconciliation() {
     DynEntityStore::update(backend.as_ref(), &change)
         .await
         .unwrap();
+    let (status, _, unreadable) =
+        request(&app, &entity_path, "GET", None, serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{unreadable}");
     let (status, _, body) = request(&app, &receipt_path, "GET", None, serde_json::json!({})).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     let (status, _, body) = request(
