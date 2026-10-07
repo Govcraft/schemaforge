@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -18,6 +19,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       base: ${{ steps.select.outputs.base }}
+      reused: ${{ steps.reuse.outputs.reused || 'false' }}
+      reuse_run: ${{ steps.reuse.outputs.reuse_run }}
       tooling: ${{ steps.select.outputs.tooling }}
       runtime: ${{ steps.select.outputs.runtime }}
       cli: ${{ steps.select.outputs.cli }}
@@ -37,9 +40,17 @@ jobs:
           BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
         run: |
           python3 scripts/ci/select_checks.py --head HEAD --event "$EVENT_NAME" --base "$BASE_REVISION"
+      - name: Verify reusable PR validation
+        id: reuse
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTION_JSON: ${{ toJSON(steps.select.outputs) }}
+        run: python3 scripts/ci/validation_evidence.py find
   validation:
     name: Selected component validation
     needs: changes
+    if: needs.changes.outputs.reused != 'true'
     uses: ./.github/workflows/full-validation.yml
     with:
       tooling: ${{ needs.changes.outputs.tooling == 'true' }}
@@ -63,3 +74,16 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: python3 scripts/ci/check_results.py required
+      - name: Record successful PR validation
+        if: github.event_name == 'pull_request'
+        env:
+          SELECTION_JSON: ${{ toJSON(needs.changes.outputs) }}
+        run: python3 scripts/ci/validation_evidence.py record
+      - name: Save reusable validation evidence
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-validation-v1-${{ github.run_attempt }}
+          path: validation-evidence.json
+          if-no-files-found: error
+          retention-days: 30

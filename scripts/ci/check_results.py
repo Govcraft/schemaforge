@@ -11,16 +11,28 @@ from select_checks import SUITES
 VALIDATION_JOBS = ("metadata", "tooling", "runtime", "cli", "postgres", "surrealdb", "mssql", "cel", "site")
 
 
-def check_required(jobs):
+def check_required(jobs, event="", ref=""):
     failures = []
-    for name in ("changes", "validation"):
-        job = jobs.get(name, {})
-        if job.get("result") != "success":
-            failures.append(f"{name}: {job.get('result', 'missing')}")
+    if jobs.get("changes", {}).get("result") != "success":
+        failures.append(f"changes: {jobs.get('changes', {}).get('result', 'missing')}")
     outputs = jobs.get("changes", {}).get("outputs", {})
     for name in SUITES:
         if outputs.get(name) not in ("true", "false"):
             failures.append(f"{name}: missing or invalid component selection")
+    reused = outputs.get("reused", "false")
+    if reused not in ("true", "false"):
+        failures.append("Missing or invalid reuse decision")
+    expected = "success"
+    if reused == "true":
+        if event != "push" or ref != "refs/heads/main":
+            failures.append("Only a main push can reuse PR validation")
+        run = outputs.get("reuse_run", "")
+        if not isinstance(run, str) or not run.isdecimal() or int(run) <= 0:
+            failures.append("Reused validation requires a successful source run")
+        expected = "skipped"
+    result = jobs.get("validation", {}).get("result")
+    if result != expected:
+        failures.append(f"validation: expected {expected}, got {result or 'missing'}")
     return failures
 
 
@@ -52,7 +64,8 @@ def main():
         if not isinstance(jobs, dict) or any(not isinstance(job, dict) for job in jobs.values()):
             raise ValueError("NEEDS_JSON must contain job objects")
         if args.gate == "required":
-            failures = check_required(jobs)
+            failures = check_required(jobs, os.environ.get("GITHUB_EVENT_NAME", ""),
+                                      os.environ.get("GITHUB_REF", ""))
         else:
             inputs = json.loads(os.environ.get("INPUTS_JSON", "{}"))
             manual = os.environ.get("MANUAL", "false")
