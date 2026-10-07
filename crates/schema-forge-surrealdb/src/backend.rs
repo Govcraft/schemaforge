@@ -686,7 +686,70 @@ fn parse_and_sanitize_definition(
     })
 }
 
+fn invitation_prune_disjunction(predicates: &[String]) -> String {
+    match predicates {
+        [] => "false".into(),
+        [predicate] => predicate.clone(),
+        predicates => {
+            let middle = predicates.len() / 2;
+            format!(
+                "({} OR {})",
+                invitation_prune_disjunction(&predicates[..middle]),
+                invitation_prune_disjunction(&predicates[middle..])
+            )
+        }
+    }
+}
+
 impl EntityStore for SurrealBackend {
+    async fn prune_invitations(
+        &self,
+        candidates: &[schema_forge_backend::invite_store::InvitationPruneCandidate],
+    ) -> Result<u64, BackendError> {
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let literal = |text: &str| {
+            field_surreal_value_to_literal(&crate::value::dynamic_to_surreal(&DynamicValue::Text(
+                text.into(),
+            )))
+        };
+        let predicates = candidates
+            .iter()
+            .map(|candidate| {
+                format!(
+                    "(id = type::record('ForgeInvitation', {}) AND status = {} AND {} = {})",
+                    literal(candidate.id().as_str()),
+                    literal(candidate.status().as_str()),
+                    candidate.timestamp_field(),
+                    literal(candidate.timestamp()),
+                )
+            })
+            .collect::<Vec<_>>();
+        // A balanced tree stays within SurrealDB's expression-depth limit even
+        // when a complete retention page is eligible for removal.
+        let predicates = invitation_prune_disjunction(&predicates);
+        let sql = format!("DELETE ForgeInvitation WHERE {predicates} RETURN VALUE id;");
+        let mut response =
+            self.execute_raw(&sql)
+                .await?
+                .check()
+                .map_err(|e| BackendError::QueryError {
+                    message: e.to_string(),
+                })?;
+        let value: surrealdb::types::Value =
+            response.take(0).map_err(|e| BackendError::QueryError {
+                message: e.to_string(),
+            })?;
+        match value {
+            surrealdb::types::Value::Array(rows) => Ok(rows.len() as u64),
+            surrealdb::types::Value::None | surrealdb::types::Value::Null => Ok(0),
+            _ => Err(BackendError::Internal {
+                message: "invitation pruning returned unexpected result".into(),
+            }),
+        }
+    }
+
     async fn create_with_membership(
         &self,
         entity: &Entity,

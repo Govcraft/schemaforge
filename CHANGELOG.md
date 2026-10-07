@@ -17,6 +17,8 @@ is pre-1.0; breaking changes bump the **minor** version per
   Shared database state survives restarts without Redis. Revocation storage
   failures deny authenticated requests.
 
+- Configure private invitation retention with `[schema_forge.invites]`: ended invitations are pruned after 30 days by default, on startup and every 24 hours. Zero retention disables cleanup; live invitations remain usable. Aggregate `forge.invite.pruned` audit events contain only the removed count.
+
 ### Changed
 
 - Warm the container runner's build and lint dependencies separately from the

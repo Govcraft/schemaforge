@@ -16,7 +16,9 @@ pub mod extension;
 #[cfg(feature = "graphql")]
 pub mod graphql;
 pub mod hooks;
+pub mod invitation_cleanup;
 pub mod invite;
+pub mod invites_config;
 pub mod messages;
 pub mod middleware;
 pub mod oauth_config;
@@ -41,6 +43,7 @@ pub use export_job::ExportJobActor;
 pub use export_rate_limit::ExportRateLimiter;
 pub use extension::{InitForgeData, SchemaForgeExtension};
 pub use hooks::HookDispatchActor;
+pub use invitation_cleanup::InvitationCleanupActor;
 pub use messages::{InitForge, ReplyChannel};
 pub use routes::{
     schema_forge_health_middleware, HealthResponse, MetaAuth, MetaBuild, MetaInfo,

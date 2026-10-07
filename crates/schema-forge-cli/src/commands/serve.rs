@@ -559,6 +559,7 @@ pub async fn run(
     // generator is moved into the route builder.
     let hook_credential: Arc<dyn HookCredentialSource> =
         Arc::new(PasetoHookCredential::new(paseto_generator.clone()));
+    let invitation_cleanup_store = invite_store.clone();
     let routes = build_versioned_routes(RouteContext {
         auth_store: login_auth_store,
         paseto_generator,
@@ -633,6 +634,7 @@ pub async fn run(
         .with_actor::<schema_forge_acton::HookDispatchActor>()
         .with_actor::<schema_forge_acton::ExportJobActor>()
         .with_actor::<schema_forge_acton::ExportRateLimiter>()
+        .with_actor::<schema_forge_acton::InvitationCleanupActor>()
         .with_routes(routes);
     let service = if use_revocation {
         builder.with_token_revocation(token_revocation).build()
@@ -718,6 +720,37 @@ pub async fn run(
                 message: "Events initialization failed".into(),
             })?;
     }
+    let cleanup_handle = service
+        .state()
+        .actor::<schema_forge_acton::InvitationCleanupActor>()
+        .ok_or_else(|| CliError::Server {
+            message: "invitation cleanup actor was not registered".into(),
+        })?;
+    let (tx, rx) = oneshot::channel();
+    cleanup_handle
+        .send(
+            schema_forge_acton::invitation_cleanup::InitializeInvitationCleanup {
+                config: service.config().custom.schema_forge.invites.clone(),
+                store: invitation_cleanup_store,
+                audit: service.state().audit_logger().cloned(),
+                reply: ReplyChannel::new(tx),
+            },
+        )
+        .await;
+    tokio::time::timeout(INIT_FORGE_TIMEOUT, rx)
+        .await
+        .map_err(|_| CliError::Server {
+            message: "invitation cleanup initialization timed out".into(),
+        })?
+        .map_err(|_| CliError::Server {
+            message: "invitation cleanup initialization failed".into(),
+        })?;
+    cleanup_handle
+        .send(schema_forge_acton::invitation_cleanup::SweepInvitations {
+            now: None,
+            reply: None,
+        })
+        .await;
     service.serve().await.map_err(|e| CliError::Server {
         message: format!("server error: {e}"),
     })?;

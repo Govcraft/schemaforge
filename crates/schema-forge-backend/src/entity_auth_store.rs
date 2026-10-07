@@ -109,6 +109,11 @@ pub struct EntityAuthStore {
 /// [`DynEntityStoreExt`], which wraps each RPITIT method in a boxed
 /// future.
 pub trait DynEntityStore: Send + Sync {
+    /// Delete unchanged invitation retention candidates atomically.
+    fn prune_invitations<'a>(
+        &'a self,
+        candidates: &'a [crate::invite_store::InvitationPruneCandidate],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, BackendError>> + Send + 'a>>;
     fn create<'a>(
         &'a self,
         entity: &'a Entity,
@@ -159,6 +164,13 @@ impl<S> DynEntityStore for S
 where
     S: EntityStore + ?Sized,
 {
+    fn prune_invitations<'a>(
+        &'a self,
+        candidates: &'a [crate::invite_store::InvitationPruneCandidate],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, BackendError>> + Send + 'a>>
+    {
+        Box::pin(EntityStore::prune_invitations(self, candidates))
+    }
     fn create<'a>(
         &'a self,
         entity: &'a Entity,

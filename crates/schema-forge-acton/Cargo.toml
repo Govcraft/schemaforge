@@ -170,3 +170,11 @@ required-features = ["postgres", "sse"]
 [[test]]
 name = "postgres_create_intents"
 required-features = ["postgres"]
+
+[[test]]
+name = "invitation_retention"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "postgres_invitation_retention"
+required-features = ["postgres"]

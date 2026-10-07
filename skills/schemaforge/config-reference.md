@@ -71,6 +71,12 @@ presign_ttl_secs = 300
 
 # Bulk-export hardening bounds (ADR-0003). Both are fail-closed and optional;
 # the defaults preserve the ADR's example behaviour. See export.md.
+# Ended invitation rows retain email, display name, tenant, role and signed token.
+# Cleanup runs at startup and periodically; pending unexpired invites stay live.
+[schema_forge.invites]
+retention_days = 30                      # 0 disables all invitation cleanup
+cleanup_interval_hours = 24              # must be greater than zero
+
 [schema_forge.export]
 default_max_rows = 100000                 # server-wide row ceiling; a schema's
                                           # @export(max_rows) is intersected (min)
@@ -266,3 +272,22 @@ supports `requests_per_minute`, `burst_size`, and `per_user` overrides.
 See [rate limiting and proxy deployment](../../docs/rate-limiting.md) for trusted
 forwarded-header configuration, separate probe quotas and limiter disabling.
 This is independent of `[schema_forge.export.rate_limit]`.
+
+## Invitation retention
+
+`[schema_forge.invites]` defaults to `retention_days = 30` and
+`cleanup_interval_hours = 24`. A startup sweep and periodic sweeps remove
+private `ForgeInvitation` rows whose lifecycle ended more than the retention
+window ago. Consumed rows use `consumed_at`; other rows use `expires_at`.
+A recently consumed invite is retained even when its expiry is old. Pending,
+unexpired invitations are always kept. Missing or malformed timestamps and
+unknown statuses are retained for operator inspection.
+
+Set `retention_days = 0` to disable sweeps. The cleanup interval must remain
+positive. A nonempty sweep emits one `forge.invite.pruned` audit event with
+only the removed count, without invitation identities, email addresses or tokens.
+Storage work is paginated in batches of 250 and bounded to a three-minute sweep
+budget. A partially completed sweep records its known committed count before
+logging the failure; a later sweep retries. The service owns the timer and stops
+it during graceful shutdown. This policy
+applies on SurrealDB, PostgreSQL and SQL Server.

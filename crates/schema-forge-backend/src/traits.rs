@@ -97,6 +97,19 @@ pub trait SchemaBackend: Send + Sync {
 /// - Creating, reading, updating, and deleting entities
 /// - Executing queries with filters, sorting, and pagination
 pub trait EntityStore: Send + Sync {
+    /// Atomically delete internal invitation candidates only if their lifecycle
+    /// status and original timestamp still match. Return committed deletion count.
+    fn prune_invitations(
+        &self,
+        _candidates: &[crate::invite_store::InvitationPruneCandidate],
+    ) -> impl Future<Output = Result<u64, BackendError>> + Send {
+        async {
+            Err(BackendError::QueryError {
+                message: "invitation retention is unsupported by this backend".into(),
+            })
+        }
+    }
+
     /// Optional durable create reconciliation; unsupported adapters must refuse.
     fn create_intent(
         &self,

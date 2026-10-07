@@ -343,6 +343,42 @@ impl SchemaBackend for MssqlBackend {
 }
 
 impl EntityStore for MssqlBackend {
+    async fn prune_invitations(
+        &self,
+        candidates: &[schema_forge_backend::invite_store::InvitationPruneCandidate],
+    ) -> Result<u64, BackendError> {
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let predicates = candidates.iter().enumerate().map(|(index, candidate)| {
+            let parameter = index * 3 + 1;
+            format!("([id] = @P{parameter} AND JSON_VALUE([data], '$.status.type') = N'Text' AND JSON_VALUE([data], '$.status.value') COLLATE Latin1_General_100_BIN2 = @P{} AND JSON_VALUE([data], '$.{}.type') = N'Text' AND JSON_VALUE([data], '$.{}.value') COLLATE Latin1_General_100_BIN2 = @P{})",
+                parameter + 1, candidate.timestamp_field(), candidate.timestamp_field(), parameter + 2)
+        }).collect::<Vec<_>>().join(" OR ");
+        let sql = format!("DELETE FROM [ForgeInvitation] WHERE {predicates};");
+        let values: Vec<String> = candidates
+            .iter()
+            .flat_map(|candidate| {
+                [
+                    candidate.id().to_string(),
+                    candidate.status().as_str().to_string(),
+                    candidate.timestamp().to_string(),
+                ]
+            })
+            .collect();
+        let params: Vec<&dyn tiberius::ToSql> = values
+            .iter()
+            .map(|value| value as &dyn tiberius::ToSql)
+            .collect();
+        let mut connection = connection(&self.pool).await?;
+        let affected = connection
+            .execute(sql, &params)
+            .await
+            .map_err(query_error)?
+            .total();
+        Ok(affected)
+    }
+
     async fn create_with_membership(
         &self,
         entity: &Entity,
