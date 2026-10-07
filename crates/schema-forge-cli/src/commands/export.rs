@@ -120,6 +120,12 @@ async fn run_openapi(
         "responses": {"200": {"description": "entity.created, entity.updated, entity.deleted; closed requires reconnect/refetch", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "400": {"description": "Invalid equality filter or active tenant"}, "401": {"description": "Bearer authentication required"}, "403": {"description": "Read or tenant membership denied"}, "404": {"description": "Events disabled or schema unknown"}, "429": {"description": "Connection limit reached"}}
     }}));
     add_login_schema_and_path(&mut paths, &mut components_schemas, &args.base_path);
+    add_invitation_management_paths(
+        &mut paths,
+        &mut components_schemas,
+        &args.base_path,
+        &args.spec_version,
+    );
     #[cfg(feature = "oauth")]
     add_oauth_paths(&mut paths, &args.base_path);
 
@@ -194,6 +200,94 @@ fn add_login_schema_and_path(
             "403": {"description": "platform_admin required"},
             "422": {"description": "Invalid subject or cutoff"},
             "502": {"description": "Revocation storage unavailable"}}
+    }}));
+}
+
+fn nullable_openapi_type(kind: &str, spec_version: &str) -> serde_json::Value {
+    if spec_version.starts_with("3.0.") {
+        serde_json::json!({"type": kind, "nullable": true})
+    } else {
+        serde_json::json!({"type": [kind, "null"]})
+    }
+}
+
+fn add_invitation_management_paths(
+    paths: &mut serde_json::Map<String, serde_json::Value>,
+    components: &mut serde_json::Map<String, serde_json::Value>,
+    base: &str,
+    spec_version: &str,
+) {
+    let mut creation_time = nullable_openapi_type("string", spec_version);
+    creation_time["format"] = serde_json::json!("date-time");
+    creation_time["description"] = serde_json::json!(
+        "UTC creation time encoded in the UUIDv7 row TypeID; null for legacy identifiers"
+    );
+    let mut expiry = nullable_openapi_type("string", spec_version);
+    expiry["format"] = serde_json::json!("date-time");
+    let mut next_offset = nullable_openapi_type("integer", spec_version);
+    next_offset["minimum"] = serde_json::json!(0);
+    next_offset["description"] = serde_json::json!(
+        "Continue with this raw storage offset, including after an empty filtered page; null when exhausted"
+    );
+    components.insert("PendingInviteResponse".into(), serde_json::json!({
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "email", "role", "inviter", "created_at", "expires_at"],
+        "properties": {
+            "id": {"type": "string", "description": "Invitation row TypeID used to revoke the invitation"},
+            "email": {"type": "string", "format": "email"},
+            "role": nullable_openapi_type("string", spec_version),
+            "inviter": nullable_openapi_type("string", spec_version),
+            "created_at": creation_time,
+            "expires_at": expiry
+        }
+    }));
+    components.insert("ListInvitesResponse".into(), serde_json::json!({
+        "type": "object", "additionalProperties": false,
+        "required": ["invitations", "next_offset"],
+        "properties": {
+            "invitations": {"type": "array", "items": {"$ref": "#/components/schemas/PendingInviteResponse"}},
+            "next_offset": next_offset
+        }
+    }));
+    let active_tenant = serde_json::json!({
+        "name": "X-Active-Tenant", "in": "header", "required": false,
+        "description": "Active tenant as <schema>:<entity_id>. Required for callers with multiple memberships. Platform administrators may select any configured tenant, or omit it to act across tenants.",
+        "schema": {"type": "string"}
+    });
+    paths.insert(format!("{base}/auth/invites"), serde_json::json!({"get": {
+        "summary": "List pending invitations",
+        "description": "Requires explicit ListInvites permission. Lists only unexpired pending invitations in the active tenant, filtered by Cedar for each row. Invitation credentials are never returned. Follow next_offset rather than inferring completion from the number of visible invitations.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [active_tenant.clone(),
+            {"name": "limit", "in": "query", "required": false, "description": "Maximum pending candidates to inspect", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+            {"name": "offset", "in": "query", "required": false, "description": "Raw storage continuation offset", "schema": {"type": "integer", "minimum": 0, "maximum": 1000000, "default": 0}}
+        ],
+        "responses": {
+            "200": {"description": "Secret-free pending invitation page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListInvitesResponse"}}}},
+            "400": {"description": "Invalid pagination, query parameter, or active tenant"},
+            "401": {"description": "Bearer authentication required"},
+            "403": {"description": "Active tenant membership or ListInvites permission denied"},
+            "500": {"description": "Invitation authorization unavailable"},
+            "502": {"description": "Invitation storage unavailable"}
+        }
+    }}));
+    paths.insert(format!("{base}/auth/invites/{{id}}"), serde_json::json!({"delete": {
+        "summary": "Revoke a pending invitation",
+        "description": "Requires explicit RevokeInvite permission in the active tenant. Already revoked invitations return 204. Consumption and revocation are atomic competing transitions; an invitation claimed for acceptance cannot subsequently be revoked.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [active_tenant,
+            {"name": "id", "in": "path", "required": true, "description": "Invitation row TypeID from the pending invitation list", "schema": {"type": "string"}}
+        ],
+        "responses": {
+            "204": {"description": "Invitation revoked, or already revoked; later acceptance is refused"},
+            "400": {"description": "Invalid invitation row identifier or active tenant"},
+            "401": {"description": "Bearer authentication required"},
+            "403": {"description": "Active tenant membership or RevokeInvite permission denied"},
+            "404": {"description": "Invitation absent or outside the active tenant"},
+            "409": {"description": "Invitation no longer pending because acceptance has claimed it"},
+            "500": {"description": "Invitation authorization unavailable"},
+            "502": {"description": "Invitation storage unavailable"}
+        }
     }}));
 }
 

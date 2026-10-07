@@ -791,7 +791,7 @@ impl SchemaBackend for PgBackend {
             Err(error) => {
                 return Err(BackendError::QueryError {
                     message: format!("failed to load schema metadata: {error}"),
-                })
+                });
             }
         };
 
@@ -827,6 +827,50 @@ impl SchemaBackend for PgBackend {
 }
 
 impl EntityStore for PgBackend {
+    async fn transition_invitation(
+        &self,
+        transition: &schema_forge_backend::InvitationTransition,
+    ) -> Result<bool, BackendError> {
+        transition.validate()?;
+        let schema =
+            SchemaName::new("ForgeInvitation").map_err(|error| BackendError::Internal {
+                message: error.to_string(),
+            })?;
+        let definition = self.load_schema_metadata(&schema).await?;
+        let mut query =
+            sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE \"ForgeInvitation\" SET status = ");
+        query.push_bind(transition.status.as_str());
+        if transition.status == schema_forge_backend::InviteStatus::Consumed {
+            query
+                .push(", consumed_at = ")
+                .push_bind(transition.at.to_rfc3339());
+        }
+        query
+            .push(" WHERE id = ")
+            .push_bind(transition.id.as_str())
+            .push(" AND status = 'pending'");
+        if let Some(expiry) = &transition.expected_expires_at {
+            query.push(" AND expires_at = ").push_bind(expiry);
+        }
+        query.push(" RETURNING *");
+        let mut tx = self.pool.begin().await.map_err(|error| {
+            map_write_error(error, "ForgeInvitation", "begin invitation transition")
+        })?;
+        let row = query
+            .build()
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|error| map_write_error(error, "ForgeInvitation", "transition invitation"))?;
+        if let Some(row) = &row {
+            let entity = row_to_entity(row, &schema, definition.as_ref())?;
+            Self::advance_revision(&mut tx, &entity).await?;
+        }
+        tx.commit().await.map_err(|error| {
+            map_write_error(error, "ForgeInvitation", "commit invitation transition")
+        })?;
+        Ok(row.is_some())
+    }
+
     async fn prune_invitations(
         &self,
         candidates: &[schema_forge_backend::invite_store::InvitationPruneCandidate],

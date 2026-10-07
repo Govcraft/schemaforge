@@ -97,6 +97,19 @@ pub trait SchemaBackend: Send + Sync {
 /// - Creating, reading, updating, and deleting entities
 /// - Executing queries with filters, sorting, and pagination
 pub trait EntityStore: Send + Sync {
+    /// Atomically move a private invitation from pending to consumed or revoked.
+    /// Compare the original expiry when supplied; unsupported backends refuse.
+    fn transition_invitation(
+        &self,
+        _transition: &crate::invite_store::InvitationTransition,
+    ) -> impl Future<Output = Result<bool, BackendError>> + Send {
+        async {
+            Err(BackendError::QueryError {
+                message: "atomic invitation transitions are unsupported by this backend".into(),
+            })
+        }
+    }
+
     /// Atomically delete internal invitation candidates only if their lifecycle
     /// status and original timestamp still match. Return committed deletion count.
     fn prune_invitations(
@@ -345,6 +358,19 @@ mod tests {
         ) -> Result<Vec<AggregateResult>, BackendError> {
             panic!("unsupported atomic operation must not aggregate")
         }
+    }
+
+    #[tokio::test]
+    async fn unsupported_invitation_transition_refuses_before_any_mutation() {
+        let store = UnsupportedStore(std::sync::atomic::AtomicUsize::new(0));
+        let transition = crate::InvitationTransition {
+            id: EntityId::new("ForgeInvitation"),
+            status: crate::InviteStatus::Revoked,
+            at: chrono::Utc::now(),
+            expected_expires_at: None,
+        };
+        assert!(store.transition_invitation(&transition).await.is_err());
+        assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

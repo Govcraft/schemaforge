@@ -47,6 +47,10 @@ pub enum ActionVerb {
     Create,
     /// Invite a user without granting direct account creation.
     Invite,
+    /// List pending invitations independently of User reads.
+    ListInvites,
+    /// Revoke a pending invitation independently of User deletion.
+    RevokeInvite,
     /// Update an existing entity.
     Update,
     /// Delete an existing entity.
@@ -67,6 +71,8 @@ impl ActionVerb {
             Self::List => "List",
             Self::Create => "Create",
             Self::Invite => "Invite",
+            Self::ListInvites => "ListInvites",
+            Self::RevokeInvite => "RevokeInvite",
             Self::Update => "Update",
             Self::Delete => "Delete",
             Self::Export => "Export",
@@ -78,7 +84,17 @@ impl ActionVerb {
 ///
 /// e.g., `action_uid(ActionVerb::Read, "Contact")` = `Forge::Action::"ReadContact"`.
 pub fn action_uid(verb: ActionVerb, schema_name: &str) -> String {
-    format!("{ACTION_PREFIX}::\"{}{}\"", verb.as_str(), schema_name)
+    format!("{ACTION_PREFIX}::\"{}\"", action_name(verb, schema_name))
+}
+
+/// Unquoted action name shared by policy UIDs and schema declarations.
+/// A colon distinguishes application Invites listing from private management.
+pub(crate) fn action_name(verb: ActionVerb, schema_name: &str) -> String {
+    match verb {
+        ActionVerb::ListInvites | ActionVerb::RevokeInvite => verb.as_str().into(),
+        ActionVerb::List if schema_name == "Invites" => "List:Invites".into(),
+        _ => format!("{}{}", verb.as_str(), schema_name),
+    }
 }
 
 /// Builds the fully-qualified action UID for the per-field read action.
@@ -110,6 +126,30 @@ mod tests {
         assert_eq!(
             action_uid(ActionVerb::Create, "Order"),
             "Action::\"CreateOrder\""
+        );
+    }
+
+    #[test]
+    fn invitation_management_uses_exact_independent_action_names() {
+        assert_eq!(
+            action_uid(ActionVerb::List, "Invites"),
+            "Action::\"List:Invites\""
+        );
+        assert_eq!(
+            action_uid(ActionVerb::ListInvites, "User"),
+            "Action::\"ListInvites\""
+        );
+        assert_eq!(
+            action_uid(ActionVerb::RevokeInvite, "User"),
+            "Action::\"RevokeInvite\""
+        );
+        assert_ne!(
+            action_uid(ActionVerb::ListInvites, "User"),
+            action_uid(ActionVerb::List, "User")
+        );
+        assert_ne!(
+            action_uid(ActionVerb::RevokeInvite, "User"),
+            action_uid(ActionVerb::Delete, "User")
         );
     }
 

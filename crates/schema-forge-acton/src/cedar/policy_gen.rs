@@ -18,6 +18,7 @@
 //! All identifiers reference the `Forge::` namespace declared by the
 //! schema generator, so generated policies always parse and validate.
 
+use crate::authz::namespace::{action_uid, ActionVerb};
 use schema_forge_core::types::{Annotation, FieldAnnotation, FieldDefinition, SchemaDefinition};
 
 /// A generated Cedar policy template carrying a description for audit logs.
@@ -254,7 +255,7 @@ forbid (
     principal is Forge::Principal,
     action in [
         Action::"Read{name}",
-        Action::"List{name}",
+        {list_action},
         Action::"Update{name}",
         Action::"Delete{name}"
     ],
@@ -263,7 +264,8 @@ forbid (
     {condition}
     && !(principal in Forge::Group::"platform_admin")
 }};"#,
-            lname = name.to_ascii_lowercase()
+            lname = name.to_ascii_lowercase(),
+            list_action = action_uid(ActionVerb::List, name),
         ),
     }
 }
@@ -299,8 +301,8 @@ fn generate_annotation_policies(
         name,
         "read",
         &[
-            format!("Action::\"Read{name}\""),
-            format!("Action::\"List{name}\""),
+            action_uid(ActionVerb::Read, name),
+            action_uid(ActionVerb::List, name),
         ],
         read_roles,
     );

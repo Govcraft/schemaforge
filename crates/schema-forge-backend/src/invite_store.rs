@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::entity::Entity;
 use crate::entity_auth_store::DynEntityStore;
 use crate::error::BackendError;
+use crate::tenant::TenantRef;
 
 /// Internal schema backing the invitation store.
 ///
@@ -145,6 +146,12 @@ pub struct ForgeInvitation {
 }
 
 impl ForgeInvitation {
+    /// Issuance time encoded by the UUIDv7-backed invitation identifier.
+    /// Legacy identifiers without a UUIDv7 timestamp return no creation time.
+    pub fn created_at(&self) -> Option<DateTime<Utc>> {
+        self.id.created_at()
+    }
+
     /// True if the invitation has passed its expiry as of `now`.
     ///
     /// A row with an unparseable/absent `expires_at` is treated as expired —
@@ -159,6 +166,54 @@ impl ForgeInvitation {
     /// True if the invitation can still be accepted at `now`.
     pub fn is_acceptable(&self, now: DateTime<Utc>) -> bool {
         self.status == InviteStatus::Pending && !self.is_expired(now)
+    }
+}
+
+/// Tenant-scoped pending invitation listing with a raw storage continuation.
+#[derive(Debug, Clone)]
+pub struct InvitationListQuery {
+    /// Exact tenant reference; absent only for authorized platform-wide listing.
+    pub tenant: Option<TenantRef>,
+    /// Maximum returned invitations, between one and 250.
+    pub limit: usize,
+    /// Offset among the matching pending storage rows, including malformed rows.
+    pub offset: usize,
+    /// Evaluation time for expiry checks.
+    pub at: DateTime<Utc>,
+}
+
+/// A bounded page of usable pending invitations.
+#[derive(Debug, Clone)]
+pub struct InvitationPage {
+    /// Valid, unexpired invitations in ascending identifier order.
+    pub invitations: Vec<ForgeInvitation>,
+    /// Raw storage offset for the following page, if more rows may remain.
+    pub next_offset: Option<usize>,
+}
+
+/// An atomic transition from pending to a terminal invitation state.
+#[derive(Debug, Clone)]
+pub struct InvitationTransition {
+    /// Invitation identifier.
+    pub id: EntityId,
+    /// Terminal state, consumed or revoked.
+    pub status: InviteStatus,
+    /// Time of the transition; consumed transitions persist this timestamp.
+    pub at: DateTime<Utc>,
+    /// Original expiry text, checked exactly when accepting a validated invitation.
+    pub expected_expires_at: Option<String>,
+}
+
+impl InvitationTransition {
+    /// Reject attempts to transition back to pending before any backend write.
+    pub fn validate(&self) -> Result<(), BackendError> {
+        if self.status == InviteStatus::Pending {
+            return Err(BackendError::ValidationFailed {
+                field: F_STATUS.into(),
+                reason: "an invitation transition must be consumed or revoked".into(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -250,6 +305,30 @@ pub const INVITATION_SWEEP_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// Storage-agnostic operations over the pending-invitation table.
 #[async_trait::async_trait]
 pub trait InviteStore: Send + Sync {
+    /// Retrieve one private invitation by identifier. Unsupported stores fail closed.
+    async fn find_by_id(&self, _id: &EntityId) -> Result<Option<ForgeInvitation>, BackendError> {
+        Err(unsupported_management())
+    }
+
+    /// Return a bounded, tenant-scoped page of usable pending invitations.
+    /// At most 250 storage rows are scanned; an empty page may have a continuation.
+    async fn list_pending(
+        &self,
+        _query: &InvitationListQuery,
+    ) -> Result<InvitationPage, BackendError> {
+        Err(unsupported_management())
+    }
+
+    /// Atomically consume a pending invitation with a valid, unchanged expiry.
+    async fn try_consume(&self, _id: &EntityId, _at: DateTime<Utc>) -> Result<bool, BackendError> {
+        Err(unsupported_management())
+    }
+
+    /// Atomically revoke a pending invitation, competing with acceptance.
+    async fn revoke(&self, _id: &EntityId, _at: DateTime<Utc>) -> Result<bool, BackendError> {
+        Err(unsupported_management())
+    }
+
     /// Remove ended invitations strictly older than `before`, returning the count.
     /// Errors preserve the known committed count, so a partially completed sweep
     /// can still emit an aggregate audit event. Implementations must bound I/O
@@ -276,9 +355,9 @@ pub trait InviteStore: Send + Sync {
     /// Look an invitation up by its `jti` (the emailed opaque reference).
     async fn find_by_jti(&self, jti: &str) -> Result<Option<ForgeInvitation>, BackendError>;
 
-    /// Mark an invitation consumed at `at`. Idempotent at the storage layer;
-    /// callers enforce single-use by checking [`ForgeInvitation::is_acceptable`]
-    /// before calling.
+    /// Consume a pending invitation without expiry validation, for trusted lifecycle
+    /// maintenance. Terminal states are rejected and can never be resurrected.
+    /// Acceptance handlers must use [`InviteStore::try_consume`] instead.
     async fn mark_consumed(&self, id: &EntityId, at: DateTime<Utc>) -> Result<(), BackendError>;
 }
 
@@ -311,6 +390,106 @@ impl EntityInviteStore {
 
 #[async_trait::async_trait]
 impl InviteStore for EntityInviteStore {
+    async fn find_by_id(&self, id: &EntityId) -> Result<Option<ForgeInvitation>, BackendError> {
+        match self.store.get(self.schema_name(), id).await {
+            Ok(entity) => Ok(entity_to_invitation(&entity)),
+            Err(BackendError::EntityNotFound { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn list_pending(
+        &self,
+        request: &InvitationListQuery,
+    ) -> Result<InvitationPage, BackendError> {
+        const PAGE_SIZE: usize = 250;
+        if !(1..=PAGE_SIZE).contains(&request.limit) {
+            return Err(BackendError::ValidationFailed {
+                field: "limit".into(),
+                reason: "invitation page size must be between 1 and 250".into(),
+            });
+        }
+        let mut filters = vec![Filter::eq(
+            FieldPath::single(F_STATUS),
+            DynamicValue::Text("pending".into()),
+        )];
+        if let Some(tenant) = &request.tenant {
+            filters.push(Filter::eq(
+                FieldPath::single(F_TENANT_TYPE),
+                DynamicValue::Text(tenant.schema.clone()),
+            ));
+            filters.push(Filter::eq(
+                FieldPath::single(F_TENANT_ID),
+                DynamicValue::Text(tenant.entity_id.clone()),
+            ));
+        }
+        let offset = request.offset;
+        let mut invitations = Vec::with_capacity(request.limit);
+        // Bound each request to one storage page. An empty visible page can
+        // still carry a continuation after expired or malformed pending rows.
+        let query = Query::new(self.schema.id.clone())
+            .with_total_count(false)
+            .with_filter(Filter::and(filters))
+            .with_sort(FieldPath::single("id"), SortOrder::Ascending)
+            .with_limit(PAGE_SIZE)
+            .with_offset(offset);
+        let page = self.store.query(&query).await?;
+        let fetched = page.entities.len();
+        let mut consumed = 0;
+        for entity in &page.entities {
+            consumed += 1;
+            if let Some(invitation) = entity_to_invitation(entity)
+                .filter(|invitation| invitation.is_acceptable(request.at))
+            {
+                invitations.push(invitation);
+            }
+            if invitations.len() == request.limit {
+                break;
+            }
+        }
+        let next_offset = if consumed < fetched || fetched == PAGE_SIZE {
+            Some(offset.checked_add(consumed).ok_or_else(offset_overflow)?)
+        } else {
+            None
+        };
+        Ok(InvitationPage {
+            invitations,
+            next_offset,
+        })
+    }
+
+    async fn try_consume(&self, id: &EntityId, at: DateTime<Utc>) -> Result<bool, BackendError> {
+        let entity = match self.store.get(self.schema_name(), id).await {
+            Ok(entity) => entity,
+            Err(BackendError::EntityNotFound { .. }) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let Some(invitation) =
+            entity_to_invitation(&entity).filter(|invitation| invitation.is_acceptable(at))
+        else {
+            return Ok(false);
+        };
+        self.store
+            .transition_invitation(&InvitationTransition {
+                id: invitation.id,
+                status: InviteStatus::Consumed,
+                at,
+                expected_expires_at: extract_nonempty(&entity, F_EXPIRES_AT),
+            })
+            .await
+    }
+
+    async fn revoke(&self, id: &EntityId, at: DateTime<Utc>) -> Result<bool, BackendError> {
+        self.store
+            .transition_invitation(&InvitationTransition {
+                id: id.clone(),
+                status: InviteStatus::Revoked,
+                at,
+                expected_expires_at: None,
+            })
+            .await
+    }
+
     async fn prune(&self, before: DateTime<Utc>) -> Result<u64, InvitationPruneError> {
         const PAGE_SIZE: usize = 250;
         let mut offset = 0;
@@ -370,17 +549,35 @@ impl InviteStore for EntityInviteStore {
     }
 
     async fn mark_consumed(&self, id: &EntityId, at: DateTime<Utc>) -> Result<(), BackendError> {
-        let mut entity = self.store.get(self.schema_name(), id).await?;
-        entity.fields.insert(
-            F_STATUS.to_string(),
-            DynamicValue::Text(InviteStatus::Consumed.as_str().to_string()),
-        );
-        entity.fields.insert(
-            F_CONSUMED_AT.to_string(),
-            DynamicValue::Text(at.to_rfc3339()),
-        );
-        self.store.update(&entity).await?;
+        let changed = self
+            .store
+            .transition_invitation(&InvitationTransition {
+                id: id.clone(),
+                status: InviteStatus::Consumed,
+                at,
+                expected_expires_at: None,
+            })
+            .await?;
+        if !changed {
+            return Err(BackendError::ValidationFailed {
+                field: F_STATUS.into(),
+                reason: "invitation is no longer pending".into(),
+            });
+        }
         Ok(())
+    }
+}
+
+fn unsupported_management() -> BackendError {
+    BackendError::QueryError {
+        message: "invitation management is unsupported by this store".into(),
+    }
+}
+
+fn offset_overflow() -> BackendError {
+    BackendError::ValidationFailed {
+        field: "offset".into(),
+        reason: "invitation offset is too large".into(),
     }
 }
 
@@ -650,6 +847,21 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_transition_never_reopens_an_invitation() {
+        let mut request = InvitationTransition {
+            id: EntityId::new("ForgeInvitation"),
+            status: InviteStatus::Pending,
+            at: Utc::now(),
+            expected_expires_at: None,
+        };
+        assert!(request.validate().is_err());
+        for terminal in [InviteStatus::Consumed, InviteStatus::Revoked] {
+            request.status = terminal;
+            assert!(request.validate().is_ok());
+        }
+    }
+
+    #[test]
     fn status_roundtrips() {
         for s in [
             InviteStatus::Pending,
@@ -675,6 +887,8 @@ mod tests {
         assert_eq!(rec.role.as_deref(), Some("member"));
         assert_eq!(rec.tenant_type.as_deref(), Some("Organization"));
         assert!(rec.expires_at.is_some());
+        assert_eq!(rec.created_at(), rec.id.created_at());
+        assert!(rec.created_at().is_some());
         assert!(rec.consumed_at.is_none());
     }
 

@@ -1,6 +1,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use chrono::{DateTime, Utc};
 use mti::prelude::{MagicTypeId, MagicTypeIdExt, V7};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -37,6 +38,19 @@ impl EntityId {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
+
+    /// Returns the UTC creation time encoded in a UUIDv7 identifier.
+    ///
+    /// The timestamp records identifier generation, with millisecond precision,
+    /// rather than a database insertion time. Other UUID versions return `None`.
+    pub fn created_at(&self) -> Option<DateTime<Utc>> {
+        let uuid = self.0.suffix().to_uuid();
+        if uuid.get_version_num() != 7 {
+            return None;
+        }
+        let (seconds, nanos) = uuid.get_timestamp()?.to_unix();
+        DateTime::from_timestamp(i64::try_from(seconds).ok()?, nanos)
+    }
 }
 
 impl fmt::Display for EntityId {
@@ -61,6 +75,21 @@ impl<'de> Deserialize<'de> for EntityId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creation_time_is_recovered_from_an_existing_uuid_v7_typeid() {
+        let id = EntityId::parse("user_01h455vb4pex5vsknk084sn02q").unwrap();
+        let expected = DateTime::parse_from_rfc3339("2023-06-30T03:34:18.518Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(id.created_at(), Some(expected));
+    }
+
+    #[test]
+    fn non_v7_identifiers_have_no_creation_time() {
+        let id = EntityId::parse("user_00000000000000000000000000").unwrap();
+        assert_eq!(id.created_at(), None);
+    }
 
     #[test]
     fn new_uses_supplied_prefix() {
