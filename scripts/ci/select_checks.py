@@ -250,17 +250,45 @@ def classify(paths, before=None, after=None, full=False):
     return checks
 
 
+def select_changes(base, head, repo="."):
+    ancestor, paths = changed_paths(base, head, repo)
+    return classify(paths, snapshot(ancestor, repo), snapshot(head, repo)), ancestor
+
+
+def select_event(event, base, head, repo="."):
+    """Select a normal push range; validate fully when its history is unavailable."""
+    if event in ("schedule", "workflow_dispatch"):
+        return classify([], full=True), ""
+    if event == "push":
+        if not re.fullmatch(r"[0-9a-f]{40}", base or "") or base == "0" * 40:
+            return classify([], full=True), ""
+        ancestry = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", base, head],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if ancestry.returncode != 0:
+            return classify([], full=True), ""
+    elif event != "pull_request":
+        raise ValueError(f"Unsupported CI event: {event}")
+    if not base:
+        raise ValueError("Pull request selection requires a base revision")
+    return select_changes(base, head, repo)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--event", choices=("pull_request", "push", "schedule", "workflow_dispatch"))
     args = parser.parse_args()
+    base = ""
     if args.full:
         checks = classify([], full=True)
+    elif args.event:
+        if args.event == "pull_request" and not args.base:
+            parser.error("Pull request selection requires --base")
+        checks, base = select_event(args.event, args.base, args.head)
     elif args.base:
-        base, paths = changed_paths(args.base, args.head)
-        checks = classify(paths, snapshot(base), snapshot(args.head))
+        checks, base = select_changes(args.base, args.head)
     else:
         parser.error("--base is required unless --full is supplied")
     print(json.dumps(checks, sort_keys=True))
@@ -268,6 +296,7 @@ def main():
         with open(output, "a", encoding="utf-8") as file:
             for name, selected in checks.items():
                 file.write(f"{name}={str(selected).lower()}\n")
+            file.write(f"base={base}\n")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
-from select_checks import SUITES, changed_paths, classify, git, satisfies, snapshot
+from select_checks import SUITES, changed_paths, classify, git, satisfies, select_event, snapshot
 from validate_metadata import validate
 
 
@@ -234,6 +234,98 @@ class GitDiffTests(unittest.TestCase):
         ancestor, paths = changed_paths("HEAD", head, self.repo)
         self.assertEqual(ancestor, self.base)
         self.assertEqual(paths, ["README.md"])
+        checks, comparison_base = select_event("pull_request", "HEAD", head, self.repo)
+        self.assertFalse(any(checks.values()))
+        self.assertEqual(comparison_base, self.base)
+
+    def test_main_push_documentation_is_fast(self):
+        self.write({"README.md": "documentation\n"})
+        self.commit()
+        checks, base = select_event("push", self.base, "HEAD", self.repo)
+        self.assertFalse(any(checks.values()))
+        self.assertEqual(base, self.base)
+
+    def test_main_push_covers_every_commit(self):
+        self.write({"crates/schema-forge-mssql/src/lib.rs": "fn storage() {}\n"})
+        self.commit()
+        self.write({"README.md": "documentation\n"})
+        self.commit()
+        checks, base = select_event("push", self.base, "HEAD", self.repo)
+        self.assertEqual({name for name, selected in checks.items() if selected}, {"mssql"})
+        self.assertEqual(base, self.base)
+
+    def test_main_push_version_only_is_fast_and_checks_changelog(self):
+        self.write(fixture("0.4.1"))
+        self.commit()
+        checks, base = select_event("push", self.base, "HEAD", self.repo)
+        self.assertFalse(any(checks.values()))
+        before, after = snapshot(base, self.repo), snapshot("HEAD", self.repo)
+        self.assertEqual(validate(after, before), [])
+        after["CHANGELOG.md"] = before["CHANGELOG.md"]
+        self.assertTrue(any("CHANGELOG" in error for error in validate(after, before)))
+
+    def test_main_push_missing_or_invalid_base_falls_back_to_full(self):
+        for base in (None, "", "0" * 40, "f" * 40, "HEAD^", "--unsafe"):
+            with self.subTest(base=base):
+                checks, comparison_base = select_event("push", base, "HEAD", self.repo)
+                self.assertTrue(all(checks.values()))
+                self.assertEqual(comparison_base, "")
+
+    def test_main_push_rollback_falls_back_to_full(self):
+        self.write({"crates/schema-forge-core/src/lib.rs": "fn shared() {}\n"})
+        self.commit()
+        before = git("rev-parse", "HEAD", repo=self.repo).decode().strip()
+        checks, base = select_event("push", before, self.base, self.repo)
+        self.assertTrue(all(checks.values()))
+        self.assertEqual(base, "")
+
+    def test_main_push_divergent_history_falls_back_to_full(self):
+        git("checkout", "-qb", "topic", repo=self.repo)
+        self.write({"README.md": "documentation\n"})
+        self.commit()
+        head = git("rev-parse", "HEAD", repo=self.repo).decode().strip()
+        git("checkout", "-q", "--detach", self.base, repo=self.repo)
+        self.write({"crates/schema-forge-core/src/lib.rs": "fn old_shared() {}\n"})
+        self.commit()
+        before = git("rev-parse", "HEAD", repo=self.repo).decode().strip()
+        checks, base = select_event("push", before, head, self.repo)
+        self.assertTrue(all(checks.values()))
+        self.assertEqual(base, "")
+
+    def test_nightly_and_manual_events_always_validate_fully(self):
+        for event in ("schedule", "workflow_dispatch"):
+            with self.subTest(event=event):
+                checks, base = select_event(event, None, "unknown", "not-a-repository")
+                self.assertTrue(all(checks.values()))
+                self.assertEqual(base, "")
+
+    def test_push_cli_outputs_verified_base_for_metadata(self):
+        self.write({"README.md": "documentation\n"})
+        self.commit()
+        script = Path(__file__).with_name("select_checks.py").resolve()
+        output = self.repo / "outputs"
+        result = subprocess.run(["python3", str(script), "--event", "push", "--base", self.base],
+                                cwd=self.repo, env={**os.environ, "GITHUB_OUTPUT": str(output)},
+                                check=True, capture_output=True, text=True)
+        self.assertFalse(any(json.loads(result.stdout).values()))
+        self.assertIn(f"base={self.base}\n", output.read_text())
+
+    def test_push_cli_fallback_clears_metadata_base(self):
+        script = Path(__file__).with_name("select_checks.py").resolve()
+        output = self.repo / "outputs"
+        result = subprocess.run(["python3", str(script), "--event", "push", "--base", "0" * 40],
+                                cwd=self.repo, env={**os.environ, "GITHUB_OUTPUT": str(output)},
+                                check=True, capture_output=True, text=True)
+        self.assertTrue(all(json.loads(result.stdout).values()))
+        self.assertIn("base=\n", output.read_text())
+        self.assertNotIn(f"base={'0' * 40}\n", output.read_text())
+
+    def test_pull_request_cli_requires_base(self):
+        script = Path(__file__).with_name("select_checks.py").resolve()
+        result = subprocess.run(["python3", str(script), "--event", "pull_request"],
+                                cwd=self.repo, check=False, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires --base", result.stderr)
 
     def test_cli_emits_boolean_json_and_github_outputs(self):
         self.write({"crates/schema-forge-codegen/src/lib.rs": "fn render() {}\n"})
