@@ -142,6 +142,15 @@ impl StreamState {
         if self.claims.exp <= chrono::Utc::now().timestamp() {
             return false;
         }
+        if let Some(provider) = self.state.token_revocation() {
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(5), provider.check_claims(&self.claims))
+                    .await,
+                Ok(Ok(false))
+            ) {
+                return false;
+            }
+        }
         let username = account_username(&self.claims);
         let user = match self.runtime.auth_store.get_user(username).await {
             Ok(Some(user)) if user.active => user,

@@ -181,6 +181,20 @@ fn add_login_schema_and_path(
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["username", "password"], "properties": {"username": {"type": "string"}, "password": {"type": "string", "format": "password"}}}}}},
         "responses": {"200": {"description": "PASETO session", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginResponse"}}}}, "401": {"description": "Invalid credentials"}, "404": {"description": "Password login disabled"}}
     }}));
+    paths.insert(format!("{base}/auth/revocations"), serde_json::json!({"post": {
+        "summary": "Revoke older bearer tokens for a subject (platform_admin only)",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": false, "required": ["subject", "not_before"],
+            "properties": {"subject": {"type": "string", "minLength": 1, "maxLength": 512},
+                "not_before": {"type": "integer", "format": "int64", "minimum": 0,
+                    "description": "Inclusive Unix-second issuance cutoff"}}
+        }}}},
+        "responses": {"200": {"description": "Persisted subject and effective monotonic cutoff"},
+            "401": {"description": "Authentication required or token revoked"},
+            "403": {"description": "platform_admin required"},
+            "422": {"description": "Invalid subject or cutoff"},
+            "502": {"description": "Revocation storage unavailable"}}
+    }}));
 }
 
 #[cfg(feature = "oauth")]
