@@ -11,6 +11,10 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- Upgrade all acton-service consumers and generated hook services to 0.47.0,
+  using the framework's split core, audit, and storage packages while retaining
+  SchemaForge's explicit feature selections.
+
 - Trim unused ZIP, GraphQL, webhook HTTP, SQLx, Tokio, and container-test
   dependency features and redundant declarations. PostgreSQL TLS explicitly
   uses AWS-LC; supported storage, authentication, exports, and diagnostics remain

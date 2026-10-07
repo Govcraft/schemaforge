@@ -58,11 +58,16 @@ dependencies = [
 
 [[package]]
 name = "acton-service"
-version = "0.46.0"
+version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "130af0863a5410312a9bebcb7612a3e80817439da5a766c912f36d4e6325974b"
+checksum = "693ef3ca0e2bf0846c64fca433ce7f7399a5add90390d8dd5c13c0d13f11a724"
 dependencies = [
  "acton-reactive",
+ "acton-service-audit",
+ "acton-service-core",
+ "acton-service-mssql",
+ "acton-service-postgres",
+ "acton-service-surrealdb",
  "anyhow",
  "arc-swap",
  "argon2",
@@ -88,7 +93,6 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prost",
- "prost-build",
  "rand 0.10.3",
  "regex",
  "reqwest 0.12.28",
@@ -106,7 +110,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
- "tonic-build",
  "tonic-health",
  "tonic-prost",
  "tonic-prost-build",
@@ -125,6 +128,86 @@ dependencies = [
  "webpki-roots 1.0.9",
  "x509-parser",
  "zeroize",
+]
+
+[[package]]
+name = "acton-service-audit"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8941a6a1b4911f109264fbc3080cc121a4b043e40451b1578226fc4e5a1ffd5c"
+dependencies = [
+ "acton-service-core",
+ "async-trait",
+ "blake3",
+ "chrono",
+ "mti",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "acton-service-core"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3c8d73593c5ed838cf69e81dda2d77ed8fcc3f527892ab96182b501da68fc97"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "acton-service-mssql"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3841a4c10c2c6bd042bb28a449a5afb2cac235ede3f9e7b0a47d41d75947fc33"
+dependencies = [
+ "acton-service-audit",
+ "acton-service-core",
+ "async-trait",
+ "bb8",
+ "bb8-tiberius",
+ "chrono",
+ "serde_json",
+ "tiberius",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "acton-service-postgres"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa30b2943522d2f86cde36084c4eb0f7b969c53afef4e589af76038cf9709763"
+dependencies = [
+ "acton-service-audit",
+ "acton-service-core",
+ "async-trait",
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "acton-service-surrealdb"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a66908b8d659846bb5d8f3ce6de486f2cfde0b7a42a8b33c8fdf60127fa3e0c"
+dependencies = [
+ "acton-service-audit",
+ "acton-service-core",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
