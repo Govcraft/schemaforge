@@ -122,6 +122,7 @@ tasks:
         # `--config config.toml` is explicit so the project's [rate_limit]
         # block applies; acton-service's auto-discovery doesn't always pick
         # up the project root.
+        ACTON_SURREALDB__URL="${SCHEMAFORGE_TEST_SURREALDB_URL:?}" \
         ACTON_SURREALDB__USERNAME="${SCHEMAFORGE_TEST_SURREALDB_USER:?}" \
         ACTON_SURREALDB__PASSWORD="${SCHEMAFORGE_TEST_SURREALDB_PASSWORD:?}" \
         ./target/debug/schemaforge --config config.toml serve \
