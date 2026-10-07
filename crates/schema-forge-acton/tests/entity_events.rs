@@ -523,6 +523,13 @@ struct LoginFixture {
 }
 
 async fn login_fixture(database: &str) -> LoginFixture {
+    login_fixture_with_revocation(database, false).await
+}
+
+async fn login_fixture_with_revocation(
+    database: &str,
+    persistent_revocation: bool,
+) -> LoginFixture {
     use acton_service::{
         auth::{config::TokenGenerationConfig, tokens::paseto_generator::PasetoGenerator},
         config::PasetoConfig,
@@ -627,10 +634,46 @@ async fn login_fixture(database: &str) -> LoginFixture {
                 .unwrap();
         }
     }
-    let service = ServiceBuilder::new()
-        .with_config(Config::<SchemaForgeConfig>::default())
-        .with_actor::<ForgeActor>()
-        .build();
+    let key = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(key.path(), [29; 32]).unwrap();
+    let token_config = PasetoConfig {
+        key_path: key.path().into(),
+        public_paths: vec!["/forge/auth/login".into()],
+        ..Default::default()
+    };
+    let revocation: Option<Arc<dyn acton_service::middleware::TokenRevocation>> =
+        if persistent_revocation {
+            #[cfg(not(feature = "surrealdb"))]
+            panic!("persistent revocation fixture requires the surrealdb feature");
+            #[cfg(feature = "surrealdb")]
+            {
+                let provider = schema_forge_acton::revocation::SurrealRevocation::new(
+                    Arc::new(backend.client().clone()),
+                    acton_service::middleware::revocation::RevocationNamespace::new("schemaforge")
+                        .unwrap(),
+                );
+                acton_service::middleware::TokenRevocation::initialize(&provider)
+                    .await
+                    .unwrap();
+                Some(Arc::new(provider))
+            }
+        } else {
+            None
+        };
+    let mut service_config = Config::<SchemaForgeConfig>::default();
+    if persistent_revocation {
+        service_config.token = Some(acton_service::config::TokenConfig::Paseto(
+            token_config.clone(),
+        ));
+    }
+    let builder = ServiceBuilder::new()
+        .with_config(service_config)
+        .with_actor::<ForgeActor>();
+    let service = if let Some(provider) = &revocation {
+        builder.with_token_revocation(provider.clone()).build()
+    } else {
+        builder.build()
+    };
     let handle = service.state().actor::<ForgeActor>().unwrap();
     let (tx, rx) = oneshot::channel();
     handle
@@ -660,17 +703,12 @@ async fn login_fixture(database: &str) -> LoginFixture {
         })
         .await;
     rx.await.unwrap();
-    let key = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(key.path(), [29; 32]).unwrap();
-    let validator = PasetoAuth::new(&PasetoConfig {
-        version: "v4".into(),
-        purpose: "local".into(),
-        key_path: key.path().into(),
-        issuer: None,
-        audience: None,
-        public_paths: vec!["/forge/auth/login".into()],
-    })
-    .unwrap();
+    let validator = PasetoAuth::new(&token_config).unwrap();
+    let validator = if let Some(provider) = revocation {
+        validator.with_shared_revocation(provider)
+    } else {
+        validator
+    };
     let generator = Arc::new(PasetoGenerator::with_symmetric_key(
         [29; 32],
         TokenGenerationConfig::default(),
@@ -993,4 +1031,136 @@ async fn login_streams_close_and_stay_refused_after_account_changes() {
     assert_closed(&mut stream, "demoted admin").await;
     f.refused(&founder, None, "demoted admin").await;
     f.refused(&founder, Some(&f.lobby), "demoted admin").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "surrealdb")]
+async fn subject_revocation_is_persistent_blocks_rest_and_ends_open_streams() {
+    use acton_service::middleware::TokenRevocation;
+    let f = login_fixture_with_revocation("subject_revocation", true).await;
+    let admin = f.login("admin@example.gov").await;
+    let user = f.login("solo@example.gov").await;
+    let rest = |token: &str| {
+        Request::builder()
+            .uri("/forge/schemas/Organization/entities")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        f.app.clone().oneshot(rest(&user)).await.unwrap().status(),
+        StatusCode::OK
+    );
+    let mut stream = f.open(&user, None, "before revocation").await;
+    let cutoff = chrono::Utc::now().timestamp();
+    let revoke = |token: &str, subject: &str, stamp| {
+        Request::builder()
+            .method("POST")
+            .uri("/forge/auth/revocations")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"subject":subject, "not_before":stamp}).to_string(),
+            ))
+            .unwrap()
+    };
+    assert_eq!(
+        f.app
+            .clone()
+            .oneshot(revoke(&user, "user:solo@example.gov", cutoff))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.app
+            .clone()
+            .oneshot(revoke(&admin, "", cutoff))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        f.app
+            .clone()
+            .oneshot(revoke(&admin, "user:solo@example.gov", -1))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let response = f
+        .app
+        .clone()
+        .oneshot(revoke(&admin, "user:solo@example.gov", cutoff))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json(response).await["not_before"], cutoff);
+    assert_eq!(
+        f.app.clone().oneshot(rest(&user)).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_closed(&mut stream, "revoked subject").await;
+    let provider = schema_forge_acton::revocation::SurrealRevocation::new(
+        Arc::new(f.backend.client().clone()),
+        acton_service::middleware::revocation::RevocationNamespace::new("schemaforge").unwrap(),
+    );
+    assert_eq!(
+        provider
+            .subject_not_before("user:solo@example.gov")
+            .await
+            .unwrap(),
+        Some(cutoff)
+    );
+    let response = f
+        .app
+        .clone()
+        .oneshot(revoke(&admin, "user:solo@example.gov", cutoff - 100))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json(response).await["not_before"], cutoff);
+    // Login tokens use second-resolution issuance times. Move past the cutoff.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let newer = f.login("solo@example.gov").await;
+    assert_eq!(
+        f.app.clone().oneshot(rest(&newer)).await.unwrap().status(),
+        StatusCode::OK
+    );
+    f.assert_opens(&newer, None, "token issued after cutoff")
+        .await;
+    let isolated = schema_forge_acton::revocation::SurrealRevocation::new(
+        Arc::new(f.backend.client().clone()),
+        acton_service::middleware::revocation::RevocationNamespace::new("another_service").unwrap(),
+    );
+    assert_eq!(
+        isolated
+            .subject_not_before("user:solo@example.gov")
+            .await
+            .unwrap(),
+        None
+    );
+    provider.revoke("opaque-token-id", 60).await.unwrap();
+    assert!(provider.is_revoked("opaque-token-id").await.unwrap());
+    assert!(!isolated.is_revoked("opaque-token-id").await.unwrap());
+    let mut stream = f.open(&newer, None, "before storage failure").await;
+    f.backend
+        .client()
+        .query("REMOVE TABLE token_revocations")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_eq!(
+        f.app.clone().oneshot(rest(&newer)).await.unwrap().status(),
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_closed(&mut stream, "revocation storage unavailable").await;
+    assert!(provider
+        .subject_not_before("user:solo@example.gov")
+        .await
+        .is_err());
 }

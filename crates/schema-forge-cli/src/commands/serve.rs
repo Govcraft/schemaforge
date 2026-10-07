@@ -86,9 +86,22 @@ pub async fn run(
     }
 
     // 4. Connect to database (try remote, fail explicitly for production)
-    let connected = connect_with_retries(&db_params, output).await?;
+    let revocation_namespace =
+        resolve_revocation_namespace(svc_config.revocation.as_ref(), &db_params)?;
+    let connected = connect_with_retries(&db_params, revocation_namespace, output).await?;
     let backend_arc = connected.backend.clone();
     let entity_store = connected.entity_store.clone();
+    // Use the entity database's existing connection for persistent revocation.
+    // Initialize it before accepting any authenticated traffic.
+    let token_revocation = connected.token_revocation.clone();
+    if svc_config.token.is_some() {
+        token_revocation
+            .initialize()
+            .await
+            .map_err(|error| CliError::Server {
+                message: format!("token revocation initialization failed: {error}"),
+            })?;
+    }
 
     // Load the role-rank hierarchy so the runtime no-upward-visibility
     // guard runs against the operator-controlled file the same way
@@ -419,7 +432,7 @@ pub async fn run(
     // Build the PASETO *validator* from the same config/key the generator
     // uses. The invite-accept endpoint re-verifies the stored invite token
     // through this validator so role/tenant are read from signed claims.
-    let paseto_validator = build_paseto_validator(&svc_config)?;
+    let paseto_validator = build_paseto_validator(&svc_config, token_revocation.clone())?;
 
     // Provision the internal ForgeInvitation table (NOT registered in the
     // public schema registry) and build the invite store over it.
@@ -610,7 +623,8 @@ pub async fn run(
     output.status("  Press Ctrl+C to stop.");
 
     // Build service with ForgeActor registered as an actor extension
-    let service = ServiceBuilder::new()
+    let use_revocation = svc_config.token.is_some();
+    let builder = ServiceBuilder::new()
         .with_config(svc_config)
         .with_optional_token_auth(
             schema_forge_acton::middleware::public_read::allows_missing_credentials,
@@ -619,8 +633,12 @@ pub async fn run(
         .with_actor::<schema_forge_acton::HookDispatchActor>()
         .with_actor::<schema_forge_acton::ExportJobActor>()
         .with_actor::<schema_forge_acton::ExportRateLimiter>()
-        .with_routes(routes)
-        .build();
+        .with_routes(routes);
+    let service = if use_revocation {
+        builder.with_token_revocation(token_revocation).build()
+    } else {
+        builder.build()
+    };
 
     // Initialize the ForgeActor with runtime state (must happen before serving)
     let forge_handle = service
@@ -713,13 +731,14 @@ pub async fn run(
 /// Retry connection failures without replacing the configured database.
 async fn connect_with_retries(
     db_params: &DbParams,
+    revocation_namespace: &str,
     output: &OutputContext,
 ) -> Result<ConnectedBackend, CliError> {
     let base_delay = Duration::from_secs(CONNECT_BASE_DELAY_SECS);
     let mut last_err = None;
 
     for attempt in 0..=MAX_CONNECT_RETRIES {
-        match connect_once(db_params).await {
+        match connect_once(db_params, revocation_namespace).await {
             Ok(connected) => {
                 if attempt > 0 {
                     output.success(&format!(
@@ -757,6 +776,28 @@ async fn connect_with_retries(
     })
 }
 
+/// Resolve revocation to the existing entity database, avoiding a second pool.
+fn resolve_revocation_namespace<'a>(
+    config: Option<&'a acton_service::config::RevocationConfig>,
+    database: &DbParams,
+) -> Result<&'a str, CliError> {
+    use acton_service::config::RevocationBackend;
+    let Some(config) = config else {
+        return Ok("schemaforge");
+    };
+    if !matches!(
+        (config.backend, database),
+        (RevocationBackend::Surrealdb, DbParams::Surrealdb(_))
+            | (RevocationBackend::Postgres, DbParams::Postgres(_))
+            | (RevocationBackend::Mssql, DbParams::Mssql(_))
+    ) {
+        return Err(CliError::Config {
+            message: "[revocation] backend must match the configured entity database".into(),
+        });
+    }
+    Ok(&config.namespace)
+}
+
 /// Connected backend: the type-erased schema/entity backend plus the
 /// trait-object-safe entity store handle that powers the
 /// [`schema_forge_backend::EntityAuthStore`].
@@ -769,10 +810,22 @@ async fn connect_with_retries(
 struct ConnectedBackend {
     backend: Arc<dyn DynForgeBackend>,
     entity_store: Arc<dyn schema_forge_backend::DynEntityStore>,
+    token_revocation: Arc<dyn acton_service::middleware::TokenRevocation>,
 }
 
 /// Attempt a single connection to the configured backend.
-async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError> {
+async fn connect_once(
+    db_params: &DbParams,
+    revocation_namespace: &str,
+) -> Result<ConnectedBackend, CliError> {
+    #[cfg(any(feature = "surrealdb", feature = "postgres", feature = "mssql"))]
+    let namespace =
+        acton_service::middleware::revocation::RevocationNamespace::new(revocation_namespace)
+            .map_err(|error| CliError::Server {
+                message: error.to_string(),
+            })?;
+    #[cfg(not(any(feature = "surrealdb", feature = "postgres", feature = "mssql")))]
+    let _ = revocation_namespace;
     match db_params {
         #[cfg(feature = "surrealdb")]
         DbParams::Surrealdb(p) => {
@@ -788,9 +841,15 @@ async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError
                 message: format!("SurrealDB connection failed: {e}"),
             })?;
             let backend = Arc::new(backend);
+            let token_revocation =
+                Arc::new(schema_forge_acton::revocation::SurrealRevocation::new(
+                    Arc::new(backend.client().clone()),
+                    namespace,
+                ));
             Ok(ConnectedBackend {
                 backend: backend.clone(),
                 entity_store: backend,
+                token_revocation,
             })
         }
         #[cfg(feature = "postgres")]
@@ -801,9 +860,16 @@ async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError
                     message: format!("PostgreSQL connection failed: {e}"),
                 })?;
             let backend = Arc::new(backend);
+            let token_revocation = Arc::new(
+                acton_service::middleware::revocation::PgTokenRevocation::new(
+                    backend.pool().clone(),
+                    namespace,
+                ),
+            );
             Ok(ConnectedBackend {
                 backend: backend.clone(),
                 entity_store: backend,
+                token_revocation,
             })
         }
         #[cfg(feature = "mssql")]
@@ -814,9 +880,16 @@ async fn connect_once(db_params: &DbParams) -> Result<ConnectedBackend, CliError
                     message: format!("SQL Server connection failed: {e}"),
                 })?;
             let backend = Arc::new(backend);
+            let token_revocation = Arc::new(
+                acton_service::middleware::revocation::MssqlTokenRevocation::new(
+                    backend.pool().clone(),
+                    namespace,
+                ),
+            );
             Ok(ConnectedBackend {
                 backend: backend.clone(),
                 entity_store: backend,
+                token_revocation,
             })
         }
         #[allow(unreachable_patterns)]
@@ -1014,6 +1087,7 @@ fn build_versioned_routes(
 /// Used by the invite-accept endpoint to re-verify a stored invite token.
 fn build_paseto_validator(
     svc_config: &acton_service::config::Config<schema_forge_acton::SchemaForgeConfig>,
+    revocation: Arc<dyn acton_service::middleware::TokenRevocation>,
 ) -> Result<Arc<PasetoAuth>, CliError> {
     let paseto_cfg = match &svc_config.token {
         Some(acton_service::config::TokenConfig::Paseto(pc)) => pc,
@@ -1028,7 +1102,7 @@ fn build_paseto_validator(
     let validator = PasetoAuth::new(paseto_cfg).map_err(|e| CliError::Config {
         message: format!("failed to build PASETO validator: {e}"),
     })?;
-    Ok(Arc::new(validator))
+    Ok(Arc::new(validator.with_shared_revocation(revocation)))
 }
 
 /// Layer the SchemaForge `/health` override middleware onto the versioned
@@ -1166,6 +1240,31 @@ mod resolve_tests {
     // CWD is process-global. Serialize the two tests below that mutate it
     // so they don't race against each other under `cargo nextest run`.
     static CWD_GUARD: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn revocation_configuration_uses_the_entity_backend_and_explicit_namespace() {
+        use acton_service::config::{RevocationBackend, RevocationConfig};
+        let database = crate::config::DbParams::Postgres(crate::config::PostgresParams {
+            url: "postgres://localhost/revocation_test".into(),
+        });
+        assert_eq!(
+            super::resolve_revocation_namespace(None, &database).unwrap(),
+            "schemaforge"
+        );
+        let config = RevocationConfig {
+            backend: RevocationBackend::Postgres,
+            namespace: "deployment_scope".into(),
+        };
+        assert_eq!(
+            super::resolve_revocation_namespace(Some(&config), &database).unwrap(),
+            "deployment_scope"
+        );
+        let mismatch = RevocationConfig {
+            backend: RevocationBackend::Surrealdb,
+            ..config
+        };
+        assert!(super::resolve_revocation_namespace(Some(&mismatch), &database).is_err());
+    }
 
     #[test]
     fn cli_metadata_supplies_binary_version_and_compile_time_revision() {

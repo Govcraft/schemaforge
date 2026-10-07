@@ -9,6 +9,14 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [0.50.0] - 2026-10-07
 
+### Added
+
+- Persist subject-level bearer token revocation in the entity database. The
+  platform-admin `POST /auth/revocations` endpoint stores a monotonic issuance
+  cutoff, enforced by HTTP and gRPC authentication and open event streams.
+  Shared database state survives restarts without Redis. Revocation storage
+  failures deny authenticated requests.
+
 ### Changed
 
 - Bound Ubuntu CI prerequisite installation and use the public HTTPS archive instead of the stalled Azure mirror. Skip installed packages and retain network limits for later browser prerequisites.

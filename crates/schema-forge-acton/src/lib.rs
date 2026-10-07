@@ -20,6 +20,8 @@ pub mod invite;
 pub mod messages;
 pub mod middleware;
 pub mod oauth_config;
+#[cfg(feature = "surrealdb")]
+pub mod revocation;
 pub mod routes;
 pub mod rules;
 pub mod shared;

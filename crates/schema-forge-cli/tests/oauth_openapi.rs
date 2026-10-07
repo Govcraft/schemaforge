@@ -21,6 +21,12 @@ fn export_reuses_login_response_and_only_lists_compiled_oauth_routes() {
     let document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
     let expected = "#/components/schemas/LoginResponse";
+    let revocation = &document["paths"]["/api/v1/forge/auth/revocations"]["post"];
+    assert_eq!(
+        revocation["requestBody"]["content"]["application/json"]["schema"]["required"],
+        serde_json::json!(["subject", "not_before"])
+    );
+    assert!(revocation["responses"]["403"].is_object());
     assert_eq!(
         document["paths"]["/api/v1/forge/auth/login"]["post"]["responses"]["200"]["content"]
             ["application/json"]["schema"]["$ref"],

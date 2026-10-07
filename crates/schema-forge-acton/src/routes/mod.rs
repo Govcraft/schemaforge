@@ -14,6 +14,7 @@ pub mod meta;
 pub mod oauth;
 pub mod permissions;
 pub mod query_params;
+pub mod revocations;
 pub mod schemas;
 pub mod users;
 
@@ -41,6 +42,7 @@ use crate::config::SchemaForgeConfig;
 /// (see [`SchemaForgeExtension::register_routes`]).
 pub fn forge_routes() -> Router<AppState<SchemaForgeConfig>> {
     let router = Router::new()
+        .route("/auth/revocations", post(revocations::revoke_subject))
         // Deployment-wide audit access uses its own platform-admin gate.
         .route("/audit/status", get(audit::status))
         .route("/audit/events", get(audit::events))
