@@ -6,7 +6,7 @@ inputs:
     required: true
   packages:
     description: System prerequisites
-    default: protobuf-compiler libkrb5-dev
+    default: protobuf-compiler libprotobuf-dev libkrb5-dev
 runs:
   using: composite
   steps:
