@@ -17,6 +17,7 @@ jobs:
     name: Select affected components
     runs-on: ubuntu-24.04
     outputs:
+      base: ${{ steps.select.outputs.base }}
       tooling: ${{ steps.select.outputs.tooling }}
       runtime: ${{ steps.select.outputs.runtime }}
       cli: ${{ steps.select.outputs.cli }}
@@ -33,15 +34,9 @@ jobs:
         id: select
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_REVISION: ${{ github.event.pull_request.base.sha }}
+          BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
         run: |
-          args=(--head HEAD)
-          if [[ "$EVENT_NAME" == pull_request ]]; then
-            args+=(--base "$BASE_REVISION")
-          else
-            args+=(--full)
-          fi
-          python3 scripts/ci/select_checks.py "${args[@]}"
+          python3 scripts/ci/select_checks.py --head HEAD --event "$EVENT_NAME" --base "$BASE_REVISION"
   validation:
     needs: changes
     uses: ./.github/workflows/full-validation.yml
@@ -54,7 +49,7 @@ jobs:
       mssql: ${{ needs.changes.outputs.mssql == 'true' }}
       cel: ${{ needs.changes.outputs.cel == 'true' }}
       site: ${{ needs.changes.outputs.site == 'true' }}
-      base: ${{ github.event.pull_request.base.sha || '' }}
+      base: ${{ needs.changes.outputs.base }}
       site-candidate-server: ${{ needs.changes.outputs.runtime == 'true' || needs.changes.outputs.cli == 'true' || needs.changes.outputs.surrealdb == 'true' || needs.changes.outputs.postgres == 'true' || needs.changes.outputs.mssql == 'true' }}
   required:
     name: Required CI

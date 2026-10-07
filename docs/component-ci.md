@@ -1,14 +1,19 @@
 # Component CI and release validation
 
-Pull requests validate the changed components and their consumers. Main, the
-nightly schedule, manual CI runs, and release tags validate every component.
+Pull requests and pushes to main validate the changed components and their
+consumers. The nightly schedule, manual CI runs, and release tags validate every
+component.
 Release packaging and signing wait for successful validation of the same tag
 commit. The required branch-protection check remains `Required CI`.
 
-## Pull request selection
+## Change selection
 
 `scripts/ci/select_checks.py` compares the pull request merge commit with the
-merge base of its base branch. Deleted and renamed files participate in selection.
+merge base of its base branch. A normal main push compares the pre-push commit
+with the new tip, including every commit in the push. Missing, zero, or
+non-ancestor push bases fall back to full validation. The verified comparison
+base is also passed to metadata validation. Deleted and renamed files participate
+in selection.
 Unknown executable/source paths, shared interfaces, dependencies, feature flags,
 toolchains, and CI policy changes select the complete suite.
 
@@ -36,6 +41,7 @@ Use these commands to inspect selection locally:
 
 ```sh
 python3 scripts/ci/select_checks.py --base origin/main --head HEAD
+python3 scripts/ci/select_checks.py --event push --base "$(git rev-parse HEAD^)" --head HEAD
 python3 scripts/ci/select_checks.py --head HEAD --full
 python3 -m unittest discover -s scripts/ci -p 'test_*.py'
 python3 scripts/ci/validate_metadata.py --head HEAD
