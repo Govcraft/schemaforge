@@ -12,6 +12,8 @@ def graph(extensions=False):
         f"schema-forge-acton v0.47.1 (/workspace/acton)|postgres{features}",
         "schema-forge-postgres v0.19.0 (/workspace/postgres)|",
         f"acton-service v0.46.0|database,http{features}",
+        "sqlx v0.8.6|postgres,runtime-tokio,tls-rustls-aws-lc-rs",
+        "sqlx-core v0.8.6|_tls-rustls,_tls-rustls-aws-lc-rs",
         "[build-dependencies]",
         "prost-build v0.14.0|default",
         "[dev-dependencies]",
@@ -55,6 +57,27 @@ class PostgresGraphTests(unittest.TestCase):
         self.assertTrue(check_graph("", False))
         with self.assertRaises(ValueError):
             check_graph("cargo tree failed", False)
+
+    def test_sqlx_requires_aws_lc_at_both_dependency_levels(self):
+        for feature in ("tls-rustls-aws-lc-rs", "_tls-rustls-aws-lc-rs"):
+            with self.subTest(feature=feature):
+                text = graph().replace("," + feature, "")
+                self.assertTrue(check_graph(text, False))
+
+    def test_feature_unification_cannot_switch_sqlx_tls_provider(self):
+        for feature in (
+            "tls-rustls", "tls-rustls-ring", "tls-rustls-ring-native-roots",
+            "tls-rustls-ring-webpki", "runtime-tokio-rustls",
+            "runtime-async-std-rustls", "tls-native-tls",
+        ):
+            with self.subTest(feature=feature):
+                self.assertTrue(check_graph(graph() + f"\nsqlx v0.8.6|{feature} (*)", False))
+        for feature in ("_tls-rustls-ring-native-roots", "_tls-rustls-ring-webpki", "_tls-native-tls"):
+            with self.subTest(feature=feature):
+                self.assertTrue(check_graph(graph() + f"\nsqlx-core v0.8.6|{feature} (*)", False))
+
+    def test_other_consumers_can_keep_ring_without_switching_sqlx(self):
+        self.assertEqual(check_graph(graph() + "\nrustls v0.23.0|ring (*)", False), [])
 
 
 if __name__ == "__main__":

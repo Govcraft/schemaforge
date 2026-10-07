@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Reject embedded database engines or accidental extension activation in PG CI."""
+"""Validate PostgreSQL backend isolation, extensions, and SQLx's TLS provider."""
 
 import argparse
 from pathlib import Path
 import sys
 
 
-REQUIRED_PACKAGES = {"schema-forge-cli", "schema-forge-acton", "schema-forge-postgres", "acton-service"}
+REQUIRED_PACKAGES = {
+    "schema-forge-cli", "schema-forge-acton", "schema-forge-postgres",
+    "acton-service", "sqlx", "sqlx-core",
+}
 EXTENSION_PACKAGES = {"schema-forge-cli", "schema-forge-acton", "acton-service"}
 
 
@@ -42,6 +45,23 @@ def check_graph(text, extensions):
     for name in ("schema-forge-cli", "schema-forge-acton"):
         if name in packages and "postgres" not in packages[name]:
             failures.append(f"{name}: PostgreSQL feature absent")
+    # SQLx prefers Ring when both providers' features are unified. Check the
+    # internal driver too, since another dependency can enable it directly.
+    for name, required in (
+        ("sqlx", "tls-rustls-aws-lc-rs"),
+        ("sqlx-core", "_tls-rustls-aws-lc-rs"),
+    ):
+        features = packages.get(name, set())
+        if required not in features:
+            failures.append(f"{name}: AWS-LC TLS feature absent")
+        competing = {
+            feature for feature in features
+            if "tls-rustls-ring" in feature
+            or feature in {"tls-rustls", "runtime-tokio-rustls", "runtime-async-std-rustls"}
+            or "tls-native-tls" in feature
+        }
+        if competing:
+            failures.append(f"{name}: competing TLS provider features {', '.join(sorted(competing))}")
     return failures
 
 
