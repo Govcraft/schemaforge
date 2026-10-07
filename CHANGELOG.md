@@ -43,6 +43,9 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Fixed
 
+- Required hook failures return a fixed client-safe message with HTTP 503 and
+  `hook_unavailable`. Hook endpoints, timeout values, and transport or protocol
+  diagnostics remain in server logs.
 - `hooks generate` preserves existing service constructors and dependency wiring
   when adding hooks for another schema. `--check` detects pending changes to the
   scaffolded registration regions and respects explicit rewrite flags.

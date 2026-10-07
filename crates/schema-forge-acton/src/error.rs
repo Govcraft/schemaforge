@@ -212,6 +212,10 @@ impl ForgeError {
                 tracing::error!(error = %message, "API backend operation failed");
                 "The server could not complete the operation".into()
             }
+            Self::HookUnavailable { message } => {
+                tracing::error!(error = %message, "API required hook failed");
+                "A required check could not run. Try again shortly.".into()
+            }
             _ => self.to_string(),
         }
     }
@@ -359,6 +363,157 @@ where
 mod tests {
     use super::*;
     use http_body_util::BodyExt;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct CapturedEvents(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
+
+    #[derive(Default)]
+    struct Fields(BTreeMap<String, String>);
+
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+            self.0.insert(field.name().into(), format!("{value:?}"));
+        }
+    }
+
+    impl tracing::Subscriber for CapturedEvents {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            fields
+                .0
+                .insert("level".into(), event.metadata().level().to_string());
+            self.0.lock().unwrap().push(fields.0);
+        }
+
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    async fn assert_hook_unavailable_redacted(
+        error: ForgeError,
+        diagnostic: &str,
+        sensitive_details: &[&str],
+    ) {
+        assert_eq!(
+            error.to_string(),
+            format!("required hook unavailable: {diagnostic}")
+        );
+        let capture = CapturedEvents::default();
+        let response = tracing::subscriber::with_default(capture.clone(), || error.into_response());
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "error": "hook_unavailable",
+                "message": "A required check could not run. Try again shortly."
+            })
+        );
+        let body = std::str::from_utf8(&bytes).unwrap();
+        for detail in sensitive_details {
+            assert!(!body.contains(detail), "client response leaked {detail}");
+        }
+
+        let events = capture.0.lock().unwrap();
+        assert!(
+            events.iter().any(|event| {
+                event.get("level").is_some_and(|level| level == "ERROR")
+                    && event.get("error").is_some_and(|error| error == diagnostic)
+            }),
+            "full hook diagnostic missing from error log: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_unavailable_transport_diagnostics_stay_in_server_logs() {
+        let endpoint = "https://hooks.private.example:9443";
+        let message = "transport error: connection refused by 10.42.1.7";
+        let error = crate::hooks::HookError::Unavailable {
+            endpoint: endpoint.into(),
+            message: message.into(),
+        };
+        assert_hook_unavailable_redacted(
+            error.into(),
+            &format!("{endpoint}: {message}"),
+            &[endpoint, "transport error", "10.42.1.7"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn hook_unavailable_timeout_diagnostics_stay_in_server_logs() {
+        let endpoint = "https://hooks.private.example:9443";
+        let error = crate::hooks::HookError::Timeout {
+            endpoint: endpoint.into(),
+            timeout_ms: 4321,
+        };
+        assert_hook_unavailable_redacted(
+            error.into(),
+            &format!("{endpoint} timed out after 4321ms"),
+            &[endpoint, "4321", "timed out"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn hook_unavailable_protocol_diagnostics_stay_in_server_logs() {
+        let message = "invalid gRPC frame from hooks.internal:9555, h2 stream reset";
+        let error = crate::hooks::HookError::Protocol {
+            message: message.into(),
+        };
+        assert_hook_unavailable_redacted(
+            error.into(),
+            &format!("protocol error: {message}"),
+            &["hooks.internal:9555", "gRPC", "h2 stream reset"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn hook_unavailable_direct_diagnostics_stay_in_server_logs() {
+        let message = "https://hooks.private.example:9443 returned internal transport details";
+        assert_hook_unavailable_redacted(
+            ForgeError::HookUnavailable {
+                message: message.into(),
+            },
+            message,
+            &["hooks.private.example", "transport details"],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn hook_aborted_keeps_user_facing_reason() {
+        let error: ForgeError =
+            crate::hooks::HookError::Aborted("Invoice must have a billing address".into()).into();
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "error": "hook_aborted",
+                "message": "hook aborted request: Invoice must have a billing address"
+            })
+        );
+    }
 
     #[test]
     fn display_schema_not_found() {
