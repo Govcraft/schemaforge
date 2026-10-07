@@ -11,6 +11,13 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- Bound Ubuntu CI prerequisite installation and use the public HTTPS archive instead of the stalled Azure mirror. Skip installed packages and retain network limits for later browser prerequisites.
+
+- Permit token-only service principals to subscribe with a signed tenant chain. Streams revalidate the hierarchy and expiry and retain per-event Cedar filtering and stored-account membership checks.
+
+- Expose each record's intrinsic `id` to Cedar policies, with an empty ID for placeholders. Reserve `id` from schema fields so signed principal claims can safely scope reads to one record.
+- Correct the custom-policy reference to describe concrete Create authorization before write rules and after hooks, including a relation-field forbid example.
+
 - Remove SurrealDB embedded engine and parser features. SchemaForge now requires a remote SurrealDB 3.3+ server; `mem://` connections and the CLI's in-memory fallback are removed. Integration and browser tests share a disposable Testcontainers server with isolated databases.
 
 - Upgrade all acton-service consumers and generated hook services to 0.47.0,

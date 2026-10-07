@@ -24,6 +24,12 @@ Tokens in query strings are rejected. Unknown schemas return 404, anonymous
 requests 401, denied reads/membership 403, and exhausted connection limits 429.
 Disabled events return 404.
 
+Service tokens without a stored account can subscribe using a signed
+`tenant_chain` claim. The stream revalidates token expiry and the tenant hierarchy
+before delivering events and during idle identity checks. Each event still passes
+the ordinary Cedar read projection, so another tenant's records remain hidden.
+Stored accounts additionally retain the live account, role, and membership checks.
+
 ```javascript
 async function readChanges(token, activeTenant, onEvent, signal) {
   const response = await fetch('/api/v1/forge/schemas/Note/events?category=books', {

@@ -19,7 +19,7 @@
 /// SchemaForge's own references during policy evaluation.
 pub const RESERVED_SCHEMA_NAMES: &[&str] = &["Forge", "SchemaForge", "Principal", "Cedar"];
 
-/// Cedar grammar keywords that cannot appear as Cedar attribute identifiers.
+/// Cedar grammar keywords and intrinsic resource attributes reserved from fields.
 ///
 /// Field names become attribute names on Cedar resources (`resource.<field>`).
 /// Cedar's parser reserves these tokens, and using one as an attribute name
@@ -32,6 +32,7 @@ pub const RESERVED_FIELD_NAMES: &[&str] = &[
     "false",
     "forbid",
     "has",
+    "id",
     "if",
     "in",
     "is",

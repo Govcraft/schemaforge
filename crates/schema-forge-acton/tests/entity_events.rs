@@ -853,6 +853,49 @@ async fn assert_closed(body: &mut Body, caller: &str) -> serde_json::Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn signed_tenant_service_token_streams_only_its_tenant_and_closes_at_expiry() {
+    use acton_service::auth::{
+        config::TokenGenerationConfig,
+        tokens::{paseto_generator::PasetoGenerator, ClaimsBuilder, TokenGenerator},
+    };
+    let fixture = login_fixture("service_token").await;
+    let generator = PasetoGenerator::with_symmetric_key([29; 32], TokenGenerationConfig::default());
+    let claims = ClaimsBuilder::new()
+        .client("scoped-stream")
+        .role("owner")
+        .custom_claim(
+            "tenant_chain",
+            serde_json::json!([
+                {"schema": "Organization", "entity_id": fixture.alpha}
+            ]),
+        )
+        .build()
+        .unwrap();
+    let token = generator
+        .generate_token_with_expiry(&claims, Duration::from_secs(4))
+        .unwrap();
+    assert!(fixture
+        .store
+        .get_user("client:scoped-stream")
+        .await
+        .unwrap()
+        .is_none());
+    fixture
+        .refused(&token, Some(&fixture.beta), "different tenant")
+        .await;
+    let mut body = fixture.open(&token, None, "service token").await;
+    let admin = fixture.login("admin@example.gov").await;
+    fixture
+        .rename(&admin, None, &fixture.beta, "Invisible")
+        .await;
+    fixture
+        .rename(&admin, None, &fixture.alpha, "Visible")
+        .await;
+    LoginFixture::assert_updated(&mut body, &fixture.alpha, "Visible", "service token").await;
+    assert_closed(&mut body, "expired service token").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn login_tokens_open_streams_for_admins_and_tenant_members() {
     let f = login_fixture("login_open").await;
     let admin = f.login("admin@example.gov").await;

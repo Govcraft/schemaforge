@@ -47,7 +47,7 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: postgres-extensions
-          packages: protobuf-compiler libkrb5-dev postgresql-client
+          packages: protobuf-compiler libprotobuf-dev libkrb5-dev postgresql-client
       - name: Verify PostgreSQL dependency isolation
         run: |
           cargo tree --locked -p schema-forge-cli -p schema-forge-acton --no-default-features --features "$CARGO_FEATURES" --prefix none --format '{p}|{f}' > "$RUNNER_TEMP/postgres-graph.txt"

@@ -145,7 +145,7 @@ impl StreamState {
         let username = account_username(&self.claims);
         let user = match self.runtime.auth_store.get_user(username).await {
             Ok(Some(user)) if user.active => user,
-            Ok(None) if !self.local_account && self.effective_chain.is_empty() => return true,
+            Ok(None) if !self.local_account => return self.tenant_chain_valid().await,
             _ => return false,
         };
         let active = self.active_tenant();
@@ -174,6 +174,13 @@ impl StreamState {
         if !memberships.contains(leaf) {
             return false;
         }
+        self.tenant_chain_valid().await
+    }
+
+    async fn tenant_chain_valid(&self) -> bool {
+        let Some(leaf) = self.active_tenant() else {
+            return true;
+        };
         let Some(forge) = self.state.actor::<ForgeActor>() else {
             return false;
         };
@@ -192,7 +199,7 @@ impl StreamState {
         match tenant_scope::walk_to_root(leaf, &config, self.runtime.entity_store.as_ref()).await {
             Ok(chain) => chain == self.effective_chain,
             Err(tenant_scope::WalkError::EntityMissing { .. }) => {
-                self.effective_chain == vec![leaf.clone()]
+                self.local_account && self.effective_chain == vec![leaf.clone()]
             }
             Err(_) => false,
         }

@@ -142,6 +142,7 @@ action UpdateSchema, DeleteSchema appliesTo {{
 fn write_schema_entity(out: &mut String, schema: &SchemaDefinition) -> Result<(), SchemaGenError> {
     let name = schema.name.as_str();
     writeln!(out, "entity {name} in [Forge::Tenant] = {{")?;
+    writeln!(out, "    id: String,")?;
 
     // _tenant is the standardized reference field. Optional because not every
     // schema participates in the tenant hierarchy.
