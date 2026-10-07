@@ -294,6 +294,23 @@ async fn callback(app: &Router, state: &str) -> Response {
     )
     .await
 }
+fn assert_callback_error(response: Response, expected: &str) {
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+    let target = Url::parse(response.headers()["location"].to_str().unwrap()).unwrap();
+    assert_eq!(target.host_str(), Some("console.example"));
+    assert_eq!(target.path(), "/app/welcome");
+    let pairs = target.query_pairs().collect::<Vec<_>>();
+    assert!(pairs
+        .iter()
+        .any(|(key, value)| key == "view" && value == "account"));
+    assert!(pairs
+        .iter()
+        .any(|(key, value)| key == "error" && value == expected));
+    assert!(!pairs.iter().any(|(key, _)| key == "code"));
+}
+
 fn login_code(response: Response) -> String {
     assert_eq!(response.status(), StatusCode::FOUND);
     let location = response.headers()["location"].to_str().unwrap();
@@ -421,10 +438,7 @@ async fn callback_refuses_unverified_missing_and_malformed_email() {
         options.info.email_verified = email != Some("alice@example.com");
         let fixture = fixture(options).await;
         let state = start(&fixture.app, None).await;
-        assert_eq!(
-            callback(&fixture.app, &state).await.status(),
-            StatusCode::UNAUTHORIZED
-        );
+        assert_callback_error(callback(&fixture.app, &state).await, "email_unverified");
         assert_eq!(fixture.store.count_users().await.unwrap(), 0);
     }
 }
@@ -500,10 +514,7 @@ async fn invitation_only_requires_invite_and_existing_email_is_never_linked() {
     options.settings.signup = SignupPolicy::InviteOnly;
     let fixture = fixture(options).await;
     let state = start(&fixture.app, None).await;
-    assert_eq!(
-        callback(&fixture.app, &state).await.status(),
-        StatusCode::FORBIDDEN
-    );
+    assert_callback_error(callback(&fixture.app, &state).await, "invite_only");
     assert_eq!(fixture.store.count_users().await.unwrap(), 0);
     fixture
         .store
@@ -511,9 +522,9 @@ async fn invitation_only_requires_invite_and_existing_email_is_never_linked() {
         .await
         .unwrap();
     let state = start(&fixture.app, None).await;
-    assert_eq!(
-        callback(&fixture.app, &state).await.status(),
-        StatusCode::CONFLICT
+    assert_callback_error(
+        callback(&fixture.app, &state).await,
+        "account_exists_unlinked",
     );
     assert!(fixture
         .store
@@ -545,10 +556,7 @@ async fn password_login_can_be_disabled_and_missing_membership_refuses_oauth() {
     })
     .await;
     let state = start(&fixture.app, None).await;
-    assert_eq!(
-        callback(&fixture.app, &state).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
+    assert_callback_error(callback(&fixture.app, &state).await, "no_tenant");
 }
 
 #[tokio::test]
@@ -764,4 +772,21 @@ async fn disabled_oauth_routes_and_disabled_password_route_are_absent() {
             .status(),
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn trusted_state_redirects_provider_and_invitation_failures() {
+    let fixture = fixture(Options::default()).await;
+    let state = start(&fixture.app, None).await;
+    let response = request(
+        &fixture.app,
+        "GET",
+        &format!("/auth/oauth/github/callback?state={state}&error=access_denied"),
+        None,
+    )
+    .await;
+    assert_callback_error(response, "provider_error");
+    let state = start(&fixture.app, Some("missing-invitation")).await;
+    assert_callback_error(callback(&fixture.app, &state).await, "invite_invalid");
+    assert_eq!(fixture.store.count_users().await.unwrap(), 0);
 }

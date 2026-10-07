@@ -1,6 +1,6 @@
 # User invitations and onboarding reference
 
-Invite a person into a SchemaForge deployment, let them set their password, and provision their account and tenant membership when they accept. Operators can deliver the link through SMTP or share it themselves.
+Invite a person into a SchemaForge deployment and provision their account and tenant membership when they accept. They can use a password or a configured OAuth provider. Operators can deliver the link through SMTP or share it themselves.
 
 ## Issuing an invitation
 
@@ -127,6 +127,13 @@ Success returns 201 with the created email and roles:
 ```
 
 ## Branding and security properties
+
+Invitation emails reflect the deployment's sign-in methods. Password deployments
+ask the invitee to choose a password. OAuth-only deployments name the configured
+providers and ask the invitee to sign in using the invited email. Deployments
+with both methods explain either option. The frontend invitation page should
+pass the opaque reference as `invite_id` when starting OAuth, alongside its
+allowlisted `return_to`. See [OAuth login](oauth-login.md) for that flow.
 
 `[schema_forge] project_name` brands invitation email subjects, bodies, and a bare `from` address's display name. An explicit mailbox display name overrides that default. `schemaforge init` seeds this value from the project name.
 

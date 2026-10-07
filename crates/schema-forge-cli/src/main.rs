@@ -2,9 +2,6 @@ mod cli;
 mod commands;
 #[cfg(feature = "server")]
 mod config;
-#[cfg(not(feature = "server"))]
-#[path = "config_tooling.rs"]
-mod config;
 #[allow(unused_assignments)]
 mod diagnostic;
 mod error;
@@ -13,6 +10,8 @@ mod http;
 mod output;
 #[cfg(any(feature = "server", test))]
 mod progress;
+#[path = "config_tooling.rs"]
+mod tooling_config;
 
 use clap::Parser;
 

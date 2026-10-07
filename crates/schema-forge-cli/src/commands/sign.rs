@@ -8,9 +8,9 @@ use schema_forge_signing::{
 };
 
 use crate::cli::{GlobalOpts, SignArgs};
-use crate::config::{load_svc_config, resolve_signing_config};
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
+use crate::tooling_config::{load_svc_config, resolve_signing_config};
 
 /// One of the concrete signers the CLI knows how to build. Carrying the
 /// concrete type (rather than `Box<dyn DirectorySigner>`) lets the

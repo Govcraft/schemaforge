@@ -210,7 +210,7 @@ pub async fn login(
     };
     match context.complete(&user, LoginSource::Password).await {
         Ok(body) => (StatusCode::OK, Json(body)).into_response(),
-        Err(response) => response,
+        Err(response) => response.into_response(),
     }
 }
 
@@ -231,12 +231,33 @@ pub(crate) enum LoginSource {
     OAuth(String),
 }
 
+/// Preserve actionable refusals until the caller chooses its HTTP response.
+pub(crate) enum LoginFailure {
+    NoTenantAssigned,
+    Response(Response),
+}
+
+impl From<Response> for LoginFailure {
+    fn from(response: Response) -> Self {
+        Self::Response(response)
+    }
+}
+
+impl IntoResponse for LoginFailure {
+    fn into_response(self) -> Response {
+        match self {
+            Self::NoTenantAssigned => LoginRefusal::NoTenantAssigned.into_response(),
+            Self::Response(response) => response,
+        }
+    }
+}
+
 impl LoginContext<'_> {
     pub async fn complete(
         &self,
         user: &schema_forge_backend::user_store::ForgeUser,
         origin: LoginSource,
-    ) -> Result<LoginResponse, Response> {
+    ) -> Result<LoginResponse, LoginFailure> {
         let result = self.build_response(user).await;
         emit_login_result(
             self.state,
@@ -252,20 +273,20 @@ impl LoginContext<'_> {
     async fn build_response(
         &self,
         user: &schema_forge_backend::user_store::ForgeUser,
-    ) -> Result<LoginResponse, Response> {
+    ) -> Result<LoginResponse, LoginFailure> {
         if !user.active {
-            return Err(unauthorized_response());
+            return Err(unauthorized_response().into());
         }
         let user_entity = if self.principal_claims.has_user_field_sources() {
             match self.auth_store.get_user_entity(&user.username).await {
                 Ok(Some(entity)) => Some(entity),
                 Ok(None) => {
-                    return Err(unauthorized_response());
+                    return Err(unauthorized_response().into());
                 }
                 Err(error) => {
-                    return Err(internal_error_response(format!(
-                        "auth store error: {error}"
-                    )))
+                    return Err(
+                        internal_error_response(format!("auth store error: {error}")).into(),
+                    )
                 }
             }
         } else {
@@ -276,11 +297,11 @@ impl LoginContext<'_> {
             .list_tenant_memberships(&user.username)
             .await
             .map_err(|error| internal_error_response(format!("auth store error: {error}")))?;
-        if let Err(refusal) =
-            enforce_tenant_membership_policy(&memberships, &user.roles, self.tenant_config)
+        if enforce_tenant_membership_policy(&memberships, &user.roles, self.tenant_config).is_err()
         {
-            return Err(refusal.into_response());
+            return Err(LoginFailure::NoTenantAssigned);
         }
+
         let mut claims = match build_login_claims(
             &user.username,
             &user.roles,
@@ -290,12 +311,12 @@ impl LoginContext<'_> {
         ) {
             Ok(claims) => claims,
             Err(BuildLoginClaimsError::NullRequired(_)) => {
-                return Err(unauthorized_response());
+                return Err(unauthorized_response().into());
             }
             Err(error) => {
-                return Err(internal_error_response(format!(
-                    "failed to build claims: {error}"
-                )))
+                return Err(
+                    internal_error_response(format!("failed to build claims: {error}")).into(),
+                )
             }
         };
         let tenant_roles = self

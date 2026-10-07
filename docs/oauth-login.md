@@ -55,8 +55,25 @@ The four OAuth routes are public and require no existing bearer:
 Start state is opaque, single use, and valid for ten minutes. It binds the
 provider, return URL, and invite. The callback consumes it before contacting the
 provider. Unknown providers return 404. Invalid return URLs return 400. Missing,
-expired, reused, or mismatched state returns 401. A provider must supply a present,
-valid, verified email; otherwise the callback returns 401.
+expired, reused, or mismatched state returns 401. Those failures never redirect
+because the return destination cannot be trusted.
+
+After validating state and its return destination, callback failures redirect
+to that destination with one fixed `error` query parameter:
+
+| Error | Meaning |
+| --- | --- |
+| `email_unverified` | The provider supplied no usable verified email. |
+| `invite_invalid` | The invitation is invalid, expired, consumed, or for another email. |
+| `invite_only` | Signup requires an invitation and none was supplied. |
+| `account_exists_unlinked` | An account has this email but no link to this provider identity. |
+| `no_tenant` | The account needs a tenant membership before it can sign in. |
+| `provider_error` | Provider communication or another sign-in operation failed. |
+
+Redirects preserve application query parameters and replace any stale `code`
+or `error`. The error contains no provider response, credential, or account data.
+The frontend should remove the parameter from the address bar and display the
+corresponding sign-in guidance.
 
 The frontend receives an opaque login code, never a PASETO in its URL. That code
 is valid for **60 seconds** and can be exchanged **once**. Redirects and exchange
@@ -90,7 +107,8 @@ sequence to the same process when using multiple instances.
 A provider/subject pair resolves its durable `OAuthIdentity` link to a `User`.
 Provider subjects are opaque and case sensitive. Email is required for onboarding,
 but is never used to attach a new provider to an existing account. A matching
-email without a link returns 409; an administrator must arrange that link.
+email without a link redirects with `error=account_exists_unlinked`; an
+administrator must arrange that link.
 Existing links continue to resolve if a provider's verified email changes.
 
 For open signup, new accounts receive `default_roles`. With tenancy enabled,
@@ -103,7 +121,7 @@ setting alone does not provide the membership needed for first login. See
 [tenant isolation](tenant-isolation.md) for configuration and creator grants.
 
 Invitation-only signup
-without an invite returns 403. An invite must still be pending and unexpired,
+without an invite redirects with `error=invite_only`. An invite must still be pending and unexpired,
 and its stored PASETO is cryptographically reverified. Its signed email must
 match the provider's verified email. Signed role and tenant claims determine the
 grants, including when mirrored database columns differ. Consumption follows
@@ -135,3 +153,9 @@ Startup seeds the new system schema. Existing User rows and password hashes need
 no migration. Builds without the feature reject enabled OAuth configuration;
 disabled OAuth routes are absent. OpenAPI export includes the four routes when
 the exporter is built with `oauth`, and exchange reuses `LoginResponse`.
+
+Offline schema parsing, policy validation and regeneration, hook generation,
+site generation, signing, and verification load only their tooling settings.
+They accept a configuration whose OAuth credentials will be supplied at runtime.
+`serve` still requires complete provider credentials and validates them before
+opening the server.
