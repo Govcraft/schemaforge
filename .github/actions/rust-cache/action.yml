@@ -1,0 +1,29 @@
+name: Shared Rust dependency cache
+description: Use the pinned compiler and save shared caches only on main
+inputs:
+  cache-key:
+    description: Component and feature graph identifier
+    required: true
+  lookup-only:
+    description: Check for an exact cache without downloading it
+    default: 'false'
+  save:
+    description: Allow main to save a missing cache
+    default: 'true'
+outputs:
+  cache-hit:
+    description: Whether this exact dependency cache already exists
+    value: ${{ steps.cache.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Keep only the pinned compiler on disposable runners
+      shell: bash
+      run: python scripts/ci/normalize_toolchains.py
+    - name: Restore component dependencies
+      id: cache
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        lookup-only: ${{ inputs.lookup-only }}
+        save-if: ${{ github.ref == 'refs/heads/main' && inputs.save == 'true' && inputs.lookup-only != 'true' }}

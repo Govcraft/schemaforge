@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_INCREMENTAL: '0'
+
 jobs:
   windows-build:
     name: Windows MSSQL compilation and signature checks
@@ -24,7 +29,9 @@ jobs:
         run: choco install protoc --no-progress --yes
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
+        with:
+          cache-key: windows-mssql
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -76,7 +83,9 @@ jobs:
         uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/rust-cache
+        with:
+          cache-key: sql-server
 
       - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
         with:

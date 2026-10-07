@@ -86,9 +86,9 @@ jobs:
       - name: Verify Rust toolchain
         run: rustc --version && cargo --version
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/rust-cache
         with:
-          shared-key: release-${{ matrix.backend }}-${{ matrix.target }}
+          cache-key: release-${{ matrix.backend }}-${{ matrix.target }}
 
       - name: Verify release tag matches CLI version
         shell: bash

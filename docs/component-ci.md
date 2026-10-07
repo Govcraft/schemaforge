@@ -17,6 +17,45 @@ Missing, expired, malformed, or inaccessible evidence falls back to component
 validation. Direct pushes and batch pushes without matching coverage also
 validate normally. Nightly, manual, and release runs always validate afresh.
 
+## Shared dependency caches
+
+Cache identities retain the component/feature graph, operating system,
+architecture, pinned Rust compiler, build environment, manifests, and lockfile.
+On disposable GitHub-hosted runners, unused preinstalled Rust toolchains are
+removed before hashing so a hosted-image update cannot invalidate a cache for
+an unchanged compiler. Local and self-hosted toolchains are untouched.
+
+Validation restores the shared dependency caches. Only main writes them: PR
+merge-ref caches cannot be restored by another PR, and tag-scoped caches cannot
+be restored by a later release tag. Workspace executables and incremental
+artifacts remain excluded by the cache action; source edits still compile the
+affected workspace crates.
+
+`cache-maintenance.yml` maintains these caches independently of `Required CI`.
+After main pushes, a daily repair schedule, or a manual main dispatch, each
+graph checks for its exact cache without downloading it. A cache hit skips all
+dependency compilation. A miss restores compatible older dependencies and
+uses pinned cargo-chef to build dependency artifacts for the same packages,
+features, targets, and build/check profiles as validation. No tests, database
+services, browser checks, or proofs run during warming. The Windows graph uses
+the native `cargo check` command because cargo-chef has no prebuilt Windows
+asset. Release optimization graphs remain separate from these development
+caches and compile normally.
+
+Cooking replaces workspace sources with temporary stubs and is restricted to
+disposable GitHub-hosted main jobs. It never executes in developer or self-hosted
+checkouts. This workflow is cache maintenance and cannot supply successful
+validation evidence or satisfy the required gate.
+
+Closed-PR events and routine maintenance remove only cache IDs whose exact
+`refs/pull/<number>/merge` scope belongs to a PR GitHub currently reports as
+closed. Cleanup uses trusted main code, confirms live PR state before deleting,
+and preserves main, tags, ordinary branches, open PRs, and validation artifacts.
+This also cleans up old PR caches created before the main-only save policy.
+
+The first run after a compiler, dependency, or cache-policy change can be cold.
+Once main warming completes, a fresh PR restores the same dependency graph.
+
 ## Change selection
 
 `scripts/ci/select_checks.py` compares the pull request merge commit with the
@@ -138,6 +177,7 @@ a candidate tooling binary from another commit.
 - `site-e2e.yml` validates generation and browser behavior.
 - `cel-kani.yml` validates scalar proofs.
 - `release.yml` calls full validation before building and signing the release matrix.
+- `cache-maintenance.yml` warms missing main dependency caches and removes closed-PR caches independently of validation.
 
 Linux test jobs install a pinned prebuilt nextest through a commit-pinned install
 action. Component cache keys keep portable and backend feature graphs separate.
