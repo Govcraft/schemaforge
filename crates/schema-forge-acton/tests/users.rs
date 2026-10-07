@@ -771,3 +771,26 @@ async fn account_mutations_fail_closed_without_configured_revocation_storage() {
     assert!(user.active);
     assert_eq!(user.display_name.as_deref(), Some("Alice"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inactive_final_platform_admin_cannot_be_deleted_or_demoted() {
+    let seeded = seed_backend("inactive_final_admin").await;
+    seeded.auth_store.toggle_user_active("admin").await.unwrap();
+    let store = seeded.auth_store.clone();
+    let app = users_router(seeded, make_claims("user:operator", &["platform_admin"])).await;
+    let (status, body) = json_request(&app, Method::DELETE, "/users/admin", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["reason"], "last_platform_admin");
+    let (status, body) = json_request(
+        &app,
+        Method::PUT,
+        "/users/admin",
+        Some(serde_json::json!({"roles":[]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["reason"], "last_platform_admin");
+    let user = store.get_user("admin").await.unwrap().unwrap();
+    assert!(!user.active);
+    assert_eq!(user.roles, vec!["platform_admin"]);
+}

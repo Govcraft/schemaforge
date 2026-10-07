@@ -745,13 +745,17 @@ pub async fn delete_user(
     }
 
     let target_is_platform_admin = target.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
-    if target.active && target_is_platform_admin {
+    if target_is_platform_admin {
         let all = auth_store.list_users().await?;
         let platform_admin_count = all
             .iter()
-            .filter(|u| u.active && u.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE))
+            .filter(|user| user.roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE))
             .count();
-        if platform_admin_count <= 1 {
+        let active_admin_count = all
+            .iter()
+            .filter(|user| user.active && user.roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE))
+            .count();
+        if platform_admin_count <= 1 || (target.active && active_admin_count <= 1) {
             return Err(ForgeError::Conflict {
                 reason: "last_platform_admin",
                 message: format!(
@@ -904,21 +908,28 @@ pub async fn update_user(
 
     // An inactive administrator cannot recover an instance without an active
     // peer. Protect the last active administrator from demotion and disabling.
-    let was_platform_admin =
-        current.active && current.roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE);
-    let still_platform_admin =
-        new_active && new_roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE);
-    if was_platform_admin && !still_platform_admin {
+    let was_platform_admin = current.roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE);
+    let still_platform_admin = new_roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE);
+    let removes_admin_role = was_platform_admin && !still_platform_admin;
+    let removes_active_admin =
+        current.active && was_platform_admin && !(new_active && still_platform_admin);
+    if removes_admin_role || removes_active_admin {
         let all = auth_store.list_users().await?;
-        let count = all
+        let admin_count = all
+            .iter()
+            .filter(|user| user.roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE))
+            .count();
+        let active_admin_count = all
             .iter()
             .filter(|user| user.active && user.roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE))
             .count();
-        if count <= 1 {
+        if (removes_admin_role && admin_count <= 1)
+            || (removes_active_admin && active_admin_count <= 1)
+        {
             return Err(ForgeError::Conflict {
                 reason: "last_platform_admin",
                 message: format!(
-                    "cannot demote or deactivate '{username}': would leave instance without an active {PLATFORM_ADMIN_ROLE}"
+                    "cannot demote or deactivate '{username}': would remove its last administrator"
                 ),
             });
         }
