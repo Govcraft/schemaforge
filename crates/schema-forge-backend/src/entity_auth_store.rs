@@ -109,6 +109,19 @@ pub struct EntityAuthStore {
 /// [`DynEntityStoreExt`], which wraps each RPITIT method in a boxed
 /// future.
 pub trait DynEntityStore: Send + Sync {
+    /// Atomically move an invitation to a terminal state, with an optional expiry guard.
+    fn transition_invitation<'a>(
+        &'a self,
+        _transition: &'a crate::invite_store::InvitationTransition,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, BackendError>> + Send + 'a>>
+    {
+        Box::pin(async {
+            Err(BackendError::QueryError {
+                message: "atomic invitation transitions are unsupported by this backend".into(),
+            })
+        })
+    }
+
     /// Delete unchanged invitation retention candidates atomically.
     fn prune_invitations<'a>(
         &'a self,
@@ -194,6 +207,13 @@ impl<S> DynEntityStore for S
 where
     S: EntityStore + ?Sized,
 {
+    fn transition_invitation<'a>(
+        &'a self,
+        transition: &'a crate::invite_store::InvitationTransition,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, BackendError>> + Send + 'a>>
+    {
+        Box::pin(EntityStore::transition_invitation(self, transition))
+    }
     fn prune_invitations<'a>(
         &'a self,
         candidates: &'a [crate::invite_store::InvitationPruneCandidate],

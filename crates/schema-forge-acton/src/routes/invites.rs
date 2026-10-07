@@ -1,6 +1,6 @@
 //! User invitation endpoints (issue #71).
 //!
-//! Two routes, both nested under `/api/v1/forge/`:
+//! Invitation routes, all nested under `/api/v1/forge/`:
 //!
 //! - `POST /auth/invites` (authenticated) — an operator invites an address
 //!   into the deployment, optionally scoping the invitee to a tenant and a
@@ -23,11 +23,12 @@
 //! checks still happen at invite time against the proposed role, so deferring
 //! account creation does not weaken authorization.
 //!
-//! The account creation and the membership write are two store calls with no
-//! spanning transaction primitive available. We order them so the invitation
-//! is consumed **last**: a failure between the two writes leaves the invite
-//! `Pending` (retryable) rather than burning a link against a partially
-//! created account.
+//! Acceptance atomically claims the invitation before the first account or
+//! membership write. Revocation and acceptance compete for the same pending
+//! state, so an accepted claim cannot resurrect a revoked invitation. A later
+//! provisioning failure leaves the claim consumed and requires operator repair.
+//! `GET /auth/invites` lists secret-free pending projections, and
+//! `DELETE /auth/invites/{id}` revokes one using independent Cedar actions.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,14 +41,18 @@ use acton_service::middleware::paseto::PasetoAuth;
 use acton_service::middleware::Claims;
 use acton_service::prelude::ActorHandleInterface;
 use acton_service::state::AppState;
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use schema_forge_backend::user_store::ForgeUser;
+use schema_forge_backend::Entity;
 use schema_forge_backend::{tenant::TenantConfig, TenantRef};
-use schema_forge_backend::{InviteStore, NewInvitation};
+use schema_forge_backend::{
+    ForgeInvitation, InvitationListQuery, InviteStatus, InviteStore, NewInvitation,
+};
+use schema_forge_core::types::{DynamicValue, EntityId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::instrument;
@@ -59,6 +64,7 @@ use crate::config::SchemaForgeConfig;
 use crate::email::{EmailDelivery, EmailMessage, EmailSender};
 use crate::error::ForgeError;
 use crate::invite::{mint_invite_token, verify_invite_token, InviteTokenParams};
+use crate::middleware::tenant_scope::{parse_active_tenant, ACTIVE_TENANT_HEADER};
 use crate::routes::users::{
     audit_user, caller_can_grant_roles, fetch_policy_store, fetch_user_schema,
     forge_user_to_user_entity, require_auth, validate_password,
@@ -132,6 +138,55 @@ pub struct AcceptInviteResponse {
     pub email: String,
     /// Roles granted to the new account.
     pub roles: Vec<String>,
+}
+
+/// Pagination for `GET /auth/invites`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListInvitesRequest {
+    /// Maximum pending candidates to inspect, from 1 to 100 (default 50).
+    pub limit: Option<usize>,
+    /// Storage continuation offset, at most 1,000,000 (default zero).
+    pub offset: Option<usize>,
+}
+
+/// Secret-free projection of a pending invitation.
+#[derive(Debug, Serialize)]
+pub struct PendingInviteResponse {
+    /// Persisted row identifier, used by the revoke endpoint.
+    pub id: EntityId,
+    /// Invited email address.
+    pub email: String,
+    /// Role offered by the invitation.
+    pub role: Option<String>,
+    /// Subject that issued the invitation, when known.
+    pub inviter: Option<String>,
+    /// UTC creation time from the UUIDv7 row identifier, or null for legacy ids.
+    pub created_at: Option<DateTime<Utc>>,
+    /// UTC expiry of the pending invitation.
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl From<ForgeInvitation> for PendingInviteResponse {
+    fn from(invite: ForgeInvitation) -> Self {
+        Self {
+            created_at: invite.id.created_at(),
+            id: invite.id,
+            email: invite.email,
+            role: invite.role,
+            inviter: invite.invited_by,
+            expires_at: invite.expires_at,
+        }
+    }
+}
+
+/// Bounded pending-invitation page. No acceptance credentials are returned.
+#[derive(Debug, Serialize)]
+pub struct ListInvitesResponse {
+    /// Invitations visible under both active scope and Cedar policy.
+    pub invitations: Vec<PendingInviteResponse>,
+    /// Continue with this raw storage offset, or null when exhausted.
+    pub next_offset: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +323,269 @@ fn validate_invite_tenant(
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+
+fn unavailable_invitation() -> ForgeError {
+    ForgeError::ValidationFailed {
+        details: vec!["invitation is expired or already used".into()],
+    }
+}
+
+fn invitation_not_found(id: &EntityId) -> ForgeError {
+    ForgeError::EntityNotFound {
+        schema: "ForgeInvitation".into(),
+        entity_id: id.to_string(),
+    }
+}
+
+async fn invitation_scope(
+    state: &AppState<SchemaForgeConfig>,
+    claims: &Claims,
+    headers: &HeaderMap,
+) -> Result<Option<TenantRef>, ForgeError> {
+    let requested = headers
+        .get(ACTIVE_TENANT_HEADER)
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(parse_active_tenant)
+                .ok_or_else(|| ForgeError::InvalidQuery {
+                    message: "X-Active-Tenant must be <schema>:<entity_id>".into(),
+                })
+        })
+        .transpose()?;
+    if claims.has_role("platform_admin") {
+        let Some((schema, entity_id)) = requested else {
+            return Ok(None);
+        };
+        if EntityId::parse(&entity_id).is_err() {
+            return Err(ForgeError::InvalidQuery {
+                message: "X-Active-Tenant must contain a valid entity id".into(),
+            });
+        }
+        let forge = state
+            .actor::<ForgeActor>()
+            .ok_or_else(|| ForgeError::Internal {
+                message: "ForgeActor not registered".into(),
+            })?;
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetTenantConfig {
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        let config = rx.await.map_err(|_| ForgeError::Internal {
+            message: "ForgeActor tenant configuration reply channel dropped".into(),
+        })?;
+        if !config.is_some_and(|config| {
+            config
+                .hierarchy
+                .iter()
+                .any(|level| level.schema.as_str() == schema)
+        }) {
+            return Err(ForgeError::InvalidQuery {
+                message: "X-Active-Tenant must name a configured tenant schema".into(),
+            });
+        }
+        return Ok(Some(TenantRef { schema, entity_id }));
+    }
+    // The middleware rewrites tenant_chain to the validated root-to-active-leaf
+    // walk. Membership in an ancestor never widens this invitation operation.
+    let chain = claims
+        .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
+        .unwrap_or_default();
+    let active = chain.last().ok_or_else(|| ForgeError::Forbidden {
+        message: "an active tenant is required to manage invitations".into(),
+    })?;
+    if requested.is_some_and(|(schema, id)| schema != active.schema || id != active.entity_id) {
+        return Err(ForgeError::Forbidden {
+            message: "invitation tenant is outside the caller's active tenant scope".into(),
+        });
+    }
+    Ok(Some(active.clone()))
+}
+
+fn invitation_in_scope(invite: &ForgeInvitation, scope: Option<&TenantRef>) -> bool {
+    scope.is_none_or(|tenant| {
+        invite.tenant_type.as_deref() == Some(tenant.schema.as_str())
+            && invite.tenant_id.as_deref() == Some(tenant.entity_id.as_str())
+    })
+}
+
+fn invitation_resource(invite: &ForgeInvitation, policies: &crate::authz::PolicyStore) -> Entity {
+    let user = ForgeUser {
+        username: invite.email.clone(),
+        roles: invite.role.iter().cloned().collect(),
+        display_name: invite.display_name.clone(),
+        active: true,
+        role_rank: 0,
+    };
+    let mut resource = forge_user_to_user_entity(&user, policies);
+    // Let concrete policies identify the pending invitation by its safe row id.
+    resource.id = invite.id.clone();
+    if let Some(tenant_id) = &invite.tenant_id {
+        resource
+            .fields
+            .insert("_tenant".into(), DynamicValue::Text(tenant_id.clone()));
+    }
+    resource
+}
+
+/// `GET /auth/invites`: list the active tenant's pending invitations.
+///
+/// `ListInvites` must permit the tenant's schema-level listing resource and each
+/// concrete proposed User. Custom per-row denies omit that invitation.
+/// Platform administrators may list all scopes. These actions do not grant
+/// roles, so the invitation creation rank guard does not apply.
+#[instrument(skip_all)]
+pub async fn list_invites(
+    State(state): State<AppState<SchemaForgeConfig>>,
+    Extension(invite_store): Extension<Arc<dyn InviteStore>>,
+    OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
+    Query(query): Query<ListInvitesRequest>,
+) -> Result<impl IntoResponse, ForgeError> {
+    let claims = require_auth(&claims)?;
+    let limit = query.limit.unwrap_or(50);
+    let offset = query.offset.unwrap_or(0);
+    if !(1..=100).contains(&limit) || offset > 1_000_000 {
+        return Err(ForgeError::InvalidQuery {
+            message: "limit must be 1..100 and offset must be at most 1000000".into(),
+        });
+    }
+    let scope = invitation_scope(&state, claims, &headers).await?;
+    let schema = fetch_user_schema(&state).await?;
+    let policies = fetch_policy_store(&state).await?;
+    let mut listing = forge_user_to_user_entity(
+        &ForgeUser {
+            username: String::new(),
+            roles: Vec::new(),
+            display_name: None,
+            active: true,
+            role_rank: 0,
+        },
+        &policies,
+    );
+    if let Some(tenant) = &scope {
+        listing.fields.insert(
+            "_tenant".into(),
+            DynamicValue::Text(tenant.entity_id.clone()),
+        );
+    }
+    let prepared = crate::authz::engine::PreparedAuthorization::new(
+        policies.current(),
+        Some(claims),
+        ActionVerb::ListInvites,
+        &schema,
+    )
+    .map_err(|_| ForgeError::Internal {
+        message: "invitation authorization failed".into(),
+    })?;
+    if !prepared
+        .authorize(Some(&listing))
+        .map_err(|_| ForgeError::Internal {
+            message: "invitation authorization failed".into(),
+        })?
+        .is_allow()
+    {
+        return Err(ForgeError::Forbidden {
+            message: "access denied for ListInvites".into(),
+        });
+    }
+    let page = invite_store
+        .list_pending(&InvitationListQuery {
+            tenant: scope.clone(),
+            limit,
+            offset,
+            at: Utc::now(),
+        })
+        .await?;
+    let mut invitations = Vec::with_capacity(page.invitations.len());
+    for invite in page.invitations {
+        // Also protect against a custom store returning out-of-scope rows.
+        if !invitation_in_scope(&invite, scope.as_ref()) || !invite.is_acceptable(Utc::now()) {
+            continue;
+        }
+        let resource = invitation_resource(&invite, &policies);
+        if prepared
+            .authorize(Some(&resource))
+            .map_err(|_| ForgeError::Internal {
+                message: "invitation authorization failed".into(),
+            })?
+            .is_allow()
+        {
+            invitations.push(invite.into());
+        }
+    }
+    Ok(Json(ListInvitesResponse {
+        invitations,
+        next_offset: page.next_offset,
+    }))
+}
+
+/// `DELETE /auth/invites/{id}`: atomically revoke a visible invitation.
+///
+/// Already revoked invitations return 204; a consumed invitation returns 409.
+/// Foreign-tenant rows and absent rows share the same 404 response.
+#[instrument(skip_all)]
+pub async fn revoke_invite(
+    State(state): State<AppState<SchemaForgeConfig>>,
+    Extension(invite_store): Extension<Arc<dyn InviteStore>>,
+    OptionalClaims(claims): OptionalClaims,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ForgeError> {
+    let claims = require_auth(&claims)?;
+    let scope = invitation_scope(&state, claims, &headers).await?;
+    let id = EntityId::parse(&id).map_err(|_| ForgeError::InvalidQuery {
+        message: "invitation id must be a valid row identifier".into(),
+    })?;
+    let invite = invite_store
+        .find_by_id(&id)
+        .await?
+        .filter(|invite| invitation_in_scope(invite, scope.as_ref()))
+        .ok_or_else(|| invitation_not_found(&id))?;
+    let schema = fetch_user_schema(&state).await?;
+    let policies = fetch_policy_store(&state).await?;
+    let resource = invitation_resource(&invite, &policies);
+    if !authorize(
+        &policies,
+        Some(claims),
+        ActionVerb::RevokeInvite,
+        &schema,
+        Some(&resource),
+    )
+    .map_err(|_| ForgeError::Internal {
+        message: "invitation authorization failed".into(),
+    })?
+    .is_allow()
+    {
+        return Err(ForgeError::Forbidden {
+            message: "access denied for RevokeInvite".into(),
+        });
+    }
+    if invite.status == InviteStatus::Revoked {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    if !invite_store.revoke(&id, Utc::now()).await? {
+        return Err(ForgeError::Conflict {
+            reason: "invitation_not_pending",
+            message: "invitation is no longer pending".into(),
+        });
+    }
+    audit_user(
+        &state,
+        "forge.invite.revoked",
+        AuditSeverity::Notice,
+        &claims.sub,
+        id.as_str(),
+        Some(serde_json::json!({
+            "entity_id": id, "tenant_id": invite.tenant_id,
+        })),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
 
 /// `POST /auth/invites` — issue an invitation.
 ///
@@ -530,16 +848,14 @@ pub async fn accept_invite(
             Some(serde_json::json!({ "invite_id": body.invite_id, "reason": reason })),
         )
         .await;
-        return Err(ForgeError::ValidationFailed {
-            details: vec!["invitation is expired or already used".to_string()],
-        });
+        return Err(unavailable_invitation());
     }
 
     // Reconstruct + verify the full token from the stored column. Signed
     // claims are authoritative; the DB columns are a convenience mirror.
-    let verified = verify_invite_token(validator.as_ref(), &invite.token).map_err(|e| {
+    let verified = verify_invite_token(validator.as_ref(), &invite.token).map_err(|_| {
         ForgeError::Internal {
-            message: format!("stored invite token failed verification: {e}"),
+            message: "stored invitation failed verification".into(),
         }
     })?;
     if verified.invite_id != invite.jti {
@@ -567,8 +883,11 @@ pub async fn accept_invite(
         .or_else(|| invite.display_name.clone())
         .unwrap_or_else(|| verified.email.clone());
 
-    // Create the account, then grant the membership, then consume the invite
-    // (consumed last — see the module docs on the non-atomic write ordering).
+    // Claim pending state before any provisioning write. A successful revoke
+    // and a successful acceptance cannot both win this atomic transition.
+    if !invite_store.try_consume(&invite.id, Utc::now()).await? {
+        return Err(unavailable_invitation());
+    }
     auth_store
         .create_user(&verified.email, &body.password, &roles, &display_name)
         .await?;
@@ -581,8 +900,6 @@ pub async fn accept_invite(
             .add_tenant_membership(&verified.email, tt, tid, verified.role.as_deref())
             .await?;
     }
-
-    invite_store.mark_consumed(&invite.id, now).await?;
 
     audit_user(
         &state,

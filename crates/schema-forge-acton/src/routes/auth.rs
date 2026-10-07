@@ -844,7 +844,14 @@ pub fn auth_routes_with_password_login(
         // Invitations (issue #71). `/auth/invites` is authenticated;
         // `/auth/invites/accept` is public (added to the token middleware's
         // public_paths by `commands::serve`) since the invitee has no token.
-        .route("/auth/invites", post(crate::routes::invites::create_invite))
+        .route(
+            "/auth/invites",
+            post(crate::routes::invites::create_invite).get(crate::routes::invites::list_invites),
+        )
+        .route(
+            "/auth/invites/{id}",
+            axum::routing::delete(crate::routes::invites::revoke_invite),
+        )
         .route(
             "/auth/invites/accept",
             post(crate::routes::invites::accept_invite),

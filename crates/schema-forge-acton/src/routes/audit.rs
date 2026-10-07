@@ -368,6 +368,7 @@ const KNOWN_FORGE_EVENTS: &[&str] = &[
     "forge.user.active_toggled",
     "forge.user.password_changed",
     "forge.invite.created",
+    "forge.invite.revoked",
     "forge.invite.accepted",
     "forge.invite.rejected",
     "forge.invite.send_failed",
@@ -846,6 +847,26 @@ mod investigation_tests {
             .unwrap();
         assert_eq!(source.request_id.as_deref(), Some("header-request"));
         assert!(source.ip.is_none());
+    }
+
+    #[test]
+    fn invitation_revocation_evidence_contains_safe_id_and_no_credentials() {
+        let mut event = AuditEvent::new(
+            AuditEventKind::Custom("forge.invite.revoked".into()),
+            AuditSeverity::Notice,
+            "synthetic".into(),
+        );
+        assert!(known_forge_event(&event.kind));
+        event.metadata = Some(serde_json::json!({
+            "actor":"owner", "target":"invitation-row", "entity_id":"invitation-row",
+            "tenant_id":"organization", "token":"SECRET-PASETO", "jti":"SECRET-JTI",
+            "accept_url":"SECRET-URL", "email":"SECRET-EMAIL",
+        }));
+        let encoded = serde_json::to_value(EventView::from(event)).unwrap();
+        assert_eq!(encoded["kind"], "custom.forge.invite.revoked");
+        assert_eq!(encoded["entity_id"], "invitation-row");
+        assert_eq!(encoded["target"], "invitation-row");
+        assert!(!encoded.to_string().contains("SECRET"));
     }
 
     #[test]

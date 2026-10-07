@@ -342,7 +342,77 @@ impl SchemaBackend for MssqlBackend {
     }
 }
 
+// The private invitation store scans bounded, sorted pending pages. Recognize
+// exactly that query shape so SQL Server does not materialize the whole table.
+fn pending_invitation_bindings(query: &Query) -> Option<Vec<(String, String)>> {
+    if query.include_total
+        || query.projection.is_some()
+        || !query.limit.is_some_and(|limit| (1..=250).contains(&limit))
+        || query.sort != vec![(FieldPath::single("id"), SortOrder::Ascending)]
+    {
+        return None;
+    }
+    let Filter::And { filters } = query.filter.as_ref()? else {
+        return None;
+    };
+    let mut bindings = Vec::new();
+    for filter in filters {
+        let Filter::Eq {
+            path,
+            value: DynamicValue::Text(value),
+        } = filter
+        else {
+            return None;
+        };
+        if !path.is_simple() || !matches!(path.root(), "status" | "tenant_type" | "tenant_id") {
+            return None;
+        }
+        bindings.push((path.root().to_string(), value.clone()));
+    }
+    let pending = bindings
+        .iter()
+        .any(|(field, value)| field == "status" && value == "pending");
+    pending.then_some(bindings)
+}
+
 impl EntityStore for MssqlBackend {
+    async fn transition_invitation(
+        &self,
+        transition: &schema_forge_backend::InvitationTransition,
+    ) -> Result<bool, BackendError> {
+        transition.validate()?;
+        let mut values = vec![
+            transition.id.to_string(),
+            serde_json::to_string(&DynamicValue::Text(transition.status.as_str().into()))
+                .map_err(json_error)?,
+        ];
+        let mut expression = "JSON_MODIFY([data], '$.status', JSON_QUERY(@P2))".to_string();
+        if transition.status == schema_forge_backend::InviteStatus::Consumed {
+            values.push(
+                serde_json::to_string(&DynamicValue::Text(transition.at.to_rfc3339()))
+                    .map_err(json_error)?,
+            );
+            expression = format!("JSON_MODIFY({expression}, '$.consumed_at', JSON_QUERY(@P3))");
+        }
+        let mut predicate = "[id] = @P1 AND JSON_VALUE([data], '$.status.type') = N'Text' AND JSON_VALUE([data], '$.status.value') COLLATE Latin1_General_100_BIN2 = N'pending'".to_string();
+        if let Some(expiry) = &transition.expected_expires_at {
+            values.push(expiry.clone());
+            predicate.push_str(&format!(" AND JSON_VALUE([data], '$.expires_at.type') = N'Text' AND JSON_VALUE([data], '$.expires_at.value') COLLATE Latin1_General_100_BIN2 = @P{}", values.len()));
+        }
+        let sql = format!("UPDATE [ForgeInvitation] SET [data] = {expression} WHERE {predicate};");
+        let params: Vec<&dyn tiberius::ToSql> = values
+            .iter()
+            .map(|value| value as &dyn tiberius::ToSql)
+            .collect();
+        let mut connection = connection(&self.pool).await?;
+        Ok(connection
+            .execute(sql, &params)
+            .await
+            .map_err(query_error)?
+            .total()
+            != 0)
+    }
+
     async fn prune_invitations(
         &self,
         candidates: &[schema_forge_backend::invite_store::InvitationPruneCandidate],
@@ -558,6 +628,33 @@ impl EntityStore for MssqlBackend {
 
     async fn query(&self, query: &Query) -> Result<QueryResult, BackendError> {
         let schema = self.schema_for_query(query).await?;
+        if schema.name.as_str() == "ForgeInvitation" {
+            if let Some(bindings) = pending_invitation_bindings(query) {
+                let predicates = bindings.iter().enumerate().map(|(index, (field, _))| format!("(JSON_VALUE([data], '$.{field}.type') = N'Text' AND JSON_VALUE([data], '$.{field}.value') COLLATE Latin1_General_100_BIN2 = @P{})", index + 1)).collect::<Vec<_>>().join(" AND ");
+                let sql = format!(
+                    "SELECT [id], [data] FROM [ForgeInvitation] WHERE {predicates} ORDER BY [id] COLLATE Latin1_General_100_BIN2 OFFSET {} ROWS FETCH NEXT {} ROWS ONLY;",
+                    query.offset.unwrap_or(0),
+                    query.limit.unwrap_or(250)
+                );
+                let params: Vec<&dyn tiberius::ToSql> = bindings
+                    .iter()
+                    .map(|(_, value)| value as &dyn tiberius::ToSql)
+                    .collect();
+                let mut connection = connection(&self.pool).await?;
+                let rows = connection
+                    .query(sql, &params)
+                    .await
+                    .map_err(query_error)?
+                    .into_first_result()
+                    .await
+                    .map_err(query_error)?;
+                let entities = rows
+                    .iter()
+                    .map(|row| entity_from_row(row, &schema.name))
+                    .collect::<Result<_, _>>()?;
+                return Ok(QueryResult::new(entities, None));
+            }
+        }
         let sql = format!(
             "SELECT [id], [data] FROM {} ORDER BY [id];",
             quote(schema.name.as_str())

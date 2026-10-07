@@ -163,7 +163,11 @@ impl SurrealBackend {
                 message: format!("cannot verify SurrealDB server version: {error}"),
             })?;
         if !supported_server_version(version.major, version.minor, version.pre.is_empty()) {
-            return Err(BackendError::ConnectionError { message: format!("SurrealDB {version} is unsupported; upgrade the server to stable 3.3 or newer within the 3.x series before using SchemaForge. Older embedded engines can lose concurrent conditional updates.") });
+            return Err(BackendError::ConnectionError {
+                message: format!(
+                    "SurrealDB {version} is unsupported; upgrade the server to stable 3.3 or newer within the 3.x series before using SchemaForge. Older embedded engines can lose concurrent conditional updates."
+                ),
+            });
         }
         let _ = self.version_checked.set(());
         Ok(())
@@ -702,6 +706,51 @@ fn invitation_prune_disjunction(predicates: &[String]) -> String {
 }
 
 impl EntityStore for SurrealBackend {
+    async fn transition_invitation(
+        &self,
+        transition: &schema_forge_backend::InvitationTransition,
+    ) -> Result<bool, BackendError> {
+        transition.validate()?;
+        let literal = |text: &str| {
+            field_surreal_value_to_literal(&crate::value::dynamic_to_surreal(&DynamicValue::Text(
+                text.into(),
+            )))
+        };
+        let mut assignments = format!("status = {}", literal(transition.status.as_str()));
+        if transition.status == schema_forge_backend::InviteStatus::Consumed {
+            assignments.push_str(&format!(
+                ", consumed_at = {}",
+                literal(&transition.at.to_rfc3339())
+            ));
+        }
+        let expiry_guard = transition
+            .expected_expires_at
+            .as_ref()
+            .map(|expiry| format!(" AND expires_at = {}", literal(expiry)))
+            .unwrap_or_default();
+        let sql = format!(
+            "UPDATE type::record('ForgeInvitation', {}) SET {assignments} WHERE status = 'pending'{expiry_guard} RETURN VALUE id;",
+            literal(transition.id.as_str())
+        );
+        let mut response = self.execute_raw(&sql).await?;
+        match response.take::<surrealdb::types::Value>(0) {
+            Ok(surrealdb::types::Value::Array(rows)) => Ok(!rows.is_empty()),
+            Ok(surrealdb::types::Value::None | surrealdb::types::Value::Null) => Ok(false),
+            Ok(_) => Err(BackendError::Internal {
+                message: "invitation transition returned unexpected result".into(),
+            }),
+            Err(error)
+                if error.query_details()
+                    == Some(&surrealdb::types::QueryError::TransactionConflict) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(BackendError::QueryError {
+                message: error.to_string(),
+            }),
+        }
+    }
+
     async fn prune_invitations(
         &self,
         candidates: &[schema_forge_backend::invite_store::InvitationPruneCandidate],

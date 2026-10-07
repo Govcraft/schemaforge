@@ -22,6 +22,7 @@ use std::fmt::Write;
 
 use schema_forge_core::types::{Cardinality, FieldAnnotation, FieldType, SchemaDefinition};
 
+use crate::authz::namespace::{action_name, ActionVerb};
 use crate::authz::principal_claims::PrincipalClaimMappings;
 
 /// Errors raised while generating Cedar schema source.
@@ -178,9 +179,16 @@ fn write_schema_entity(out: &mut String, schema: &SchemaDefinition) -> Result<()
 
 fn write_schema_actions(out: &mut String, schema: &SchemaDefinition) -> Result<(), SchemaGenError> {
     let name = schema.name.as_str();
+    let list_action = action_name(ActionVerb::List, name);
+    // Cedar identifiers cannot contain colons, but literal action names can.
+    let list_declaration = if name == "Invites" {
+        format!("\"{list_action}\"")
+    } else {
+        list_action
+    };
     writeln!(
         out,
-        "action Read{name}, List{name}, Create{name}, Update{name}, Delete{name}, Export{name} appliesTo {{
+        "action Read{name}, {list_declaration}, Create{name}, Update{name}, Delete{name}, Export{name} appliesTo {{
     principal: [Forge::Principal],
     resource: [{name}],
     context: {{ resource_is_placeholder: Bool }},
@@ -189,7 +197,7 @@ fn write_schema_actions(out: &mut String, schema: &SchemaDefinition) -> Result<(
     if name == "User" {
         writeln!(
             out,
-            "action InviteUser appliesTo {{
+            "action InviteUser, ListInvites, RevokeInvite appliesTo {{
     principal: [Forge::Principal],
     resource: [User],
     context: {{ resource_is_placeholder: Bool }},
@@ -430,6 +438,67 @@ forbid (
             src,
             result.err()
         );
+    }
+
+    #[test]
+    fn application_invites_listing_cannot_authorize_private_invitation_management() {
+        use crate::authz::namespace::ActionVerb;
+        use crate::authz::{authorize, PolicyStore, PolicyStoreSnapshot, RoleRanks};
+        use acton_service::middleware::Claims;
+        use schema_forge_core::types::Annotation;
+        use std::sync::Arc;
+
+        let user = schema_forge_dsl::parse(schema_forge_core::system_schemas::USER_SCHEMA)
+            .unwrap()
+            .remove(0);
+        let invites = SchemaDefinition::new(
+            SchemaId::new(),
+            SchemaName::new("Invites").unwrap(),
+            vec![FieldDefinition::new(
+                FieldName::new("name").unwrap(),
+                FieldType::Text(TextConstraints::unconstrained()),
+            )],
+            vec![Annotation::Access {
+                read: vec!["owner".into()],
+                write: vec![],
+                delete: vec![],
+                cross_tenant_read: vec![],
+            }],
+        )
+        .unwrap();
+        let schemas = [user, invites];
+        let source = generate_cedar_schema(&schemas).unwrap();
+        assert!(
+            source.contains("action ReadInvites, \"List:Invites\", CreateInvites"),
+            "{source}"
+        );
+        assert!(
+            cedar_policy::Schema::from_cedarschema_str(&source).is_ok(),
+            "{source}"
+        );
+        // from_schemas strictly validates every generated permit and tenant guard.
+        let snapshot = PolicyStoreSnapshot::from_schemas(
+            &schemas,
+            None,
+            RoleRanks::from_toml_str("[roles]\nowner = 20").unwrap(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap();
+        let store = Arc::new(PolicyStore::new(snapshot));
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+            "sub":"owner", "roles":["owner"], "perms":[], "exp":9999999999_u64,
+        }))
+        .unwrap();
+        for action in [ActionVerb::Read, ActionVerb::List] {
+            assert!(authorize(&store, Some(&claims), action, &schemas[1], None)
+                .unwrap()
+                .is_allow());
+        }
+        for action in [ActionVerb::ListInvites, ActionVerb::RevokeInvite] {
+            assert!(!authorize(&store, Some(&claims), action, &schemas[0], None)
+                .unwrap()
+                .is_allow());
+        }
     }
 
     fn principal_claims_for_test() -> PrincipalClaimMappings {

@@ -10,6 +10,9 @@ mod creator_membership;
 #[path = "../../schema-forge-backend/tests/support/account_erasure.rs"]
 mod account_erasure;
 
+#[path = "../../schema-forge-acton/tests/support/invitation_retention.rs"]
+mod invitation_retention;
+
 use std::collections::BTreeMap;
 
 use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
@@ -98,6 +101,11 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
             .unwrap();
     }
     account_erasure::erase(&backend, &fixture).await;
+    {
+        let mut connection = backend.pool().get().await.unwrap();
+        connection.execute("DROP TABLE [ForgeInvitation]; DELETE FROM [_schema_metadata] WHERE [name] = N'ForgeInvitation';", &[]).await.unwrap();
+    }
+    invitation_retention::exercise(std::sync::Arc::new(backend.clone())).await;
 }
 
 async fn rename_collision_rolls_back_entire_plan(backend: &MssqlBackend) {

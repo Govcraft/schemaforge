@@ -89,6 +89,8 @@ struct Options {
     code_ttl: u64,
     tenancy: bool,
     default_tenant: Option<DefaultTenant>,
+    revoke_before_claim: bool,
+    attach_membership_store: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -113,9 +115,52 @@ impl Default for Options {
             code_ttl: 60,
             tenancy: false,
             default_tenant: None,
+            revoke_before_claim: false,
+            attach_membership_store: true,
         }
     }
 }
+
+/// Simulate an operator revoking after validation but before the atomic claim.
+struct RevokeBeforeClaim {
+    inner: Arc<dyn InviteStore>,
+}
+
+#[async_trait::async_trait]
+impl InviteStore for RevokeBeforeClaim {
+    async fn create(
+        &self,
+        invitation: NewInvitation,
+    ) -> Result<schema_forge_backend::ForgeInvitation, schema_forge_backend::BackendError> {
+        self.inner.create(invitation).await
+    }
+
+    async fn find_by_jti(
+        &self,
+        jti: &str,
+    ) -> Result<Option<schema_forge_backend::ForgeInvitation>, schema_forge_backend::BackendError>
+    {
+        self.inner.find_by_jti(jti).await
+    }
+
+    async fn try_consume(
+        &self,
+        id: &EntityId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool, schema_forge_backend::BackendError> {
+        assert!(self.inner.revoke(id, at).await?);
+        self.inner.try_consume(id, at).await
+    }
+
+    async fn mark_consumed(
+        &self,
+        id: &EntityId,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), schema_forge_backend::BackendError> {
+        self.inner.mark_consumed(id, at).await
+    }
+}
+
 struct Fixture {
     app: Router,
     store: Arc<dyn DynAuthStore>,
@@ -143,15 +188,20 @@ async fn fixture(options: Options) -> Fixture {
         schemas.insert(schema.name.to_string(), schema);
     }
     let user_schema = schemas["User"].clone();
-    let store: Arc<dyn DynAuthStore> = Arc::new(
-        EntityAuthStore::new(backend.clone(), user_schema.clone(), Arc::new(|_| Some(10)))
-            .with_oauth_identity_schema(schemas["OAuthIdentity"].clone())
-            .with_tenant_membership_schema(schemas["TenantMembership"].clone()),
-    );
-    let invites: Arc<dyn InviteStore> = Arc::new(EntityInviteStore::new(
+    let store = EntityAuthStore::new(backend.clone(), user_schema.clone(), Arc::new(|_| Some(10)))
+        .with_oauth_identity_schema(schemas["OAuthIdentity"].clone());
+    let store: Arc<dyn DynAuthStore> = Arc::new(if options.attach_membership_store {
+        store.with_tenant_membership_schema(schemas["TenantMembership"].clone())
+    } else {
+        store
+    });
+    let mut invites: Arc<dyn InviteStore> = Arc::new(EntityInviteStore::new(
         backend.clone(),
         schemas["ForgeInvitation"].clone(),
     ));
+    if options.revoke_before_claim {
+        invites = Arc::new(RevokeBeforeClaim { inner: invites });
+    }
     let key = NamedTempFile::new().unwrap();
     std::fs::write(key.path(), [0xAC; 32]).unwrap();
     let generator = Arc::new(
@@ -625,7 +675,7 @@ async fn open_signup_adds_default_membership_before_issuing_tenant_session() {
 }
 
 #[tokio::test]
-async fn invitation_signed_claims_override_mutable_columns_and_consumption_is_last() {
+async fn invitation_signed_claims_override_mutable_columns_and_claim_is_consumed() {
     let mut options = Options::default();
     options.settings.signup = SignupPolicy::InviteOnly;
     options.tenancy = true;
@@ -712,6 +762,153 @@ async fn invitation_signed_claims_override_mutable_columns_and_consumption_is_la
             .unwrap(),
         row
     );
+}
+
+async fn pending_invitation(fixture: &Fixture) -> schema_forge_backend::ForgeInvitation {
+    let minted = mint_invite_token(
+        &fixture.services.generator,
+        &InviteTokenParams {
+            email: "alice@example.com".into(),
+            role: Some("member".into()),
+            tenant_type: Some("Organization".into()),
+            tenant_id: Some("org_signed".into()),
+        },
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    fixture
+        .services
+        .invites
+        .create(NewInvitation {
+            email: "alice@example.com".into(),
+            display_name: Some("Invited Alice".into()),
+            tenant_type: Some("Organization".into()),
+            tenant_id: Some("org_signed".into()),
+            role: Some("member".into()),
+            jti: minted.invite_id,
+            token: minted.token,
+            expires_at: minted.expires_at,
+            invited_by: Some("operator".into()),
+        })
+        .await
+        .unwrap()
+}
+
+async fn assert_no_invitation_provisioning(fixture: &Fixture) {
+    assert_eq!(fixture.store.count_users().await.unwrap(), 0);
+    for table in ["TenantMembership", "OAuthIdentity"] {
+        let definition = fixture
+            .backend
+            .load_schema_metadata(&SchemaName::new(table).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let result = fixture
+            .backend
+            .query(&schema_forge_core::query::Query::new(definition.id))
+            .await
+            .unwrap();
+        assert!(
+            result.entities.is_empty(),
+            "unexpected {table} provisioning"
+        );
+    }
+}
+
+#[tokio::test]
+async fn revoked_invitation_refuses_oauth_without_provisioning_or_login_code() {
+    let mut options = Options::default();
+    options.settings.signup = SignupPolicy::InviteOnly;
+    let fixture = fixture(options).await;
+    let invite = pending_invitation(&fixture).await;
+    let state = start(&fixture.app, Some(&invite.jti)).await;
+    assert!(fixture
+        .services
+        .invites
+        .revoke(&invite.id, chrono::Utc::now())
+        .await
+        .unwrap());
+    assert_callback_error(callback(&fixture.app, &state).await, "invite_invalid");
+    assert_no_invitation_provisioning(&fixture).await;
+    assert_eq!(
+        fixture
+            .services
+            .invites
+            .find_by_jti(&invite.jti)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        InviteStatus::Revoked
+    );
+}
+
+#[tokio::test]
+async fn revocation_between_pending_read_and_oauth_claim_cannot_create_account() {
+    let mut options = Options {
+        revoke_before_claim: true,
+        ..Options::default()
+    };
+    options.settings.signup = SignupPolicy::InviteOnly;
+    let fixture = fixture(options).await;
+    let invite = pending_invitation(&fixture).await;
+    let state = start(&fixture.app, Some(&invite.jti)).await;
+    assert_callback_error(callback(&fixture.app, &state).await, "invite_invalid");
+    assert_no_invitation_provisioning(&fixture).await;
+    assert_eq!(
+        fixture
+            .services
+            .invites
+            .find_by_jti(&invite.jti)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        InviteStatus::Revoked
+    );
+}
+
+#[tokio::test]
+async fn failed_oauth_membership_provisioning_keeps_invitation_claim_consumed() {
+    let mut options = Options {
+        attach_membership_store: false,
+        ..Options::default()
+    };
+    options.settings.signup = SignupPolicy::InviteOnly;
+    let fixture = fixture(options).await;
+    let invite = pending_invitation(&fixture).await;
+    let state = start(&fixture.app, Some(&invite.jti)).await;
+    assert_callback_error(callback(&fixture.app, &state).await, "provider_error");
+    // User creation succeeded before the deliberately missing membership store
+    // refused provisioning. The claim stays spent and no external identity is
+    // attached to the partial account.
+    assert_eq!(fixture.store.count_users().await.unwrap(), 1);
+    assert!(fixture
+        .store
+        .list_identities("alice@example.com")
+        .await
+        .unwrap()
+        .is_empty());
+    let persisted = fixture
+        .services
+        .invites
+        .find_by_jti(&invite.jti)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.status, InviteStatus::Consumed);
+    assert!(!fixture
+        .services
+        .invites
+        .try_consume(&invite.id, chrono::Utc::now())
+        .await
+        .unwrap());
+    assert!(!fixture
+        .services
+        .invites
+        .revoke(&invite.id, chrono::Utc::now())
+        .await
+        .unwrap());
 }
 
 #[tokio::test]

@@ -7,6 +7,41 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-07
+
+### Added
+
+- List pending invitations with `GET /auth/invites` and revoke them with
+  `DELETE /auth/invites/{id}`. Independent Cedar `ListInvites` and `RevokeInvite`
+  permissions constrain tenant callers to their active tenant; platform
+  administrators can manage invitations across tenants. Listings expose safe
+  metadata and bounded pagination, without tokens or acceptance references.
+- Recover invitation creation dates from the UUIDv7 TypeID through `mti`,
+  including existing invitations, without a database migration.
+- Record invitation revocations as `forge.invite.revoked` audit events.
+
+### Fixed
+
+- Serialize invitation acceptance and revocation through atomic Pending-state
+  changes on SurrealDB, PostgreSQL, and SQL Server. Password and OAuth acceptance
+  claim the invitation before provisioning; successful revocation prevents
+  subsequent acceptance and cannot be overwritten by an in-flight request.
+
+### Upgrade notes
+
+- Add explicit `ListInvites` and `RevokeInvite` grants to custom tenant policies.
+  `InviteUser` and general User CRUD permissions do not imply these permissions.
+  See the invitation reference for a tenant-owner policy example.
+- If an application schema is named `Invites`, update its custom listing
+  policies to `Action::"List:Invites"`. `Action::"ListInvites"` now identifies
+  private invitation management; generated application policies use the
+  disambiguated action automatically.
+- Invitation acceptance now consumes its claim before account writes. A later
+  provisioning failure leaves it consumed and requires operator recovery.
+  Custom invitation stores must implement the new atomic `try_consume` operation;
+  the default refuses acceptance. Custom entity backends must implement the
+  atomic invitation transition operation to support management and acceptance.
+
 ## [0.50.0] - 2026-10-07
 
 ### Added

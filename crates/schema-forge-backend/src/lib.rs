@@ -15,8 +15,8 @@ pub use entity::{Entity, QueryResult};
 pub use entity_auth_store::{compute_role_rank, DynEntityStore, EntityAuthStore};
 pub use error::BackendError;
 pub use invite_store::{
-    EntityInviteStore, ForgeInvitation, InviteStatus, InviteStore, NewInvitation,
-    FORGE_INVITATION_SCHEMA,
+    EntityInviteStore, ForgeInvitation, InvitationListQuery, InvitationPage, InvitationTransition,
+    InviteStatus, InviteStore, NewInvitation, FORGE_INVITATION_SCHEMA,
 };
 pub use tenant::TenantRef;
 pub use tenant::{TenantConfig, TenantConfigError, TenantLevel};

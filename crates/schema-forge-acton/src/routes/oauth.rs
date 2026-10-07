@@ -484,6 +484,20 @@ async fn provision_account(
         .and_then(|(row, _)| row.display_name.as_deref())
         .or(display_name)
         .unwrap_or(email);
+    // Claim the invitation before any account, membership, or identity write.
+    // The backend serializes this pending->consumed transition with revocation,
+    // so a revoked link cannot provision an account from a stale pending read.
+    // Later provisioning errors leave the claim spent rather than reopen it.
+    if let Some((invite, _)) = &invite {
+        if !services
+            .invites
+            .try_consume(&invite.id, Utc::now())
+            .await
+            .map_err(|_| CallbackFailure::ProviderError)?
+        {
+            return Err(CallbackFailure::InviteInvalid);
+        }
+    }
     services
         .auth_store
         .create_user_without_password(email, &roles, display_name)
@@ -517,15 +531,6 @@ async fn provision_account(
         .link_identity(email, identity, email)
         .await
         .map_err(|_| CallbackFailure::ProviderError)?;
-    // As with password invitations, consumption follows successful account,
-    // membership and identity writes. No provider credentials are persisted.
-    if let Some((invite, _)) = &invite {
-        services
-            .invites
-            .mark_consumed(&invite.id, Utc::now())
-            .await
-            .map_err(|_| CallbackFailure::ProviderError)?;
-    }
     services
         .auth_store
         .get_user(email)
