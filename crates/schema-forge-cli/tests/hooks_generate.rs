@@ -621,6 +621,305 @@ fn issue_41_additive_mode_inserts_new_schema_without_touching_customized_main() 
     assert!(out_dir.join("src/hooks/beta.rs").exists());
 }
 
+const CUSTOM_ALPHA_REGISTRATION: &str =
+    "        // Keep dependency injection and constructor formatting.\n\
+        .add_service(\n\
+            pb :: alpha :: alpha_hooks_server :: AlphaHooksServer :: new(\n\
+                hooks::alpha::Service::new(\n\
+                    Box::new(provision::LoggingExecutor),\n\
+                ),\n\
+            ),\n\
+        )\n";
+
+const DEFAULT_ALPHA_REGISTRATION: &str = "        .add_service(pb::alpha::alpha_hooks_server::AlphaHooksServer::new(hooks::alpha::Service::default()))\n";
+
+#[test]
+fn additive_generation_preserves_dependency_wiring_inside_service_markers() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+
+    let main_path = out_dir.join("src/main.rs");
+    let original = fs::read_to_string(&main_path).unwrap();
+    let customized = original.replace(DEFAULT_ALPHA_REGISTRATION, CUSTOM_ALPHA_REGISTRATION);
+    assert_ne!(original, customized);
+    fs::write(&main_path, &customized).unwrap();
+    fs::write(schema_dir.join("beta.schema"), SECOND_SCHEMA).unwrap();
+    run_generate(&schema_dir, &out_dir);
+
+    let generated = fs::read_to_string(&main_path).unwrap();
+    assert!(generated.contains(CUSTOM_ALPHA_REGISTRATION));
+    assert_eq!(generated.matches("AlphaHooksServer").count(), 1);
+    assert_eq!(generated.matches("BetaHooksServer").count(), 1);
+    run_generate(&schema_dir, &out_dir);
+    assert_eq!(fs::read_to_string(&main_path).unwrap(), generated);
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--check", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+}
+
+#[test]
+fn check_detects_preserve_marker_drift_without_writing() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+    let main_path = out_dir.join("src/main.rs");
+    let mod_path = out_dir.join("src/hooks/mod.rs");
+    let old_main = fs::read_to_string(&main_path).unwrap();
+    let old_mod = fs::read_to_string(&mod_path).unwrap();
+    fs::write(schema_dir.join("beta.schema"), SECOND_SCHEMA).unwrap();
+    run_generate(&schema_dir, &out_dir);
+    // Keep all Owned artifacts current, but restore only user-owned wiring.
+    fs::write(&main_path, &old_main).unwrap();
+    fs::write(&mod_path, &old_mod).unwrap();
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--check", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("src/main.rs"))
+        .stderr(predicates::str::contains("src/hooks/mod.rs"));
+    assert_eq!(fs::read_to_string(&main_path).unwrap(), old_main);
+    assert_eq!(fs::read_to_string(&mod_path).unwrap(), old_mod);
+    run_generate(&schema_dir, &out_dir);
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--check", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+}
+
+#[test]
+fn additive_generation_ignores_commented_and_quoted_registrations() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+    let main_path = out_dir.join("src/main.rs");
+    let original = fs::read_to_string(&main_path).unwrap();
+    let notes = concat!(
+        "        // .add_service(pb::alpha::alpha_hooks_server::AlphaHooksServer::new(unused))\n",
+        "        /* outer /* nested */ .add_service(pb::alpha::alpha_hooks_server::AlphaHooksServer::new(unused)) */\n",
+        "        .with_note(\".add_service(pb::alpha::alpha_hooks_server::AlphaHooksServer::new(unused))\")\n",
+        "        .with_note(r##\".add_service(pb::alpha::alpha_hooks_server::AlphaHooksServer::new(unused))\"##)\n",
+    );
+    fs::write(
+        &main_path,
+        original.replace(DEFAULT_ALPHA_REGISTRATION, notes),
+    )
+    .unwrap();
+    run_generate(&schema_dir, &out_dir);
+    let after = fs::read_to_string(&main_path).unwrap();
+    assert!(
+        after.contains(notes),
+        "user comments and expressions must survive"
+    );
+    assert!(
+        after.contains(DEFAULT_ALPHA_REGISTRATION),
+        "an actual registration must be appended"
+    );
+    run_generate(&schema_dir, &out_dir);
+    assert_eq!(fs::read_to_string(&main_path).unwrap(), after);
+}
+
+#[test]
+fn additive_generation_removes_obsolete_calls_and_preserves_active_constructors() {
+    for select_subset in [false, true] {
+        let workdir = TempDir::new().unwrap();
+        let schema_dir = workdir.path().join("schemas");
+        fs::create_dir_all(&schema_dir).unwrap();
+        fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+        fs::write(schema_dir.join("beta.schema"), SECOND_SCHEMA).unwrap();
+        let out_dir = workdir.path().join("hooks-service");
+        run_generate(&schema_dir, &out_dir);
+        let main_path = out_dir.join("src/main.rs");
+        let original = fs::read_to_string(&main_path).unwrap();
+        let default_beta = DEFAULT_ALPHA_REGISTRATION
+            .replace("alpha", "beta")
+            .replace("Alpha", "Beta");
+        let custom_beta = CUSTOM_ALPHA_REGISTRATION
+            .replace("alpha", "beta")
+            .replace("Alpha", "Beta");
+        let customized = original
+            .replace(DEFAULT_ALPHA_REGISTRATION, CUSTOM_ALPHA_REGISTRATION)
+            .replace(&default_beta, &custom_beta);
+        assert_ne!(original, customized);
+        fs::write(&main_path, &customized).unwrap();
+        let selection = if select_subset {
+            ["--schema", "Beta"].as_slice()
+        } else {
+            fs::remove_file(schema_dir.join("alpha.schema")).unwrap();
+            ["--all"].as_slice()
+        };
+        schema_forge()
+            .args(["hooks", "generate"])
+            .args(selection)
+            .args(["--check", "--schema-dir"])
+            .arg(&schema_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
+            .assert()
+            .failure();
+        assert_eq!(fs::read_to_string(&main_path).unwrap(), customized);
+        schema_forge()
+            .args(["hooks", "generate"])
+            .args(selection)
+            .arg("--schema-dir")
+            .arg(&schema_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
+            .assert()
+            .success();
+        let after = fs::read_to_string(&main_path).unwrap();
+        assert!(!after.contains("AlphaHooksServer"));
+        assert!(!after.contains("hooks::alpha::Service::new"));
+        assert!(!after.contains("schema_forge_hooks.alpha"));
+        assert!(after.contains(&custom_beta));
+        assert!(!fs::read_to_string(out_dir.join("src/hooks/mod.rs"))
+            .unwrap()
+            .contains("pub mod alpha;"));
+        assert!(!out_dir.join("proto/alpha_hooks.proto").exists());
+        schema_forge()
+            .args(["hooks", "generate"])
+            .args(selection)
+            .arg("--schema-dir")
+            .arg(&schema_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
+            .assert()
+            .success();
+        assert_eq!(fs::read_to_string(&main_path).unwrap(), after);
+    }
+}
+
+#[test]
+fn malformed_markers_fail_before_owned_artifacts_are_written() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+    let main_path = out_dir.join("src/main.rs");
+    let malformed = fs::read_to_string(&main_path)
+        .unwrap()
+        .replace("// SCHEMAFORGE_HOOKS_SERVICES_END", "// removed end marker");
+    fs::write(&main_path, &malformed).unwrap();
+    fs::write(schema_dir.join("beta.schema"), SECOND_SCHEMA).unwrap();
+    for check in [true, false] {
+        let mut command = schema_forge();
+        command.args(["hooks", "generate", "--all"]);
+        if check {
+            command.arg("--check");
+        }
+        command
+            .arg("--schema-dir")
+            .arg(&schema_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("no matching"));
+        assert_eq!(fs::read_to_string(&main_path).unwrap(), malformed);
+        assert!(!out_dir.join("proto/beta_hooks.proto").exists());
+        assert!(!out_dir.join("src/hooks/beta.rs").exists());
+    }
+}
+
+#[test]
+fn forced_check_reports_preserve_rewrites_and_leaves_files_unchanged() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+    let main_path = out_dir.join("src/main.rs");
+    let customized = fs::read_to_string(&main_path)
+        .unwrap()
+        .replace(DEFAULT_ALPHA_REGISTRATION, CUSTOM_ALPHA_REGISTRATION);
+    fs::write(&main_path, &customized).unwrap();
+    let cargo_path = out_dir.join("Cargo.toml");
+    let custom_cargo = format!(
+        "{}\n# custom dependency configuration\n",
+        fs::read_to_string(&cargo_path).unwrap()
+    );
+    fs::write(&cargo_path, &custom_cargo).unwrap();
+    for flag in ["--regenerate", "--force-user-files"] {
+        schema_forge()
+            .args([
+                "hooks",
+                "generate",
+                "--all",
+                "--check",
+                flag,
+                "--schema-dir",
+            ])
+            .arg(&schema_dir)
+            .arg("--out-dir")
+            .arg(&out_dir)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("src/main.rs"))
+            .stderr(predicates::str::contains("Cargo.toml"));
+        assert_eq!(fs::read_to_string(&main_path).unwrap(), customized);
+        assert_eq!(fs::read_to_string(&cargo_path).unwrap(), custom_cargo);
+    }
+}
+
+#[test]
+fn check_reports_legacy_upgrades_and_missing_preserve_files() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(schema_dir.join("alpha.schema"), TWO_SCHEMAS).unwrap();
+    let out_dir = workdir.path().join("hooks-service");
+    run_generate(&schema_dir, &out_dir);
+    let main_path = out_dir.join("src/main.rs");
+    let mod_path = out_dir.join("src/hooks/mod.rs");
+    let legacy = "// @generated by schema-forge hooks\npub mod alpha;\n";
+    fs::write(&main_path, legacy).unwrap();
+    fs::write(&mod_path, legacy).unwrap();
+    fs::remove_file(out_dir.join("src/hooks/alpha.rs")).unwrap();
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--check", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("src/main.rs"))
+        .stderr(predicates::str::contains("src/hooks/mod.rs"))
+        .stderr(predicates::str::contains("src/hooks/alpha.rs"));
+    assert_eq!(fs::read_to_string(&main_path).unwrap(), legacy);
+    assert_eq!(fs::read_to_string(&mod_path).unwrap(), legacy);
+    assert!(!out_dir.join("src/hooks/alpha.rs").exists());
+    run_generate(&schema_dir, &out_dir);
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--check", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+}
+
 #[test]
 fn issue_41_additive_mode_upgrades_legacy_owned_mod_rs() {
     // Before #41, `src/hooks/mod.rs` was Owned with an `@generated` header

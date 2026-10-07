@@ -16,7 +16,7 @@
 //!   src/
 //!     main.rs                          # Preserve — scaffolded once, user edits
 //!     hooks/
-//!       mod.rs                         # Owned
+//!       mod.rs                         # Preserve, additive module declarations
 //!       <schema>.rs                    # Preserve — scaffold once, user edits
 //!       <schema>/
 //!         <event>.prompt.md            # Owned prompt file per stub
@@ -155,8 +155,20 @@ fn generate(
         force_init: args.force_init,
     };
 
+    // Project Preserve changes once so dry-run and write mode agree, including
+    // additive wiring, missing scaffolds, legacy upgrades, and forced rewrites.
+    let preserved =
+        additive::project_preserve_files(&args.out_dir, &plan, &hooked, options, output)?;
+
     if args.check {
-        let report = check_plan(&args.out_dir, &plan, options)?;
+        let mut report = check_plan(&args.out_dir, &plan, options)?;
+        for change in &preserved {
+            if change.missing {
+                report.missing.push(change.relative_path.clone());
+            } else {
+                report.differing.push(change.relative_path.clone());
+            }
+        }
         if report.is_clean() {
             output.success("hooks generator is idempotent — no drift");
             return Ok(());
@@ -182,21 +194,13 @@ fn generate(
 
     write_plan(&args.out_dir, &plan, options)?;
 
-    // Additive splice pass (issue #41). Default mode: after `write_plan`
-    // has scaffolded missing files and left existing Preserve files
-    // alone, walk `src/main.rs` and `src/hooks/mod.rs` and surgically
-    // update the schema-driven regions so net-new schemas become visible
-    // to the server. `--regenerate` skips this step because it already
-    // rewrote both files from scratch.
-    if !args.regenerate {
-        let inserted = additive::splice_existing_files(&args.out_dir, &hooked, output)?;
-        if !inserted.is_empty() {
-            output.status(&format!(
-                "  additive: inserted {} net-new schema(s): {}",
-                inserted.len(),
-                inserted.join(", "),
-            ));
-        }
+    let inserted = additive::apply_preserve_changes(&args.out_dir, &preserved)?;
+    if !inserted.is_empty() {
+        output.status(&format!(
+            "  additive: inserted {} net-new schema(s): {}",
+            inserted.len(),
+            inserted.join(", "),
+        ));
     }
 
     output.success(&format!(
@@ -356,9 +360,11 @@ tonic-prost-build = "0.14"
 // per-service constructor wiring). When a new `@hook`-annotated schema is
 // added to the project, the generator must splice new lines into those
 // files *without* rewriting everything else. Stable marker comments bound
-// the regions the generator owns — everything between `*_BEGIN` and
-// `*_END` is regenerated from the current schema list on every run, and
-// everything outside is left alone.
+// the regions that receive schema wiring. PB and module declarations are
+// regenerated from the current schema list. Service registrations are retained
+// byte for byte while selected, with missing registrations appended and
+// obsolete schema registrations removed. Everything outside
+// the markers is left alone.
 //
 // See issue #41 for the motivating scenario.
 pub(crate) const MOD_BEGIN: &str =
@@ -396,7 +402,7 @@ fn render_mod_line(h: &SchemaHooks) -> String {
 
 fn render_main_rs(hooked: &[SchemaHooks]) -> String {
     let mut s = String::new();
-    s.push_str("//! Scaffolded once by `schema-forge hooks generate` — edit freely.\n");
+    s.push_str("//! Scaffolded once by `schema-forge hooks generate`, edit freely.\n");
     s.push_str("//!\n");
     s.push_str("//! Subsequent runs are additive: new `@hook`-annotated schemas get\n");
     s.push_str("//! spliced into `mod pb { ... }` and the `GrpcServicesBuilder` chain\n");
@@ -405,6 +411,19 @@ fn render_main_rs(hooked: &[SchemaHooks]) -> String {
     s.push_str("//! validation, and per-service constructor wiring will survive\n");
     s.push_str("//! every regen. Use `--regenerate` to opt out and rewrite this\n");
     s.push_str("//! file from scratch.\n");
+    s.push_str("//!\n");
+    s.push_str("//! # Dependency wiring\n");
+    s.push_str("//!\n");
+    s.push_str("//! Replace `hooks::<schema>::Service::default()` with your constructor,\n");
+    s.push_str("//! for example `hooks::<schema>::Service::new(executor)`, directly in\n");
+    s.push_str("//! the `.add_service(...)` registration below. Keep the qualified\n");
+    s.push_str("//! `pb::<schema>::<schema>_hooks_server::<Schema>HooksServer` path so\n");
+    s.push_str("//! additive generation can recognize the registration. Constructor\n");
+    s.push_str("//! arguments and surrounding comments survive subsequent runs unchanged.\n");
+    s.push_str("//! New schemas receive a default constructor to customize in the same way.\n");
+    s.push_str("//! Removing a schema from generation removes its service registration;\n");
+    s.push_str("//! constructors for the remaining schemas stay unchanged.\n");
+    s.push_str("//! `--regenerate` and `--force-user-files` reset this wiring to the scaffold.\n");
     s.push_str("//!\n");
     s.push_str("//! # Who is allowed to call this\n");
     s.push_str("//!\n");
@@ -938,163 +957,339 @@ fn render_prompt(h: &SchemaHooks, event: HookEvent, intent: &str) -> Result<Stri
 // Additive splice pass (issue #41)
 // ---------------------------------------------------------------------------
 
-/// Surgical in-place update of `src/main.rs` and `src/hooks/mod.rs` for the
-/// default "additive" mode of `schema-forge hooks generate`.
-///
-/// The scaffolded templates for both files carry stable marker comments
-/// (see [`MOD_BEGIN`], [`PB_BEGIN`], [`SVC_BEGIN`]) that fence the regions
-/// the generator owns. Everything inside a `*_BEGIN` / `*_END` pair is
-/// regenerated from the current schema list; everything outside is
-/// user-owned and never touched. The pass:
-///
-/// 1. Loads the on-disk copy of each file (if present).
-/// 2. Detects legacy layouts that predate the markers and upgrades them in
-///    place by replacing the whole file with the new scaffold — safe
-///    because legacy files were written as `Owned` with a `@generated`
-///    header and the one-time upgrade inherits that trust.
-/// 3. Splices the schema-driven regions inside `mod pb { ... }`,
-///    `Server::builder()`, and `src/hooks/mod.rs` with the lines derived
-///    from the full schema list.
-///
-/// Returns the list of schemas that were *newly* referenced after the
-/// splice (best-effort: compares the old `pub mod <snake>` set against the
-/// new one from `src/hooks/mod.rs`).
+/// Hook-local projections of user-owned scaffolds. Reads and writes stay at
+/// the boundary; the marker transformations are pure and shared by both modes.
 mod additive {
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    use heck::ToPascalCase;
 
     use super::{
         render_hooks_mod, render_main_rs, render_mod_line, render_pb_entry, render_service_line,
-        SchemaHooks, MOD_BEGIN, MOD_END, PB_BEGIN, PB_END, SVC_BEGIN, SVC_END,
+        FilePlan, SchemaHooks, WriteMode, WriteOptions, MOD_BEGIN, MOD_END, PB_BEGIN, PB_END,
+        SVC_BEGIN, SVC_END,
     };
     use crate::error::CliError;
     use crate::output::OutputContext;
 
-    pub(super) fn splice_existing_files(
+    pub(super) struct PreserveChange {
+        pub relative_path: PathBuf,
+        pub contents: String,
+        pub missing: bool,
+    }
+
+    pub(super) fn project_preserve_files(
         out_dir: &Path,
+        plan: &[FilePlan],
         hooked: &[SchemaHooks],
+        options: WriteOptions,
         output: &OutputContext,
-    ) -> Result<Vec<String>, CliError> {
-        let main_path = out_dir.join("src/main.rs");
-        let mod_path = out_dir.join("src/hooks/mod.rs");
-
-        let before_mods = read_mod_set(&mod_path);
-        splice_main_rs(&main_path, hooked, output)?;
-        splice_mod_rs(&mod_path, hooked, output)?;
-        let after_mods = read_mod_set(&mod_path);
-
-        let inserted: Vec<String> = after_mods
+    ) -> Result<Vec<PreserveChange>, CliError> {
+        let mut changes = Vec::new();
+        for entry in plan
             .iter()
-            .filter(|name| !before_mods.contains(*name))
-            .cloned()
-            .collect();
-        Ok(inserted)
+            .filter(|entry| entry.mode == WriteMode::Preserve)
+        {
+            let path = out_dir.join(&entry.relative_path);
+            let existing = read_if_exists(&path)?;
+            let desired = match existing.as_deref() {
+                None => entry.contents.clone(),
+                Some(_) if options.force_user_files => entry.contents.clone(),
+                Some(source) => match entry.relative_path.to_str() {
+                    Some("src/main.rs") => {
+                        report_layout(source, PB_BEGIN, &path, output);
+                        project_main_rs(source, hooked, &path)?
+                    }
+                    Some("src/hooks/mod.rs") => {
+                        report_layout(source, MOD_BEGIN, &path, output);
+                        project_mod_rs(source, hooked, &path)?
+                    }
+                    _ => source.to_string(),
+                },
+            };
+            if existing.as_deref() != Some(desired.as_str()) {
+                changes.push(PreserveChange {
+                    relative_path: entry.relative_path.clone(),
+                    contents: desired,
+                    missing: existing.is_none(),
+                });
+            }
+        }
+        Ok(changes)
     }
 
-    fn splice_main_rs(
-        path: &Path,
-        hooked: &[SchemaHooks],
-        output: &OutputContext,
-    ) -> Result<(), CliError> {
-        let Some(existing) = read_if_exists(path)? else {
-            return Ok(());
-        };
+    fn report_layout(source: &str, marker: &str, path: &Path, output: &OutputContext) {
+        if source.contains(marker) {
+            return;
+        }
+        if source.contains("@generated by schema-forge hooks") {
+            output.status(&format!(
+                "  additive: upgrading legacy {} to marker-bounded layout",
+                path.display()
+            ));
+        } else {
+            output.warn(&format!(
+                "additive: {} is missing insertion markers, skipping splice. \
+                 Re-run with --regenerate to rewrite from the current scaffold, \
+                 or restore the SCHEMAFORGE_HOOKS insertion markers by hand.",
+                path.display()
+            ));
+        }
+    }
 
-        // Legacy file upgrade path: the file was generated before issue
-        // #41 added insertion markers. Detect by "no PB_BEGIN marker" AND
-        // "has the old generator header". Rewrite from scratch — we can
-        // do this safely because a legacy main.rs was either Preserve (so
-        // only hand-written content, which the upgrade still has to opt
-        // into via --regenerate) or, pre-#41, Owned with a @generated
-        // header. We *only* upgrade the Owned legacy case.
+    pub(super) fn apply_preserve_changes(
+        out_dir: &Path,
+        changes: &[PreserveChange],
+    ) -> Result<Vec<String>, CliError> {
+        let mod_path = out_dir.join("src/hooks/mod.rs");
+        let before_mods = read_mod_set(&mod_path);
+        for change in changes.iter().filter(|change| !change.missing) {
+            let path = out_dir.join(&change.relative_path);
+            fs::write(&path, &change.contents).map_err(|source| CliError::Io { path, source })?;
+        }
+        let after_mods = read_mod_set(&mod_path);
+        Ok(after_mods.difference(&before_mods).cloned().collect())
+    }
+
+    fn project_main_rs(
+        existing: &str,
+        hooked: &[SchemaHooks],
+        path: &Path,
+    ) -> Result<String, CliError> {
         if !existing.contains(PB_BEGIN) {
-            if existing.contains("@generated by schema-forge hooks") {
-                let fresh = render_main_rs(hooked);
-                fs::write(path, fresh).map_err(|e| CliError::Config {
-                    message: format!("writing {}: {e}", path.display()),
-                })?;
-                output.status(&format!(
-                    "  additive: upgraded legacy {} to marker-bounded layout",
-                    path.display()
-                ));
-                return Ok(());
-            }
-            output.warn(&format!(
-                "additive: {} is missing insertion markers — skipping splice. \
-                 Re-run with --regenerate to rewrite from the current scaffold, \
-                 or add `// SCHEMAFORGE_HOOKS_PB_BEGIN` / `_END` and \
-                 `// SCHEMAFORGE_HOOKS_SERVICES_BEGIN` / `_END` by hand.",
-                path.display()
-            ));
-            return Ok(());
+            return Ok(if existing.contains("@generated by schema-forge hooks") {
+                render_main_rs(hooked)
+            } else {
+                existing.to_string()
+            });
         }
-
         let pb_body: String = hooked.iter().map(render_pb_entry).collect();
-        let svc_body: String = hooked.iter().map(render_service_line).collect();
-
-        let spliced = splice_region(&existing, PB_BEGIN, PB_END, &pb_body, path)?;
-        let spliced = splice_region(&spliced, SVC_BEGIN, SVC_END, &svc_body, path)?;
-
-        if spliced != existing {
-            fs::write(path, spliced).map_err(|e| CliError::Config {
-                message: format!("writing {}: {e}", path.display()),
-            })?;
-        }
-        Ok(())
+        let services = &existing[region_range(existing, SVC_BEGIN, SVC_END, path)?];
+        let svc_body = project_services(services, hooked);
+        let spliced = splice_region(existing, PB_BEGIN, PB_END, &pb_body, path)?;
+        splice_region(&spliced, SVC_BEGIN, SVC_END, &svc_body, path)
     }
 
-    fn splice_mod_rs(
-        path: &Path,
+    fn project_mod_rs(
+        existing: &str,
         hooked: &[SchemaHooks],
-        output: &OutputContext,
-    ) -> Result<(), CliError> {
-        let Some(existing) = read_if_exists(path)? else {
-            return Ok(());
-        };
-
+        path: &Path,
+    ) -> Result<String, CliError> {
         if !existing.contains(MOD_BEGIN) {
-            if existing.contains("@generated by schema-forge hooks") {
-                let fresh = render_hooks_mod(hooked);
-                fs::write(path, fresh).map_err(|e| CliError::Config {
-                    message: format!("writing {}: {e}", path.display()),
-                })?;
-                output.status(&format!(
-                    "  additive: upgraded legacy {} to marker-bounded layout",
-                    path.display()
-                ));
-                return Ok(());
-            }
-            output.warn(&format!(
-                "additive: {} is missing insertion markers — skipping splice. \
-                 Re-run with --regenerate to rewrite from the current scaffold, \
-                 or add `// SCHEMAFORGE_HOOKS_MODS_BEGIN` / `_END` by hand.",
-                path.display()
-            ));
-            return Ok(());
+            return Ok(if existing.contains("@generated by schema-forge hooks") {
+                render_hooks_mod(hooked)
+            } else {
+                existing.to_string()
+            });
         }
-
         let mod_body: String = hooked.iter().map(render_mod_line).collect();
-        let spliced = splice_region(&existing, MOD_BEGIN, MOD_END, &mod_body, path)?;
-        if spliced != existing {
-            fs::write(path, spliced).map_err(|e| CliError::Config {
-                message: format!("writing {}: {e}", path.display()),
-            })?;
-        }
-        Ok(())
+        splice_region(existing, MOD_BEGIN, MOD_END, &mod_body, path)
     }
 
-    /// Replace the content strictly between `begin` and `end` marker lines
-    /// in `existing`. Both markers must appear and `begin` must come first.
-    /// The returned string preserves exact leading content (including the
-    /// `begin` line + its trailing newline), replaces the middle with
-    /// `body`, and keeps the tail (starting with the `end` line).
-    pub(super) fn splice_region(
+    struct Registration<'a> {
+        schema: &'a str,
+        span: std::ops::Range<usize>,
+    }
+
+    /// Preserve active calls verbatim, remove obsolete calls without disturbing
+    /// surrounding user comments, and append registrations for new schemas.
+    fn project_services(source: &str, hooked: &[SchemaHooks]) -> String {
+        let registrations = registrations(source);
+        let mut projected = String::new();
+        let mut copied = 0;
+        for registration in &registrations {
+            if !hooked
+                .iter()
+                .any(|schema| schema.snake == registration.schema)
+            {
+                projected.push_str(&source[copied..registration.span.start]);
+                copied = registration.span.end;
+            }
+        }
+        projected.push_str(&source[copied..]);
+        for schema in hooked {
+            if !registrations.iter().any(|call| call.schema == schema.snake) {
+                projected.push_str(&render_service_line(schema));
+            }
+        }
+        projected
+    }
+
+    /// Recognize a qualified hook server path inside an actual add_service
+    /// argument. Constructor choice and Rust formatting do not affect identity.
+    fn registrations(source: &str) -> Vec<Registration<'_>> {
+        let tokens = rust_tokens(source);
+        let mut registrations = Vec::new();
+        let mut index = 0;
+        while index + 2 < tokens.len() {
+            if tokens[index].text != "."
+                || tokens[index + 1].text != "add_service"
+                || tokens[index + 2].text != "("
+            {
+                index += 1;
+                continue;
+            }
+            let arguments = &tokens[index + 3..];
+            let mut depth = 1;
+            let Some(end) = arguments.iter().position(|token| {
+                match token.text {
+                    "(" => depth += 1,
+                    ")" => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            }) else {
+                break;
+            };
+            if let Some(schema) = arguments[..end].windows(7).find_map(qualified_schema) {
+                registrations.push(Registration {
+                    schema,
+                    span: tokens[index].offset..arguments[end].offset + 1,
+                });
+            }
+            index += 3 + end + 1;
+        }
+        registrations
+    }
+
+    fn qualified_schema<'a>(path: &[Token<'a>]) -> Option<&'a str> {
+        let schema = path[2].text;
+        (path[0].text == "pb"
+            && path[1].text == "::"
+            && path[3].text == "::"
+            && path[4].text == format!("{schema}_hooks_server")
+            && path[5].text == "::"
+            && path[6].text == format!("{}HooksServer", schema.to_pascal_case()))
+        .then_some(schema)
+    }
+
+    struct Token<'a> {
+        text: &'a str,
+        offset: usize,
+    }
+
+    /// Minimal lexical scan for path recognition, not a Rust parser. Literals
+    /// and comments contribute no tokens, including nested block comments and
+    /// raw strings. Every other token is retained to avoid joining paths across
+    /// punctuation or accidentally interpreting a string as a registration.
+    fn rust_tokens(source: &str) -> Vec<Token<'_>> {
+        let mut tokens = Vec::new();
+        let mut index = 0;
+        while index < source.len() {
+            let rest = &source[index..];
+            if let Some(length) = skipped_token_len(rest) {
+                index += length;
+                continue;
+            }
+            let Some(first) = rest.chars().next() else {
+                break;
+            };
+            let length = if rest.starts_with("::") {
+                2
+            } else if first.is_alphabetic() || first == '_' {
+                rest.char_indices()
+                    .find(|(_, c)| !c.is_alphanumeric() && *c != '_')
+                    .map_or(rest.len(), |(offset, _)| offset)
+            } else {
+                first.len_utf8()
+            };
+            tokens.push(Token {
+                text: &source[index..index + length],
+                offset: index,
+            });
+            index += length;
+        }
+        tokens
+    }
+
+    fn skipped_token_len(source: &str) -> Option<usize> {
+        let first = source.chars().next()?;
+        if first.is_whitespace() {
+            return Some(first.len_utf8());
+        }
+        if source.starts_with("//") {
+            return Some(source.find('\n').unwrap_or(source.len()));
+        }
+        if source.starts_with("/*") {
+            return Some(block_comment_len(source));
+        }
+        if first == '"' {
+            return Some(quoted_literal_len(source, '"'));
+        }
+        if let Some(after_quote) = source.strip_prefix('\'') {
+            let character = after_quote.chars().next()?;
+            if character == '\\' || after_quote[character.len_utf8()..].starts_with('\'') {
+                return Some(quoted_literal_len(source, '\''));
+            }
+        }
+        raw_literal_len(source)
+    }
+
+    fn block_comment_len(source: &str) -> usize {
+        let mut depth = 1;
+        let mut index = 2;
+        while index < source.len() {
+            if source[index..].starts_with("/*") {
+                depth += 1;
+                index += 2;
+            } else if source[index..].starts_with("*/") {
+                depth -= 1;
+                index += 2;
+                if depth == 0 {
+                    return index;
+                }
+            } else {
+                index += source[index..].chars().next().map_or(1, char::len_utf8);
+            }
+        }
+        source.len()
+    }
+
+    fn quoted_literal_len(source: &str, quote: char) -> usize {
+        let mut escaped = false;
+        for (index, character) in source.char_indices().skip(1) {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote {
+                return index + character.len_utf8();
+            }
+        }
+        source.len()
+    }
+
+    fn raw_literal_len(source: &str) -> Option<usize> {
+        let prefix = if source.starts_with("br") || source.starts_with("cr") {
+            2
+        } else if source.starts_with('r') {
+            1
+        } else {
+            return None;
+        };
+        let hashes = source[prefix..]
+            .bytes()
+            .take_while(|byte| *byte == b'#')
+            .count();
+        let quote = prefix + hashes;
+        if source.as_bytes().get(quote) != Some(&b'"') {
+            return None;
+        }
+        let suffix = format!("\"{}", "#".repeat(hashes));
+        Some(
+            source[quote + 1..]
+                .find(&suffix)
+                .map_or(source.len(), |end| quote + 1 + end + suffix.len()),
+        )
+    }
+
+    fn region_range(
         existing: &str,
         begin: &str,
         end: &str,
-        body: &str,
         path: &Path,
-    ) -> Result<String, CliError> {
+    ) -> Result<std::ops::Range<usize>, CliError> {
         let begin_idx = existing.find(begin).ok_or_else(|| CliError::Config {
             message: format!(
                 "{}: additive insertion marker `{begin}` not found",
@@ -1102,11 +1297,10 @@ mod additive {
             ),
         })?;
         let after_begin = begin_idx + begin.len();
-        // Skip exactly one trailing newline after the BEGIN marker so the
-        // inserted body starts on the next line.
-        let body_start = match existing.as_bytes().get(after_begin) {
-            Some(b'\n') => after_begin + 1,
-            _ => after_begin,
+        let body_start = if existing.as_bytes().get(after_begin) == Some(&b'\n') {
+            after_begin + 1
+        } else {
+            after_begin
         };
         let end_idx = existing[body_start..]
             .find(end)
@@ -1117,41 +1311,48 @@ mod additive {
                     path.display()
                 ),
             })?;
+        Ok(body_start..end_idx)
+    }
+
+    /// Replace only the bytes between the marker lines.
+    pub(super) fn splice_region(
+        existing: &str,
+        begin: &str,
+        end: &str,
+        body: &str,
+        path: &Path,
+    ) -> Result<String, CliError> {
+        let range = region_range(existing, begin, end, path)?;
         let mut out = String::with_capacity(existing.len() + body.len());
-        out.push_str(&existing[..body_start]);
+        out.push_str(&existing[..range.start]);
         out.push_str(body);
-        out.push_str(&existing[end_idx..]);
+        out.push_str(&existing[range.end..]);
         Ok(out)
     }
 
     fn read_if_exists(path: &Path) -> Result<Option<String>, CliError> {
         match fs::read_to_string(path) {
             Ok(s) => Ok(Some(s)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(CliError::Config {
-                message: format!("reading {}: {e}", path.display()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(CliError::Io {
+                path: path.to_path_buf(),
+                source,
             }),
         }
     }
 
-    /// Cheap set of `pub mod <name>;` declarations parsed out of a mod.rs
-    /// between the insertion markers. Used for the inserted-schema summary
-    /// output; tolerates a missing file by returning an empty set.
     fn read_mod_set(path: &Path) -> std::collections::BTreeSet<String> {
-        let Ok(src) = fs::read_to_string(path) else {
+        let Ok(source) = fs::read_to_string(path) else {
             return Default::default();
         };
-        let Some(begin) = src.find(MOD_BEGIN) else {
+        let Ok(range) = region_range(&source, MOD_BEGIN, MOD_END, path) else {
             return Default::default();
         };
-        let Some(end) = src[begin..].find(MOD_END).map(|i| begin + i) else {
-            return Default::default();
-        };
-        src[begin..end]
+        source[range]
             .lines()
-            .filter_map(|l| {
-                let t = l.trim();
-                t.strip_prefix("pub mod ")
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("pub mod ")
                     .and_then(|rest| rest.strip_suffix(';'))
                     .map(str::to_string)
             })

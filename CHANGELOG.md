@@ -39,6 +39,9 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Fixed
 
+- `hooks generate` preserves existing service constructors and dependency wiring
+  when adding hooks for another schema. `--check` detects pending changes to the
+  scaffolded registration regions and respects explicit rewrite flags.
 - `schemaforge policies validate` now checks custom policies against the
   built-in system schemas (`User`, `TenantMembership`, `OAuthIdentity`,
   `WebhookSubscription`), as `serve` does. Policies that reference them,
