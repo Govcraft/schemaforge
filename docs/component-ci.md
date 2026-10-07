@@ -6,6 +6,17 @@ component.
 Release packaging and signing wait for successful validation of the same tag
 commit. The required branch-protection check remains `Required CI`.
 
+A normal main push reuses successful PR validation when GitHub confirms that
+the merged commit has exactly the same file tree as the tested provisional
+merge, and that the PR covered every component selected for the push plus
+metadata validation. Successful PR CI saves a small evidence artifact after
+the required gate. Main verifies its repository, run, attempt, PR head, tested
+commit and parents, tree, coverage, and successful `Required CI` job before
+skipping repeated validation. The workflow summary links the source PR run.
+Missing, expired, malformed, or inaccessible evidence falls back to component
+validation. Direct pushes and batch pushes without matching coverage also
+validate normally. Nightly, manual, and release runs always validate afresh.
+
 ## Change selection
 
 `scripts/ci/select_checks.py` compares the pull request merge commit with the
@@ -130,6 +141,8 @@ a candidate tooling binary from another commit.
 
 Linux test jobs install a pinned prebuilt nextest through a commit-pinned install
 action. Component cache keys keep portable and backend feature graphs separate.
+Component test compilation/execution, clippy, and tooling doctests have separate
+visible steps and use the same package and feature selection.
 The PostgreSQL storage, runtime, and CLI checks use one feature set with OAuth
 and SSE enabled. A parallel job validates the deliberately different
 extension-disabled graph. Both jobs must succeed before the PostgreSQL reusable

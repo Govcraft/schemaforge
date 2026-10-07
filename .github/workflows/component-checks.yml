@@ -16,31 +16,17 @@ jobs:
     name: ${{ inputs.component == 'tooling' && 'Portable tooling tests, lints, and doctests' || inputs.component == 'runtime' && 'Portable runtime tests and lints' || inputs.component == 'cli' && 'Server CLI tests and lints' || 'Unknown component' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      COMPONENT: ${{ inputs.component }}
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: ${{ inputs.component }}-portable
-      - name: Test and lint component
-        env:
-          COMPONENT: ${{ inputs.component }}
-        run: |
-          features=()
-          case "$COMPONENT" in
-            tooling)
-              packages=(-p schema-forge-core -p schema-forge-cel -p schema-forge-dsl -p schema-forge-config -p schema-forge-codegen -p schema-forge-signing -p schema-forge-cli)
-              ;;
-            cli)
-              packages=(-p schema-forge-cli)
-              features=(--features "server,oauth,sse")
-              ;;
-            runtime)
-              packages=(-p schema-forge-acton -p schema-forge-backend)
-              ;;
-            *) echo "Unknown component: $COMPONENT" >&2; exit 1 ;;
-          esac
-          cargo nextest run --locked "${packages[@]}" --no-default-features "${features[@]}" --no-fail-fast
-          cargo clippy --locked "${packages[@]}" --no-default-features "${features[@]}" --all-targets -- -D warnings
-          if [[ "$COMPONENT" == tooling ]]; then
-            cargo test --locked "${packages[@]}" --no-default-features --doc
-          fi
+      - name: Compile and run component tests
+        run: bash scripts/ci/check_component.sh tests
+      - name: Lint all component targets
+        run: bash scripts/ci/check_component.sh lint
+      - name: Run tooling doctests
+        if: inputs.component == 'tooling'
+        run: bash scripts/ci/check_component.sh doctests

@@ -103,6 +103,26 @@ class GateTests(unittest.TestCase):
         del jobs["changes"]["outputs"]["site"]
         self.assertTrue(check_required(jobs))
 
+    def test_only_verified_main_reuse_allows_skipped_validation(self):
+        jobs = self.required_results()
+        jobs["changes"]["outputs"].update(reused="true", reuse_run="123")
+        jobs["validation"]["result"] = "skipped"
+        self.assertEqual(check_required(jobs, "push", "refs/heads/main"), [])
+        for event, ref in (("pull_request", "refs/heads/main"), ("schedule", "refs/heads/main"),
+                           ("workflow_dispatch", "refs/heads/main"), ("push", "refs/tags/v1.0.0"),
+                           ("push", "refs/heads/other")):
+            self.assertTrue(check_required(jobs, event, ref))
+        for value in (None, "", "false", "0", "abc"):
+            jobs["changes"]["outputs"]["reuse_run"] = value
+            self.assertTrue(check_required(jobs, "push", "refs/heads/main"))
+
+    def test_failed_lookup_and_invalid_reuse_decisions_cannot_allow_skipped_validation(self):
+        jobs = self.required_results()
+        jobs["validation"]["result"] = "skipped"
+        for value in ("false", "", "TRUE", True, None):
+            jobs["changes"]["outputs"]["reused"] = value
+            self.assertTrue(check_required(jobs, "push", "refs/heads/main"))
+
     def test_cli_rejects_malformed_job_data(self):
         script = Path(__file__).with_name("check_results.py")
         for payload in ("not-json", "[]", '{"metadata": false}'):

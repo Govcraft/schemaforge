@@ -11,8 +11,12 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- Main pushes reuse successful PR CI when the exact file tree and required
+  component coverage match verified validation evidence. Missing evidence runs
+  normal component validation; nightly, manual, and release runs validate afresh.
+  Portable component tests, clippy, and doctests appear as separate CI steps.
 - Pull requests select affected component checks. Version-only release preparation
-  uses metadata validation; main, nightly, and release tags run full validation.
+  uses metadata validation; nightly and release tags run full validation.
   Release packaging waits for tests of the tagged commit. CI installs prebuilt
   nextest and separates PostgreSQL from SurrealDB checks.
 - Site generation and generated-file primitives live in `schema-forge-codegen`,
