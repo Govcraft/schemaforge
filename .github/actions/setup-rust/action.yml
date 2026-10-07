@@ -16,8 +16,7 @@ runs:
         BUILD_PACKAGES: ${{ inputs.packages }}
       run: |
         read -r -a packages <<< "$BUILD_PACKAGES"
-        sudo apt-get update
-        sudo apt-get install -y "${packages[@]}"
+        python3 scripts/ci/install_prerequisites.py "${packages[@]}"
     - uses: dtolnay/rust-toolchain@1.97.1
     - uses: ./.github/actions/rust-cache
       with:

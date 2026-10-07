@@ -73,7 +73,7 @@ jobs:
           save: 'false'
       - name: Install Linux prerequisites for a missing cache
         if: steps.probe.outputs.cache-hit != 'true' && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev
+        run: python3 scripts/ci/install_prerequisites.py protobuf-compiler libkrb5-dev
       - name: Install Windows prerequisites for a missing cache
         if: steps.probe.outputs.cache-hit != 'true' && runner.os == 'Windows'
         shell: pwsh

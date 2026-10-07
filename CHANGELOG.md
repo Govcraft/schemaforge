@@ -11,6 +11,8 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- Bound Ubuntu CI prerequisite installation and use the public HTTPS archive instead of the stalled Azure mirror. Skip installed packages and retain network limits for later browser prerequisites.
+
 - Permit token-only service principals to subscribe with a signed tenant chain. Streams revalidate the hierarchy and expiry and retain per-event Cedar filtering and stored-account membership checks.
 
 - Expose each record's intrinsic `id` to Cedar policies, with an empty ID for placeholders. Reserve `id` from schema fields so signed principal claims can safely scope reads to one record.
