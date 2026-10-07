@@ -13,6 +13,10 @@ APT_LIMITS = '''Acquire::http::Timeout "15";
 Acquire::https::Timeout "15";
 Acquire::Retries "1";
 Acquire::Languages "none";
+Acquire::IndexTargets::deb::DEP-11::DefaultEnabled "false";
+Acquire::IndexTargets::deb::DEP-11-icons-small::DefaultEnabled "false";
+Acquire::IndexTargets::deb::DEP-11-icons::DefaultEnabled "false";
+Acquire::IndexTargets::deb::DEP-11-icons-hidpi::DefaultEnabled "false";
 '''
 
 
@@ -34,6 +38,25 @@ def missing_packages(packages, run=subprocess.run):
         if result.returncode != 0 or result.stdout.strip() != "install ok installed":
             missing.append(name)
     return missing
+
+
+def required_ubuntu_components(contents):
+    """CI prerequisites and browser libraries use main and universe, not driver catalogs."""
+    lines = []
+    for line in contents.splitlines(keepends=True):
+        if line.startswith("Components:"):
+            components = [name for name in line.split()[1:] if name not in ("restricted", "multiverse")]
+            # Leave unknown standalone repositories intact instead of creating
+            # an empty component declaration.
+            if components:
+                line = "Components: " + " ".join(components) + ("\n" if line.endswith("\n") else "")
+        elif line.startswith(("deb ", "deb-src ")) and any(uri in line for uri in (
+                "archive.ubuntu.com/ubuntu", "security.ubuntu.com/ubuntu",
+                "ports.ubuntu.com/ubuntu-ports", "mirror+file:/etc/apt/apt-mirrors.txt")):
+            words = [word for word in line.split() if word not in ("restricted", "multiverse")]
+            line = " ".join(words) + ("\n" if line.endswith("\n") else "")
+        lines.append(line)
+    return "".join(lines)
 
 
 def install(packages, environment, release, apt_root=Path("/etc/apt"), run=subprocess.run):
@@ -61,6 +84,7 @@ def install(packages, environment, release, apt_root=Path("/etc/apt"), run=subpr
         if path.exists():
             contents = path.read_text()
             updated = re.sub(r"https?://azure\.archive\.ubuntu\.com/ubuntu/?", mirror, contents)
+            updated = required_ubuntu_components(updated)
             if updated != contents:
                 write(path, updated)
     write(apt_root / "apt.conf.d/99schemaforge-ci", APT_LIMITS)

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
-from install_prerequisites import install, missing_packages, ubuntu_mirror
+from install_prerequisites import APT_LIMITS, install, missing_packages, required_ubuntu_components, ubuntu_mirror
 
 
 HOSTED = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"}
@@ -72,6 +72,30 @@ class PrerequisiteTests(unittest.TestCase):
             if not failure:
                 self.assertIn("180s", apt[1])
                 self.assertEqual(apt[1][-1], "protobuf-compiler")
+
+    def test_only_needed_ubuntu_package_components_are_fetched(self):
+        source = "URIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: noble noble-updates noble-security\nComponents: main restricted universe multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+        expected = source.replace("Components: main restricted universe multiverse", "Components: main universe")
+        self.assertEqual(required_ubuntu_components(source), expected)
+        legacy = "deb [signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu/ noble main restricted universe multiverse\n"
+        self.assertEqual(required_ubuntu_components(legacy), legacy.replace("main restricted universe multiverse", "main universe"))
+        external = "deb https://example.invalid/packages stable main restricted\n"
+        self.assertEqual(required_ubuntu_components(external), external)
+        self.assertEqual(required_ubuntu_components("Components: restricted\n"), "Components: restricted\n")
+        self.assertIn('Acquire::IndexTargets::deb::DEP-11::DefaultEnabled "false";', APT_LIMITS)
+
+    def test_installed_packages_still_configure_minimal_later_browser_indexes(self):
+        run = self.runner([True])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sources.list.d").mkdir()
+            source = root / "sources.list.d/ubuntu.sources"
+            source.write_text("URIs: http://azure.archive.ubuntu.com/ubuntu/\nComponents: main restricted universe multiverse\nSigned-By: unchanged\n")
+            install(["protobuf-compiler"], HOSTED, {"ID": "ubuntu"}, root, run)
+            writes = {call.args[0][-1]: call.kwargs["input"] for call in run.call_args_list if "tee" in call.args[0]}
+            self.assertIn("Components: main universe\n", writes[str(source)])
+            self.assertIn("Signed-By: unchanged\n", writes[str(source)])
+        self.assertFalse(any("apt-get" in call.args[0] for call in run.call_args_list))
 
     def test_arm_releases_use_the_ports_archive(self):
         self.assertEqual(ubuntu_mirror("arm64"), "https://ports.ubuntu.com/ubuntu-ports/")
