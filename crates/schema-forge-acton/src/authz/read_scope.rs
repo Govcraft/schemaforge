@@ -122,6 +122,10 @@ fn compatible_resource_shape(snapshot: &PolicyStoreSnapshot, schema: &SchemaDefi
         return false;
     }
     let mut attributes = HashMap::new();
+    attributes.insert(
+        "id".into(),
+        RestrictedExpression::new_string("_shape_witness".into()),
+    );
     for field in &schema.fields {
         if field.is_hidden() {
             continue;

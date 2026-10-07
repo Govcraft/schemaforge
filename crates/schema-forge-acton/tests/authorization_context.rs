@@ -71,6 +71,97 @@ const GUARDED_FORBID: &str = r#"
 "#;
 
 #[test]
+fn signed_claim_scopes_reads_to_the_intrinsic_record_id() {
+    use schema_forge_acton::authz::principal_claims::{
+        PrincipalClaimConfigEntry, PrincipalClaimType,
+    };
+    let schema = schema_forge_dsl::parse(
+        r#"@access(read: ["reviewer"]) schema World { title: text required }"#,
+    )
+    .unwrap()
+    .remove(0);
+    let mappings = PrincipalClaimMappings::from_config(&BTreeMap::from([(
+        "world_id".into(),
+        PrincipalClaimConfigEntry {
+            claim: None,
+            claim_type: PrincipalClaimType::String,
+            required: false,
+            default: None,
+            source: None,
+        },
+    )]))
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("scope.cedar"),
+        r#"
+        forbid(principal, action == Action::"ReadWorld", resource is World)
+        when { !context.resource_is_placeholder &&
+            !(principal has world_id && resource.id == principal.world_id) };
+        forbid(principal, action == Action::"ReadWorld", resource is World)
+        when { context.resource_is_placeholder && resource.id != "" };
+    "#,
+    )
+    .unwrap();
+    let store = Arc::new(PolicyStore::new(
+        PolicyStoreSnapshot::from_schemas(
+            std::slice::from_ref(&schema),
+            Some(dir.path()),
+            RoleRanks::empty(),
+            mappings,
+        )
+        .unwrap(),
+    ));
+    let allowed = Entity::new(
+        schema.name.clone(),
+        BTreeMap::from([("title".into(), DynamicValue::Text("allowed".into()))]),
+    );
+    let mut other = Entity::new(schema.name.clone(), allowed.fields.clone());
+    // A raw stored field cannot replace the intrinsic identity.
+    other
+        .fields
+        .insert("id".into(), DynamicValue::Text(allowed.id.to_string()));
+    let mut caller = claims();
+    caller
+        .custom
+        .insert("world_id".into(), serde_json::json!(allowed.id.as_str()));
+    assert!(
+        authorize(&store, Some(&caller), ActionVerb::Read, &schema, None)
+            .unwrap()
+            .is_allow()
+    );
+    assert!(authorize(
+        &store,
+        Some(&caller),
+        ActionVerb::Read,
+        &schema,
+        Some(&allowed)
+    )
+    .unwrap()
+    .is_allow());
+    assert!(!authorize(
+        &store,
+        Some(&caller),
+        ActionVerb::Read,
+        &schema,
+        Some(&other)
+    )
+    .unwrap()
+    .is_allow());
+    caller.custom.remove("world_id");
+    assert!(!authorize(
+        &store,
+        Some(&caller),
+        ActionVerb::Read,
+        &schema,
+        Some(&allowed)
+    )
+    .unwrap()
+    .is_allow());
+    assert!(schema_forge_dsl::parse("schema World { id: text }").is_err());
+}
+
+#[test]
 fn guarded_read_forbid_distinguishes_required_optional_and_real_default_values() {
     for required in [false, true] {
         let (schema, store) = fixture(required, GUARDED_FORBID);

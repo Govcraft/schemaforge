@@ -257,6 +257,12 @@ pub fn build_resource_entity(
         }
     }
 
+    // Intrinsic identity comes from the entity, never from stored fields.
+    attrs.insert(
+        "id".into(),
+        RestrictedExpression::new_string(entity.id.to_string()),
+    );
+
     // Resource carries _tenant as a Cedar entity reference when present so
     // tenant policies can do `resource._tenant in principal`.
     let root_tenant = DynamicValue::Text(entity.id.to_string());
@@ -303,6 +309,7 @@ pub fn build_resource_placeholder(schema: &SchemaDefinition) -> Result<CedarEnti
     })?;
 
     let mut attrs: HashMap<String, RestrictedExpression> = HashMap::new();
+    attrs.insert("id".into(), RestrictedExpression::new_string(String::new()));
     for field in &schema.fields {
         if !field.is_required()
             || field.is_hidden()

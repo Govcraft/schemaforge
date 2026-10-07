@@ -48,9 +48,45 @@ when {
 
 The role restriction applies to both branches. This grants a preflight and readable concrete records to that role. Cedar permits are additive: this condition does not narrow a broader generated or custom permit. Use an appropriately scoped forbid when a restriction must override other permits.
 
+## Record identity and scoped service tokens
+
+Every application resource has a reserved `id: String` attribute containing its own record ID. Placeholders use an empty string. SchemaForge derives this value from the entity identity; stored fields and request bodies cannot override it. A schema field named `id` is rejected to prevent collisions.
+
+Map a signed service-token claim to a principal attribute:
+
+```toml
+[schema_forge.authz.principal_claims.world_id]
+type = "string"
+```
+
+Then constrain concrete reads to that record while allowing schema preflights:
+
+```cedar
+forbid(principal, action == Action::"ReadWorld", resource is World)
+when {
+    !context.resource_is_placeholder &&
+    !(principal has world_id && resource.id == principal.world_id)
+};
+```
+
+The token needs an applicable read permit as well. A missing claim or a different record ID denies concrete reads. Include the record's bare ID in the signed `world_id` claim.
+
 ## Create and other action boundaries
 
-The generic entity Create route currently checks schema access without passing the proposed entity to `authorize`. That check sees a placeholder. A Create forbid guarded by `!context.resource_is_placeholder` would therefore not enforce a condition on proposed fields. Do not copy the Read example to Create expecting record validation. Use applicable schema constraints, `@require` rules, or before-change hooks to validate proposed values while retaining the intended schema authorization gate.
+The generic entity Create route authorizes the concrete proposed record twice: before applying write rules and again after before-change hooks. A Create forbid can therefore inspect proposed field values and reject values introduced by a hook. Permission discovery and schema preflights still use placeholders, so guard record-specific conditions explicitly.
+
+For example, this policy refuses a proposed relation to a restricted organization while allowing placeholder preflights to proceed to their applicable permit:
+
+```cedar
+forbid(principal, action == Action::"CreateNotice", resource is Notice)
+when {
+    !context.resource_is_placeholder &&
+    resource has organization &&
+    resource.organization == "organization_restricted"
+};
+```
+
+Replace the relation ID with the actual restricted record ID. Relation attributes contain the referenced record's bare ID as a string. The schema must declare the `organization` relation, and an applicable permit is still required.
 
 Update and delete routes perform schema checks and concrete-resource checks. Field checks always receive an entity. The context flag describes only whether the individual engine call has a placeholder; it does not promise that the entity is persisted, contains proposed changes, or that another check will run later. Review the relevant route before assigning a policy to a different action.
 
