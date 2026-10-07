@@ -78,6 +78,15 @@ class PrerequisiteTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ubuntu_mirror("unknown")
 
+    def test_every_protobuf_build_installs_its_required_standard_definitions(self):
+        # --no-install-recommends omits libprotobuf-dev, but CEL imports its
+        # duration/struct/timestamp schemas. Include it even in package overrides.
+        root = Path(__file__).resolve().parents[2] / ".github"
+        for path in root.rglob("*.yml"):
+            for line in path.read_text().splitlines():
+                if "protobuf-compiler" in line:
+                    self.assertIn("libprotobuf-dev", line, str(path))
+
 
 if __name__ == "__main__":
     unittest.main()
