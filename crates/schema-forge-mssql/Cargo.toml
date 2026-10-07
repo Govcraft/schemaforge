@@ -4,7 +4,7 @@ version = "0.8.1"
 edition = "2021"
 
 [dependencies]
-acton-service = { version = "0.46.0", features = ["mssql", "crypto-aws-lc-rs"], default-features = false }
+acton-service = { version = "0.47.0", features = ["mssql", "crypto-aws-lc-rs"], default-features = false }
 bb8 = "0.9.1"
 bb8-tiberius = "0.16.0"
 schema-forge-backend = { version = "0.21.1", path = "../schema-forge-backend" }
