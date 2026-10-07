@@ -1,4 +1,4 @@
-name: PostgreSQL conditional mutations
+name: PostgreSQL contracts and feature isolation
 
 on:
   workflow_call:
@@ -7,8 +7,6 @@ on:
 permissions:
   contents: read
 
-# Multiple backend/extension feature graphs otherwise fill hosted runner disks
-# with debug information and incremental artifacts before validation finishes.
 env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
@@ -16,8 +14,9 @@ env:
 
 jobs:
   conditional:
+    name: PostgreSQL storage, HTTP, and CLI
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -37,51 +36,50 @@ jobs:
       PGPASSWORD: schemaforge-test
       PGDATABASE: schemaforge_test
       SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test
+      SCHEMAFORGE_TEST_POSTGRES_HTTP_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dconditional_http
+      SCHEMAFORGE_TEST_POSTGRES_IDENTITY_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Doauth_http
+      SCHEMAFORGE_TEST_POSTGRES_EVENTS_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Devents_http
+      SCHEMAFORGE_TEST_POSTGRES_CREATE_INTENTS_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dcreate_intents_http
+      SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE: "1"
+      CARGO_FEATURES: schema-forge-cli/postgres,schema-forge-cli/oauth,schema-forge-cli/sse
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: postgres-extensions
           packages: protobuf-compiler libkrb5-dev postgresql-client
-      - name: Run storage concurrency cases
-        run: cargo nextest run --locked -p schema-forge-backend -p schema-forge-postgres --run-ignored all --no-fail-fast
-      - name: Prepare disposable HTTP namespace
+      - name: Verify PostgreSQL dependency isolation
+        run: |
+          cargo tree --locked -p schema-forge-cli -p schema-forge-acton --no-default-features --features "$CARGO_FEATURES" --prefix none --format '{p}|{f}' > "$RUNNER_TEMP/postgres-graph.txt"
+          python3 scripts/ci/check_postgres_graph.py "$RUNNER_TEMP/postgres-graph.txt" --extensions enabled
+      - name: Prepare isolated HTTP fixtures
+        run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA conditional_http; CREATE SCHEMA oauth_http; CREATE SCHEMA events_http; CREATE SCHEMA create_intents_http'
+      - name: Test PostgreSQL storage and consumers
+        run: cargo nextest run --locked -p schema-forge-postgres -p schema-forge-acton -p schema-forge-cli --no-default-features --features "$CARGO_FEATURES" --no-fail-fast
+      - name: Test live storage, HTTP, identity, events, and create intents
         if: ${{ !cancelled() }}
-        run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA conditional_http; CREATE SCHEMA oauth_http; CREATE SCHEMA events_http'
-      - name: Run complete runtime and schema suites
+        run: cargo nextest run --locked -p schema-forge-postgres -p schema-forge-acton -p schema-forge-cli --no-default-features --features "$CARGO_FEATURES" --run-ignored only -E 'package(schema-forge-postgres) | (package(schema-forge-acton) & binary(/^postgres_/))' --no-fail-fast
+      - name: Deny PostgreSQL consumer lints
         if: ${{ !cancelled() }}
-        run: cargo nextest run --locked -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl --features schema-forge-acton/postgres,schema-forge-acton/graphql,schema-forge-acton/oauth,schema-forge-acton/sse,schema-forge-acton/test-surrealdb --no-fail-fast
-      - name: Run HTTP authorization and concurrency cases
+        run: cargo clippy --locked -p schema-forge-postgres -p schema-forge-acton -p schema-forge-cli --no-default-features --features "$CARGO_FEATURES" --all-targets -- -D warnings
+
+  extensions-disabled:
+    name: PostgreSQL extensions remain opt-in
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_FEATURES: schema-forge-cli/postgres
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: postgres-no-extensions
+      - name: Verify backend and extension isolation
+        run: |
+          cargo tree --locked -p schema-forge-cli -p schema-forge-acton --no-default-features --features "$CARGO_FEATURES" --prefix none --format '{p}|{f}' > "$RUNNER_TEMP/postgres-graph.txt"
+          python3 scripts/ci/check_postgres_graph.py "$RUNNER_TEMP/postgres-graph.txt" --extensions disabled
+      - name: Test extension-disabled behavior
+        run: cargo nextest run --locked -p schema-forge-cli -p schema-forge-acton --no-default-features --features "$CARGO_FEATURES" --lib --test oauth_openapi -E 'test(export_reuses_login_response) | test(export_lists_event_stream) | test(events_route_is_absent)' --no-fail-fast
+      - name: Deny extension-disabled lints
         if: ${{ !cancelled() }}
-        env:
-          SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE: "1"
-          SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dconditional_http
-        run: cargo nextest run --locked -p schema-forge-acton --features postgres,graphql,oauth,sse,test-surrealdb --test conditional_entities --run-ignored only --no-fail-fast
-      - name: Check PostgreSQL identity uniqueness
-        if: ${{ !cancelled() }}
-        env:
-          SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Doauth_http
-        run: cargo nextest run --locked -p schema-forge-acton --features postgres,graphql,oauth,sse,test-surrealdb --test oauth_storage --run-ignored only --no-fail-fast
-      - name: Check PostgreSQL committed event projection
-        if: ${{ !cancelled() }}
-        env:
-          SCHEMAFORGE_TEST_POSTGRES_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Devents_http
-        run: cargo nextest run --locked -p schema-forge-acton --features postgres,graphql,oauth,sse,test-surrealdb --test entity_events --run-ignored only --no-fail-fast
-      - name: Check CLI preparation and security behavior
-        if: ${{ !cancelled() }}
-        run: cargo nextest run --locked -p schema-forge-cli --no-default-features --features postgres,oauth,sse --no-fail-fast
-      - name: Check extension features remain opt-in
-        if: ${{ !cancelled() }}
-        run: cargo nextest run --locked -p schema-forge-cli -p schema-forge-acton --no-default-features --features schema-forge-cli/postgres -E 'test(export_reuses_login_response) | test(export_lists_event_stream) | test(events_route_is_absent)' --no-fail-fast
-      - name: Deny runtime and backend lints
-        if: ${{ !cancelled() }}
-        run: cargo clippy --locked -p schema-forge-acton -p schema-forge-surrealdb -p schema-forge-core -p schema-forge-dsl -p schema-forge-backend -p schema-forge-postgres --features schema-forge-acton/postgres,schema-forge-acton/graphql,schema-forge-acton/oauth,schema-forge-acton/sse,schema-forge-acton/test-surrealdb --all-targets -- -D warnings
-      - name: Deny CLI lints
-        if: ${{ !cancelled() }}
-        run: cargo clippy --locked -p schema-forge-cli --no-default-features --features postgres,oauth,sse --all-targets -- -D warnings
-      - name: Report remaining runner disk
-        if: always()
-        run: df -h .
-      - name: Clean disposable HTTP namespace
-        if: always()
-        run: psql -X -v ON_ERROR_STOP=1 -c 'DROP SCHEMA IF EXISTS conditional_http CASCADE; DROP SCHEMA IF EXISTS oauth_http CASCADE; DROP SCHEMA IF EXISTS events_http CASCADE'
+        run: cargo clippy --locked -p schema-forge-cli -p schema-forge-acton --no-default-features --features "$CARGO_FEATURES" --all-targets -- -D warnings

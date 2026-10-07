@@ -100,7 +100,12 @@ For generator-only changes, CI builds the candidate tooling CLI and runs the
 rendered application against a pinned released SurrealDB server. The release asset
 is verified against a committed SHA-256 digest. Runtime, database configuration,
 and shared-interface changes use a server compiled from the candidate commit.
-Full and release validation always compile the candidate server.
+Full and release validation always compile the candidate server and use that
+same executable to generate the site. A second portable executable adds no
+browser coverage in this mode: the portable tooling job tests that compilation
+boundary, and generator-only changes use it for browser smoke. Generated Node
+files live under the runner's temporary directory rather than Cargo's target
+directory, so Rust cache collection does not traverse Node package fixtures.
 
 `GENERATOR_BIN` and `SERVER_BIN` let `tests/site_e2e/run.sh` select these binaries
 independently. Without those variables, the script builds and uses the default CLI
@@ -125,8 +130,72 @@ a candidate tooling binary from another commit.
 
 Linux test jobs install a pinned prebuilt nextest through a commit-pinned install
 action. Component cache keys keep portable and backend feature graphs separate.
-The PostgreSQL extension checks use a consistent feature set except for the
-intentional extension-disabled regression check.
+The PostgreSQL storage, runtime, and CLI checks use one feature set with OAuth
+and SSE enabled. A parallel job validates the deliberately different
+extension-disabled graph. Both jobs must succeed before the PostgreSQL reusable
+suite passes. Dependency guards reject embedded SurrealDB in either graph and
+reject accidentally enabled extensions in the opt-out graph.
 
 Changes to this CI architecture add CLI build capability and should be included
 in the next minor CLI release. This change does not create a release tag.
+
+## PostgreSQL validation ownership
+
+| Retained work | Required evidence |
+| --- | --- |
+| Checkout, pinned Rust/nextest, system prerequisites, component cache | Validate this commit reproducibly with available generated-protobuf and database tooling; reuse dependencies |
+| Dependency graph guards | PostgreSQL consumers compile without embedded SurrealDB; the opt-out graph has no OAuth, SSE, or GraphQL features |
+| PostgreSQL 16 service and health check | Real migrations, transactions, row locking, uniqueness, permissions, and durable create intents |
+| Four disposable HTTP namespaces | Allow the conditional, identity, event, and create-intent targets to run together without metadata or table collisions |
+| Ordinary PostgreSQL package tests | Backend SQL/planning units and runtime/CLI behavior compiled with the PostgreSQL release features |
+| Ignored live PostgreSQL tests | Storage concurrency/migration contracts plus six runtime HTTP, identity, event, reconciliation, and tenant-membership cases |
+| Clippy with warnings denied | Lint all PostgreSQL consumer targets with the same features used by their tests |
+| Parallel extension-disabled tests and lints | Prove that PostgreSQL alone leaves optional extension routes and export capabilities disabled |
+
+Portable core, DSL, and backend unit tests/lints belong to the portable component
+jobs. SurrealDB integration, including GraphQL units and real GraphQL fixtures,
+belongs to the SurrealDB job. They are no longer separate packages in the
+PostgreSQL job. Runtime and CLI tests remain in each backend job because their
+compiled feature graphs differ, including backend-specific preparation and
+security behavior. Extension-disabled checks retain a separate graph because
+feature unification would otherwise invalidate the negative assertions. The
+opt-out test build selects only the runtime library and CLI OpenAPI integration
+target that contain those three checks; clippy still checks every target.
+
+The live test invocation selects ignored tests only in `schema-forge-postgres`
+and the runtime's `postgres_*` binaries. It intentionally leaves the existing
+MinIO tests to their separate opt-in environment. Normal tests and live tests
+use the same packages and features, so the second invocation reuses the compiled
+binaries. Conditional and create-intent test pairs serialize within their own
+namespaces while retaining the concurrent requests inside each test.
+
+The old PostgreSQL workflow omitted the two PostgreSQL create-intent runtime
+tests. They now run alongside the four previously executed runtime cases.
+All six cases retain their assertions. Ephemeral service teardown already
+removes the PostgreSQL database, so an explicit end-of-job schema cleanup and
+routine disk report are unnecessary after removing the foreign engine builds.
+
+To run the same graph locally, provision a disposable PostgreSQL instance with
+`conditional_http`, `oauth_http`, `events_http`, and `create_intents_http` schemas.
+Set `SCHEMAFORGE_TEST_POSTGRES_URL` for storage tests and the respective scoped
+`SCHEMAFORGE_TEST_POSTGRES_HTTP_URL`, `SCHEMAFORGE_TEST_POSTGRES_IDENTITY_URL`,
+`SCHEMAFORGE_TEST_POSTGRES_EVENTS_URL`, and
+`SCHEMAFORGE_TEST_POSTGRES_CREATE_INTENTS_URL` values for the HTTP targets. Set
+`SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE=1`. Each scoped URL uses an appropriate
+`options=-csearch_path%3D<namespace>` query. The targets accept the old global URL
+as a fallback when run individually; simultaneous targets require distinct
+namespaces.
+
+```sh
+features=schema-forge-cli/postgres,schema-forge-cli/oauth,schema-forge-cli/sse
+cargo nextest run --locked -p schema-forge-postgres -p schema-forge-acton -p schema-forge-cli --no-default-features --features "$features"
+cargo nextest run --locked -p schema-forge-postgres -p schema-forge-acton -p schema-forge-cli --no-default-features --features "$features" --run-ignored only -E 'package(schema-forge-postgres) | (package(schema-forge-acton) & binary(/^postgres_/))'
+cargo clippy --locked -p schema-forge-postgres -p schema-forge-acton -p schema-forge-cli --no-default-features --features "$features" --all-targets -- -D warnings
+```
+
+The other suites retain distinct evidence: portable compilation and doctests,
+real SurrealDB and GraphQL behavior, SQL Server 2019/2022 contracts and native
+Windows compilation/signature-tool compatibility, CEL proofs, generated React
+build/lint/browser behavior, and release-platform packaging/signing. Release
+validation checks the exact tag before distributing binaries. Metadata policy
+and final result gates remain required even when component jobs are skipped.

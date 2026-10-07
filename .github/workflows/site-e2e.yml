@@ -30,7 +30,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
-      - name: Build candidate generator
+      - name: Build portable candidate generator
+        if: github.event_name != 'workflow_dispatch' && !inputs.candidate-server
         run: |
           cargo build --locked --package schema-forge-cli --bin schemaforge --no-default-features
           mkdir -p target/site-ci
@@ -41,6 +42,7 @@ jobs:
         run: |
           cargo build --locked --package schema-forge-cli --bin schemaforge
           echo "SERVER_BIN=$GITHUB_WORKSPACE/target/debug/schemaforge" >> "$GITHUB_ENV"
+          echo "GENERATOR_BIN=$GITHUB_WORKSPACE/target/debug/schemaforge" >> "$GITHUB_ENV"
       - name: Download pinned validated server
         if: github.event_name != 'workflow_dispatch' && !inputs.candidate-server
         env:
@@ -52,6 +54,8 @@ jobs:
           tar -xzf "target/site-ci/$asset" -C target/site-ci
           echo "SERVER_BIN=$GITHUB_WORKSPACE/target/site-ci/schemaforge" >> "$GITHUB_ENV"
       - name: Run generated app build, lint, and browser smoke
+        env:
+          TMP_ROOT: ${{ runner.temp }}/site-e2e
         run: ./crates/schema-forge-cli/tests/site_e2e/run.sh
       - name: Upload browser artifacts on failure
         if: failure()
@@ -69,7 +73,7 @@ jobs:
         with:
           name: site-server-logs
           path: |
-            target/site-e2e-*/backend.log
-            target/site-e2e-*/vite.log
+            ${{ runner.temp }}/site-e2e/backend.log
+            ${{ runner.temp }}/site-e2e/vite.log
           if-no-files-found: ignore
           retention-days: 7
