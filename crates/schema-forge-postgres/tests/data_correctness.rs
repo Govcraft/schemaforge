@@ -62,3 +62,23 @@ async fn creator_membership_is_atomic() {
     with_database(|backend| async move { creator_membership::exercise(backend.as_ref()).await })
         .await;
 }
+
+#[path = "../../schema-forge-backend/tests/support/account_erasure.rs"]
+mod account_erasure;
+
+#[tokio::test]
+#[ignore = "requires SCHEMAFORGE_TEST_POSTGRES_URL with CREATE SCHEMA privilege"]
+async fn account_erasure_rolls_back_restricted_delete_then_removes_dependants() {
+    use schema_forge_backend::EntityStore;
+    with_database(|backend| async move {
+        let fixture = account_erasure::setup(backend.as_ref()).await;
+        // Operator-defined references remain protected. The earlier system-row
+        // deletes must roll back when this last User delete encounters RESTRICT.
+        sqlx::query("CREATE TABLE account_delete_guard (user_id TEXT REFERENCES \"User\"(id) ON DELETE RESTRICT)").execute(backend.pool()).await.unwrap();
+        sqlx::query("INSERT INTO account_delete_guard VALUES ($1)").bind(fixture.user.id.as_str()).execute(backend.pool()).await.unwrap();
+        assert!(backend.erase_account(&fixture.user.id).await.is_err());
+        account_erasure::assert_preserved(backend.as_ref(), &fixture).await;
+        sqlx::query("DELETE FROM account_delete_guard").execute(backend.pool()).await.unwrap();
+        account_erasure::erase(backend.as_ref(), &fixture).await;
+    }).await;
+}

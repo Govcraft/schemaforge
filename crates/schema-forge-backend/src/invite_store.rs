@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use schema_forge_core::query::{FieldPath, Filter, Query};
+use schema_forge_core::query::{FieldPath, Filter, Query, SortOrder};
 use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaName};
 use serde::{Deserialize, Serialize};
 
@@ -162,9 +162,114 @@ impl ForgeInvitation {
     }
 }
 
+/// A validated retention candidate, with the original lifecycle values.
+///
+/// Backends must compare the status and timestamp when deleting, so accepting
+/// an expired invitation concurrently cannot remove a newly consumed row.
+#[derive(Debug, Clone)]
+pub struct InvitationPruneCandidate {
+    id: EntityId,
+    status: InviteStatus,
+    timestamp: String,
+}
+
+impl InvitationPruneCandidate {
+    /// Select only rows whose lifecycle ended strictly before `before`.
+    /// Consumed timestamps take precedence over expiry; malformed data is kept.
+    pub fn from_entity(entity: &Entity, before: DateTime<Utc>) -> Option<Self> {
+        if entity.schema.as_str() != "ForgeInvitation" {
+            return None;
+        }
+        let status = InviteStatus::parse(&extract_text(entity, F_STATUS)?)?;
+        let field = match status {
+            InviteStatus::Consumed => F_CONSUMED_AT,
+            InviteStatus::Pending | InviteStatus::Revoked => F_EXPIRES_AT,
+        };
+        let timestamp = extract_nonempty(entity, field)?;
+        let at = DateTime::parse_from_rfc3339(&timestamp).ok()?;
+        (at < before).then(|| Self {
+            id: entity.id.clone(),
+            status,
+            timestamp,
+        })
+    }
+
+    /// Entity identifier of the candidate.
+    pub fn id(&self) -> &EntityId {
+        &self.id
+    }
+    /// Original lifecycle state to match atomically.
+    pub fn status(&self) -> InviteStatus {
+        self.status
+    }
+    /// Original timestamp text to match atomically.
+    pub fn timestamp(&self) -> &str {
+        &self.timestamp
+    }
+    /// Lifecycle timestamp column to match.
+    pub fn timestamp_field(&self) -> &'static str {
+        match self.status {
+            InviteStatus::Consumed => F_CONSUMED_AT,
+            InviteStatus::Pending | InviteStatus::Revoked => F_EXPIRES_AT,
+        }
+    }
+}
+
+/// A failed retention sweep, preserving the count from already committed pages.
+#[derive(Debug, Clone)]
+pub struct InvitationPruneError {
+    /// Invitations removed before the error occurred.
+    pub removed: u64,
+    /// Storage or timeout failure that stopped the sweep.
+    pub source: BackendError,
+}
+impl std::fmt::Display for InvitationPruneError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "invitation retention failed after {} removals: {}",
+            self.removed, self.source
+        )
+    }
+}
+impl std::error::Error for InvitationPruneError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+impl InvitationPruneError {
+    /// A failure before any known deletions were committed.
+    pub fn before_removals(source: BackendError) -> Self {
+        Self { removed: 0, source }
+    }
+}
+
+/// Maximum duration of a production invitation sweep, including all pages.
+pub const INVITATION_SWEEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 /// Storage-agnostic operations over the pending-invitation table.
 #[async_trait::async_trait]
 pub trait InviteStore: Send + Sync {
+    /// Remove ended invitations strictly older than `before`, returning the count.
+    /// Errors preserve the known committed count, so a partially completed sweep
+    /// can still emit an aggregate audit event. Implementations must bound I/O
+    /// and return before [`INVITATION_SWEEP_TIMEOUT`]. Unsupported custom stores
+    /// refuse without deleting anything.
+    async fn prune(&self, _before: DateTime<Utc>) -> Result<u64, InvitationPruneError> {
+        Err(InvitationPruneError::before_removals(
+            BackendError::QueryError {
+                message: "invitation retention is unsupported by this store".into(),
+            },
+        ))
+    }
+
+    /// Delete every invitation for the exact account email, including consumed rows.
+    async fn delete_by_email(&self, _email: &str) -> Result<u64, BackendError> {
+        Err(BackendError::QueryError {
+            message: "invite store does not support bulk deletion".into(),
+        })
+    }
+
     /// Persist a new pending invitation.
     async fn create(&self, invite: NewInvitation) -> Result<ForgeInvitation, BackendError>;
 
@@ -206,6 +311,45 @@ impl EntityInviteStore {
 
 #[async_trait::async_trait]
 impl InviteStore for EntityInviteStore {
+    async fn prune(&self, before: DateTime<Utc>) -> Result<u64, InvitationPruneError> {
+        const PAGE_SIZE: usize = 250;
+        let mut offset = 0;
+        let mut removed = 0;
+        let deadline = tokio::time::Instant::now() + INVITATION_SWEEP_TIMEOUT;
+        loop {
+            let query = Query::new(self.schema.id.clone())
+                .with_sort(FieldPath::single("id"), SortOrder::Ascending)
+                .with_limit(PAGE_SIZE)
+                .with_offset(offset);
+            let page = retention_io(deadline, removed, self.store.query(&query)).await?;
+            let fetched = page.entities.len();
+            if fetched == 0 {
+                break;
+            }
+            let candidates: Vec<_> = page
+                .entities
+                .iter()
+                .filter_map(|entity| InvitationPruneCandidate::from_entity(entity, before))
+                .collect();
+            let deleted = if candidates.is_empty() {
+                0
+            } else {
+                retention_io(deadline, removed, self.store.prune_invitations(&candidates)).await?
+            };
+            removed += deleted;
+            // Deletions shift surviving rows back by exactly this count.
+            offset += fetched.saturating_sub(usize::try_from(deleted).unwrap_or(fetched));
+            if fetched < PAGE_SIZE {
+                break;
+            }
+        }
+        Ok(removed)
+    }
+
+    async fn delete_by_email(&self, email: &str) -> Result<u64, BackendError> {
+        self.store.delete_invitations_by_email(email).await
+    }
+
     async fn create(&self, invite: NewInvitation) -> Result<ForgeInvitation, BackendError> {
         let entity = build_invitation_entity(self.schema_name(), &invite);
         let created = self.store.create(&entity).await?;
@@ -238,6 +382,22 @@ impl InviteStore for EntityInviteStore {
         self.store.update(&entity).await?;
         Ok(())
     }
+}
+
+async fn retention_io<T>(
+    deadline: tokio::time::Instant,
+    removed: u64,
+    operation: impl std::future::Future<Output = Result<T, BackendError>>,
+) -> Result<T, InvitationPruneError> {
+    tokio::time::timeout_at(deadline, operation)
+        .await
+        .map_err(|_| InvitationPruneError {
+            removed,
+            source: BackendError::QueryError {
+                message: "invitation retention sweep exceeded its time budget".into(),
+            },
+        })?
+        .map_err(|source| InvitationPruneError { removed, source })
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +505,147 @@ mod tests {
             token: "v4.local.deadbeef".to_string(),
             expires_at: Utc::now() + Duration::days(7),
             invited_by: Some("user:admin".to_string()),
+        }
+    }
+
+    struct LaterPageFailure {
+        rows: Vec<Entity>,
+        queries: std::sync::atomic::AtomicUsize,
+        removed: std::sync::atomic::AtomicUsize,
+    }
+    impl crate::traits::EntityStore for LaterPageFailure {
+        async fn create(&self, _: &Entity) -> Result<Entity, BackendError> {
+            panic!("prune cannot create")
+        }
+        async fn get(&self, _: &SchemaName, _: &EntityId) -> Result<Entity, BackendError> {
+            panic!("prune cannot read individually")
+        }
+        async fn update(&self, _: &Entity) -> Result<Entity, BackendError> {
+            panic!("prune cannot update")
+        }
+        async fn delete(&self, _: &SchemaName, _: &EntityId) -> Result<(), BackendError> {
+            panic!("prune must delete conditionally in bulk")
+        }
+        async fn query(&self, query: &Query) -> Result<crate::entity::QueryResult, BackendError> {
+            if self
+                .queries
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                != 0
+            {
+                return Err(BackendError::QueryError {
+                    message: "synthetic later-page failure".into(),
+                });
+            }
+            assert_eq!(query.limit, Some(250));
+            Ok(crate::entity::QueryResult::new(self.rows.clone(), None))
+        }
+        async fn prune_invitations(
+            &self,
+            candidates: &[InvitationPruneCandidate],
+        ) -> Result<u64, BackendError> {
+            self.removed
+                .fetch_add(candidates.len(), std::sync::atomic::Ordering::SeqCst);
+            Ok(candidates.len() as u64)
+        }
+        async fn count(&self, _: &Query) -> Result<usize, BackendError> {
+            panic!("prune cannot count individually")
+        }
+        async fn aggregate(
+            &self,
+            _: &schema_forge_core::query::AggregateQuery,
+        ) -> Result<Vec<schema_forge_core::query::AggregateResult>, BackendError> {
+            panic!("prune cannot aggregate")
+        }
+    }
+    #[tokio::test]
+    async fn later_page_failure_preserves_committed_count() {
+        let schema = SchemaDefinition::new(
+            schema_forge_core::types::SchemaId::new(),
+            SchemaName::new("ForgeInvitation").unwrap(),
+            vec![schema_forge_core::types::FieldDefinition::new(
+                schema_forge_core::types::FieldName::new("email").unwrap(),
+                schema_forge_core::types::FieldType::Text(
+                    schema_forge_core::types::TextConstraints::unconstrained(),
+                ),
+            )],
+            vec![],
+        )
+        .unwrap();
+        let before = Utc::now();
+        let mut invite = sample_new();
+        invite.expires_at = before - Duration::days(31);
+        let backend = Arc::new(LaterPageFailure {
+            rows: (0..250)
+                .map(|_| build_invitation_entity(&schema.name, &invite))
+                .collect(),
+            queries: Default::default(),
+            removed: Default::default(),
+        });
+        let store = EntityInviteStore::new(backend.clone(), schema);
+        let error = store.prune(before).await.unwrap_err();
+        assert_eq!(error.removed, 250);
+        assert_eq!(
+            backend.removed.load(std::sync::atomic::Ordering::SeqCst),
+            250
+        );
+        assert!(error.source.to_string().contains("later-page failure"));
+    }
+    #[tokio::test]
+    async fn stalled_operation_is_bounded_and_keeps_prior_removal_count() {
+        let error = retention_io::<()>(tokio::time::Instant::now(), 250, std::future::pending())
+            .await
+            .unwrap_err();
+        assert_eq!(error.removed, 250);
+        assert!(error.source.to_string().contains("time budget"));
+    }
+
+    #[test]
+    fn retention_uses_consumption_before_expiry_and_keeps_uncertain_rows() {
+        let cutoff = DateTime::parse_from_rfc3339("2026-09-07T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let schema = SchemaName::new("ForgeInvitation").unwrap();
+        let mut entity = build_invitation_entity(&schema, &sample_new());
+        for (status, expiry, consumed, expected) in [
+            ("pending", "2026-08-01T00:00:00Z", None, true),
+            ("pending", "2026-10-14T00:00:00Z", None, false),
+            ("pending", "2026-09-07T00:00:00Z", None, false),
+            ("pending", "2026-09-07T01:00:00+02:00", None, true),
+            ("revoked", "2026-08-01T00:00:00Z", None, true),
+            (
+                "consumed",
+                "2026-08-01T00:00:00Z",
+                Some("2026-10-01T00:00:00Z"),
+                false,
+            ),
+            (
+                "consumed",
+                "2026-10-14T00:00:00Z",
+                Some("2026-08-01T00:00:00Z"),
+                true,
+            ),
+            ("consumed", "2026-08-01T00:00:00Z", None, false),
+            ("consumed", "2026-08-01T00:00:00Z", Some("bad"), false),
+            ("pending", "bad", None, false),
+            ("unknown", "2026-08-01T00:00:00Z", None, false),
+        ] {
+            entity
+                .fields
+                .insert(F_STATUS.into(), DynamicValue::Text(status.into()));
+            entity
+                .fields
+                .insert(F_EXPIRES_AT.into(), DynamicValue::Text(expiry.into()));
+            entity.fields.remove(F_CONSUMED_AT);
+            if let Some(consumed) = consumed {
+                entity
+                    .fields
+                    .insert(F_CONSUMED_AT.into(), DynamicValue::Text(consumed.into()));
+            }
+            assert_eq!(
+                InvitationPruneCandidate::from_entity(&entity, cutoff).is_some(),
+                expected,
+                "status={status}, expiry={expiry}, consumed={consumed:?}"
+            );
         }
     }
 

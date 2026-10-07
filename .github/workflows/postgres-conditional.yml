@@ -40,6 +40,7 @@ jobs:
       SCHEMAFORGE_TEST_POSTGRES_IDENTITY_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Doauth_http
       SCHEMAFORGE_TEST_POSTGRES_EVENTS_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Devents_http
       SCHEMAFORGE_TEST_POSTGRES_CREATE_INTENTS_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dcreate_intents_http
+      SCHEMAFORGE_TEST_POSTGRES_RETENTION_URL: postgres://schemaforge:schemaforge-test@localhost:5432/schemaforge_test?options=-csearch_path%3Dinvitation_retention_http
       SCHEMAFORGE_TEST_POSTGRES_DISPOSABLE: "1"
       CARGO_FEATURES: schema-forge-cli/postgres,schema-forge-cli/oauth,schema-forge-cli/sse
     steps:
@@ -53,7 +54,7 @@ jobs:
           cargo tree --locked -p schema-forge-cli -p schema-forge-acton --no-default-features --features "$CARGO_FEATURES" --prefix none --format '{p}|{f}' > "$RUNNER_TEMP/postgres-graph.txt"
           python3 scripts/ci/check_postgres_graph.py "$RUNNER_TEMP/postgres-graph.txt" --extensions enabled
       - name: Prepare isolated HTTP fixtures
-        run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA conditional_http; CREATE SCHEMA oauth_http; CREATE SCHEMA events_http; CREATE SCHEMA create_intents_http'
+        run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA conditional_http; CREATE SCHEMA oauth_http; CREATE SCHEMA events_http; CREATE SCHEMA create_intents_http; CREATE SCHEMA invitation_retention_http'
       - name: Test PostgreSQL storage and consumers
         run: cargo nextest run --locked -p schema-forge-postgres -p schema-forge-acton -p schema-forge-cli --no-default-features --features "$CARGO_FEATURES" --no-fail-fast
       - name: Test live storage, HTTP, identity, events, and create intents

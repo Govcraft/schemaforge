@@ -343,6 +343,52 @@ impl SchemaBackend for MssqlBackend {
 }
 
 impl EntityStore for MssqlBackend {
+    async fn prune_invitations(
+        &self,
+        candidates: &[schema_forge_backend::invite_store::InvitationPruneCandidate],
+    ) -> Result<u64, BackendError> {
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let predicates = candidates.iter().enumerate().map(|(index, candidate)| {
+            let parameter = index * 3 + 1;
+            format!("([id] = @P{parameter} AND JSON_VALUE([data], '$.status.type') = N'Text' AND JSON_VALUE([data], '$.status.value') COLLATE Latin1_General_100_BIN2 = @P{} AND JSON_VALUE([data], '$.{}.type') = N'Text' AND JSON_VALUE([data], '$.{}.value') COLLATE Latin1_General_100_BIN2 = @P{})",
+                parameter + 1, candidate.timestamp_field(), candidate.timestamp_field(), parameter + 2)
+        }).collect::<Vec<_>>().join(" OR ");
+        let sql = format!("DELETE FROM [ForgeInvitation] WHERE {predicates};");
+        let values: Vec<String> = candidates
+            .iter()
+            .flat_map(|candidate| {
+                [
+                    candidate.id().to_string(),
+                    candidate.status().as_str().to_string(),
+                    candidate.timestamp().to_string(),
+                ]
+            })
+            .collect();
+        let params: Vec<&dyn tiberius::ToSql> = values
+            .iter()
+            .map(|value| value as &dyn tiberius::ToSql)
+            .collect();
+        let mut connection = connection(&self.pool).await?;
+        let affected = connection
+            .execute(sql, &params)
+            .await
+            .map_err(query_error)?
+            .total();
+        Ok(affected)
+    }
+
+    async fn erase_account(
+        &self,
+        user: &EntityId,
+    ) -> Result<schema_forge_backend::AccountErasureCounts, BackendError> {
+        self.erase_account_transaction(user).await
+    }
+    async fn delete_invitations_by_email(&self, email: &str) -> Result<u64, BackendError> {
+        self.delete_invitation_email(email).await
+    }
+
     async fn create_with_membership(
         &self,
         entity: &Entity,
@@ -778,6 +824,64 @@ fn aggregate_value(entities: &[Entity], op: &AggregateOp) -> Result<f64, Backend
         _ => Err(BackendError::QueryError {
             message: "unsupported aggregate operation".into(),
         }),
+    }
+}
+
+impl MssqlBackend {
+    async fn erase_account_transaction(
+        &self,
+        user: &EntityId,
+    ) -> Result<schema_forge_backend::AccountErasureCounts, BackendError> {
+        // Dynamic SQL avoids compiling absent legacy system tables; all values
+        // remain parameters. HOLDLOCK protects the account while related rows go.
+        let statements = r#"
+          DECLARE @email NVARCHAR(MAX), @identities BIGINT = 0, @memberships BIGINT = 0, @invitations BIGINT = 0;
+          SELECT @email = JSON_VALUE([data], '$.email.value') FROM [User] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = @P1;
+          IF EXISTS (SELECT 1 FROM [User] WHERE [id] = @P1) BEGIN
+            IF @email IS NULL THROW 50005, 'account email is missing or malformed', 1;
+            IF OBJECT_ID(N'[dbo].[OAuthIdentity]', N'U') IS NOT NULL
+              EXEC sp_executesql N'DELETE FROM [OAuthIdentity] WHERE JSON_VALUE([data], ''$.user.value'') COLLATE Latin1_General_100_BIN2 = @user; SET @count = @@ROWCOUNT;', N'@user NVARCHAR(255), @count BIGINT OUTPUT', @P1, @identities OUTPUT;
+            IF OBJECT_ID(N'[dbo].[TenantMembership]', N'U') IS NOT NULL
+              EXEC sp_executesql N'DELETE FROM [TenantMembership] WHERE JSON_VALUE([data], ''$.user.value'') COLLATE Latin1_General_100_BIN2 = @user; SET @count = @@ROWCOUNT;', N'@user NVARCHAR(255), @count BIGINT OUTPUT', @P1, @memberships OUTPUT;
+            IF OBJECT_ID(N'[dbo].[ForgeInvitation]', N'U') IS NOT NULL
+              EXEC sp_executesql N'DELETE FROM [ForgeInvitation] WHERE JSON_VALUE([data], ''$.email.value'') COLLATE Latin1_General_100_BIN2 = @email; SET @count = @@ROWCOUNT;', N'@email NVARCHAR(MAX), @count BIGINT OUTPUT', @email, @invitations OUTPUT;
+            DELETE FROM [User] WHERE [id] = @P1;
+          END;
+        "#;
+        // Emit counts only after COMMIT, so the caller cannot audit rolled-back work.
+        let sql = format!("{} SELECT @identities AS identities, @memberships AS memberships, @invitations AS invitations;", transaction_batch(statements));
+        let mut connection = connection(&self.pool).await?;
+        let rows = connection
+            .query(sql, &[&user.as_str()])
+            .await
+            .map_err(query_error)?
+            .into_first_result()
+            .await
+            .map_err(query_error)?;
+        let row = rows.first().ok_or_else(|| BackendError::Internal {
+            message: "account erasure returned no counts".into(),
+        })?;
+        let count = |name| -> Result<u64, BackendError> {
+            let value = row
+                .try_get::<i64, _>(name)
+                .map_err(query_error)?
+                .ok_or_else(|| BackendError::Internal {
+                    message: "missing account erasure count".into(),
+                })?;
+            u64::try_from(value).map_err(|_| BackendError::Internal {
+                message: "negative account erasure count".into(),
+            })
+        };
+        Ok(schema_forge_backend::AccountErasureCounts {
+            identities: count("identities")?,
+            memberships: count("memberships")?,
+            invitations: count("invitations")?,
+        })
+    }
+
+    async fn delete_invitation_email(&self, email: &str) -> Result<u64, BackendError> {
+        let mut connection = connection(&self.pool).await?;
+        connection.execute("DELETE FROM [ForgeInvitation] WHERE JSON_VALUE([data], '$.email.value') COLLATE Latin1_General_100_BIN2 = @P1;", &[&email]).await.map_err(query_error).map(|result| result.total())
     }
 }
 

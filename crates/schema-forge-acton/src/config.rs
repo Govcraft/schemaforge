@@ -73,6 +73,10 @@ pub struct SchemaForgeSettings {
     #[serde(default)]
     pub authz: AuthzConfig,
 
+    /// Retention and sweep cadence for private invitation records.
+    #[serde(default)]
+    pub invites: crate::invites_config::InvitesConfig,
+
     /// External sign-in and password login policy.
     #[serde(default)]
     pub auth: crate::oauth_config::AuthSettings,
@@ -182,6 +186,7 @@ impl Default for SchemaForgeSettings {
             export: crate::export_config::ExportSettings::default(),
             email: crate::email::EmailConfig::default(),
             authz: AuthzConfig::default(),
+            invites: crate::invites_config::InvitesConfig::default(),
             auth: crate::oauth_config::AuthSettings::default(),
             tenancy: crate::tenancy_config::TenancySettings::default(),
             signing: SigningConfig::default(),
@@ -216,6 +221,7 @@ mod tests {
                 export: crate::export_config::ExportSettings::default(),
                 email: crate::email::EmailConfig::default(),
                 authz: AuthzConfig::default(),
+                invites: crate::invites_config::InvitesConfig::default(),
                 auth: crate::oauth_config::AuthSettings::default(),
                 tenancy: crate::tenancy_config::TenancySettings::default(),
                 signing: SigningConfig::default(),

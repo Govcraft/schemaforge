@@ -827,6 +827,66 @@ impl SchemaBackend for PgBackend {
 }
 
 impl EntityStore for PgBackend {
+    async fn prune_invitations(
+        &self,
+        candidates: &[schema_forge_backend::invite_store::InvitationPruneCandidate],
+    ) -> Result<u64, BackendError> {
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let mut query =
+            sqlx::QueryBuilder::<sqlx::Postgres>::new("DELETE FROM \"ForgeInvitation\" WHERE ");
+        for (index, candidate) in candidates.iter().enumerate() {
+            if index != 0 {
+                query.push(" OR ");
+            }
+            query
+                .push("(id = ")
+                .push_bind(candidate.id().as_str())
+                .push(" AND status = ")
+                .push_bind(candidate.status().as_str())
+                .push(" AND ")
+                .push(candidate.timestamp_field())
+                .push(" = ")
+                .push_bind(candidate.timestamp())
+                .push(")");
+        }
+        query.push(" RETURNING id");
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| map_write_error(e, "ForgeInvitation", "begin retention sweep"))?;
+        let ids: Vec<(String,)> = query
+            .build_query_as()
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| map_write_error(e, "ForgeInvitation", "prune invitations"))?;
+        let schema = SchemaName::new("ForgeInvitation").map_err(|e| BackendError::Internal {
+            message: e.to_string(),
+        })?;
+        for (id,) in &ids {
+            let id = EntityId::parse(id).map_err(|e| BackendError::Internal {
+                message: e.to_string(),
+            })?;
+            Self::remove_revision(&mut tx, &schema, &id).await?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| map_write_error(e, "ForgeInvitation", "commit retention sweep"))?;
+        Ok(ids.len() as u64)
+    }
+
+    async fn erase_account(
+        &self,
+        user: &EntityId,
+    ) -> Result<schema_forge_backend::AccountErasureCounts, BackendError> {
+        self.erase_account_transaction(user).await
+    }
+    async fn delete_invitations_by_email(&self, email: &str) -> Result<u64, BackendError> {
+        self.delete_invitation_email(email).await
+    }
+
     async fn create_intent(
         &self,
         request: &schema_forge_backend::create_intent::CreateIntentRequest,

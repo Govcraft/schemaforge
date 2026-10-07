@@ -7,6 +7,9 @@ mod data_correctness;
 #[path = "../../schema-forge-backend/tests/support/creator_membership.rs"]
 mod creator_membership;
 
+#[path = "../../schema-forge-backend/tests/support/account_erasure.rs"]
+mod account_erasure;
+
 use std::collections::BTreeMap;
 
 use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
@@ -73,6 +76,28 @@ async fn connects_and_initializes_metadata(image_tag: &str) {
     migration_renames::exercise(&backend).await;
     rename_collision_rolls_back_entire_plan(&backend).await;
     migration_backfills_and_relation_removal(&backend).await;
+    let fixture = account_erasure::setup(&backend).await;
+    {
+        let mut connection = backend.pool().get().await.unwrap();
+        connection.execute("CREATE TABLE account_delete_guard (user_id NVARCHAR(255) REFERENCES [User]([id]));", &[]).await.unwrap();
+        connection
+            .execute(
+                "INSERT INTO account_delete_guard VALUES (@P1);",
+                &[&fixture.user.id.as_str()],
+            )
+            .await
+            .unwrap();
+    }
+    assert!(backend.erase_account(&fixture.user.id).await.is_err());
+    account_erasure::assert_preserved(&backend, &fixture).await;
+    {
+        let mut connection = backend.pool().get().await.unwrap();
+        connection
+            .execute("DROP TABLE account_delete_guard;", &[])
+            .await
+            .unwrap();
+    }
+    account_erasure::erase(&backend, &fixture).await;
 }
 
 async fn rename_collision_rolls_back_entire_plan(backend: &MssqlBackend) {

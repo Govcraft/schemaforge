@@ -7,7 +7,7 @@ edition = "2021"
 heck = "0.5.0"
 minijinja = { version = "2.24.0", features = ["json"] }
 schema-forge-config = { version = "0.1.0", path = "../schema-forge-config" }
-schema-forge-core = { version = "0.19.2", path = "../schema-forge-core" }
+schema-forge-core = { version = "0.20.0", path = "../schema-forge-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 toml = "1.1.6"
