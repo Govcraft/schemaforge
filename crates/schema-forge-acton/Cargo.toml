@@ -156,3 +156,19 @@ required-features = ["test-surrealdb"]
 [[test]]
 name = "users"
 required-features = ["test-surrealdb"]
+
+[[test]]
+name = "postgres_conditional_entities"
+required-features = ["postgres"]
+
+[[test]]
+name = "postgres_oauth_storage"
+required-features = ["postgres"]
+
+[[test]]
+name = "postgres_entity_events"
+required-features = ["postgres", "sse"]
+
+[[test]]
+name = "postgres_create_intents"
+required-features = ["postgres"]

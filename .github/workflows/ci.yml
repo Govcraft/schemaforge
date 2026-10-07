@@ -38,6 +38,7 @@ jobs:
         run: |
           python3 scripts/ci/select_checks.py --head HEAD --event "$EVENT_NAME" --base "$BASE_REVISION"
   validation:
+    name: Selected component validation
     needs: changes
     uses: ./.github/workflows/full-validation.yml
     with:

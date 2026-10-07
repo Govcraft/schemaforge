@@ -13,6 +13,7 @@ env:
   CARGO_INCREMENTAL: "0"
 jobs:
   check:
+    name: ${{ inputs.component == 'tooling' && 'Portable tooling tests, lints, and doctests' || inputs.component == 'runtime' && 'Portable runtime tests and lints' || inputs.component == 'cli' && 'Server CLI tests and lints' || 'Unknown component' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

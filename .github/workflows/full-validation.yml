@@ -40,7 +40,7 @@ permissions:
   contents: read
 jobs:
   metadata:
-    name: Metadata and CI policy
+    name: Metadata, CI policy, and Rust formatting
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -93,7 +93,7 @@ jobs:
     with:
       candidate-server: ${{ github.event_name == 'workflow_dispatch' || inputs.site-candidate-server }}
   passed:
-    name: Validation passed
+    name: Verify selected component results
     needs: [metadata, tooling, runtime, cli, postgres, surrealdb, mssql, cel, site]
     if: always()
     runs-on: ubuntu-24.04

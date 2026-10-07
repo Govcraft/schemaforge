@@ -1,9 +1,15 @@
 [test-groups]
-# These HTTP fixtures share the caller-provided disposable PostgreSQL namespace.
-# Serialize their initialization; each test still runs its own concurrent
-# mutation requests on its multithreaded Tokio runtime.
+# Each fixture pair shares one disposable PostgreSQL namespace. CI supplies
+# distinct namespaces for the conditional and create-intent integration targets.
+# Serialize each pair; individual tests retain concurrent mutation requests
+# on their multithreaded Tokio runtimes.
 postgres-http-fixtures = { max-threads = 1 }
+postgres-create-intent-fixtures = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(schema-forge-acton) & binary(conditional_entities) & test(/^postgres_http_/)'
+filter = 'package(schema-forge-acton) & binary(postgres_conditional_entities) & test(/^postgres_http_/)'
 test-group = 'postgres-http-fixtures'
+
+[[profile.default.overrides]]
+filter = 'package(schema-forge-acton) & binary(postgres_create_intents)'
+test-group = 'postgres-create-intent-fixtures'

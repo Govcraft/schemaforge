@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   windows-build:
-    name: Windows MSSQL build
+    name: Windows MSSQL compilation and signature checks
     runs-on: windows-2025
     timeout-minutes: 30
 
@@ -54,7 +54,7 @@ jobs:
           --no-default-features --features mssql
 
   sql-server:
-    name: SQL Server ${{ matrix.version }}
+    name: SQL Server ${{ matrix.version }} backend validation
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
