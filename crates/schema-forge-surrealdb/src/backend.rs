@@ -750,6 +750,16 @@ impl EntityStore for SurrealBackend {
         }
     }
 
+    async fn erase_account(
+        &self,
+        user: &EntityId,
+    ) -> Result<schema_forge_backend::AccountErasureCounts, BackendError> {
+        self.erase_account_transaction(user).await
+    }
+    async fn delete_invitations_by_email(&self, email: &str) -> Result<u64, BackendError> {
+        self.delete_invitation_email(email).await
+    }
+
     async fn create_with_membership(
         &self,
         entity: &Entity,

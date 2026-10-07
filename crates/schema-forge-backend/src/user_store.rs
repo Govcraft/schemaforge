@@ -134,6 +134,19 @@ pub trait AuthStore: Send + Sync {
     /// Count the total number of users.
     fn count_users(&self) -> impl Future<Output = Result<usize, BackendError>> + Send;
 
+    /// Atomically erase a user and associated identities, memberships and invitations.
+    /// Custom implementations must support a transaction; the default fails closed.
+    fn erase_user(
+        &self,
+        _username: &str,
+    ) -> impl Future<Output = Result<crate::AccountErasureCounts, BackendError>> + Send {
+        async {
+            Err(BackendError::QueryError {
+                message: "auth store does not support atomic account erasure".into(),
+            })
+        }
+    }
+
     /// Delete a user by username. Idempotent: no error if the row is absent.
     fn delete_user(&self, username: &str) -> impl Future<Output = Result<(), BackendError>> + Send;
 

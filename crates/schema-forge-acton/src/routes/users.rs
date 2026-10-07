@@ -761,7 +761,7 @@ pub async fn delete_user(
         }
     }
 
-    auth_store.delete_user(&username).await?;
+    let erased = auth_store.erase_user(&username).await?;
     audit_user(
         &state,
         "forge.user.deleted",
@@ -769,6 +769,9 @@ pub async fn delete_user(
         &claims.sub,
         &username,
         Some(serde_json::json!({
+            "identities": erased.identities,
+            "memberships": erased.memberships,
+            "invitations": erased.invitations,
             "deleted_roles": target.roles,
             "was_platform_admin": target_is_platform_admin,
         })),

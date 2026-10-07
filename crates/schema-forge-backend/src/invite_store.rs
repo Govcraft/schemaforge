@@ -263,6 +263,13 @@ pub trait InviteStore: Send + Sync {
         ))
     }
 
+    /// Delete every invitation for the exact account email, including consumed rows.
+    async fn delete_by_email(&self, _email: &str) -> Result<u64, BackendError> {
+        Err(BackendError::QueryError {
+            message: "invite store does not support bulk deletion".into(),
+        })
+    }
+
     /// Persist a new pending invitation.
     async fn create(&self, invite: NewInvitation) -> Result<ForgeInvitation, BackendError>;
 
@@ -337,6 +344,10 @@ impl InviteStore for EntityInviteStore {
             }
         }
         Ok(removed)
+    }
+
+    async fn delete_by_email(&self, email: &str) -> Result<u64, BackendError> {
+        self.store.delete_invitations_by_email(email).await
     }
 
     async fn create(&self, invite: NewInvitation) -> Result<ForgeInvitation, BackendError> {

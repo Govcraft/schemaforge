@@ -595,3 +595,101 @@ async fn put_user_can_disable_and_re_enable_active_flag() {
     let read_back = auth_store.get_user("alice").await.unwrap().unwrap();
     assert!(read_back.active);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_user_erases_identity_membership_and_consumed_invitation() {
+    use chrono::{Duration as ChronoDuration, Utc};
+    use schema_forge_backend::{Entity, EntityStore, NewInvitation};
+    use schema_forge_core::types::{DynamicValue, SchemaName};
+    use std::collections::BTreeMap;
+    let seeded = seed_backend("users_erase_related").await;
+    seeded
+        .auth_store
+        .create_user("alice@example.gov", "alicepass", &["sales".into()], "Alice")
+        .await
+        .unwrap();
+    let user = seeded
+        .auth_store
+        .get_user_entity("alice@example.gov")
+        .await
+        .unwrap()
+        .unwrap();
+    let app = users_router(
+        seeded.clone(),
+        make_claims("user:admin", &["platform_admin"]),
+    )
+    .await;
+    let identity = Entity::new(
+        SchemaName::new("OAuthIdentity").unwrap(),
+        BTreeMap::from([
+            ("user".into(), DynamicValue::Ref(user.id.clone())),
+            ("provider".into(), DynamicValue::Text("github".into())),
+            ("subject".into(), DynamicValue::Text("subject-erase".into())),
+            (
+                "identity_key".into(),
+                DynamicValue::Text("6:githubsubject-erase".into()),
+            ),
+            (
+                "email_at_link".into(),
+                DynamicValue::Text("alice@example.gov".into()),
+            ),
+        ]),
+    );
+    let membership = Entity::new(
+        SchemaName::new("TenantMembership").unwrap(),
+        BTreeMap::from([
+            ("user".into(), DynamicValue::Ref(user.id.clone())),
+            (
+                "tenant_type".into(),
+                DynamicValue::Text("Organization".into()),
+            ),
+            ("tenant_id".into(), DynamicValue::Text("org-erase".into())),
+        ]),
+    );
+    seeded.backend.create(&identity).await.unwrap();
+    seeded.backend.create(&membership).await.unwrap();
+    let invites = schema_forge_acton::system::provision_invite_store(
+        seeded.backend.as_ref(),
+        seeded.backend.clone(),
+    )
+    .await
+    .unwrap();
+    let invitation = invites
+        .create(NewInvitation {
+            email: "alice@example.gov".into(),
+            display_name: Some("Alice".into()),
+            tenant_type: None,
+            tenant_id: None,
+            role: None,
+            jti: "invite-erase".into(),
+            token: "PRIVATE-TOKEN".into(),
+            expires_at: Utc::now() + ChronoDuration::days(1),
+            invited_by: Some("admin".into()),
+        })
+        .await
+        .unwrap();
+    invites
+        .mark_consumed(&invitation.id, Utc::now())
+        .await
+        .unwrap();
+    let (status, body) = json_request(&app, Method::DELETE, "/users/alice@example.gov", None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert!(seeded
+        .auth_store
+        .get_user("alice@example.gov")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(seeded
+        .backend
+        .get(&identity.schema, &identity.id)
+        .await
+        .is_err());
+    assert!(seeded
+        .backend
+        .get(&membership.schema, &membership.id)
+        .await
+        .is_err());
+    assert!(invites.find_by_jti("invite-erase").await.unwrap().is_none());
+    assert!(seeded.auth_store.get_user("admin").await.unwrap().is_some());
+}

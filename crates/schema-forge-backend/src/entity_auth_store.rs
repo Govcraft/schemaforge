@@ -114,6 +114,36 @@ pub trait DynEntityStore: Send + Sync {
         &'a self,
         candidates: &'a [crate::invite_store::InvitationPruneCandidate],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, BackendError>> + Send + 'a>>;
+    /// Atomically erase an account and related system records.
+    fn erase_account<'a>(
+        &'a self,
+        _user: &'a EntityId,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<crate::AccountErasureCounts, BackendError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async {
+            Err(BackendError::QueryError {
+                message: "atomic account erasure is unsupported by this backend".into(),
+            })
+        })
+    }
+    /// Bulk invitation deletion by exact email.
+    fn delete_invitations_by_email<'a>(
+        &'a self,
+        _email: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, BackendError>> + Send + 'a>>
+    {
+        Box::pin(async {
+            Err(BackendError::QueryError {
+                message: "bulk invitation deletion is unsupported by this backend".into(),
+            })
+        })
+    }
+
     fn create<'a>(
         &'a self,
         entity: &'a Entity,
@@ -171,6 +201,26 @@ where
     {
         Box::pin(EntityStore::prune_invitations(self, candidates))
     }
+    fn erase_account<'a>(
+        &'a self,
+        user: &'a EntityId,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<crate::AccountErasureCounts, BackendError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(EntityStore::erase_account(self, user))
+    }
+    fn delete_invitations_by_email<'a>(
+        &'a self,
+        email: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64, BackendError>> + Send + 'a>>
+    {
+        Box::pin(EntityStore::delete_invitations_by_email(self, email))
+    }
+
     fn create<'a>(
         &'a self,
         entity: &'a Entity,
@@ -726,12 +776,18 @@ impl AuthStore for EntityAuthStore {
         self.store.count(&query).await
     }
 
-    async fn delete_user(&self, username: &str) -> Result<(), BackendError> {
-        let entity = match self.find_entity_by_username(username).await? {
-            Some(e) => e,
-            None => return Ok(()),
+    async fn erase_user(
+        &self,
+        username: &str,
+    ) -> Result<crate::AccountErasureCounts, BackendError> {
+        let Some(entity) = self.find_entity_by_username(username).await? else {
+            return Ok(crate::AccountErasureCounts::default());
         };
-        self.store.delete(self.user_schema_name(), &entity.id).await
+        self.store.erase_account(&entity.id).await
+    }
+
+    async fn delete_user(&self, username: &str) -> Result<(), BackendError> {
+        self.erase_user(username).await.map(|_| ())
     }
 
     async fn change_password(
@@ -866,6 +922,43 @@ mod tests {
     }
 
     impl EntityStore for MemStore {
+        async fn erase_account(
+            &self,
+            user: &EntityId,
+        ) -> Result<crate::AccountErasureCounts, BackendError> {
+            let mut rows = self.rows.lock().unwrap();
+            let Some(account) = rows
+                .iter()
+                .find(|entity| entity.schema.as_str() == "User" && entity.id == *user)
+            else {
+                return Ok(crate::AccountErasureCounts::default());
+            };
+            let email = account.field("email").cloned();
+            let mut counts = crate::AccountErasureCounts::default();
+            rows.retain(|entity| {
+                let associated = entity.field("user") == Some(&DynamicValue::Ref(user.clone()));
+                match entity.schema.as_str() {
+                    "OAuthIdentity" if associated => {
+                        counts.identities += 1;
+                        false
+                    }
+                    "TenantMembership" if associated => {
+                        counts.memberships += 1;
+                        false
+                    }
+                    "ForgeInvitation"
+                        if email.is_some() && entity.field("email") == email.as_ref() =>
+                    {
+                        counts.invitations += 1;
+                        false
+                    }
+                    "User" if entity.id == *user => false,
+                    _ => true,
+                }
+            });
+            Ok(counts)
+        }
+
         fn create(
             &self,
             entity: &Entity,

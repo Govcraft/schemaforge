@@ -25,6 +25,8 @@ is pre-1.0; breaking changes bump the **minor** version per
   SurrealDB application graph, reducing repeated CI compilation while preserving
   each command's feature set.
 
+- Erase accounts transactionally with their OAuth identities, tenant memberships and all email invitations. Existing deletion guards and operator-defined references remain enforced. Deletion audit events include related-row counts, also exposed through administrator audit browsing.
+
 - Bound Ubuntu CI prerequisite installation and use the public HTTPS archive instead of the stalled Azure mirror. Skip installed packages and retain network limits for later browser prerequisites.
 
 - Permit token-only service principals to subscribe with a signed tenant chain. Streams revalidate the hierarchy and expiry and retain per-event Cedar filtering and stored-account membership checks.

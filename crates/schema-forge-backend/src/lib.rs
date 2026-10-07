@@ -1,3 +1,5 @@
+pub mod account_erasure;
+pub use account_erasure::AccountErasureCounts;
 pub mod auth;
 pub mod entity;
 pub mod entity_auth_store;

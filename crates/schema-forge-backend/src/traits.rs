@@ -110,6 +110,32 @@ pub trait EntityStore: Send + Sync {
         }
     }
 
+    /// Erase the User and its related system records in one transaction.
+    /// The stored User email selects invitations. Missing users return zero counts.
+    /// Unsupported adapters refuse without writing anything.
+    fn erase_account(
+        &self,
+        _user: &EntityId,
+    ) -> impl Future<Output = Result<crate::AccountErasureCounts, BackendError>> + Send {
+        async {
+            Err(BackendError::QueryError {
+                message: "atomic account erasure is unsupported by this backend".into(),
+            })
+        }
+    }
+
+    /// Atomically delete all invitations for an exact email, returning the count.
+    fn delete_invitations_by_email(
+        &self,
+        _email: &str,
+    ) -> impl Future<Output = Result<u64, BackendError>> + Send {
+        async {
+            Err(BackendError::QueryError {
+                message: "bulk invitation deletion is unsupported by this backend".into(),
+            })
+        }
+    }
+
     /// Optional durable create reconciliation; unsupported adapters must refuse.
     fn create_intent(
         &self,
@@ -319,6 +345,17 @@ mod tests {
         ) -> Result<Vec<AggregateResult>, BackendError> {
             panic!("unsupported atomic operation must not aggregate")
         }
+    }
+
+    #[tokio::test]
+    async fn unsupported_account_erasure_refuses_before_any_mutation() {
+        let store = UnsupportedStore(std::sync::atomic::AtomicUsize::new(0));
+        assert!(store.erase_account(&EntityId::new("entity")).await.is_err());
+        assert!(store
+            .delete_invitations_by_email("alice@example.gov")
+            .await
+            .is_err());
+        assert_eq!(store.0.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

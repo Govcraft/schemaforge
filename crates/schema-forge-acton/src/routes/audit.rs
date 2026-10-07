@@ -231,6 +231,10 @@ struct EventView {
     new_roles: Option<Vec<String>>,
     active: Option<bool>,
     self_service: Option<bool>,
+    identities: Option<u64>,
+    memberships: Option<u64>,
+    invitations: Option<u64>,
+    not_before: Option<i64>,
 }
 
 impl From<AuditEvent> for EventView {
@@ -276,9 +280,25 @@ impl From<AuditEvent> for EventView {
         let self_service = is_kind("forge.user.password_changed")
             .then(|| metadata?.get("self_service")?.as_bool())
             .flatten();
+        let erased = |name: &str| {
+            is_kind("forge.user.deleted")
+                .then(|| metadata?.get(name)?.as_u64())
+                .flatten()
+        };
         let user = field("user");
         let actor = field("actor").or_else(|| user.clone());
         Self {
+            not_before: is_kind("forge.token.subject_revoked")
+                .then(|| {
+                    metadata?
+                        .get("not_before")?
+                        .as_i64()
+                        .filter(|value| *value >= 0)
+                })
+                .flatten(),
+            identities: erased("identities"),
+            memberships: erased("memberships"),
+            invitations: erased("invitations"),
             previous_roles,
             new_roles,
             active,
@@ -344,6 +364,7 @@ const KNOWN_FORGE_EVENTS: &[&str] = &[
     "forge.user.created",
     "forge.user.updated",
     "forge.user.deleted",
+    "forge.token.subject_revoked",
     "forge.user.active_toggled",
     "forge.user.password_changed",
     "forge.invite.created",

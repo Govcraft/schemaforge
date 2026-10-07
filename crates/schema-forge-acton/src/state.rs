@@ -654,6 +654,24 @@ pub trait DynAuthStore: Send + Sync {
     fn count_users(&self)
         -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + '_>>;
 
+    /// Atomically erase an account, returning related record counts.
+    fn erase_user<'a>(
+        &'a self,
+        _username: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<schema_forge_backend::AccountErasureCounts, BackendError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async {
+            Err(BackendError::QueryError {
+                message: "auth store does not support atomic account erasure".into(),
+            })
+        })
+    }
+
     /// Delete a user by username. Idempotent.
     fn delete_user<'a>(
         &'a self,
@@ -824,6 +842,19 @@ impl<T: AuthStore + 'static> DynAuthStore for T {
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<usize, BackendError>> + Send + '_>> {
         Box::pin(AuthStore::count_users(self))
+    }
+
+    fn erase_user<'a>(
+        &'a self,
+        username: &'a str,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<schema_forge_backend::AccountErasureCounts, BackendError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(AuthStore::erase_user(self, username))
     }
 
     fn delete_user<'a>(

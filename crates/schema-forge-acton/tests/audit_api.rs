@@ -692,3 +692,70 @@ async fn user_change_details_are_typed_and_restricted_to_their_producer() {
     }
     assert!(!result.to_string().contains("SECRET"));
 }
+
+#[tokio::test]
+async fn deletion_audit_counts_are_typed_and_only_exposed_for_account_erasure() {
+    let (store, _) = fixture(3);
+    {
+        let mut events = store.events.lock().unwrap();
+        for (event, kind) in events.iter_mut().zip([
+            "forge.user.deleted",
+            "forge.entity.deleted",
+            "forge.user.deleted",
+        ]) {
+            event.kind = AuditEventKind::Custom(kind.into());
+            event.metadata = Some(
+                json!({"identities": 2, "memberships": 3, "invitations": 4, "token": "PRIVATE"}),
+            );
+        }
+        events[2].metadata =
+            Some(json!({"identities": "2", "memberships": -1, "invitations": true}));
+    }
+    let app = app(
+        Some(store),
+        Some(claims("platform_admin", "tenant-a")),
+        true,
+    )
+    .await;
+    let (status, result) = request(&app, "events", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["events"][0]["identities"], 2);
+    assert_eq!(result["events"][0]["memberships"], 3);
+    assert_eq!(result["events"][0]["invitations"], 4);
+    for index in [1, 2] {
+        for field in ["identities", "memberships", "invitations"] {
+            assert!(result["events"][index][field].is_null());
+        }
+    }
+    assert!(!result.to_string().contains("PRIVATE"));
+}
+
+#[tokio::test]
+async fn subject_revocation_cutoff_is_typed_and_restricted_to_its_producer() {
+    let (store, _) = fixture(4);
+    {
+        let mut events = store.events.lock().unwrap();
+        for (event, (kind, cutoff)) in events.iter_mut().zip([
+            ("forge.token.subject_revoked", json!(1730000000)),
+            ("forge.user.deleted", json!(1730000000)),
+            ("forge.token.subject_revoked", json!(-1)),
+            ("forge.token.subject_revoked", json!("1730000000")),
+        ]) {
+            event.kind = AuditEventKind::Custom(kind.into());
+            event.metadata = Some(json!({"not_before": cutoff, "token": "PRIVATE"}));
+        }
+    }
+    let app = app(
+        Some(store),
+        Some(claims("platform_admin", "tenant-a")),
+        true,
+    )
+    .await;
+    let (status, result) = request(&app, "events", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["events"][0]["not_before"], 1730000000);
+    for index in [1, 2, 3] {
+        assert!(result["events"][index]["not_before"].is_null());
+    }
+    assert!(!result.to_string().contains("PRIVATE"));
+}
