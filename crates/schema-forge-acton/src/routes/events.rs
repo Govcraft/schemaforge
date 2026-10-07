@@ -353,7 +353,8 @@ pub async fn subscribe(
         .get_user(account_username(&claims))
         .await
         .map_err(ForgeError::from)?
-        .is_some();
+        .is_some()
+        || (claims.iss.as_deref() == Some("schemaforge") && claims.username.is_some());
     let effective_chain = claims.custom_claim_as("tenant_chain").unwrap_or_default();
     let (tx, rx) = oneshot::channel();
     forge

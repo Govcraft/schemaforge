@@ -26,8 +26,12 @@ and revocation namespace. They remain stored after individual tokens expire.
 HTTP and gRPC token authentication check revocation. An existing event stream
 closes at its next identity check, using the configured events recheck cadence.
 Database failures refuse authenticated requests and close existing streams.
-Changing a user's `active` flag does not itself revoke their bearer tokens; use
-this route to revoke existing tokens as part of account deactivation.
+Deleting an account or setting its `active` flag to false through the User
+endpoint automatically persists cutoffs for both its canonical `user:{username}`
+subject and its legacy bare username before changing the account. Revocation
+storage failures prevent that mutation. A failed later deletion leaves the
+account intact and its old tokens revoked; a fresh login after the cutoff
+second can restore access. Reactivation does not restore old tokens.
 
 The route requires authentication and the `platform_admin` role. Invalid input
 returns 422, insufficient privileges return 403, and unavailable revocation

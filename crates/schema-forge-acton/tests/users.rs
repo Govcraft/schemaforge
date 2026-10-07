@@ -1,7 +1,7 @@
 //! Integration tests for `/api/v1/forge/users` endpoints.
 //!
 //! These exercise the full router wiring (state + Extension + Claims
-//! injection) against an in-memory `SurrealBackend` seeded with a
+//! injection) against a remote `SurrealBackend` seeded with a
 //! `platform_admin` user and, where relevant, additional non-platform
 //! peers. The harness follows the same pattern as `tests/integration.rs`
 //! but additionally layers the `auth_store` Extension the way
@@ -77,7 +77,7 @@ async fn seed_backend(namespace: &str) -> SeededBackend {
 
     let backend = schema_forge_surrealdb::test_support::connect("test", namespace)
         .await
-        .expect("connect in-memory surreal");
+        .expect("connect remote surreal");
 
     // Apply the User schema and register its metadata so the backend can
     // resolve `SchemaId` → table on every entity query.
@@ -123,6 +123,14 @@ fn parse_user_schema() -> SchemaDefinition {
 
 /// Build a router whose `AppState` carries a live `ForgeActor`.
 async fn users_router(seeded: SeededBackend, claims: Claims) -> Router {
+    users_router_with_token_config(seeded, claims, false).await
+}
+
+async fn users_router_with_token_config(
+    seeded: SeededBackend,
+    claims: Claims,
+    token_configured: bool,
+) -> Router {
     use acton_service::service_builder::ServiceBuilder;
 
     let backend = seeded.backend;
@@ -135,7 +143,12 @@ async fn users_router(seeded: SeededBackend, claims: Claims) -> Router {
         .await
         .expect("seed system schemas");
 
-    let config = Config::<SchemaForgeConfig>::default();
+    let mut config = Config::<SchemaForgeConfig>::default();
+    if token_configured {
+        config.token = Some(acton_service::config::TokenConfig::Paseto(
+            Default::default(),
+        ));
+    }
     let service = ServiceBuilder::new()
         .with_config(config)
         .with_actor::<ForgeActor>()
@@ -692,4 +705,69 @@ async fn deleting_user_erases_identity_membership_and_consumed_invitation() {
         .is_err());
     assert!(invites.find_by_jti("invite-erase").await.unwrap().is_none());
     assert!(seeded.auth_store.get_user("admin").await.unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn put_user_refuses_to_deactivate_last_active_platform_admin() {
+    let seeded = seed_backend("last_active_admin").await;
+    seeded
+        .auth_store
+        .create_user(
+            "inactive",
+            "anotherpass",
+            &["platform_admin".into()],
+            "Inactive admin",
+        )
+        .await
+        .unwrap();
+    seeded
+        .auth_store
+        .toggle_user_active("inactive")
+        .await
+        .unwrap();
+    let store = seeded.auth_store.clone();
+    let app = users_router(seeded, make_claims("user:admin", &["platform_admin"])).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/users/admin")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"active":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(store.get_user("admin").await.unwrap().unwrap().active);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn account_mutations_fail_closed_without_configured_revocation_storage() {
+    let seeded = seed_backend("revocation_unavailable").await;
+    seeded
+        .auth_store
+        .create_user("alice", "alicepass", &["sales".into()], "Alice")
+        .await
+        .unwrap();
+    let store = seeded.auth_store.clone();
+    let app = users_router_with_token_config(
+        seeded,
+        make_claims("user:admin", &["platform_admin"]),
+        true,
+    )
+    .await;
+    let (status, _) = json_request(
+        &app,
+        Method::PUT,
+        "/users/alice",
+        Some(serde_json::json!({"active":false,"display_name":"Changed"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let (status, _) = json_request(&app, Method::DELETE, "/users/alice", None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let user = store.get_user("alice").await.unwrap().unwrap();
+    assert!(user.active);
+    assert_eq!(user.display_name.as_deref(), Some("Alice"));
 }

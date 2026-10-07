@@ -1164,3 +1164,137 @@ async fn subject_revocation_is_persistent_blocks_rest_and_ends_open_streams() {
         .await
         .is_err());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "surrealdb")]
+async fn deleted_and_deactivated_login_tokens_are_revoked() {
+    let f = login_fixture_with_revocation("erasure_token_probe", true).await;
+    let admin = f.login("admin@example.gov").await;
+    let solo = f.login("solo@example.gov").await;
+    let mut old_stream = f.open(&solo, None, "before deletion").await;
+    let deletion = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/forge/users/solo@example.gov")
+                .header("authorization", format!("Bearer {admin}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let deletion_status = deletion.status();
+    let deletion_body = deletion.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        deletion_status,
+        StatusCode::NO_CONTENT,
+        "delete body: {}",
+        String::from_utf8_lossy(&deletion_body)
+    );
+    assert!(f
+        .store
+        .get_user("solo@example.gov")
+        .await
+        .unwrap()
+        .is_none());
+    let protected = |token: &str| {
+        Request::builder()
+            .uri("/forge/schemas/Organization/entities")
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-active-tenant", format!("Organization:{}", f.lobby))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let deleted_rest = f
+        .app
+        .clone()
+        .oneshot(protected(&solo))
+        .await
+        .unwrap()
+        .status();
+    let deleted_sse = f.subscribe(&solo, None).await.status();
+    assert_closed(&mut old_stream, "deleted account existing stream").await;
+    assert_eq!(deleted_rest, StatusCode::UNAUTHORIZED);
+    assert_eq!(deleted_sse, StatusCode::UNAUTHORIZED);
+
+    let multi = f.login("multi@example.gov").await;
+    let mut active_stream = f.open(&multi, Some(&f.lobby), "before deactivation").await;
+    let deactivation = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/forge/users/multi@example.gov")
+                .header("authorization", format!("Bearer {admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"active": false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let deactivation_status = deactivation.status();
+    let deactivation_body = deactivation.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        deactivation_status,
+        StatusCode::OK,
+        "deactivation body: {}",
+        String::from_utf8_lossy(&deactivation_body)
+    );
+    let deactivated_rest = f
+        .app
+        .clone()
+        .oneshot(protected(&multi))
+        .await
+        .unwrap()
+        .status();
+    let deactivated_sse = f.subscribe(&multi, Some(&f.lobby)).await.status();
+    assert_eq!(deactivated_rest, StatusCode::UNAUTHORIZED);
+    assert_eq!(deactivated_sse, StatusCode::UNAUTHORIZED);
+    assert_closed(&mut active_stream, "deactivated account existing stream").await;
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/forge/users/multi@example.gov")
+                .header("authorization", format!("Bearer {admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"active":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let newer = f.login("multi@example.gov").await;
+    assert_eq!(
+        f.app
+            .clone()
+            .oneshot(protected(&newer))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.app
+            .clone()
+            .oneshot(protected(&multi))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // A direct storage erasure still cannot turn a login identity into a
+    // token-only service principal on a fresh subscription.
+    f.store.erase_user("admin@example.gov").await.unwrap();
+    assert_eq!(
+        f.subscribe(&admin, None).await.status(),
+        StatusCode::FORBIDDEN
+    );
+}

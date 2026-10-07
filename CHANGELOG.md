@@ -67,8 +67,7 @@ is pre-1.0; breaking changes bump the **minor** version per
   tests are enabled explicitly with `test-surrealdb`. Generator-only browser smoke
   tests use a pinned validated server; full validation tests the candidate server.
 
-- Build the server, backends, CLI, and generated hook services on acton-service
-  0.46.0. Audit records reach ordinary logs (console, journald, and OTLP log
+- Audit records reach ordinary logs (console, journald, and OTLP log
   exporters) only with `[audit] otlp_logs_enabled = true`, which defaults to
   `false`. Before, every audit event was logged at `info` with its subject and
   client IP whatever the setting. Storage and syslog export are unchanged, and
@@ -78,12 +77,31 @@ is pre-1.0; breaking changes bump the **minor** version per
 - `hooks generate` scaffolds load `Config::<()>::load()`. acton-service 0.46.0
   made `GrpcServicesBuilder::build` generic over the state type, so a bare
   `Config::load()` no longer compiles (E0283). Existing hook services moving
-  their `acton-service` pin to 0.46.0 to match the forge need the same one-line
+  their `acton-service` pin to 0.47.0 to match the forge need the same one-line
   change in `src/main.rs`; additive regeneration leaves that line alone, and
   `--regenerate` rewrites the whole file.
 
+### Migration
+
+- Run a remote SurrealDB 3.3+ server and replace `mem://` configuration with its
+  WebSocket or HTTP endpoint. Embedded connections and `connect_memory` are
+  removed. Tests can use the disposable Testcontainers runner.
+- Rename user-defined `id` fields. Cedar receives the intrinsic record ID as a
+  required string; custom Cedar schema declarations must include it. Create
+  placeholders receive an empty ID until persistence assigns one.
+- Library users should align core 0.20.0, backend 0.22.0, acton 0.48.0,
+  SurrealDB and PostgreSQL adapters 0.17.0, MSSQL 0.9.0, DSL 0.16.0, and CEL
+  0.13.0. Custom storage adapters must implement atomic account erasure and
+  guarded invitation pruning; unsupported operations fail before deleting data.
+- Account deletion and deactivation revoke existing login tokens. The last
+  active platform administrator cannot be deleted, demoted, or disabled.
+  Fresh login after reactivation must occur after the persisted issuance cutoff.
+
 ### Fixed
 
+- Account deletion and deactivation invalidate existing bearer tokens and open
+  event streams. A deleted login account cannot reconnect as a token-only
+  service principal. Revocation storage failures prevent the account mutation.
 - Required hook failures return a fixed client-safe message with HTTP 503 and
   `hook_unavailable`. Hook endpoints, timeout values, and transport or protocol
   diagnostics remain in server logs.

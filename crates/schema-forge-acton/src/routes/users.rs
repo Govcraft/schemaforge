@@ -745,11 +745,11 @@ pub async fn delete_user(
     }
 
     let target_is_platform_admin = target.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
-    if target_is_platform_admin {
+    if target.active && target_is_platform_admin {
         let all = auth_store.list_users().await?;
         let platform_admin_count = all
             .iter()
-            .filter(|u| u.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE))
+            .filter(|u| u.active && u.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE))
             .count();
         if platform_admin_count <= 1 {
             return Err(ForgeError::Conflict {
@@ -761,6 +761,7 @@ pub async fn delete_user(
         }
     }
 
+    super::revocations::revoke_account_tokens(&state, &claims.sub, &username).await?;
     let erased = auth_store.erase_user(&username).await?;
     audit_user(
         &state,
@@ -792,9 +793,8 @@ pub async fn delete_user(
 ///    themselves hold (same `UpdateUser` action, separate evaluation).
 ///
 /// The "no upward escalation" rule mirrors `create_user`'s synthetic check.
-/// Refuses to demote the last `platform_admin` (drop the role from the
-/// only one) with `409 Conflict { reason: "last_platform_admin" }` —
-/// same defense-in-depth as `delete_user`.
+/// Refuses to demote or deactivate the last active `platform_admin` with
+/// `409 Conflict { reason: "last_platform_admin" }`, matching `delete_user`.
 #[instrument(skip_all)]
 pub async fn update_user(
     State(state): State<AppState<SchemaForgeConfig>>,
@@ -900,25 +900,31 @@ pub async fn update_user(
                 ),
             });
         }
+    }
 
-        // Last-platform_admin protection: refuse to demote the only one.
-        let was_platform_admin = current.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
-        let still_platform_admin = new_roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE);
-        if was_platform_admin && !still_platform_admin {
-            let all = auth_store.list_users().await?;
-            let count = all
-                .iter()
-                .filter(|u| u.roles.iter().any(|r| r == PLATFORM_ADMIN_ROLE))
-                .count();
-            if count <= 1 {
-                return Err(ForgeError::Conflict {
-                    reason: "last_platform_admin",
-                    message: format!(
-                        "cannot remove {PLATFORM_ADMIN_ROLE} from '{username}': would leave instance without one"
-                    ),
-                });
-            }
+    // An inactive administrator cannot recover an instance without an active
+    // peer. Protect the last active administrator from demotion and disabling.
+    let was_platform_admin =
+        current.active && current.roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE);
+    let still_platform_admin =
+        new_active && new_roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE);
+    if was_platform_admin && !still_platform_admin {
+        let all = auth_store.list_users().await?;
+        let count = all
+            .iter()
+            .filter(|user| user.active && user.roles.iter().any(|role| role == PLATFORM_ADMIN_ROLE))
+            .count();
+        if count <= 1 {
+            return Err(ForgeError::Conflict {
+                reason: "last_platform_admin",
+                message: format!(
+                    "cannot demote or deactivate '{username}': would leave instance without an active {PLATFORM_ADMIN_ROLE}"
+                ),
+            });
         }
+    }
+    if body.active == Some(false) {
+        super::revocations::revoke_account_tokens(&state, &claims.sub, &username).await?;
     }
 
     // Persist. `update_user` covers roles + display_name; `toggle_user_active`
