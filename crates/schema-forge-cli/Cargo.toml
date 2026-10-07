@@ -16,7 +16,6 @@ schema-forge-postgres = { path = "../schema-forge-postgres", optional = true }
 schema-forge-acton = { version = "0.47.0", path = "../schema-forge-acton", optional = true }
 clap = { version = "4", features = ["derive", "env", "string"] }
 clap_complete = "4"
-tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -43,6 +42,7 @@ figment = { version = "0.10.19", features = ["env", "toml"] }
 schema-forge-codegen = { version = "0.1.0", path = "../schema-forge-codegen" }
 schema-forge-config = { version = "0.1.0", path = "../schema-forge-config" }
 rustls = { version = "0.23.45", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
+tokio = { version = "1.53.2", features = ["fs", "io-std", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 [features]
 # Offline parsing and generation compile without the server dependency graph.
@@ -68,4 +68,3 @@ assert_cmd = "2"
 predicates = "3"
 ssh-key = { version = "0.6.7", features = ["ed25519"] }
 tempfile = "3"
-tower = { version = "0.5" }

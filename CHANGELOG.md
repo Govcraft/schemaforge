@@ -11,6 +11,11 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- Trim unused ZIP, GraphQL, webhook HTTP, SQLx, Tokio, and container-test
+  dependency features and redundant declarations. PostgreSQL TLS explicitly
+  uses AWS-LC; supported storage, authentication, exports, and diagnostics remain
+  available. The dependency feature audit records measured graphs and upstream
+  feature requests that still limit further reductions.
 - CI caches use only the pinned compiler and are shared from main. Background
   maintenance builds missing dependency caches without repeating validation,
   and removes caches belonging to closed pull requests.
