@@ -19,7 +19,7 @@ GRAPHS = {
     "postgres-disabled": {"key": "postgres-no-extensions", "packages": ["cli", "acton"], "portable": True,
                           "features": "schema-forge-cli/postgres", "feature_env": True},
     "surrealdb": {"key": "surrealdb-extensions", "packages": ["cli", "acton", "surrealdb"],
-                  "features": "schema-forge-cli/oauth,schema-forge-cli/sse,schema-forge-acton/test-surrealdb,schema-forge-acton/graphql"},
+                  "features": "schema-forge-cli/oauth,schema-forge-cli/sse,schema-forge-cli/test-surrealdb,schema-forge-acton/test-surrealdb,schema-forge-acton/graphql"},
     "site": {"key": "site-v2-candidate", "packages": ["cli"], "bin": "schemaforge"},
     "site-tooling": {"key": "site-v2-tooling", "packages": ["cli"], "portable": True, "bin": "schemaforge"},
     "mssql": {"key": "sql-server", "packages": ["mssql"]},

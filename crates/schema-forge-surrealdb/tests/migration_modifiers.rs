@@ -1,3 +1,5 @@
+#![cfg(feature = "test-support")]
+
 //! Field modifier migrations retain complete definitions and remain atomic.
 use std::collections::BTreeMap;
 
@@ -9,7 +11,7 @@ use schema_forge_core::{
 use schema_forge_surrealdb::SurrealBackend;
 
 async fn fixture(namespace: &str) -> (SurrealBackend, SchemaDefinition, Entity) {
-    let backend = SurrealBackend::connect_memory(namespace, namespace)
+    let backend = schema_forge_surrealdb::test_support::connect(namespace, namespace)
         .await
         .unwrap();
     let schema = SchemaDefinition::new(
@@ -306,7 +308,7 @@ async fn new_fields_with_defaults_fill_existing_rows() {
 
 #[tokio::test]
 async fn removing_and_readding_relation_does_not_restore_values_or_lose_other_fields() {
-    let backend = SurrealBackend::connect_memory("relationvalues", "relationvalues")
+    let backend = schema_forge_surrealdb::test_support::connect("relationvalues", "relationvalues")
         .await
         .unwrap();
     let mut schema = SchemaDefinition::new(
@@ -417,9 +419,10 @@ async fn removing_and_readding_relation_does_not_restore_values_or_lose_other_fi
 
 #[tokio::test]
 async fn removing_required_relation_clears_values_before_recreating_optional_storage() {
-    let backend = SurrealBackend::connect_memory("requiredrelation", "requiredrelation")
-        .await
-        .unwrap();
+    let backend =
+        schema_forge_surrealdb::test_support::connect("requiredrelation", "requiredrelation")
+            .await
+            .unwrap();
     let name = SchemaName::new("RequiredRelation").unwrap();
     let field = FieldName::new("parent").unwrap();
     let mut schema = SchemaDefinition::new(

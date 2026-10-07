@@ -59,7 +59,7 @@ jobs:
       - name: Run generated app build, lint, and browser smoke
         env:
           TMP_ROOT: ${{ runner.temp }}/site-e2e
-        run: ./crates/schema-forge-cli/tests/site_e2e/run.sh
+        run: cargo run --locked -p schema-forge-test-runner -- ./crates/schema-forge-cli/tests/site_e2e/run.sh
       - name: Upload browser artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v7

@@ -21,7 +21,7 @@ site_e2e/
 
 ```bash
 # from the repo root
-./crates/schema-forge-cli/tests/site_e2e/run.sh
+cargo run --locked -p schema-forge-test-runner -- ./crates/schema-forge-cli/tests/site_e2e/run.sh
 ```
 
 `run.sh` does the following:
@@ -30,7 +30,7 @@ site_e2e/
 2. Copies `demo.schema` into `$TMP/schemas/`.
 3. Runs `cargo run --bin schemaforge -- site generate -s $TMP/schemas -o $TMP/site`.
 4. Runs `pnpm install` inside `$TMP/site`.
-5. Boots `schemaforge serve --db-url mem://` on an ephemeral port with a seeded `admin/admin` credential.
+5. Boots `schemaforge serve` against the test runner's remote SurrealDB on an ephemeral port with a seeded `admin/admin` credential.
 6. Starts `pnpm dev` pointed at the ephemeral backend via `VITE_FORGE_UPSTREAM`.
 7. Waits for `http://localhost:<vite-port>` to be reachable.
 8. Runs `pnpm --filter schemaforge-site-e2e exec playwright test` against the dev server.

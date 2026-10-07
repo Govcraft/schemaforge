@@ -17,7 +17,6 @@ use schema_forge_core::types::{
     Annotation, DynamicValue, EntityId, FieldDefinition, FieldName, FieldType, SchemaDefinition,
     SchemaId, SchemaName, TenantKind, TextConstraints,
 };
-use schema_forge_surrealdb::SurrealBackend;
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
@@ -31,7 +30,7 @@ use conditional_entities::*;
 
 async fn fixture(owner: &str, roles: &[&str]) -> (Router, String) {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("conditional", "conditional")
+        schema_forge_surrealdb::test_support::connect("conditional", "conditional")
             .await
             .unwrap(),
     );
@@ -41,7 +40,7 @@ async fn fixture(owner: &str, roles: &[&str]) -> (Router, String) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn patch_deployment_settings_preserves_authorized_json_changes() {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("patch", "deployment")
+        schema_forge_surrealdb::test_support::connect("patch", "deployment")
             .await
             .unwrap(),
     );
@@ -235,7 +234,7 @@ async fn conditional_mutations_honor_selected_tenant_before_condition_details() 
     )
     .unwrap();
     let backend = Arc::new(
-        SurrealBackend::connect_memory("conditional_tenant", "conditional_tenant")
+        schema_forge_surrealdb::test_support::connect("conditional_tenant", "conditional_tenant")
             .await
             .unwrap(),
     );
@@ -396,7 +395,7 @@ async fn write_pipeline_fixture_with_policy(
 ) -> Router {
     use schema_forge_backend::SchemaBackend;
     let backend = Arc::new(
-        SurrealBackend::connect_memory("writes", "writes")
+        schema_forge_surrealdb::test_support::connect("writes", "writes")
             .await
             .unwrap(),
     );
@@ -599,7 +598,11 @@ async fn create_field_authorization_accepts_defaults_but_fails_closed_on_missing
 async fn put_omission_matches_persisted_values_and_preserves_denied_fields() {
     use schema_forge_backend::SchemaBackend;
     for role in ["editor", "manager"] {
-        let backend = Arc::new(SurrealBackend::connect_memory("put", "put").await.unwrap());
+        let backend = Arc::new(
+            schema_forge_surrealdb::test_support::connect("put", "put")
+                .await
+                .unwrap(),
+        );
         let schema = schema_forge_dsl::parse(
             r#"
             @access(read: ["editor", "manager"], write: ["editor", "manager"], delete: ["manager"])
@@ -653,7 +656,7 @@ async fn put_omission_matches_persisted_values_and_preserves_denied_fields() {
 async fn denied_inputs_cannot_authorize_other_fields() {
     use schema_forge_backend::SchemaBackend;
     let backend = Arc::new(
-        SurrealBackend::connect_memory("field_auth", "field_auth")
+        schema_forge_surrealdb::test_support::connect("field_auth", "field_auth")
             .await
             .unwrap(),
     );

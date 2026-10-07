@@ -252,7 +252,7 @@ const REQUIRE_GRANTED: &str = "status != 'closed' || related.approval.state == '
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn require_passes_when_related_row_satisfies() {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "test")
+        schema_forge_surrealdb::test_support::connect("test", "test")
             .await
             .unwrap(),
     );
@@ -299,7 +299,7 @@ async fn require_passes_when_related_row_satisfies() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn require_rejected_when_related_row_fails() {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "test")
+        schema_forge_surrealdb::test_support::connect("test", "test")
             .await
             .unwrap(),
     );
@@ -350,7 +350,7 @@ async fn require_rejected_when_related_row_fails() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn require_fails_closed_when_fk_is_null() {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "test")
+        schema_forge_surrealdb::test_support::connect("test", "test")
             .await
             .unwrap(),
     );
@@ -388,7 +388,7 @@ async fn require_fails_closed_when_fk_is_null() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn require_fails_closed_when_related_row_missing() {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "test")
+        schema_forge_surrealdb::test_support::connect("test", "test")
             .await
             .unwrap(),
     );
@@ -442,7 +442,7 @@ async fn require_fails_closed_when_related_row_missing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cross_tenant_related_row_is_not_readable() {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "test")
+        schema_forge_surrealdb::test_support::connect("test", "test")
             .await
             .unwrap(),
     );
@@ -522,7 +522,7 @@ async fn to_many_relation_in_require_is_rejected_at_runtime() {
     // reference (bypassing the DSL apply-time guard); the runtime resolver must
     // reject it rather than mis-resolve. We assert a non-2xx outcome.
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "test")
+        schema_forge_surrealdb::test_support::connect("test", "test")
             .await
             .unwrap(),
     );
@@ -563,7 +563,7 @@ async fn multi_hop_related_read_is_rejected_with_clear_error() {
     // traverses `related.approval.reviewer.name` — a second relation hop. The
     // runtime resolver must reject this with the multi-hop message.
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "test")
+        schema_forge_surrealdb::test_support::connect("test", "test")
             .await
             .unwrap(),
     );
@@ -639,7 +639,7 @@ async fn multi_hop_related_read_is_rejected_with_clear_error() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relation_writes_validate_tenant_targets_and_request_fields() {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "relation_writes")
+        schema_forge_surrealdb::test_support::connect("test", "relation_writes")
             .await
             .unwrap(),
     );
@@ -785,7 +785,7 @@ async fn relation_writes_validate_tenant_targets_and_request_fields() {
 async fn subscription_writes_reject_unsafe_urls_before_persistence() {
     use schema_forge_backend::{Entity, EntityStore};
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "subscription_urls")
+        schema_forge_surrealdb::test_support::connect("test", "subscription_urls")
             .await
             .unwrap(),
     );

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Orchestrator for the generated-site Playwright smoke suite.
 #
-# Boots a fresh schemaforge backend against an in-memory SurrealDB, generates
+# Boots a fresh schemaforge backend against a remote SurrealDB, generates
 # a React site from tests/site_e2e/demo.schema, starts the Vite dev server,
 # and runs the Playwright spec at tests/site_e2e/playwright/tests/smoke.spec.ts.
 # Tears down both child processes on exit.
@@ -62,8 +62,12 @@ fi
 # ---------- backend ----------
 BACKEND_LOG="$TMP_ROOT/backend.log"
 FORGE_ADMIN_USER=admin FORGE_ADMIN_PASSWORD=admin \
+  ACTON_SURREALDB__USERNAME="${SCHEMAFORGE_TEST_SURREALDB_USER:?}" \
+  ACTON_SURREALDB__PASSWORD="${SCHEMAFORGE_TEST_SURREALDB_PASSWORD:?}" \
   "$SERVER_BIN" serve \
-    --db-url mem:// \
+    --db-url "${SCHEMAFORGE_TEST_SURREALDB_URL:?Run through schema-forge-test-runner}" \
+    --db-ns site_e2e \
+    --db-name "site_${BASHPID}" \
     --schemas "$SCHEMAS_DIR" \
     -H 127.0.0.1 \
     -p "$BACKEND_PORT" \

@@ -1,6 +1,5 @@
 //! Unsupported create-intent and authorization contracts on SurrealDB.
 use axum::{http::StatusCode, Router};
-use schema_forge_surrealdb::SurrealBackend;
 use std::sync::Arc;
 
 #[path = "support/create_intents.rs"]
@@ -9,7 +8,7 @@ use create_intents::{fixture_with_backend, request};
 
 async fn fixture(owner: &str, roles: &[&str]) -> (Router, String) {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("conditional", "conditional")
+        schema_forge_surrealdb::test_support::connect("conditional", "conditional")
             .await
             .unwrap(),
     );

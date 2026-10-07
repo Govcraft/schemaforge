@@ -710,9 +710,7 @@ pub async fn run(
 
 /// Connect to database with exponential backoff retries.
 ///
-/// Unlike `connect_backend()` (used by CLI commands), this does NOT fall back
-/// to in-memory on failure. A production server must connect to its configured
-/// database or fail explicitly.
+/// Retry connection failures without replacing the configured database.
 async fn connect_with_retries(
     db_params: &DbParams,
     output: &OutputContext,
@@ -877,7 +875,7 @@ fn build_entity_auth_store(
 ///
 /// The generator shares the same key file as the token middleware so minted
 /// tokens round-trip through validation. If the key file does not exist yet
-/// (e.g. a fresh `mem://` smoke test before `schemaforge token init-key`
+/// (e.g. a fresh database smoke test before `schemaforge token init-key`
 /// has been run) it is auto-generated via
 /// [`crate::commands::token::ensure_paseto_key`].
 ///
@@ -1242,10 +1240,8 @@ mod resolve_tests {
     }
 }
 
-/// Mem-backed SurrealDB is the only auth store we can stand up synchronously
-/// in-process, so the only test in this file is surrealdb-feature-gated.
-/// Postgres builds get coverage from the resolver tests in `config.rs`.
-#[cfg(all(test, feature = "surrealdb"))]
+/// Route wiring against an isolated remote SurrealDB test fixture.
+#[cfg(all(test, feature = "test-surrealdb"))]
 mod tests {
     use super::*;
 
@@ -1260,7 +1256,6 @@ mod tests {
             FieldAnnotation, FieldDefinition, FieldModifier, FieldName, FieldType,
             IntegerConstraints, SchemaDefinition, SchemaId, SchemaName, TextConstraints,
         };
-        use schema_forge_surrealdb::SurrealBackend;
 
         use std::io::Write as _;
 
@@ -1289,8 +1284,8 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let backend = rt
-            .block_on(SurrealBackend::connect_with_auth(
-                "mem://", "test", "test", None, None,
+            .block_on(schema_forge_surrealdb::test_support::connect(
+                "test", "routes",
             ))
             .unwrap();
         let backend = Arc::new(backend);

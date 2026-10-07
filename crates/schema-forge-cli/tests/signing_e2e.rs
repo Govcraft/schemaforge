@@ -38,7 +38,7 @@ fn scaffold_project(mode: &str) -> TempDir {
     // Config has no signing section yet; sign step will print the
     // public key and the caller will splice it in.
     let config = format!(
-        "[surrealdb]\nurl = \"mem://\"\nnamespace = \"t\"\ndatabase = \"t\"\n\n\
+        "[surrealdb]\nurl = \"ws://localhost:8000\"\nnamespace = \"t\"\ndatabase = \"t\"\n\n\
          [schema_forge.signing]\nmode = \"{mode}\"\n"
     );
     fs::write(dir.path().join("config.toml"), config).unwrap();

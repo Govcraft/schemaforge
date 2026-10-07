@@ -23,7 +23,6 @@ use schema_forge_acton::routes::auth_routes;
 use schema_forge_acton::state::DynAuthStore;
 use schema_forge_backend::{AuthStore, EntityAuthStore};
 use schema_forge_core::types::SchemaDefinition;
-use schema_forge_surrealdb::SurrealBackend;
 use tempfile::NamedTempFile;
 use tower::ServiceExt;
 
@@ -31,15 +30,15 @@ use tower::ServiceExt;
 ///
 /// Uses the production [`EntityAuthStore`] path so the test exercises
 /// the real identity surface — `User` entity table, `password_hash`
-/// behind `@hidden`. The schema is migrated to the in-memory backend
+/// behind `@hidden`. The schema is migrated to the isolated remote backend
 /// so entity create/get queries work.
 async fn seeded_auth_store() -> Arc<dyn DynAuthStore> {
     use schema_forge_backend::traits::SchemaBackend;
     use schema_forge_core::migration::DiffEngine;
 
-    let backend = SurrealBackend::connect_memory("test", "auth_login_test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "auth_login_test")
         .await
-        .expect("connect in-memory surreal");
+        .expect("connect isolated remote surreal");
 
     // Apply the system User schema and register its metadata so the
     // SchemaId → table mapping exists.
@@ -234,7 +233,7 @@ async fn login_success_stamps_last_login_on_user_row() {
 // Tenancy / TenantMembership tests (issue #67)
 // ---------------------------------------------------------------------------
 
-/// Seed an in-memory backend with both the User and TenantMembership system
+/// Seed an isolated remote backend with both the User and TenantMembership system
 /// schemas migrated, and one user "alice" with `n_memberships` rows pointing
 /// at distinct Organization IDs.
 async fn seeded_auth_store_with_memberships(
@@ -249,9 +248,9 @@ async fn seeded_auth_store_with_memberships(
     use schema_forge_core::migration::DiffEngine;
     use schema_forge_core::types::DynamicValue;
 
-    let backend = SurrealBackend::connect_memory("test", "auth_login_tenancy_test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "auth_login_tenancy_test")
         .await
-        .expect("connect in-memory surreal");
+        .expect("connect isolated remote surreal");
 
     // Migrate User schema.
     let user_schema = parse_user_schema();

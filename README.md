@@ -27,13 +27,14 @@ From this single file, SchemaForge generates:
 
 ## Try it in 2 minutes
 
-The repo ships a self-contained demo: an in-memory backend with twelve seeded entities and a React admin UI. There is no database to install.
+The repo ships a demo with twelve seeded entities and a React admin UI. Testcontainers starts a disposable SurrealDB server for the demo.
 
 ### Prerequisites
 
 | Tool | Why it's needed |
 |---|---|
 | [Rust 1.97.1+](https://rustup.rs) | The demo builds the CLI from source |
+| Docker | Runs the disposable SurrealDB server |
 | [Task](https://taskfile.dev/installation/) | Runs the bundled demo recipes |
 | [pnpm](https://pnpm.io/installation) + Node 20+ | Builds and serves the React admin |
 
@@ -43,7 +44,7 @@ The repo ships a self-contained demo: an in-memory backend with twelve seeded en
 git clone https://github.com/Govcraft/schemaforge
 cd schemaforge
 
-task demo        # builds the CLI, starts an in-memory backend on :3000, seeds 12 entities
+task demo        # starts a disposable database and backend on :3000, seeds 12 entities
 ```
 
 In a second terminal:
@@ -54,7 +55,7 @@ task site:dev    # regenerates the React admin and serves it on :5173
 
 Open <http://localhost:5173> and sign in with `admin` / `changeme`.
 
-That's the whole demo. The backend uses an embedded in-memory store, so nothing persists between runs; press Ctrl+C in the `task demo` terminal to stop. When you're ready to point SchemaForge at SurrealDB or PostgreSQL, see [Install for a Real Project](#install-for-a-real-project).
+The separate database server keeps demo data in memory, so nothing persists between runs; press Ctrl+C in the `task demo` terminal to stop. For a persistent SurrealDB or PostgreSQL deployment, see [Install for a Real Project](#install-for-a-real-project).
 
 ## Table of Contents
 
@@ -473,7 +474,13 @@ SurrealDB is the primary backend. Its data model aligns naturally:
 | `FieldType::Json` | `FLEXIBLE TYPE object` |
 | Relation traversal | Native dot-notation (no JOINs) |
 
-The embedded SurrealDB mode (`kv-mem`) enables development and testing without running a separate database process.
+SchemaForge connects to a separate stable SurrealDB 3.3+ server over HTTP or WebSocket, with TLS available for either protocol. The database engine is absent from SchemaForge's dependency graph. Embedded `mem://` URLs are no longer supported; for development, run `surreal start --user root --pass secret memory` and configure the remote endpoint and credentials.
+
+The integration tests use one disposable SurrealDB 3.3.0 container per suite, managed by Testcontainers, with a unique database for each fixture. Docker is required. Run:
+
+```bash
+cargo run --locked -p schema-forge-test-runner -- cargo nextest run --locked -p schema-forge-surrealdb --features test-support
+```
 
 ## SchemaDSL Reference
 

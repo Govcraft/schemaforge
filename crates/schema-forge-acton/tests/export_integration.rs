@@ -1,7 +1,7 @@
 //! Integration tests for the synchronous streamable export endpoint
 //! (`POST /schemas/{schema}/entities/export`, item 5 of the export epic).
 //!
-//! In-process SurrealDB (`mem://`), no external services. Exercises the
+//! A remote SurrealDB fixture owned by the test runner. Exercises the
 //! fail-closed gates and the AU-2 audit-shaped flow end to end: a schema without
 //! `@export` refuses; a non-`@exportable` field never appears in the file; the
 //! read-vs-export Cedar split denies a read-only role; the row cap defers to the
@@ -250,7 +250,7 @@ async fn seeded_app_with_config(
     custom: SchemaForgeConfig,
 ) -> Router {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "test")
+        schema_forge_surrealdb::test_support::connect("test", "test")
             .await
             .expect("mem surreal"),
     );
@@ -800,7 +800,7 @@ async fn export_relation_labels_respect_target_schema_row_field_and_operator_acc
     )
     .unwrap();
     let backend = Arc::new(
-        SurrealBackend::connect_memory("test", "export-targets")
+        schema_forge_surrealdb::test_support::connect("test", "export-targets")
             .await
             .unwrap(),
     );

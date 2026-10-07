@@ -95,32 +95,9 @@ impl SurrealBackend {
         &self.db
     }
 
-    /// Connect to an in-memory SurrealDB instance for testing.
-    ///
-    /// Uses the `kv-mem` engine. The namespace and database are created
-    /// automatically.
-    pub async fn connect_memory(ns: &str, db_name: &str) -> Result<Self, BackendError> {
-        let db = surrealdb::engine::any::connect("mem://")
-            .await
-            .map_err(|e| BackendError::ConnectionError {
-                message: e.to_string(),
-            })?;
-
-        db.use_ns(ns)
-            .use_db(db_name)
-            .await
-            .map_err(|e| BackendError::ConnectionError {
-                message: e.to_string(),
-            })?;
-
-        let backend = Self::from_client(db);
-        backend.ensure_supported_version().await?;
-        Ok(backend)
-    }
-
     /// Connect to a remote SurrealDB instance.
     ///
-    /// Supports ws://, wss://, http://, https://, and mem:// schemes.
+    /// Supports ws://, wss://, http://, and https:// schemes.
     /// After connecting, optionally authenticates with root credentials,
     /// then selects the given namespace and database.
     pub async fn connect(url: &str, ns: &str, db_name: &str) -> Result<Self, BackendError> {
@@ -138,6 +115,11 @@ impl SurrealBackend {
         username: Option<&str>,
         password: Option<&str>,
     ) -> Result<Self, BackendError> {
+        if url.starts_with("mem://") || url.starts_with("memory://") {
+            return Err(BackendError::ConnectionError {
+                message: "embedded SurrealDB is no longer supported; start a separate SurrealDB 3.3+ server and connect with ws://, wss://, http://, or https://".into(),
+            });
+        }
         let db = surrealdb::engine::any::connect(url).await.map_err(|_| {
             BackendError::ConnectionError {
                 message: "failed to connect to SurrealDB; check the database address, credentials, and server availability".into(),
@@ -1103,9 +1085,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn connect_memory_via_url() {
+    async fn embedded_urls_require_a_remote_server() {
         let result = SurrealBackend::connect("mem://", "test", "test").await;
-        assert!(result.is_ok(), "connect(\"mem://\") should succeed");
+        assert!(
+            matches!(result, Err(BackendError::ConnectionError { message }) if message.contains("separate SurrealDB"))
+        );
     }
 
     #[tokio::test]
@@ -1145,7 +1129,7 @@ mod tests {
     async fn create_with_negative_duration_is_rejected() {
         use std::collections::BTreeMap;
 
-        let backend = SurrealBackend::connect_memory("test", "test")
+        let backend = crate::test_support::connect("test", "test")
             .await
             .expect("failed to connect to in-memory SurrealDB");
 
@@ -1179,7 +1163,7 @@ mod tests {
 
     #[tokio::test]
     async fn bytes_literal_round_trips_through_surrealql() {
-        let backend = SurrealBackend::connect_memory("bytes", "bytes")
+        let backend = crate::test_support::connect("bytes", "bytes")
             .await
             .unwrap();
         for bytes in [vec![], b"hello".to_vec(), vec![0, 255, 128, 34, 39, 92]] {
@@ -1198,7 +1182,7 @@ mod tests {
     async fn create_with_oversized_bytes_is_rejected() {
         use std::collections::BTreeMap;
 
-        let backend = SurrealBackend::connect_memory("test", "test")
+        let backend = crate::test_support::connect("test", "test")
             .await
             .expect("failed to connect to in-memory SurrealDB");
 

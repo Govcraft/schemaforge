@@ -29,7 +29,7 @@ use entity_events::*;
 async fn fixture(config: EventsConfig) -> Fixture {
     fixture_backend(
         Arc::new(
-            schema_forge_surrealdb::SurrealBackend::connect_memory("events", "events")
+            schema_forge_surrealdb::test_support::connect("events", "events")
                 .await
                 .unwrap(),
         ),
@@ -224,7 +224,7 @@ async fn committed_updates_are_delivered_in_commit_order() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn membership_removal_closes_stream_and_active_tenant_cannot_be_impersonated() {
     let backend = Arc::new(
-        schema_forge_surrealdb::SurrealBackend::connect_memory("events", "tenants")
+        schema_forge_surrealdb::test_support::connect("events", "tenants")
             .await
             .unwrap(),
     );
@@ -283,7 +283,7 @@ async fn membership_removal_closes_stream_and_active_tenant_cannot_be_impersonat
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scoped_membership_role_allows_stream_and_role_revocation_closes_it() {
     let backend = Arc::new(
-        schema_forge_surrealdb::SurrealBackend::connect_memory("events", "scoped_roles")
+        schema_forge_surrealdb::test_support::connect("events", "scoped_roles")
             .await
             .unwrap(),
     );
@@ -435,7 +435,7 @@ async fn concurrent_updates_end_with_the_same_snapshot_as_storage() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relation_filters_derived_collections_and_read_hooks_equal_get_projection() {
     let backend = Arc::new(
-        schema_forge_surrealdb::SurrealBackend::connect_memory("events", "read_projection")
+        schema_forge_surrealdb::test_support::connect("events", "read_projection")
             .await
             .unwrap(),
     );
@@ -538,7 +538,7 @@ async fn login_fixture(database: &str) -> LoginFixture {
     use schema_forge_core::types::DynamicValue;
 
     let backend = Arc::new(
-        schema_forge_surrealdb::SurrealBackend::connect_memory("events", database)
+        schema_forge_surrealdb::test_support::connect("events", database)
             .await
             .unwrap(),
     );

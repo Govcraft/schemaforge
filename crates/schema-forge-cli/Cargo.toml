@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-cli"
-version = "0.49.1"
+version = "0.50.0"
 edition = "2021"
 
 [[bin]]
@@ -51,6 +51,7 @@ sse = ["server", "schema-forge-acton/sse", "acton-service/sse"]
 oauth = ["server", "schema-forge-acton/oauth", "acton-service/oauth"]
 default = ["surrealdb"]
 surrealdb = ["server", "dep:schema-forge-surrealdb", "schema-forge-acton/surrealdb", "acton-service/surrealdb"]
+test-surrealdb = ["surrealdb", "schema-forge-surrealdb/test-support"]
 postgres = ["server", "dep:schema-forge-postgres", "schema-forge-acton/postgres", "acton-service/database"]
 mssql = ["server", "dep:schema-forge-mssql", "acton-service/mssql"]
 # Federal-grade build: routes rustls, sqlx, reqwest, and tonic through

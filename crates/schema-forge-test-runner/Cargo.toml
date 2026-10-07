@@ -1,0 +1,10 @@
+[package]
+name = "schema-forge-test-runner"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97.1"
+publish = false
+
+[dependencies]
+testcontainers = { version = "0.28.0", default-features = false, features = ["http_wait_plain"] }
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "process", "signal"] }

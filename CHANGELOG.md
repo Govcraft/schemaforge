@@ -7,9 +7,11 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
-## [0.49.1] - 2026-10-06
+## [0.50.0] - 2026-10-07
 
 ### Changed
+
+- Remove SurrealDB embedded engine and parser features. SchemaForge now requires a remote SurrealDB 3.3+ server; `mem://` connections and the CLI's in-memory fallback are removed. Integration and browser tests share a disposable Testcontainers server with isolated databases.
 
 - Upgrade all acton-service consumers and generated hook services to 0.47.0,
   using the framework's split core, audit, and storage packages while retaining

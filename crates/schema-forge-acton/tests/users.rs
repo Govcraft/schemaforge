@@ -75,7 +75,7 @@ async fn seed_backend(namespace: &str) -> SeededBackend {
     use schema_forge_backend::EntityAuthStore;
     use schema_forge_core::migration::DiffEngine;
 
-    let backend = SurrealBackend::connect_memory("test", namespace)
+    let backend = schema_forge_surrealdb::test_support::connect("test", namespace)
         .await
         .expect("connect in-memory surreal");
 
