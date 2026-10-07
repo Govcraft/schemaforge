@@ -19,10 +19,9 @@ runs:
         sudo apt-get update
         sudo apt-get install -y "${packages[@]}"
     - uses: dtolnay/rust-toolchain@1.97.1
-    - uses: Swatinem/rust-cache@v2
+    - uses: ./.github/actions/rust-cache
       with:
-        shared-key: ${{ inputs.cache-key }}
-        cache-on-failure: true
+        cache-key: ${{ inputs.cache-key }}
     - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
       with:
         tool: cargo-nextest@0.9.146

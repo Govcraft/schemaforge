@@ -11,6 +11,9 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- CI caches use only the pinned compiler and are shared from main. Background
+  maintenance builds missing dependency caches without repeating validation,
+  and removes caches belonging to closed pull requests.
 - Main pushes reuse successful PR CI when the exact file tree and required
   component coverage match verified validation evidence. Missing evidence runs
   normal component validation; nightly, manual, and release runs validate afresh.

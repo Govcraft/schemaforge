@@ -1,0 +1,96 @@
+name: Shared CI cache maintenance
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [closed]
+  schedule:
+    - cron: '47 7 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+concurrency:
+  group: cache-maintenance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+jobs:
+  cleanup:
+    name: Remove caches belonging to closed PRs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
+    steps:
+      # The close event never checks out or executes the PR's code.
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - name: Confirm closed PRs and remove their cache IDs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOSED_PR: ${{ github.event.pull_request.number }}
+        run: |
+          args=()
+          if [[ -n "$CLOSED_PR" ]]; then args+=(--pr "$CLOSED_PR"); fi
+          python3 scripts/ci/cleanup_caches.py "${args[@]}"
+  plan:
+    name: Select shared dependency caches
+    if: github.event_name != 'pull_request_target' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Select component and platform graphs
+        id: select
+        run: python3 scripts/ci/warm_caches.py matrix
+  warm:
+    name: Shared dependencies (${{ matrix.label }})
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_FEATURES: ${{ matrix.cargo_features }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - name: Check whether shared dependencies already exist
+        id: probe
+        uses: ./.github/actions/rust-cache
+        with:
+          cache-key: ${{ matrix.cache_key }}
+          lookup-only: 'true'
+          save: 'false'
+      - name: Install Linux prerequisites for a missing cache
+        if: steps.probe.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libkrb5-dev
+      - name: Install Windows prerequisites for a missing cache
+        if: steps.probe.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: choco install protoc --no-progress --yes
+      - name: Restore previous compatible dependencies and save the new cache
+        if: steps.probe.outputs.cache-hit != 'true'
+        uses: ./.github/actions/rust-cache
+        with:
+          cache-key: ${{ matrix.cache_key }}
+      - name: Install the pinned dependency builder
+        if: steps.probe.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        with:
+          tool: cargo-chef@0.1.78
+      - name: Build missing dependency artifacts without running tests
+        if: steps.probe.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          CACHE_GRAPH: ${{ matrix.graph }}
+        run: python scripts/ci/warm_caches.py warm --graph "$CACHE_GRAPH"
