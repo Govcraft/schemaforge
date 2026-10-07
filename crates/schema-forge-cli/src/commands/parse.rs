@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 use schema_forge_signing::{FileVerifyOutcome, SigningMode, VerifyPolicy};
 
 use crate::cli::{GlobalOpts, ParseArgs};
-use crate::config::{build_verify_policy, load_svc_config};
 use crate::diagnostic::render_diagnostics;
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
+use crate::tooling_config::{build_verify_policy, load_svc_config};
 
 /// Run the `parse` command: validate .schema files and render diagnostics.
 pub async fn run(

@@ -900,3 +900,52 @@ fn tooling_build_exposes_generation_and_excludes_server_commands() {
         .failure()
         .stderr(predicates::str::contains("unrecognized subcommand"));
 }
+
+#[test]
+#[cfg(feature = "server")]
+fn offline_commands_ignore_missing_oauth_provider_credentials() {
+    let project = TempDir::new().unwrap();
+    fs::create_dir(project.path().join("schemas")).unwrap();
+    fs::create_dir(project.path().join("policies")).unwrap();
+    fs::write(project.path().join("policies/role_ranks.toml"), "[roles]\n").unwrap();
+    fs::write(
+        project.path().join("schemas/contact.schema"),
+        r#"@hook(before_change) """normalize fields""" schema Contact { name: text required }"#,
+    )
+    .unwrap();
+    let config = project.path().join("config.toml");
+    fs::write(
+        &config,
+        "[auth.oauth.providers.github]\nredirect_uri = 'https://app/oauth/callback'\n",
+    )
+    .unwrap();
+    for arguments in [
+        vec!["policies", "validate", "schemas"],
+        vec!["policies", "regenerate"],
+        vec!["hooks", "generate", "--all"],
+    ] {
+        schema_forge()
+            .current_dir(project.path())
+            .env("XDG_CONFIG_HOME", project.path())
+            .arg("--config")
+            .arg(&config)
+            .args(arguments)
+            .assert()
+            .success();
+    }
+    assert!(project
+        .path()
+        .join("policies/generated/contact.cedar")
+        .is_file());
+    assert!(project.path().join("hooks-service/Cargo.toml").is_file());
+    #[cfg(feature = "oauth")]
+    schema_forge()
+        .current_dir(project.path())
+        .env("XDG_CONFIG_HOME", project.path())
+        .arg("--config")
+        .arg(&config)
+        .arg("serve")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("client_id"));
+}

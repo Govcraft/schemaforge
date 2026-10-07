@@ -162,3 +162,78 @@ pub fn resolve_signing_config(
     }
     Ok(svc_config.custom.schema_forge.signing.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_global() -> GlobalOpts {
+        GlobalOpts {
+            config: None,
+            format: "human".into(),
+            verbose: 0,
+            quiet: false,
+            no_color: false,
+            #[cfg(feature = "server")]
+            db_url: None,
+            #[cfg(feature = "server")]
+            db_ns: None,
+            #[cfg(feature = "server")]
+            db_name: None,
+            trust_policy: None,
+            no_verify: false,
+        }
+    }
+
+    #[test]
+    fn build_verify_policy_off_by_default() {
+        let svc: ToolingConfig = ToolingConfig::default();
+        let policy = build_verify_policy(&svc, &empty_global()).unwrap();
+        assert_eq!(policy.mode(), SigningMode::Off);
+    }
+
+    #[test]
+    fn build_verify_policy_honours_no_verify_in_warn_mode() {
+        let mut svc: ToolingConfig = ToolingConfig::default();
+        svc.custom.schema_forge.signing.mode = SigningMode::Warn;
+        let mut global = empty_global();
+        global.no_verify = true;
+        let policy = build_verify_policy(&svc, &global).unwrap();
+        assert_eq!(policy.mode(), SigningMode::Off);
+    }
+
+    #[test]
+    fn build_verify_policy_refuses_no_verify_under_enforce() {
+        std::env::remove_var("SCHEMAFORGE_ALLOW_NO_VERIFY");
+        let mut svc: ToolingConfig = ToolingConfig::default();
+        svc.custom.schema_forge.signing.mode = SigningMode::Enforce;
+        svc.custom.schema_forge.signing.trusted_signers =
+            vec![schema_forge_signing::TrustedSigner::Ed25519 {
+                name: "x".into(),
+                public_key_b64: schema_forge_signing::Ed25519Signer::from_seed_bytes(&[0x42; 32])
+                    .public_key_b64_raw(),
+            }];
+        let mut global = empty_global();
+        global.no_verify = true;
+        let err = build_verify_policy(&svc, &global).unwrap_err();
+        assert!(matches!(err, CliError::Config { .. }));
+    }
+
+    #[test]
+    fn build_verify_policy_allows_no_verify_with_env_override() {
+        std::env::set_var("SCHEMAFORGE_ALLOW_NO_VERIFY", "1");
+        let mut svc: ToolingConfig = ToolingConfig::default();
+        svc.custom.schema_forge.signing.mode = SigningMode::Enforce;
+        svc.custom.schema_forge.signing.trusted_signers =
+            vec![schema_forge_signing::TrustedSigner::Ed25519 {
+                name: "x".into(),
+                public_key_b64: schema_forge_signing::Ed25519Signer::from_seed_bytes(&[0x42; 32])
+                    .public_key_b64_raw(),
+            }];
+        let mut global = empty_global();
+        global.no_verify = true;
+        let policy = build_verify_policy(&svc, &global).unwrap();
+        assert_eq!(policy.mode(), SigningMode::Off);
+        std::env::remove_var("SCHEMAFORGE_ALLOW_NO_VERIFY");
+    }
+}

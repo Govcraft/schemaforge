@@ -5,9 +5,9 @@
 use schema_forge_signing::{FileVerifyOutcome, SigningMode, VerifyPolicy, VerifyReport};
 
 use crate::cli::{GlobalOpts, VerifyArgs};
-use crate::config::{build_verify_policy, load_svc_config};
 use crate::error::CliError;
 use crate::output::{OutputContext, OutputMode};
+use crate::tooling_config::{build_verify_policy, load_svc_config};
 
 /// Run the `verify` command.
 pub async fn run(

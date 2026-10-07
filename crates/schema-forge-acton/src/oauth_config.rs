@@ -94,18 +94,27 @@ impl ReturnUrl {
     }
 
     /// Preserve application query parameters and replace any stale login code.
-    pub fn with_login_code(mut self, code: &str) -> String {
+    pub fn with_login_code(self, code: &str) -> String {
+        self.with_result("code", code)
+    }
+
+    /// Redirect a validated destination with a fixed callback error code.
+    pub fn with_error(self, error: &str) -> String {
+        self.with_result("error", error)
+    }
+
+    fn with_result(mut self, key: &str, value: &str) -> String {
         let pairs: Vec<(String, String)> = self
             .0
             .query_pairs()
-            .filter(|(name, _)| name != "code")
+            .filter(|(name, _)| name != "code" && name != "error")
             .map(|(name, value)| (name.into_owned(), value.into_owned()))
             .collect();
         self.0.set_query(None);
         self.0
             .query_pairs_mut()
             .extend_pairs(pairs)
-            .append_pair("code", code);
+            .append_pair(key, value);
         self.0.into()
     }
 }
@@ -193,6 +202,23 @@ mod tests {
                 ("code".into(), "opaque+/code".into())
             ]
         );
+    }
+
+    #[test]
+    fn error_redirect_clears_stale_results_and_preserves_application_query() {
+        let target = settings()
+            .validate_return_to("https://console.example.com/app?view=1&code=old&error=old")
+            .unwrap();
+        let url = Url::parse(&target.clone().with_error("email_unverified")).unwrap();
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            [
+                ("view".into(), "1".into()),
+                ("error".into(), "email_unverified".into()),
+            ]
+        );
+        let success = target.with_login_code("new");
+        assert!(!success.contains("error="));
     }
 
     #[test]

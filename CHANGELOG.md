@@ -24,6 +24,10 @@ is pre-1.0; breaking changes bump the **minor** version per
   using the framework's split core, audit, and storage packages while retaining
   SchemaForge's explicit feature selections.
 
+- Redirect trusted OAuth callback failures to the frontend with fixed error codes.
+  Invitation emails reflect enabled sign-in methods, and offline CLI commands
+  load tooling settings without requiring runtime provider credentials.
+
 - Trim unused ZIP, GraphQL, webhook HTTP, SQLx, Tokio, and container-test
   dependency features and redundant declarations. PostgreSQL TLS explicitly
   uses AWS-LC; supported storage, authentication, exports, and diagnostics remain

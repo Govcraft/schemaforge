@@ -51,6 +51,29 @@ const STATE_TTL_SECS: u64 = 600;
 const LOGIN_CODE_TTL_SECS: u64 = 60;
 const LOGIN_CODE_KIND: &str = "forge_login_code";
 
+#[derive(Debug, Clone, Copy)]
+enum CallbackFailure {
+    EmailUnverified,
+    InviteInvalid,
+    InviteOnly,
+    AccountExistsUnlinked,
+    NoTenant,
+    ProviderError,
+}
+
+impl CallbackFailure {
+    fn code(self) -> &'static str {
+        match self {
+            Self::EmailUnverified => "email_unverified",
+            Self::InviteInvalid => "invite_invalid",
+            Self::InviteOnly => "invite_only",
+            Self::AccountExistsUnlinked => "account_exists_unlinked",
+            Self::NoTenant => "no_tenant",
+            Self::ProviderError => "provider_error",
+        }
+    }
+}
+
 /// Shared login dependencies, constructed once by the embedding service.
 #[derive(Clone)]
 pub struct OAuthLoginServices {
@@ -327,75 +350,84 @@ async fn finish_callback(
         .settings
         .validate_return_to(&redirect_state.return_to)
         .map_err(|_| unauthorized_response())?;
-    let code = query
-        .code
-        .filter(|value| !value.is_empty())
-        .ok_or_else(unauthorized_response)?;
-    let tokens = implementation
-        .exchange_code(&code)
-        .await
-        .map_err(|_| unauthorized_response())?;
-    let info = implementation
-        .get_user_info(&tokens.access_token)
-        .await
-        .map_err(|_| unauthorized_response())?;
-    let email = info
-        .email
-        .as_deref()
-        .filter(|email| info.email_verified && valid_email(email))
-        .ok_or_else(unauthorized_response)?;
-    let identity = ProviderIdentity::new(provider, info.provider_user_id)
-        .map_err(|_| unauthorized_response())?;
-
-    // Serialize new-account/invite provisioning within the process. Backend
-    // uniqueness still protects identity links against external writers.
-    let user = {
-        let _guard = runtime.provisioning.lock().await;
-        match services
-            .auth_store
-            .find_user_by_identity(&identity)
+    let result: Result<Response, CallbackFailure> = async {
+        let code = query
+            .code
+            .filter(|value| !value.is_empty())
+            .ok_or(CallbackFailure::ProviderError)?;
+        let tokens = implementation
+            .exchange_code(&code)
             .await
-            .map_err(store_error)?
-        {
-            Some(user) => user,
-            None => {
-                provision_account(
-                    runtime,
-                    services,
-                    &identity,
-                    email,
-                    info.name.as_deref(),
-                    redirect_state.invite_id.as_deref(),
-                )
-                .await?
+            .map_err(|_| CallbackFailure::ProviderError)?;
+        let info = implementation
+            .get_user_info(&tokens.access_token)
+            .await
+            .map_err(|_| CallbackFailure::ProviderError)?;
+        let email = info
+            .email
+            .as_deref()
+            .filter(|email| info.email_verified && valid_email(email))
+            .ok_or(CallbackFailure::EmailUnverified)?;
+        let identity = ProviderIdentity::new(provider, info.provider_user_id)
+            .map_err(|_| CallbackFailure::ProviderError)?;
+
+        // Serialize new-account/invite provisioning within the process. Backend
+        // uniqueness still protects identity links against external writers.
+        let user = {
+            let _guard = runtime.provisioning.lock().await;
+            match services
+                .auth_store
+                .find_user_by_identity(&identity)
+                .await
+                .map_err(|_| CallbackFailure::ProviderError)?
+            {
+                Some(user) => user,
+                None => {
+                    provision_account(
+                        runtime,
+                        services,
+                        &identity,
+                        email,
+                        info.name.as_deref(),
+                        redirect_state.invite_id.as_deref(),
+                    )
+                    .await?
+                }
             }
-        }
-    };
-    let context = LoginContext {
-        state,
-        source,
-        auth_store: services.auth_store.as_ref(),
-        generator: &services.generator,
-        principal_claims: &services.principal_claims,
-        tenant_config: services.tenant_config.as_ref().as_ref(),
-    };
-    let login = context
-        .complete(&user, LoginSource::OAuth(provider.to_owned()))
-        .await?;
-    let payload = StateData {
-        provider: LOGIN_CODE_KIND.into(),
-        redirect_uri: None,
-        created_at: Utc::now().timestamp(),
-        extra: Some(
-            serde_json::to_value(login).map_err(|error| json_error(error).into_response())?,
-        ),
-    };
-    let login_code = runtime
-        .login_codes
-        .create_state(&payload)
-        .await
-        .map_err(|error| manager_error(error).into_response())?;
-    redirect(destination.with_login_code(&login_code)).map_err(IntoResponse::into_response)
+        };
+        let context = LoginContext {
+            state,
+            source,
+            auth_store: services.auth_store.as_ref(),
+            generator: &services.generator,
+            principal_claims: &services.principal_claims,
+            tenant_config: services.tenant_config.as_ref().as_ref(),
+        };
+        let login = context
+            .complete(&user, LoginSource::OAuth(provider.to_owned()))
+            .await
+            .map_err(|failure| match failure {
+                super::auth::LoginFailure::NoTenantAssigned => CallbackFailure::NoTenant,
+                super::auth::LoginFailure::Response(_) => CallbackFailure::ProviderError,
+            })?;
+        let payload = StateData {
+            provider: LOGIN_CODE_KIND.into(),
+            redirect_uri: None,
+            created_at: Utc::now().timestamp(),
+            extra: Some(serde_json::to_value(login).map_err(|_| CallbackFailure::ProviderError)?),
+        };
+        let login_code = runtime
+            .login_codes
+            .create_state(&payload)
+            .await
+            .map_err(|_| CallbackFailure::ProviderError)?;
+        redirect(destination.clone().with_login_code(&login_code))
+            .map_err(|_| CallbackFailure::ProviderError)
+    }
+    .await;
+    result.map_err(|error| {
+        redirect(destination.with_error(error.code())).unwrap_or_else(IntoResponse::into_response)
+    })
 }
 
 async fn provision_account(
@@ -405,35 +437,31 @@ async fn provision_account(
     email: &str,
     display_name: Option<&str>,
     invite_id: Option<&str>,
-) -> Result<ForgeUser, Response> {
+) -> Result<ForgeUser, CallbackFailure> {
     // Never auto-link a provider to an existing account by matching its email.
     if services
         .auth_store
         .get_user(email)
         .await
-        .map_err(store_error)?
+        .map_err(|_| CallbackFailure::ProviderError)?
         .is_some()
     {
-        return Err(ForgeError::Conflict {
-            reason: "user_exists",
-            message: "an account already uses this email; external identity is not linked".into(),
-        }
-        .into_response());
+        return Err(CallbackFailure::AccountExistsUnlinked);
     }
     let invite = if let Some(id) = invite_id {
         let invite = services
             .invites
             .find_by_jti(id)
             .await
-            .map_err(store_error)?
-            .ok_or_else(unauthorized_response)?;
+            .map_err(|_| CallbackFailure::ProviderError)?
+            .ok_or(CallbackFailure::InviteInvalid)?;
         if !invite.is_acceptable(Utc::now()) {
-            return Err(unauthorized_response());
+            return Err(CallbackFailure::InviteInvalid);
         }
         let verified = verify_invite_token(services.validator.as_ref(), &invite.token)
-            .map_err(|_| unauthorized_response())?;
+            .map_err(|_| CallbackFailure::InviteInvalid)?;
         if verified.invite_id != invite.jti || verified.email != email {
-            return Err(unauthorized_response());
+            return Err(CallbackFailure::InviteInvalid);
         }
         Some((invite, verified))
     } else {
@@ -449,7 +477,7 @@ async fn provision_account(
         None if runtime.settings.signup == SignupPolicy::Open => {
             runtime.settings.default_roles.clone()
         }
-        None => return Err(StatusCode::FORBIDDEN.into_response()),
+        None => return Err(CallbackFailure::InviteOnly),
     };
     let display_name = invite
         .as_ref()
@@ -460,14 +488,14 @@ async fn provision_account(
         .auth_store
         .create_user_without_password(email, &roles, display_name)
         .await
-        .map_err(store_error)?;
+        .map_err(|_| CallbackFailure::ProviderError)?;
     if let Some((_, verified)) = &invite {
         if let (Some(tenant_type), Some(tenant_id)) = (&verified.tenant_type, &verified.tenant_id) {
             services
                 .auth_store
                 .add_tenant_membership(email, tenant_type, tenant_id, verified.role.as_deref())
                 .await
-                .map_err(store_error)?;
+                .map_err(|_| CallbackFailure::ProviderError)?;
         }
     }
     if invite.is_none() {
@@ -481,27 +509,14 @@ async fn provision_account(
                     Some(&default.role),
                 )
                 .await
-                .map_err(store_error)?;
+                .map_err(|_| CallbackFailure::ProviderError)?;
         }
     }
     services
         .auth_store
         .link_identity(email, identity, email)
         .await
-        .map_err(|error| {
-            if matches!(
-                error,
-                schema_forge_backend::BackendError::UniqueViolation { .. }
-            ) {
-                ForgeError::Conflict {
-                    reason: "identity_exists",
-                    message: "external identity is already linked".into(),
-                }
-                .into_response()
-            } else {
-                store_error(error)
-            }
-        })?;
+        .map_err(|_| CallbackFailure::ProviderError)?;
     // As with password invitations, consumption follows successful account,
     // membership and identity writes. No provider credentials are persisted.
     if let Some((invite, _)) = &invite {
@@ -509,14 +524,14 @@ async fn provision_account(
             .invites
             .mark_consumed(&invite.id, Utc::now())
             .await
-            .map_err(store_error)?;
+            .map_err(|_| CallbackFailure::ProviderError)?;
     }
     services
         .auth_store
         .get_user(email)
         .await
-        .map_err(store_error)?
-        .ok_or_else(unauthorized_response)
+        .map_err(|_| CallbackFailure::ProviderError)?
+        .ok_or(CallbackFailure::ProviderError)
 }
 
 /// POST /auth/oauth/exchange consumes one opaque code and returns LoginResponse.

@@ -26,7 +26,7 @@ fn generate(
     ));
     let schemas =
         parse_all_schemas_with_global(std::slice::from_ref(&args.schema_dir), global, output)?;
-    let config = crate::config::load_svc_config(global)?;
+    let config = crate::tooling_config::load_svc_config(global)?;
     let options = SiteOptions {
         schema_dir: args.schema_dir,
         schema: args.schema,

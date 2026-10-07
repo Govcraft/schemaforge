@@ -186,10 +186,31 @@ fn build_accept_url(base: Option<&str>, invite_id: &str) -> String {
 /// Plain-text invitation email body, branded with the deployment's
 /// `project_name` so onboarding users see the application they are joining
 /// (e.g. "Bob's Dog Scheduling") rather than the underlying engine.
-fn invite_email_body(project_name: &str, accept_url: &str) -> String {
+fn invite_email_body(
+    project_name: &str,
+    accept_url: &str,
+    password_login: bool,
+    providers: &[String],
+) -> String {
+    let providers = providers
+        .iter()
+        .map(|provider| match provider.as_str() {
+            "github" => "GitHub",
+            "google" => "Google",
+            "microsoft" => "Microsoft",
+            other => other,
+        })
+        .collect::<Vec<_>>()
+        .join(" or ");
+    let instructions = match (providers.is_empty(), password_login) {
+        (false, false) => format!("To accept the invitation, sign in with {providers} using this email address. Open:"),
+        (false, true) => format!("To accept the invitation, sign in with {providers} using this email address, or set your password. Open:"),
+        (true, true) => "To accept the invitation and set your password, open:".into(),
+        (true, false) => "To accept the invitation, open:".into(),
+    };
     format!(
         "You have been invited to join {project_name}.\n\n\
-         To accept the invitation and set your password, open:\n\n  {accept_url}\n\n\
+         {instructions}\n\n  {accept_url}\n\n\
          If you were not expecting this invitation you can ignore this message.\n"
     )
 }
@@ -397,10 +418,27 @@ pub async fn create_invite(
         &invitation.jti,
     );
     let project_name = &state.config().custom.schema_forge.project_name;
+    let oauth = &state.config().custom.schema_forge.auth.oauth;
+    #[cfg(feature = "oauth")]
+    let providers = state
+        .config()
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.oauth.as_ref())
+        .filter(|config| oauth.enabled && config.enabled)
+        .map(|config| config.providers.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    #[cfg(not(feature = "oauth"))]
+    let providers = Vec::new();
     let message = EmailMessage {
         to: body.email.clone(),
         subject: invite_email_subject(project_name),
-        body_text: invite_email_body(project_name, &accept_url),
+        body_text: invite_email_body(
+            project_name,
+            &accept_url,
+            !oauth.enabled || oauth.password_login,
+            &providers,
+        ),
     };
     if email_config.delivery == EmailDelivery::Smtp {
         if let Err(e) = email_sender.send(message).await {
@@ -672,13 +710,34 @@ mod tests {
         let body = invite_email_body(
             "SchemaForge",
             "https://app.agency.gov/invite/accept?invite=xyz",
+            true,
+            &[],
         );
         assert!(body.contains("https://app.agency.gov/invite/accept?invite=xyz"));
     }
 
     #[test]
+    fn invitation_wording_matches_available_login_modes() {
+        let providers = ["github".into(), "google".into()];
+        let oauth_only = invite_email_body("App", "https://app/invite", false, &providers);
+        assert!(oauth_only.contains("sign in with GitHub or Google using this email address"));
+        assert!(!oauth_only.contains("password"));
+        let mixed = invite_email_body("App", "https://app/invite", true, &providers);
+        assert!(mixed.contains("sign in with GitHub or Google"));
+        assert!(mixed.contains("or set your password"));
+        let password_only = invite_email_body("App", "https://app/invite", true, &[]);
+        assert!(password_only.contains("set your password"));
+        assert!(!password_only.contains("sign in with"));
+    }
+
+    #[test]
     fn invite_email_is_branded_with_project_name() {
-        let body = invite_email_body("Bob's Dog Scheduling", "https://x/invite?invite=1");
+        let body = invite_email_body(
+            "Bob's Dog Scheduling",
+            "https://x/invite?invite=1",
+            true,
+            &[],
+        );
         assert!(
             body.contains("join Bob's Dog Scheduling"),
             "email body must name the deployment, not the engine: {body}"
