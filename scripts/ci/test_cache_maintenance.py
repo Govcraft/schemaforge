@@ -145,6 +145,18 @@ class WarmingTests(unittest.TestCase):
             expected = GRAPHS[entry["graph"]].get("features", "") if entry["graph"].startswith("postgres") else ""
             self.assertEqual(entry["cargo_features"], expected)
 
+    def test_surreal_runner_dependencies_are_warmed_with_their_own_features(self):
+        cooked = commands("surrealdb", Path("recipe.json"))
+        self.assertEqual(len(cooked), 5)
+        for command in cooked[-2:]:
+            packages, features, portable = self.selectors(command)
+            self.assertEqual(packages, ["schema-forge-test-runner"])
+            self.assertEqual(features, [])
+            self.assertFalse(portable)
+            self.assertIn("--all-targets", command)
+        self.assertIn("--check", cooked[-1])
+        self.assertNotIn("--check", cooked[-2])
+
     def test_warming_never_executes_tests_and_windows_only_checks_its_binary(self):
         for name in GRAPHS:
             for command in commands(name, Path("recipe.json")):

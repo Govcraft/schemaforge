@@ -19,6 +19,10 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ### Changed
 
+- Warm the container runner's build and lint dependencies separately from the
+  SurrealDB application graph, reducing repeated CI compilation while preserving
+  each command's feature set.
+
 - Bound Ubuntu CI prerequisite installation and use the public HTTPS archive instead of the stalled Azure mirror. Skip installed packages and retain network limits for later browser prerequisites.
 
 - Permit token-only service principals to subscribe with a signed tenant chain. Streams revalidate the hierarchy and expiry and retain per-event Cedar filtering and stored-account membership checks.
