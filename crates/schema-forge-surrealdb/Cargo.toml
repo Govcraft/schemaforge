@@ -1,16 +1,20 @@
 [package]
 rust-version = "1.97.1"
 name = "schema-forge-surrealdb"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 
 [dependencies]
 schema-forge-core = { path = "../schema-forge-core" }
 schema-forge-backend = { path = "../schema-forge-backend" }
-surrealdb = { version = "3.3.0", features = ["kv-mem", "protocol-ws", "rustls"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1.44"
 
+surrealdb = { version = "3.3.0", default-features = false, features = ["protocol-ws", "protocol-http", "rustls"] }
+
 [dev-dependencies]
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }
+
+[features]
+test-support = []

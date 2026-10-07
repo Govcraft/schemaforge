@@ -58,7 +58,12 @@ tasks:
       BASE_URL: "{{.BASE_URL}}"
 
   demo:
-    desc: "Build, serve (in-memory DB) backend + ops console at /console, seed demo data, keep running. CONSOLE=0 for API-only."
+    desc: "Run the backend and console against a disposable SurrealDB container. CONSOLE=0 for API-only."
+    cmds:
+      - cargo run --locked -p schema-forge-test-runner -- task demo:run
+
+  demo:run:
+    desc: "Demo implementation, invoked by the disposable database runner."
     cmds:
       - |
         set -euo pipefail
@@ -113,16 +118,19 @@ tasks:
         # Build the CLI
         cargo build -p schema-forge-cli $feature_args
 
-        # Start server in background with in-memory DB.
+        # Connect to the disposable remote database owned by the test runner.
         # `--config config.toml` is explicit so the project's [rate_limit]
         # block applies; acton-service's auto-discovery doesn't always pick
         # up the project root.
+        ACTON_SURREALDB__URL="${SCHEMAFORGE_TEST_SURREALDB_URL:?}" \
+        ACTON_SURREALDB__USERNAME="${SCHEMAFORGE_TEST_SURREALDB_USER:?}" \
+        ACTON_SURREALDB__PASSWORD="${SCHEMAFORGE_TEST_SURREALDB_PASSWORD:?}" \
         ./target/debug/schemaforge --config config.toml serve \
           --port {{.PORT}} \
           --schemas {{.SCHEMA_DIR}} \
           --admin-password {{.ADMIN_PASSWORD}} \
           --seed-demo-users \
-          --db-url "mem://" \
+          --db-url "${SCHEMAFORGE_TEST_SURREALDB_URL:?}" \
           --dev-cors &
         SERVER_PID=$!
         trap 'kill $SERVER_PID 2>/dev/null' EXIT

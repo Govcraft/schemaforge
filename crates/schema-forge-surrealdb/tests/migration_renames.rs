@@ -1,9 +1,11 @@
+#![cfg(feature = "test-support")]
+
 #[path = "../../schema-forge-backend/tests/support/migration_renames.rs"]
 mod contract;
 
 #[tokio::test]
 async fn declared_renames_preserve_values_and_schema_constraints() {
-    let backend = schema_forge_surrealdb::SurrealBackend::connect_memory("renames", "renames")
+    let backend = schema_forge_surrealdb::test_support::connect("renames", "renames")
         .await
         .unwrap();
     contract::exercise(&backend).await;
@@ -14,7 +16,7 @@ async fn metadata_failure_rolls_back_destructive_schema_steps() {
     use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
     use schema_forge_core::{migration::DiffEngine, types::*};
     use std::collections::BTreeMap;
-    let backend = schema_forge_surrealdb::SurrealBackend::connect_memory("atomic", "atomic")
+    let backend = schema_forge_surrealdb::test_support::connect("atomic", "atomic")
         .await
         .unwrap();
     let original = SchemaDefinition::new(
@@ -62,7 +64,7 @@ async fn metadata_failure_rolls_back_destructive_schema_steps() {
 async fn fresh_metadata_reads_are_empty_without_creating_tables() {
     use schema_forge_backend::SchemaBackend;
     use schema_forge_core::types::SchemaName;
-    let backend = schema_forge_surrealdb::SurrealBackend::connect_memory("fresh", "fresh")
+    let backend = schema_forge_surrealdb::test_support::connect("fresh", "fresh")
         .await
         .unwrap();
     assert!(backend.list_schema_metadata().await.unwrap().is_empty());
@@ -90,7 +92,7 @@ async fn fresh_metadata_reads_are_empty_without_creating_tables() {
 async fn metadata_write_checks_statement_failures() {
     use schema_forge_backend::SchemaBackend;
     use schema_forge_core::types::*;
-    let backend = schema_forge_surrealdb::SurrealBackend::connect_memory("metadata", "metadata")
+    let backend = schema_forge_surrealdb::test_support::connect("metadata", "metadata")
         .await
         .unwrap();
     let mut schema = SchemaDefinition::new(

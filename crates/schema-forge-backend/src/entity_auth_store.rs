@@ -94,7 +94,7 @@ pub struct EntityAuthStore {
     /// `TenantMembership` schema definition, used to query the user's
     /// flat membership set during login/refresh. `None` when the
     /// deployment has not seeded the system schema yet (e.g. a
-    /// `mem://` smoke test that skips system-schema seeding) — in that
+    /// disposable-database smoke test that skips system-schema seeding) — in that
     /// case [`AuthStore::list_tenant_memberships`] returns an empty
     /// `Vec`, mirroring the "no memberships configured" path.
     tenant_membership_schema: Option<SchemaDefinition>,

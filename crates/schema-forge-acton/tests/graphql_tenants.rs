@@ -20,7 +20,6 @@ use schema_forge_acton::{
 use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
 use schema_forge_core::migration::DiffEngine;
 use schema_forge_core::types::{DynamicValue, SchemaName};
-use schema_forge_surrealdb::SurrealBackend;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use tokio::sync::oneshot;
@@ -35,7 +34,7 @@ async fn app_with_relations(relations: bool) -> (Router, String, String) {
 }
 
 async fn app_with_options(relations: bool, tenancy: bool) -> (Router, String, String) {
-    let backend = SurrealBackend::connect_with_auth("mem://", "graphql", "tenants", None, None)
+    let backend = schema_forge_surrealdb::test_support::connect("graphql", "tenants")
         .await
         .unwrap();
     let mut schemas = schema_forge_dsl::parse(

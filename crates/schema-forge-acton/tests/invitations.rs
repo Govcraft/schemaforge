@@ -29,7 +29,6 @@ use schema_forge_backend::{
     BackendError, EntityAuthStore, ForgeInvitation, InviteStatus, InviteStore, NewInvitation,
 };
 use schema_forge_core::types::{EntityId, SchemaName};
-use schema_forge_surrealdb::SurrealBackend;
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
@@ -92,7 +91,7 @@ async fn app(
     action: &str,
 ) -> (Router, Arc<MemoryInvites>, Arc<FailingEmail>) {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("invites", "invites")
+        schema_forge_surrealdb::test_support::connect("invites", "invites")
             .await
             .unwrap(),
     );

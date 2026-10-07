@@ -5,3 +5,6 @@ pub mod value;
 
 pub use backend::SurrealBackend;
 pub use surrealdb;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;

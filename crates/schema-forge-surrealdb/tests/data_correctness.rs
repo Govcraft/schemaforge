@@ -1,12 +1,13 @@
+#![cfg(feature = "test-support")]
+
 #[path = "../../schema-forge-backend/tests/support/data_correctness.rs"]
 mod contract;
 
 #[tokio::test]
 async fn null_filters_stable_pages_and_enum_migrations() {
-    let backend =
-        schema_forge_surrealdb::SurrealBackend::connect_memory("correctness", "correctness")
-            .await
-            .unwrap();
+    let backend = schema_forge_surrealdb::test_support::connect("correctness", "correctness")
+        .await
+        .unwrap();
     contract::exercise(&backend).await;
 }
 
@@ -17,7 +18,9 @@ async fn competing_clients_cannot_both_replace_the_same_snapshot() {
     use schema_forge_surrealdb::SurrealBackend;
     use std::collections::BTreeMap;
 
-    let backend = SurrealBackend::connect_memory("cas", "cas").await.unwrap();
+    let backend = schema_forge_surrealdb::test_support::connect("cas", "cas")
+        .await
+        .unwrap();
     let schema = SchemaDefinition::new(
         SchemaId::new(),
         SchemaName::new("ConcurrentCas").unwrap(),

@@ -32,7 +32,6 @@ use schema_forge_core::types::{
     Annotation, EntityId, FieldAnnotation, FieldDefinition, FieldModifier, FieldName, FieldType,
     SchemaDefinition, SchemaId, SchemaName, TenantKind, TextConstraints,
 };
-use schema_forge_surrealdb::SurrealBackend;
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
@@ -208,7 +207,7 @@ async fn register_schema(
 async fn demo_system_schemas_seeded_at_startup() {
     println!("\n=== DEMO: System Schemas Seeded at Startup ===");
 
-    let backend = SurrealBackend::connect_memory("test", "demo_system")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "demo_system")
         .await
         .unwrap();
     let builder = schema_forge_acton::SchemaForgeExtension::builder().with_backend(backend);
@@ -276,7 +275,7 @@ async fn demo_system_schemas_seeded_at_startup() {
 async fn demo_schema_access_control() {
     println!("\n=== DEMO: Schema-Level @access Enforcement ===");
 
-    let backend = SurrealBackend::connect_memory("test", "demo_access")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "demo_access")
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
@@ -367,7 +366,7 @@ async fn demo_schema_access_control() {
 async fn demo_field_access_filtering() {
     println!("\n=== DEMO: Field-Level @field_access Filtering ===");
 
-    let backend = SurrealBackend::connect_memory("test", "demo_field")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "demo_field")
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
@@ -454,7 +453,7 @@ async fn demo_field_access_filtering() {
 async fn demo_record_ownership() {
     println!("\n=== DEMO: Record-Level @owner Enforcement ===");
 
-    let backend = SurrealBackend::connect_memory("test", "demo_owner")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "demo_owner")
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
@@ -585,7 +584,7 @@ async fn demo_record_ownership() {
 async fn demo_multi_tenancy_isolation() {
     println!("\n=== DEMO: Multi-Tenancy Isolation ===");
 
-    let surreal = SurrealBackend::connect_memory("test", "demo_tenant")
+    let surreal = schema_forge_surrealdb::test_support::connect("test", "demo_tenant")
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(surreal);
@@ -916,7 +915,7 @@ async fn demo_cedar_policies_from_annotations() {
 async fn demo_all_auth_layers_combined() {
     println!("\n=== DEMO: All Auth Layers Combined ===");
 
-    let backend = SurrealBackend::connect_memory("test", "demo_combined")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "demo_combined")
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
@@ -1150,7 +1149,7 @@ async fn demo_all_auth_layers_combined() {
 async fn list_field_projection_omitting_required_field_returns_rows() {
     println!("\n=== REGRESSION #73: --fields projection drops rows ===");
 
-    let backend = SurrealBackend::connect_memory("test", "issue_73_projection")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "issue_73_projection")
         .await
         .unwrap();
     let backend: Arc<dyn DynForgeBackend> = Arc::new(backend);
@@ -1253,7 +1252,7 @@ async fn list_field_projection_omitting_required_field_returns_rows() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn public_configuration_reads_preserve_write_and_field_authorization() {
     let backend: Arc<dyn DynForgeBackend> = Arc::new(
-        SurrealBackend::connect_memory("test", "public_configuration")
+        schema_forge_surrealdb::test_support::connect("test", "public_configuration")
             .await
             .unwrap(),
     );
@@ -1355,7 +1354,7 @@ async fn public_reads_enforce_record_forbids_and_ownership() {
         PolicyStore, PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks,
     };
     let backend: Arc<dyn DynForgeBackend> = Arc::new(
-        SurrealBackend::connect_memory("test", "public_restrictions")
+        schema_forge_surrealdb::test_support::connect("test", "public_restrictions")
             .await
             .unwrap(),
     );
@@ -1451,7 +1450,7 @@ async fn readable_paging_fixture(
     use schema_forge_core::types::DynamicValue;
 
     let backend: Arc<dyn DynForgeBackend> = Arc::new(
-        SurrealBackend::connect_memory("test", "readable_paging")
+        schema_forge_surrealdb::test_support::connect("test", "readable_paging")
             .await
             .unwrap(),
     );

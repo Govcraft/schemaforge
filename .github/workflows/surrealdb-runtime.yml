@@ -18,9 +18,14 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: surrealdb-extensions
+      - name: Verify remote-only SurrealDB dependency graph
+        run: |
+          cargo tree --locked -p schema-forge-cli --prefix none --format '{p}|{f}' > "$RUNNER_TEMP/surrealdb-graph.txt"
+          python3 scripts/ci/check_surrealdb_graph.py "$RUNNER_TEMP/surrealdb-graph.txt"
       - name: Test and lint SurrealDB consumers
         run: |
           packages=(-p schema-forge-cli -p schema-forge-acton -p schema-forge-surrealdb)
-          features=schema-forge-cli/oauth,schema-forge-cli/sse,schema-forge-acton/test-surrealdb,schema-forge-acton/graphql
-          cargo nextest run --locked "${packages[@]}" --features "$features" --no-fail-fast
+          features=schema-forge-cli/oauth,schema-forge-cli/sse,schema-forge-cli/test-surrealdb,schema-forge-acton/test-surrealdb,schema-forge-acton/graphql
+          cargo run --locked -p schema-forge-test-runner -- cargo nextest run --locked "${packages[@]}" --features "$features" --no-fail-fast
           cargo clippy --locked "${packages[@]}" --features "$features" --all-targets -- -D warnings
+          cargo clippy --locked -p schema-forge-test-runner --all-targets -- -D warnings

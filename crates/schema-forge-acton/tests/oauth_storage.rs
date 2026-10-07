@@ -10,7 +10,7 @@ use oauth_storage::exercise;
 #[tokio::test]
 async fn surreal_identity_pair_is_unique() {
     exercise(Arc::new(
-        schema_forge_surrealdb::SurrealBackend::connect_memory("oauth_storage", "oauth_storage")
+        schema_forge_surrealdb::test_support::connect("oauth_storage", "oauth_storage")
             .await
             .unwrap(),
     ))

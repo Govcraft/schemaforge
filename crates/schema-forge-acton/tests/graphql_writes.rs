@@ -15,13 +15,12 @@ use schema_forge_acton::{
 };
 use schema_forge_backend::SchemaBackend;
 use schema_forge_core::migration::DiffEngine;
-use schema_forge_surrealdb::SurrealBackend;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 async fn app() -> Router {
-    let backend = SurrealBackend::connect_with_auth("mem://", "graphql", "writes", None, None)
+    let backend = schema_forge_surrealdb::test_support::connect("graphql", "writes")
         .await
         .unwrap();
     let schemas = schema_forge_dsl::parse(

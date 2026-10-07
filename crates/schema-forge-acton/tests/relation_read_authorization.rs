@@ -19,7 +19,6 @@ use schema_forge_acton::{
 };
 use schema_forge_backend::{auth::RecordAccessPolicy, entity::Entity, EntityStore, SchemaBackend};
 use schema_forge_core::types::{DynamicValue, EntityId, FieldName, SchemaDefinition};
-use schema_forge_surrealdb::SurrealBackend;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 use tower::ServiceExt;
@@ -98,7 +97,7 @@ async fn fixture(
         .unwrap()
         .derived_from = Some(FieldName::new("parent").unwrap());
     let backend = Arc::new(
-        SurrealBackend::connect_memory("related", "related")
+        schema_forge_surrealdb::test_support::connect("related", "related")
             .await
             .unwrap(),
     );
@@ -369,7 +368,7 @@ async fn nested_fixture(product_role: &str) -> Router {
     )
     .unwrap();
     let backend = Arc::new(
-        SurrealBackend::connect_memory("nested", "nested")
+        schema_forge_surrealdb::test_support::connect("nested", "nested")
             .await
             .unwrap(),
     );

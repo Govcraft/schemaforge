@@ -28,7 +28,6 @@ use schema_forge_core::{
     migration::DiffEngine,
     types::{DynamicValue, FieldDefinition, FieldModifier, FieldName, FieldType, TextConstraints},
 };
-use schema_forge_surrealdb::SurrealBackend;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 use tower::ServiceExt;
@@ -69,7 +68,7 @@ async fn custom_policy_field_contract_refuses_mutations_before_storage_changes()
         .unwrap()
         .remove(0);
     let backend = Arc::new(
-        SurrealBackend::connect_memory("policy", "preflight")
+        schema_forge_surrealdb::test_support::connect("policy", "preflight")
             .await
             .unwrap(),
     );

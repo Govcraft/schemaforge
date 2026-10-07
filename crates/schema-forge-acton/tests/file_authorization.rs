@@ -130,7 +130,7 @@ async fn fixture_with_options(
     )
     .unwrap();
     let backend = Arc::new(
-        SurrealBackend::connect_memory("files", "files")
+        schema_forge_surrealdb::test_support::connect("files", "files")
             .await
             .unwrap(),
     );

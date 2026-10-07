@@ -23,7 +23,6 @@ use schema_forge_acton::{
 };
 use schema_forge_backend::{Entity, EntityAuthStore, EntityStore, SchemaBackend};
 use schema_forge_core::{migration::DiffEngine, types::DynamicValue};
-use schema_forge_surrealdb::SurrealBackend;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::oneshot;
@@ -38,7 +37,7 @@ struct Fixture {
 }
 async fn fixture(creator_role: Option<&str>) -> Fixture {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("creator", "creator")
+        schema_forge_surrealdb::test_support::connect("creator", "creator")
             .await
             .unwrap(),
     );

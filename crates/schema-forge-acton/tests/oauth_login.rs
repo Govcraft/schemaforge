@@ -125,7 +125,7 @@ struct Fixture {
 }
 async fn fixture(options: Options) -> Fixture {
     let backend = Arc::new(
-        SurrealBackend::connect_memory("oauth_login", "oauth_login")
+        schema_forge_surrealdb::test_support::connect("oauth_login", "oauth_login")
             .await
             .unwrap(),
     );

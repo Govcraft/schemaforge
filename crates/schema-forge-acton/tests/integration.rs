@@ -19,7 +19,6 @@ use schema_forge_acton::ForgeActor;
 use schema_forge_backend::auth::RecordAccessPolicy;
 use schema_forge_backend::tenant::TenantConfig;
 use schema_forge_core::types::SchemaDefinition;
-use schema_forge_surrealdb::SurrealBackend;
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
@@ -95,7 +94,7 @@ async fn build_test_app_state(init: TestForgeInit) -> AppState<SchemaForgeConfig
 
 /// Create a simple test `AppState` with an empty in-memory SurrealDB backend.
 async fn test_app_state() -> AppState<SchemaForgeConfig> {
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
     build_test_app_state(TestForgeInit {
@@ -477,7 +476,7 @@ async fn require_annotation_rejects_invalid_entity_with_422() {
         SchemaDefinition, SchemaId, SchemaName,
     };
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -568,7 +567,7 @@ async fn compute_annotation_derives_and_overwrites_field() {
         SchemaId, SchemaName, TextConstraints,
     };
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -661,7 +660,7 @@ async fn default_annotation_fills_absent_fields_but_preserves_supplied() {
         SchemaId, SchemaName, TextConstraints,
     };
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -777,7 +776,7 @@ async fn rule_phase_order_default_then_compute_then_require_is_observable() {
         SchemaDefinition, SchemaId, SchemaName,
     };
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -1087,7 +1086,7 @@ fn cedar_policies_generated_for_schema() {
 async fn extension_builder_with_backend_loads_schemas() {
     use schema_forge_acton::SchemaForgeExtension;
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -1140,7 +1139,7 @@ async fn extension_register_routes_nests_under_forge() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_with_admin_claims_succeeds() {
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
     let state = build_test_app_state(TestForgeInit {
@@ -1170,7 +1169,7 @@ async fn request_without_claims_returns_401() {
         TextConstraints,
     };
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -1238,7 +1237,7 @@ async fn access_test_state(
         TextConstraints,
     };
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -1362,7 +1361,7 @@ async fn request_without_claims_on_access_controlled_schema_returns_401() {
         TextConstraints,
     };
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -1428,7 +1427,7 @@ async fn field_filtering_hides_restricted_fields() {
         SchemaName, TextConstraints,
     };
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -2110,7 +2109,7 @@ async fn setup_paired_schemas() -> (AppState<SchemaForgeConfig>, Router) {
         SchemaDefinition, SchemaId, SchemaName, TextConstraints,
     };
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
     let backend = Arc::new(backend);
@@ -2447,7 +2446,7 @@ async fn public_entity_reads_through_production_token_middleware() {
     )
     .unwrap();
     let backend = Arc::new(
-        SurrealBackend::connect_memory("public_read", "public_read")
+        schema_forge_surrealdb::test_support::connect("public_read", "public_read")
             .await
             .unwrap(),
     );

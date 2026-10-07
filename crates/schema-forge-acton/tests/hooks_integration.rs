@@ -31,7 +31,6 @@ use schema_forge_core::types::{
     Annotation, DynamicValue, FieldDefinition, FieldModifier, FieldName, FieldType, HookEvent,
     SchemaDefinition, SchemaId, SchemaName, TextConstraints,
 };
-use schema_forge_surrealdb::SurrealBackend;
 use tokio::sync::oneshot;
 use tower::ServiceExt;
 
@@ -116,7 +115,7 @@ async fn setup_with_schema(
 ) -> AppState<SchemaForgeConfig> {
     use acton_service::service_builder::ServiceBuilder;
 
-    let backend = SurrealBackend::connect_memory("test", "test")
+    let backend = schema_forge_surrealdb::test_support::connect("test", "test")
         .await
         .expect("failed to connect to in-memory SurrealDB");
 
@@ -700,7 +699,7 @@ async fn after_change_writeback_to_trigger_entity_is_eventually_consistent() {
                 m
             },
             backend: Arc::new(
-                SurrealBackend::connect_memory("test", "test")
+                schema_forge_surrealdb::test_support::connect("test", "test")
                     .await
                     .expect("backend"),
             ),

@@ -7,7 +7,7 @@ use crate::error::CliError;
 use crate::output::OutputContext;
 use crate::progress;
 
-/// Connect to the configured database backend, with fallback to in-memory for SurrealDB.
+/// Connect to the configured database backend, failing if it is unavailable.
 ///
 /// Returns a trait object that implements both `SchemaBackend` and `EntityStore`.
 /// The concrete backend is selected based on the URL scheme in `db_params`.
@@ -64,31 +64,16 @@ async fn connect_backend_inner(
     match db_params {
         #[cfg(feature = "surrealdb")]
         DbParams::Surrealdb(p) => {
-            let result = schema_forge_surrealdb::SurrealBackend::connect_with_auth(
+            let backend = schema_forge_surrealdb::SurrealBackend::connect_with_auth(
                 &p.url,
                 &p.namespace,
                 &p.database,
                 p.username.as_deref(),
                 p.password.as_deref(),
             )
-            .await;
-
-            match result {
-                Ok(b) => Ok(Arc::new(b)),
-                Err(remote_err) => {
-                    eprintln!(
-                        "Warning: Could not connect to {}; falling back to in-memory backend: {remote_err}",
-                        db_params.redacted_url()
-                    );
-                    let b = schema_forge_surrealdb::SurrealBackend::connect_memory(
-                        &p.namespace,
-                        &p.database,
-                    )
-                    .await
-                    .map_err(CliError::Backend)?;
-                    Ok(Arc::new(b))
-                }
-            }
+            .await
+            .map_err(CliError::Backend)?;
+            Ok(Arc::new(backend))
         }
         #[cfg(feature = "postgres")]
         DbParams::Postgres(p) => {
