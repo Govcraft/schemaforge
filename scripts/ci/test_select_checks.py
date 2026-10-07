@@ -362,5 +362,53 @@ class GitDiffTests(unittest.TestCase):
         self.assertFalse(any(classify(paths, snapshot(base, self.repo), snapshot("HEAD", self.repo)).values()))
 
 
+class SiteReleasePinTests(unittest.TestCase):
+    path = ".github/workflows/site-e2e.yml"
+    old = "env:\n  SITE_SERVER_VERSION: v0.49.0\n  SITE_SERVER_SHA256: " + "a" * 64 + "\njobs:\n  smoke: unchanged\n"
+    new = old.replace("v0.49.0", "v0.50.0").replace("a" * 64, "b" * 64)
+
+    def selected(self, old, new):
+        checks = classify([self.path], {self.path: old}, {self.path: new})
+        return {name for name, enabled in checks.items() if enabled}
+
+    def test_literal_release_pin_selects_only_browser_validation(self):
+        self.assertEqual(self.selected(self.old, self.new), {"site"})
+
+    def test_workflow_commands_and_permissions_still_require_full_validation(self):
+        for changed in [self.new.replace("smoke: unchanged", "smoke: changed"),
+                        self.new + "permissions: write-all\n"]:
+            with self.subTest(changed=changed):
+                self.assertEqual(self.selected(self.old, changed), set(SUITES))
+
+    def test_unknown_missing_duplicate_and_nonliteral_pins_fail_broad(self):
+        for changed in [
+            self.new.replace("v0.50.0", "${{ github.ref_name }}"),
+            self.new.replace("b" * 64, "not-a-checksum"),
+            self.new.replace("v0.50.0", "v00.50.0"),
+            self.new.replace("  SITE_SERVER_VERSION: v0.50.0\n", ""),
+            self.new + "  SITE_SERVER_SHA256: " + "b" * 64 + "\n",
+        ]:
+            with self.subTest(changed=changed):
+                self.assertEqual(self.selected(self.old, changed), set(SUITES))
+        self.assertTrue(all(classify([self.path]).values()))
+
+    def test_snapshot_retains_workflow_for_real_pin_comparison(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            workflow = repo / self.path
+            workflow.parent.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            workflow.write_text(self.old)
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "test: seed workflow"], check=True)
+            before = snapshot("HEAD", repo)
+            self.assertEqual(before[self.path], self.old)
+            workflow.write_text(self.new)
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "test: update release pin"], check=True)
+            after = snapshot("HEAD", repo)
+            self.assertEqual({name for name, enabled in classify([self.path], before, after).items() if enabled}, {"site"})
+
+
 if __name__ == "__main__":
     unittest.main()
