@@ -18,8 +18,9 @@ GRAPHS = {
                  "features": "schema-forge-cli/postgres,schema-forge-cli/oauth,schema-forge-cli/sse", "feature_env": True},
     "postgres-disabled": {"key": "postgres-no-extensions", "packages": ["cli", "acton"], "portable": True,
                           "features": "schema-forge-cli/postgres", "feature_env": True},
-    "surrealdb": {"key": "surrealdb-extensions", "packages": ["cli", "acton", "surrealdb"],
-                  "features": "schema-forge-cli/oauth,schema-forge-cli/sse,schema-forge-cli/test-surrealdb,schema-forge-acton/test-surrealdb,schema-forge-acton/graphql"},
+    "surrealdb": {"key": "surrealdb-extensions-runner", "packages": ["cli", "acton", "surrealdb"],
+                  "features": "schema-forge-cli/oauth,schema-forge-cli/sse,schema-forge-cli/test-surrealdb,schema-forge-acton/test-surrealdb,schema-forge-acton/graphql",
+                  "auxiliary": [{"packages": ["test-runner"]}]},
     "site": {"key": "site-v2-candidate", "packages": ["cli"], "bin": "schemaforge"},
     "site-tooling": {"key": "site-v2-tooling", "packages": ["cli"], "portable": True, "bin": "schemaforge"},
     "mssql": {"key": "sql-server", "packages": ["mssql"]},
@@ -64,6 +65,14 @@ def commands(name, recipe):
               ["cargo", "chef", "cook", "--recipe-path", str(recipe), *args]]
     if not graph.get("bin"):
         result.append(["cargo", "chef", "cook", "--check", "--recipe-path", str(recipe), *args])
+    # The container runner builds in its own Cargo invocation. Preserve its
+    # dependency features instead of unifying them with the application graph.
+    for auxiliary in graph.get("auxiliary", []):
+        auxiliary_args = build_arguments(auxiliary)
+        result.extend([
+            ["cargo", "chef", "cook", "--recipe-path", str(recipe), *auxiliary_args],
+            ["cargo", "chef", "cook", "--check", "--recipe-path", str(recipe), *auxiliary_args],
+        ])
     return result
 
 

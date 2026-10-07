@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: surrealdb-extensions
+          cache-key: surrealdb-extensions-runner
       - name: Verify remote-only SurrealDB dependency graph
         run: |
           cargo tree --locked -p schema-forge-cli --prefix none --format '{p}|{f}' > "$RUNNER_TEMP/surrealdb-graph.txt"
