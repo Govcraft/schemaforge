@@ -42,6 +42,14 @@ async fn surreal_crud_events_equal_authorized_get() {
     exercise_crud(&fixture(enabled()).await).await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn annotated_readable_fields_accept_typed_equality_filters() {
+    exercise_readable_field_filters(&fixture(enabled()).await).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conditional_field_filters_do_not_disclose_private_changes() {
+    exercise_conditional_field_filters(&fixture(enabled()).await).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streams_require_authentication_known_schema_and_readable_equality_filters() {
     let f = fixture(enabled()).await;
     assert_eq!(

@@ -52,6 +52,15 @@ Accepts a JSON body with `filter`, `sort`, `limit`, and `offset` fields.
 Both endpoints require read access to the schema and return the same
 `ListEntitiesResponse` shape.
 
+### Get one entity (GET)
+
+```
+GET /schemas/{schema}/entities/{id}
+```
+
+Returns one entity object. Supports `fields` for field projection and
+`resolve=false` to omit relation display companions.
+
 ---
 
 ## 2. Response Format
@@ -153,7 +162,22 @@ Field projection is optional. When omitted, all fields are returned. The `id`
 and `schema` properties are always included in the response regardless of
 projection.
 
-Invalid field names return a 400 error listing the unknown fields.
+The single-record GET endpoint supports the same comma-separated `fields`
+parameter as the list endpoint:
+
+```
+GET /schemas/Contact/entities/{id}?fields=name,email
+```
+
+Projection runs after record authorization, read hooks, and field access
+checks. Selecting a hidden or read-restricted field does not grant access to
+it. Selected readable relations include their `<field>__display` companions
+unless `resolve=false` is supplied; unselected relations have no companions.
+Entity permissions and the stored `Entity-Revision` marker are unaffected by
+projection.
+
+Invalid field names return a 400 error listing the unknown fields. An empty
+GET `fields` parameter also returns 400.
 
 **GET example:**
 

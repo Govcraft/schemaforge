@@ -7,6 +7,22 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-10-08
+
+### Fixed
+
+- Honor `fields` on single-record entity GET requests after complete record
+  authorization, read hooks, and field restrictions. Omitted large fields and
+  unselected relation displays no longer appear; unknown fields or an empty
+  projection return 400, matching list projection validation.
+- Permit equality event filters on readable fields with write-only
+  `@field_access` annotations. Field preflights use a schema-valid Cedar
+  placeholder marked by trusted `context.resource_is_placeholder`; each
+  committed or pre-delete record still undergoes complete read projection
+  before matching filters, including record-dependent field restrictions.
+- Log the field authorization preflight marker and Cedar evaluation errors at
+  debug level, so schema-conformance failures can be distinguished from denials.
+
 ## [0.51.0] - 2026-10-07
 
 ### Added

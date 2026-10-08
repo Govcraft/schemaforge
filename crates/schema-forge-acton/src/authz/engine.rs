@@ -284,7 +284,14 @@ pub fn authorize_field(
     field_name: &str,
     direction: FieldDirection,
 ) -> Result<AuthzDecision, AuthzError> {
-    authorize_field_resource(store, claims, schema, entity, field_name, direction, true)
+    authorize_field_resource(
+        store,
+        claims,
+        schema,
+        FieldResource::Complete(entity),
+        field_name,
+        direction,
+    )
 }
 
 /// Authorize provisional caller input before server rules and final validation.
@@ -300,21 +307,47 @@ pub(crate) fn authorize_input_field(
         store,
         claims,
         schema,
-        entity,
+        FieldResource::Input(entity),
         field_name,
         FieldDirection::Write,
-        false,
     )
+}
+
+/// Check field readability before a filter has a concrete record.
+///
+/// The schema-valid placeholder is marked in trusted Cedar context. Every
+/// delivered record must still pass complete read authorization and projection.
+#[cfg(any(feature = "sse", test))]
+pub(crate) fn authorize_filter_field(
+    store: &Arc<PolicyStore>,
+    claims: Option<&Claims>,
+    schema: &SchemaDefinition,
+    field_name: &str,
+) -> Result<AuthzDecision, AuthzError> {
+    authorize_field_resource(
+        store,
+        claims,
+        schema,
+        FieldResource::Placeholder,
+        field_name,
+        FieldDirection::Read,
+    )
+}
+
+enum FieldResource<'a> {
+    Complete(&'a Entity),
+    Input(&'a Entity),
+    #[cfg(any(feature = "sse", test))]
+    Placeholder,
 }
 
 fn authorize_field_resource(
     store: &Arc<PolicyStore>,
     claims: Option<&Claims>,
     schema: &SchemaDefinition,
-    entity: &Entity,
+    resource: FieldResource<'_>,
     field_name: &str,
     direction: FieldDirection,
-    complete: bool,
 ) -> Result<AuthzDecision, AuthzError> {
     let snapshot = store.current();
 
@@ -342,7 +375,12 @@ fn authorize_field_resource(
         }
     };
 
-    let resource_entity = build_resource_entity(schema, entity)?;
+    let (resource_entity, complete, resource_is_placeholder) = match resource {
+        FieldResource::Complete(entity) => (build_resource_entity(schema, entity)?, true, false),
+        FieldResource::Input(entity) => (build_resource_entity(schema, entity)?, false, false),
+        #[cfg(any(feature = "sse", test))]
+        FieldResource::Placeholder => (build_resource_placeholder(schema)?, true, true),
+    };
     let resource_uid = resource_entity.uid().clone();
     let mut all_entities = principal_entities;
     all_entities.push(resource_entity);
@@ -359,7 +397,7 @@ fn authorize_field_resource(
         principal_uid_value,
         action,
         resource_uid,
-        authorization_context(false)?,
+        authorization_context(resource_is_placeholder)?,
         Some(&snapshot.schema),
     )
     .map_err(|e| AuthzError::Request(render_error_chain(&e)))?;
@@ -382,10 +420,14 @@ fn authorize_field_resource(
         matched_policies,
         errors,
     };
-    let _ = (entity, field_name); // referenced for future audit metadata; logged below via tracing
-    let principal_id_field = field_name; // shadow no longer needed; placeholder kept for clarity
-    let _ = principal_id_field;
-    audit_field_decision(claims, schema, field_name, direction, &decision);
+    audit_field_decision(
+        claims,
+        schema,
+        field_name,
+        direction,
+        resource_is_placeholder,
+        &decision,
+    );
     Ok(decision)
 }
 
@@ -434,6 +476,7 @@ fn audit_field_decision(
     schema: &SchemaDefinition,
     field_name: &str,
     direction: FieldDirection,
+    resource_is_placeholder: bool,
     decision: &AuthzDecision,
 ) {
     let principal = claims.map(|c| c.sub.as_str()).unwrap_or("_anonymous");
@@ -447,8 +490,87 @@ fn audit_field_decision(
         schema = schema.name.as_str(),
         field = field_name,
         direction = dir,
-        resource_is_placeholder = false,
+        resource_is_placeholder,
         allowed = decision.is_allow(),
+        errors = ?decision.errors,
         "field-level authz decision"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::authz::{PolicyStoreSnapshot, PrincipalClaimMappings, RoleRanks};
+    use schema_forge_core::types::DynamicValue;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn field_filter_preflight_marks_only_the_trusted_placeholder() {
+        let schema = schema_forge_dsl::parse(
+            r#"
+            @access(read: ["member"], write: ["member"])
+            schema Note { title: text required @field_access(write: ["member"]) }
+        "#,
+        )
+        .unwrap()
+        .remove(0);
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("preflight.cedar"), r#"
+            forbid (principal is Forge::Principal, action == Action::"ReadFieldNote_title", resource is Note)
+            when { !context.resource_is_placeholder };
+        "#).unwrap();
+        let store = Arc::new(PolicyStore::new(
+            PolicyStoreSnapshot::from_schemas(
+                std::slice::from_ref(&schema),
+                Some(directory.path()),
+                RoleRanks::empty(),
+                PrincipalClaimMappings::default(),
+            )
+            .unwrap(),
+        ));
+        let entity = Entity::new(
+            schema.name.clone(),
+            BTreeMap::from([("title".into(), DynamicValue::Text("Concrete".into()))]),
+        );
+        let incomplete = Entity::new(schema.name.clone(), BTreeMap::new());
+        for spoofed_marker in [true, false] {
+            let mut claims: Claims = serde_json::from_value(serde_json::json!({
+                "sub":"user:alice", "roles":["member"], "perms":[], "exp":9_999_999_999_u64
+            }))
+            .unwrap();
+            claims.custom.insert(
+                "resource_is_placeholder".into(),
+                serde_json::json!(spoofed_marker),
+            );
+            assert!(
+                authorize_filter_field(&store, Some(&claims), &schema, "title")
+                    .unwrap()
+                    .is_allow()
+            );
+            assert!(!authorize_field(
+                &store,
+                Some(&claims),
+                &schema,
+                &entity,
+                "title",
+                FieldDirection::Read
+            )
+            .unwrap()
+            .is_allow());
+            assert!(authorize_field(
+                &store,
+                Some(&claims),
+                &schema,
+                &incomplete,
+                "title",
+                FieldDirection::Read
+            )
+            .is_err());
+            assert!(
+                authorize_input_field(&store, Some(&claims), &schema, &incomplete, "title")
+                    .unwrap()
+                    .is_allow()
+            );
+        }
+    }
 }

@@ -20,6 +20,33 @@ fn export_reuses_login_response_and_only_lists_compiled_oauth_routes() {
         .success();
     let document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+    // Both GET routes expose the same validated projection options.
+    for path in [
+        "/api/v1/forge/schemas/note/entities",
+        "/api/v1/forge/schemas/note/entities/{id}",
+    ] {
+        let read = &document["paths"][path]["get"];
+        let parameters = read["parameters"].as_array().unwrap();
+        let fields = parameters
+            .iter()
+            .find(|parameter| parameter["name"] == "fields")
+            .unwrap();
+        assert_eq!(fields["in"], "query");
+        assert_eq!(fields["required"], false);
+        assert_eq!(fields["schema"]["type"], "string");
+        assert_eq!(fields["schema"]["minLength"], 1);
+        assert!(fields["description"]
+            .as_str()
+            .unwrap()
+            .contains("authorization"));
+        let resolve = parameters
+            .iter()
+            .find(|parameter| parameter["name"] == "resolve")
+            .unwrap();
+        assert_eq!(resolve["in"], "query");
+        assert_eq!(resolve["schema"]["default"], "true");
+        assert!(read["responses"]["400"].is_object());
+    }
     let expected = "#/components/schemas/LoginResponse";
     let revocation = &document["paths"]["/api/v1/forge/auth/revocations"]["post"];
     assert_eq!(

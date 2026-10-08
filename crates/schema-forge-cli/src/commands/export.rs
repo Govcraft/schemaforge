@@ -63,7 +63,9 @@ async fn run_openapi(
             serde_json::json!({
                 "get": {
                     "summary": format!("List {name} entities"),
+                    "parameters": entity_read_parameters(),
                     "responses": {
+                        "400": {"description": "Invalid query parameter, unknown field, or empty fields projection"},
                         "200": {
                             "description": format!("List of {name} entities"),
                         }
@@ -85,7 +87,9 @@ async fn run_openapi(
             serde_json::json!({
                 "get": {
                     "summary": format!("Get a {name} entity by ID"),
+                    "parameters": entity_read_parameters(),
                     "responses": {
+                        "400": {"description": "Unknown field or empty fields projection"},
                         "200": {
                             "description": format!("{name} entity"),
                         }
@@ -156,6 +160,27 @@ async fn run_openapi(
     }
 
     Ok(())
+}
+
+/// Query options shared by collection and single-record reads.
+fn entity_read_parameters() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated schema field names. Applied after complete record authorization and field access checks; hidden and denied fields remain omitted. Unknown names or an empty value return 400. The id, schema, permissions and stored row revision remain unchanged.",
+            "schema": {"type": "string", "minLength": 1},
+            "example": "title,owner"
+        },
+        {
+            "name": "resolve",
+            "in": "query",
+            "required": false,
+            "description": "Add display companions only for returned readable relation fields. false, 0, no and off omit companions; other values retain default-on behavior.",
+            "schema": {"type": "string", "default": "true"}
+        }
+    ])
 }
 
 fn openapi_type_for(field_type: &schema_forge_core::types::FieldType) -> &'static str {
