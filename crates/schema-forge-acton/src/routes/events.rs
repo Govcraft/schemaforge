@@ -25,7 +25,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::stream;
-use schema_forge_backend::{user_store::TenantRole, Entity, TenantRef};
+use schema_forge_backend::{user_store::TenantRole, TenantRef};
 use schema_forge_core::{
     query::Filter,
     types::{DynamicValue, SchemaDefinition},
@@ -50,7 +50,6 @@ async fn filters(
     params: &HashMap<String, String>,
 ) -> Result<Vec<(String, DynamicValue)>, ForgeError> {
     let store = entities::fetch_export_policy_store(state).await?;
-    let probe = Entity::new(schema.name.clone(), Default::default());
     let mut result = Vec::new();
     for (key, value) in params {
         let (name, op) = parse_filter_key(key).ok_or_else(invalid_filter)?;
@@ -59,15 +58,8 @@ async fn filters(
             return Err(invalid_filter());
         }
         if field.field_access().is_some()
-            && !crate::authz::authorize_field(
-                &store,
-                Some(claims),
-                schema,
-                &probe,
-                name,
-                crate::authz::FieldDirection::Read,
-            )
-            .is_ok_and(|d| d.is_allow())
+            && !crate::authz::engine::authorize_filter_field(&store, Some(claims), schema, name)
+                .is_ok_and(|d| d.is_allow())
         {
             return Err(ForgeError::Forbidden {
                 message: "Not authorized to filter this field.".into(),

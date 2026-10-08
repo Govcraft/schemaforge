@@ -3447,14 +3447,32 @@ pub async fn get_entity(
         return Err(error);
     }
 
+    // Match list projection validation, while keeping the full row for all
+    // authorization, permission and read-hook decisions below.
+    let projection = params
+        .get("fields")
+        .map(|fields| {
+            parse_fields_param(fields, &schema_def)
+                .map_err(|message| ForgeError::InvalidQuery { message })
+        })
+        .transpose()?;
+
     // Parse the entity ID
     let entity_id =
         EntityId::parse(&id).map_err(|_| ForgeError::InvalidEntityId { id: id.clone() })?;
 
     let (entity, revision) = load_mutation_baseline(&forge, &schema_name, &entity_id, true).await?;
 
-    let (mut response, entity, tenant_config) =
+    let (mut response, mut entity, tenant_config) =
         project_read_snapshot(&state, &schema_def, entity, claims.as_ref(), &headers).await?;
+    // Presentation projection follows full record and field authorization,
+    // hooks and derived-field population. Project the display source as well
+    // so unselected relations cannot reappear as __display companions.
+    if let Some(projection) = &projection {
+        response.fields.retain(|name, _| projection.contains(name));
+        entity.fields.retain(|name, _| projection.contains(name));
+    }
+
     // Resolve relation display fields unless the caller opted out with
     // `?resolve=false`. Reuses the same batched IN-query path the list
     // endpoint uses — with a single source entity it's still one query

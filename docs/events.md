@@ -82,6 +82,15 @@ known, readable, and visible in the projected result; hidden or unauthorized
 fields cannot become a filtering oracle. Sorting, pagination, nested paths, and
 non-equality operators are rejected.
 
+Filter readability is checked before any record exists, using a schema-valid
+placeholder with trusted Cedar `context.resource_is_placeholder = true`.
+Write-only `@field_access` annotations leave reads open for authenticated callers
+unless another policy restricts them. Record-dependent field policies should
+distinguish this preflight from concrete reads using that context marker.
+Each event then runs the field policies on the full record with the marker false;
+if its filtered field is removed, no change metadata is delivered, including for
+deletes. Token claims cannot set this context marker.
+
 A single framework broadcaster serves this process. Actor-owned event writes
 serialize the backend commit and nonblocking publication before replying, so
 commits on an entity remain ordered even if its HTTP request is cancelled. Slow

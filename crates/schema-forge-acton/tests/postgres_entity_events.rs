@@ -11,7 +11,8 @@ pub mod entity_events;
 #[path = "support/postgres.rs"]
 mod postgres;
 use entity_events::{
-    change, connect, enabled, exercise_crud, fixture_backend, frame, json, request,
+    change, connect, enabled, exercise_conditional_field_filters, exercise_crud,
+    exercise_readable_field_filters, fixture_backend, frame, json, request,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -30,7 +31,7 @@ async fn postgres_crud_events_equal_authorized_get() {
         .unwrap();
     exercise_crud(&f).await;
     let mut body = connect(&f.app, "").await;
-    let fields = serde_json::json!({"title":"Intent create", "category":"books"});
+    let fields = serde_json::json!({"title":"Intent create", "category":"books", "kept":false});
     let receipt = json(
         request(
             &f.app,
@@ -78,4 +79,7 @@ async fn postgres_crud_events_equal_authorized_get() {
         frame(&mut body).await.contains("keep-alive"),
         "reconciliation must not publish a duplicate create"
     );
+    drop(body);
+    exercise_readable_field_filters(&f).await;
+    exercise_conditional_field_filters(&f).await;
 }

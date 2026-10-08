@@ -62,12 +62,14 @@ pub async fn fixture_identity_options<B: SchemaBackend + EntityStore + 'static>(
         r#"
         @access(read: ["member"], write: ["member"], delete: ["member"])
         schema Note {
-            title: text required
-            category: text
+            title: text required @field_access(write: ["member"])
+            category: text @field_access(write: ["member"])
+            kept: boolean required default(false) @field_access(write: ["member"])
+            conditional: text @field_access(write: ["member"])
             secret: text @hidden @compute("'stored-secret'")
             restricted: text @field_access(read: ["admin"], write: ["member"])
             owner: text @owner
-            parent: -> Note
+            parent: -> Note @field_access(write: ["member"])
             children: -> Note[]
             read_label: text
         }
@@ -169,6 +171,8 @@ pub async fn fixture_identity_options<B: SchemaBackend + EntityStore + 'static>(
     std::fs::write(directory.path().join("owner-read.cedar"), r#"
         forbid (principal is Forge::Principal, action == Action::"ReadNote", resource is Note)
         when { resource has owner && resource.owner != principal.id && !(principal in Forge::Group::"platform_admin") };
+        forbid (principal is Forge::Principal, action == Action::"ReadFieldNote_conditional", resource is Note)
+        when { !context.resource_is_placeholder && resource has category && resource.category == "private" };
     "#).unwrap();
     let policy_store = Arc::new(schema_forge_acton::authz::PolicyStore::new(
         schema_forge_acton::authz::PolicyStoreSnapshot::from_schemas(
@@ -334,12 +338,14 @@ pub async fn request(
         .unwrap()
 }
 pub async fn json(response: axum::response::Response) -> serde_json::Value {
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert!(
-        response.status().is_success(),
-        "response status: {}",
-        response.status()
+        status.is_success(),
+        "response status: {status}, body: {}",
+        String::from_utf8_lossy(&bytes[..bytes.len().min(512)])
     );
-    serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+    serde_json::from_slice(&bytes).unwrap()
 }
 pub async fn connect(app: &Router, query: &str) -> Body {
     let response = request(
@@ -375,6 +381,90 @@ pub async fn change(body: &mut Body) -> (String, serde_json::Value) {
         }
     }
 }
+pub async fn exercise_readable_field_filters(f: &Fixture) {
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            "/schemas/Note/events?restricted=private",
+            serde_json::Value::Null
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN,
+    );
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            "/schemas/Note/events?kept=invalid",
+            serde_json::Value::Null
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST,
+    );
+    let parent = json(
+        request(
+            &f.app,
+            "POST",
+            "/schemas/Note/entities",
+            serde_json::json!({"title":"Parent"}),
+        )
+        .await,
+    )
+    .await;
+    let parent_id = parent["id"].as_str().unwrap();
+    let mut body = connect(
+        &f.app,
+        &format!("?title__eq=Match&category=books&kept=true&parent={parent_id}"),
+    )
+    .await;
+    json(request(&f.app, "POST", "/schemas/Note/entities",
+        serde_json::json!({"title":"Match", "category":"music", "kept":true, "parent":parent_id})).await).await;
+    json(request(&f.app, "POST", "/schemas/Note/entities",
+        serde_json::json!({"title":"Match", "category":"books", "kept":false, "parent":parent_id})).await).await;
+    let matched = json(request(&f.app, "POST", "/schemas/Note/entities",
+        serde_json::json!({"title":"Match", "category":"books", "kept":true, "parent":parent_id})).await).await;
+    let (_, event) = change(&mut body).await;
+    assert_eq!(event["entity_id"], matched["id"]);
+    assert_eq!(event["entity"]["fields"]["parent"], parent["id"]);
+    assert_eq!(event["entity"]["fields"]["kept"], true);
+}
+
+pub async fn exercise_conditional_field_filters(f: &Fixture) {
+    let mut body = connect(&f.app, "?conditional=guessed-secret").await;
+    let private = json(request(&f.app, "POST", "/schemas/Note/entities",
+        serde_json::json!({"title":"Private", "category":"private", "conditional":"guessed-secret"})).await).await;
+    let id = private["id"].as_str().unwrap();
+    let path = format!("/schemas/Note/entities/{id}");
+    let detail = json(request(&f.app, "GET", &path, serde_json::Value::Null).await).await;
+    assert!(detail["fields"].get("conditional").is_none());
+    json(
+        request(
+            &f.app,
+            "PATCH",
+            &path,
+            serde_json::json!({"title":"Changed private"}),
+        )
+        .await,
+    )
+    .await;
+    assert!(request(&f.app, "DELETE", &path, serde_json::Value::Null)
+        .await
+        .status()
+        .is_success());
+    let public = json(request(&f.app, "POST", "/schemas/Note/entities",
+        serde_json::json!({"title":"Readable sentinel", "category":"books", "conditional":"guessed-secret"})).await).await;
+    let (frame, event) = change(&mut body).await;
+    assert_eq!(
+        event["entity_id"], public["id"],
+        "unreadable filter values must hide change metadata too"
+    );
+    assert_eq!(event["entity"]["fields"]["conditional"], "guessed-secret");
+    assert!(!frame.contains(id));
+}
+
 pub async fn exercise_crud(f: &Fixture) {
     let mut body = connect(&f.app, "").await;
     let created = json(
@@ -421,7 +511,7 @@ pub async fn exercise_crud(f: &Fixture) {
                 &f.app,
                 method,
                 &path,
-                serde_json::json!({"title":method, "category":"books"}),
+                serde_json::json!({"title":method, "category":"books", "kept":false}),
             )
             .await,
         )
