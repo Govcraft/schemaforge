@@ -13,8 +13,8 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
   # Update together after a successful release, retaining the verified asset hash.
-  SITE_SERVER_VERSION: v0.51.0
-  SITE_SERVER_SHA256: 51af374c1cbe096fde2487772bc4a220980491839dae90634d069748ccc8f04a
+  SITE_SERVER_VERSION: v0.51.1
+  SITE_SERVER_SHA256: 34b036e5f828f11b2ee8af78b1c05da774d7d8deadff1c694dc1579815f367e6
 jobs:
   smoke:
     name: Generated React build, lint, and browser tests
