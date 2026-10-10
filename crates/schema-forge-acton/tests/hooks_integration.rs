@@ -245,6 +245,39 @@ async fn post_entity(
     (status, json)
 }
 
+async fn write_existing_entity(
+    router: &Router,
+    id: &str,
+    method: Method,
+    fields: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(format!("/schemas/Translation/entities/{id}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({"fields": fields})).unwrap(),
+        ))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn wait_for_after_calls(dispatcher: &MockHookDispatcher, count: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if dispatcher.after_calls().await.len() >= count {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("after-change hook did not complete");
+}
+
 fn binding(required: bool, event: HookEvent) -> HookBinding {
     binding_for("Translation", required, event)
 }
@@ -445,6 +478,161 @@ async fn after_change_hook_fires_without_blocking_response() {
     assert_eq!(after[0].operation, "create");
     // After-hook sees the persisted entity id.
     assert!(after[0].entity_id.is_some());
+    assert!(after[0].changed_fields.is_empty());
+    assert!(after[0].previous.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn after_change_metadata_tracks_persisted_update_and_patch_changes() {
+    let dispatcher = Arc::new(MockHookDispatcher::new());
+    let config = HooksConfig {
+        enabled: true,
+        bindings: vec![
+            binding(true, HookEvent::BeforeChange),
+            binding(false, HookEvent::AfterChange),
+        ],
+        ..HooksConfig::default()
+    };
+    let router = test_router(setup(config, Some(dispatcher.clone())).await);
+    let (status, created) = post_entity(
+        &router,
+        "Translation",
+        serde_json::json!({
+            "source_text": "original", "translated_text": "old translation"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap();
+    wait_for_after_calls(&dispatcher, 1).await;
+
+    dispatcher
+        .respond_before(
+            "Translation",
+            HookEvent::BeforeChange,
+            HookOutcome {
+                abort_reason: None,
+                modified_fields: Some(std::collections::BTreeMap::from([(
+                    "translated_text".into(),
+                    DynamicValue::Text("hook translation".into()),
+                )])),
+            },
+        )
+        .await;
+    let (status, response) = write_existing_entity(
+        &router,
+        id,
+        Method::PUT,
+        serde_json::json!({
+            "source_text": "updated", "translated_text": "client translation"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    wait_for_after_calls(&dispatcher, 2).await;
+    let calls = dispatcher.after_calls().await;
+    assert_eq!(calls[1].operation, "update");
+    assert_eq!(calls[1].changed_fields, ["source_text", "translated_text"]);
+    assert_eq!(
+        calls[1].previous["source_text"],
+        DynamicValue::Text("original".into())
+    );
+    assert_eq!(
+        calls[1].previous["translated_text"],
+        DynamicValue::Text("old translation".into())
+    );
+    assert_eq!(
+        calls[1].fields["translated_text"],
+        DynamicValue::Text("hook translation".into())
+    );
+
+    let (status, response) = write_existing_entity(
+        &router,
+        id,
+        Method::PATCH,
+        serde_json::json!({
+            "source_text": "patched"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    wait_for_after_calls(&dispatcher, 3).await;
+    let calls = dispatcher.after_calls().await;
+    assert_eq!(calls[2].operation, "patch");
+    assert_eq!(calls[2].changed_fields, ["source_text"]);
+    assert_eq!(calls[2].previous.len(), 1);
+    assert_eq!(
+        calls[2].previous["source_text"],
+        DynamicValue::Text("updated".into())
+    );
+
+    let (status, response) = write_existing_entity(
+        &router,
+        id,
+        Method::PATCH,
+        serde_json::json!({
+            "source_text": "patched"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    wait_for_after_calls(&dispatcher, 4).await;
+    let calls = dispatcher.after_calls().await;
+    assert!(calls[3].changed_fields.is_empty());
+    assert!(calls[3].previous.is_empty());
+
+    // The before hook accepts but makes the required source field invalid.
+    dispatcher
+        .respond_before(
+            "Translation",
+            HookEvent::BeforeChange,
+            HookOutcome {
+                abort_reason: None,
+                modified_fields: Some(std::collections::BTreeMap::from([(
+                    "source_text".into(),
+                    DynamicValue::Null,
+                )])),
+            },
+        )
+        .await;
+    let (status, _) = write_existing_entity(
+        &router,
+        id,
+        Method::PUT,
+        serde_json::json!({
+            "source_text": "rejected"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    dispatcher
+        .respond_before(
+            "Translation",
+            HookEvent::BeforeChange,
+            HookOutcome::default(),
+        )
+        .await;
+    let (status, response) = write_existing_entity(
+        &router,
+        id,
+        Method::PATCH,
+        serde_json::json!({
+            "source_text": "final"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    wait_for_after_calls(&dispatcher, 5).await;
+    let calls = dispatcher.after_calls().await;
+    assert_eq!(
+        calls.len(),
+        5,
+        "rejected write must not dispatch after_change"
+    );
+    assert_eq!(
+        calls[4].previous["source_text"],
+        DynamicValue::Text("patched".into())
+    );
 }
 
 /// Regression for issue #6: the hook dispatcher's merge step must coerce

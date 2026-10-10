@@ -367,6 +367,34 @@ pub struct ExportContext<'a> {
         &'a Option<std::sync::Arc<dyn schema_forge_backend::auth::RecordAccessPolicy>>,
 }
 
+/// Validate before accepting an async job and again before executing it.
+fn parse_export_filter(
+    store: &std::sync::Arc<crate::authz::PolicyStore>,
+    claims: Option<&acton_service::middleware::Claims>,
+    schema: &SchemaDefinition,
+    filter_json: Option<&serde_json::Value>,
+) -> Result<Option<schema_forge_core::query::Filter>, ForgeError> {
+    filter_json
+        .map(|json| {
+            let filter =
+                crate::routes::entities::json_to_filter(json, schema).map_err(|errors| {
+                    ForgeError::InvalidQuery {
+                        message: errors.join("; "),
+                    }
+                })?;
+            crate::routes::entities::authorize_query_filter(store, claims, schema, &filter)?;
+            validate_filter(&filter, schema).map_err(|errors| ForgeError::InvalidQuery {
+                message: errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            })?;
+            Ok(filter)
+        })
+        .transpose()
+}
+
 /// Run the full export pipeline — query (no page limit, `max_rows`-capped),
 /// tenant injection, record-level access filter, relation-display resolution,
 /// per-field read stripping, and serialization — and return the materialized
@@ -484,20 +512,7 @@ pub async fn prepare_export(
     // Build the query (an export is a query with no page limit). Cap the read at
     // max_rows + 1 so an over-cap result is detectable without draining the table.
     let mut query = Query::new(schema_def.id.clone()).without_total_count();
-    if let Some(filter_json) = filter_json {
-        let filter =
-            crate::routes::entities::json_to_filter(filter_json, schema_def).map_err(|errors| {
-                ForgeError::InvalidQuery {
-                    message: errors.join("; "),
-                }
-            })?;
-        validate_filter(&filter, schema_def).map_err(|errors| ForgeError::InvalidQuery {
-            message: errors
-                .iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; "),
-        })?;
+    if let Some(filter) = parse_export_filter(policy_store, claims, schema_def, filter_json)? {
         query = query.with_filter(filter);
     }
     let probe_limit = usize::try_from(max_rows)
@@ -830,6 +845,13 @@ pub async fn export_entities(
             });
         }
     }
+
+    parse_export_filter(
+        &policy_store,
+        claims.as_ref(),
+        &schema_def,
+        body.filter.as_ref(),
+    )?;
 
     // Per-subject bulk-export rate limit. Export is an exfiltration surface, so a
     // caller cannot drain a table by issuing many small exports back to back even

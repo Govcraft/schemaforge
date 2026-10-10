@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package schema_forge_test;
 
+import "google/protobuf/struct.proto";
+
 // Mirrors what the Phase 3 scaffold generator will emit for a schema named
 // `Translation` with `before_change` and `after_change` hooks. Used by the
 // tonic dispatcher integration test.
@@ -31,6 +33,8 @@ message TranslationAfterChangeRequest {
   string operation = 1;
   optional string user_id = 2;
   optional string entity_id = 3;
+  repeated string changed_fields = 4;
+  map<string, google.protobuf.Value> previous = 5;
   string source_text = 100;
   string translated_text = 101;
   repeated string tags = 102;

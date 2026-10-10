@@ -62,6 +62,15 @@ fn generate_emits_expected_layout() {
     assert!(proto.contains("string source_text"));
     // Optional field tag for the non-required `translated_text`.
     assert!(proto.contains("optional string translated_text"));
+    assert!(proto.contains("import \"google/protobuf/struct.proto\";"));
+    assert!(proto.contains("repeated string changed_fields = 4;"));
+    assert!(proto.contains("map<string, google.protobuf.Value> previous = 5;"));
+    let manifest: toml::Value =
+        toml::from_str(&fs::read_to_string(out_dir.join("Cargo.toml")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["dependencies"]["prost-types"].as_str(),
+        Some("0.14.4")
+    );
 
     let impl_path = out_dir.join("src/hooks/translation.rs");
     assert!(impl_path.exists(), "translation.rs stub missing");
@@ -80,6 +89,61 @@ fn generate_emits_expected_layout() {
     assert!(before_md.contains("patch translated_text"));
     assert!(before_md.contains("source_text"));
     assert!(before_md.contains("Done when"));
+    let after_md = fs::read_to_string(&after_prompt).unwrap();
+    assert!(after_md.contains("changed_fields"));
+    assert!(after_md.contains("previous"));
+    assert!(after_md.contains("Both collections are empty on create and no-op writes"));
+}
+
+#[test]
+fn generated_change_metadata_avoids_business_field_and_json_name_collisions() {
+    let workdir = TempDir::new().unwrap();
+    let schema_dir = workdir.path().join("schemas");
+    fs::create_dir_all(&schema_dir).unwrap();
+    fs::write(
+        schema_dir.join("collision.schema"),
+        r#"
+@hook(after_change) """act only on persisted changes"""
+schema Collision {
+  changed_fields: text
+  previous: text
+  schemaforge_changed_fields_2: text
+  schemaforge_previous_2: text
+}
+"#,
+    )
+    .unwrap();
+    let out_dir = workdir.path().join("hooks-service");
+    schema_forge()
+        .args(["hooks", "generate", "--all", "--schema-dir"])
+        .arg(&schema_dir)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .assert()
+        .success();
+    let proto_path = out_dir.join("proto/collision_hooks.proto");
+    let proto = fs::read_to_string(&proto_path).unwrap();
+    assert!(proto.contains("repeated string schemaforge_changed_fields_3 = 4;"));
+    assert!(proto.contains("map<string, google.protobuf.Value> schemaforge_previous_3 = 5;"));
+    assert!(proto.contains("optional string changed_fields = 100;"));
+    assert!(proto.contains("optional string previous = 101;"));
+    let prompt =
+        fs::read_to_string(out_dir.join("src/hooks/collision/after_change.prompt.md")).unwrap();
+    assert!(prompt.contains("`schemaforge_changed_fields_3` lists"));
+    assert!(prompt.contains("`schemaforge_previous_3` contains"));
+    let output = std::process::Command::new("protoc")
+        .arg("--descriptor_set_out")
+        .arg(workdir.path().join("collision.bin"))
+        .arg("--proto_path")
+        .arg(out_dir.join("proto"))
+        .arg(&proto_path)
+        .output()
+        .expect("protoc is required to validate generated hook protobuf");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// The scaffold must serve through `acton-service`, not a bare tonic server.
@@ -195,6 +259,13 @@ fn generate_preserves_existing_impl_without_force() {
     // Mark the impl file with a sentinel.
     let impl_path = out_dir.join("src/hooks/translation.rs");
     fs::write(&impl_path, "// USER EDITED\n").unwrap();
+    // An older scaffold has no prost-types dependency. Normal regeneration
+    // preserves its manifest, so the documented cargo add step is required.
+    let cargo_path = out_dir.join("Cargo.toml");
+    let older_manifest = fs::read_to_string(&cargo_path)
+        .unwrap()
+        .replace("prost-types = \"0.14.4\"\n", "");
+    fs::write(&cargo_path, &older_manifest).unwrap();
 
     // Re-run without --force
     schema_forge()
@@ -206,6 +277,9 @@ fn generate_preserves_existing_impl_without_force() {
         .success();
 
     let after = fs::read_to_string(&impl_path).unwrap();
+    assert_eq!(fs::read_to_string(&cargo_path).unwrap(), older_manifest);
+    let proto = fs::read_to_string(out_dir.join("proto/translation_hooks.proto")).unwrap();
+    assert!(proto.contains("map<string, google.protobuf.Value> previous = 5;"));
     assert_eq!(
         after, "// USER EDITED\n",
         "impl was clobbered without --force"

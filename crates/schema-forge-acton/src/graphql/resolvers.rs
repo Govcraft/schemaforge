@@ -14,6 +14,7 @@ use crate::access::{
 };
 use crate::authz::{authorize, namespace::ActionVerb};
 use crate::error::ForgeError;
+use crate::routes::entities::{authorize_query_filter, authorize_query_path};
 
 /// Entity data stored in resolver parent values.
 pub struct EntityFields {
@@ -143,6 +144,8 @@ pub async fn resolve_list_entities<'a>(
                     message: errors.join("; "),
                 })
             })?;
+        authorize_query_filter(&gql_ctx.state.policy_store, claims, schema_def, &filter)
+            .map_err(forge_error_to_gql)?;
         validate_filter(&filter, schema_def).map_err(|errors| {
             forge_error_to_gql(ForgeError::InvalidQuery {
                 message: errors
@@ -170,6 +173,13 @@ pub async fn resolve_list_entities<'a>(
                         None => SortOrder::Ascending,
                     };
                     if let Ok(path) = FieldPath::parse(&field_str) {
+                        authorize_query_path(
+                            &gql_ctx.state.policy_store,
+                            claims,
+                            schema_def,
+                            &path,
+                        )
+                        .map_err(forge_error_to_gql)?;
                         query = query.with_sort(path, order);
                     }
                 }

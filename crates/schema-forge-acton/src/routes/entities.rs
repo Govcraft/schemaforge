@@ -398,6 +398,8 @@ fn build_invocation(
         user_id: user.map(|c| c.sub.clone()),
         entity_id,
         fields: fields.clone(),
+        changed_fields: Vec::new(),
+        previous: BTreeMap::new(),
     }
 }
 
@@ -501,15 +503,25 @@ struct AfterHookCtx {
 /// Detached, not "fire-and-forget": the dispatch runs under acton
 /// supervision so in-flight hook calls participate in graceful shutdown
 /// and the runtime's concurrency budget.
-async fn fire_after_hook(state: &AppState<SchemaForgeConfig>, ctx: AfterHookCtx, entity: &Entity) {
-    let invocation = HookInvocation {
+async fn fire_after_hook(
+    state: &AppState<SchemaForgeConfig>,
+    ctx: AfterHookCtx,
+    entity: &Entity,
+    before: Option<&BTreeMap<String, DynamicValue>>,
+) {
+    let mut invocation = HookInvocation {
         schema: ctx.schema.name.as_str().to_string(),
         event: ctx.event,
         operation: ctx.operation,
         user_id: ctx.user_id,
         entity_id: Some(entity.id.as_str().to_string()),
         fields: entity.fields.clone(),
+        changed_fields: Vec::new(),
+        previous: BTreeMap::new(),
     };
+    if let Some(before) = before {
+        invocation = invocation.with_changes(before);
+    }
     match state.actor::<HookDispatchActor>() {
         Some(actor) => {
             actor
@@ -1460,7 +1472,14 @@ pub fn json_to_filter(
                 .ok_or_else(|| vec![format!("'{op}' filter must have a 'field' string")])?;
             let path = FieldPath::parse(field_str)
                 .map_err(|e| vec![format!("invalid field path '{field_str}': {e}")])?;
-            let field_type = schema.field(path.root()).map(|fd| &fd.field_type);
+            // A traversed leaf has the target field's type, not its root
+            // relation type. Keep it untyped until path authorization rejects
+            // unsupported traversal at the caller query boundary.
+            let field_type = if path.is_simple() {
+                schema.field(path.root()).map(|fd| &fd.field_type)
+            } else {
+                None
+            };
 
             match op {
                 "contains" => {
@@ -1532,6 +1551,70 @@ fn coerce_json_filter_value(
         convert_json_with_type_hint(value, ft)
     } else {
         convert_json_untyped(value)
+    }
+}
+
+/// Shared collection query boundary: validate caller paths before storage can
+/// expose a hidden value through membership, count, or ordering. Related target
+/// policies are not evaluated by
+/// storage traversal, so dotted paths fail closed.
+pub(crate) fn authorize_query_path(
+    store: &Arc<crate::authz::PolicyStore>,
+    claims: Option<&Claims>,
+    schema: &SchemaDefinition,
+    path: &FieldPath,
+) -> Result<(), ForgeError> {
+    let denied = || ForgeError::Forbidden {
+        message: "Not authorized to filter this field.".into(),
+    };
+    if !path.is_simple() {
+        return Err(denied());
+    }
+    if path.root() == "id" {
+        return Ok(());
+    }
+    let field = schema
+        .field(path.root())
+        .ok_or_else(|| ForgeError::InvalidQuery {
+            message: format!("unknown field '{}'", path.root()),
+        })?;
+    if field.is_hidden()
+        || (field.field_access().is_some()
+            && !crate::authz::engine::authorize_query_field(store, claims, schema, path.root())
+                .is_ok_and(|decision| decision.is_allow()))
+    {
+        return Err(denied());
+    }
+    Ok(())
+}
+
+/// Authorize every leaf in a caller collection predicate before storage access.
+pub(crate) fn authorize_query_filter(
+    store: &Arc<crate::authz::PolicyStore>,
+    claims: Option<&Claims>,
+    schema: &SchemaDefinition,
+    filter: &Filter,
+) -> Result<(), ForgeError> {
+    match filter {
+        Filter::And { filters } | Filter::Or { filters } => {
+            for filter in filters {
+                authorize_query_filter(store, claims, schema, filter)?;
+            }
+            Ok(())
+        }
+        Filter::Not { filter } => authorize_query_filter(store, claims, schema, filter),
+        Filter::Eq { path, .. }
+        | Filter::Ne { path, .. }
+        | Filter::Gt { path, .. }
+        | Filter::Gte { path, .. }
+        | Filter::Lt { path, .. }
+        | Filter::Lte { path, .. }
+        | Filter::Contains { path, .. }
+        | Filter::StartsWith { path, .. }
+        | Filter::In { path, .. } => authorize_query_path(store, claims, schema, path),
+        _ => Err(ForgeError::Forbidden {
+            message: "Not authorized to filter this field.".into(),
+        }),
     }
 }
 
@@ -3038,6 +3121,7 @@ pub async fn create_entity(
                 user_id: claims.as_ref().map(|c| c.sub.clone()),
             },
             &created,
+            None,
         )
         .await;
     }
@@ -3184,6 +3268,7 @@ pub async fn list_entities(
         let sort_clauses =
             parse_sort_param(sort_str).map_err(|e| ForgeError::InvalidQuery { message: e })?;
         for (path, order) in sort_clauses {
+            authorize_query_path(&policy_store, claims.as_ref(), &schema_def, &path)?;
             query = query.with_sort(path, order);
         }
     }
@@ -3194,6 +3279,7 @@ pub async fn list_entities(
             message: errors.join("; "),
         })?;
     if let Some(f) = &filter {
+        authorize_query_filter(&policy_store, claims.as_ref(), &schema_def, f)?;
         validate_filter(f, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
             message: errors
                 .iter()
@@ -3331,6 +3417,7 @@ pub async fn query_entities(
             let path = FieldPath::parse(&clause.field).map_err(|e| ForgeError::InvalidQuery {
                 message: format!("invalid sort field '{}': {e}", clause.field),
             })?;
+            authorize_query_path(&policy_store, claims.as_ref(), &schema_def, &path)?;
             let order = match clause.order.as_deref() {
                 Some("desc") => SortOrder::Descending,
                 Some("asc") | None => SortOrder::Ascending,
@@ -3351,6 +3438,7 @@ pub async fn query_entities(
                 message: errors.join("; "),
             }
         })?;
+        authorize_query_filter(&policy_store, claims.as_ref(), &schema_def, &filter)?;
         validate_filter(&filter, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
             message: errors
                 .iter()
@@ -3954,6 +4042,7 @@ pub async fn update_entity(
                 user_id: claims.as_ref().map(|c| c.sub.clone()),
             },
             &updated,
+            Some(&existing.fields),
         )
         .await;
     }
@@ -4305,6 +4394,7 @@ pub async fn patch_entity(
                 user_id: claims.as_ref().map(|c| c.sub.clone()),
             },
             &updated,
+            Some(&baseline_fields),
         )
         .await;
     }
@@ -4526,6 +4616,7 @@ pub async fn delete_entity(
                 user_id: claims.as_ref().map(|c| c.sub.clone()),
             },
             &snapshot,
+            None,
         )
         .await;
     }

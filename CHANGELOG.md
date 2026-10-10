@@ -7,6 +7,46 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-10
+
+### Added
+
+- Include `changed_fields` and `previous` in detached `after_change` hook
+  invocations for updates and patches. Metadata compares stored before and
+  after values, including changes made by blocking hooks, and previous values
+  contain only changed fields. Creates and deletes carry empty metadata.
+- Generate additive protobuf fields for change metadata while retaining
+  existing field numbers and support for older hook descriptors.
+
+### Fixed
+
+- Authorize every REST list, JSON query, and GraphQL filter and sort field before storage
+  evaluates the query. Hidden fields and fields the caller cannot read are
+  refused, preventing equality, prefix, ordering, and count probes from
+  exposing protected values. Nested boolean filters and synchronous and
+  asynchronous export filters receive the same checks.
+- Reject unknown sort fields with 400 `invalid_query` before they reach the
+  database, instead of surfacing a backend failure.
+
+### Upgrade notes
+
+- Regenerate and redeploy hook services and their descriptors to receive the
+  new metadata. Existing hook-service manifests are preserved; run
+  `cargo add prost-types@0.14.4` in those projects before rebuilding regenerated
+  code. Existing descriptors continue receiving their existing request shape.
+  Rust integrations constructing `HookInvocation` must initialize the two new
+  fields. The runtime crate advances to 0.50.0.
+- Application fields named `changed_fields` or `previous` retain their names
+  and protobuf numbers. When necessary, generated metadata uses unique names
+  listed in the hook prompt.
+- Filters and sorts on relation traversal paths or fields with custom
+  record-dependent field policies are refused when readability cannot be
+  established safely before querying. Direct readable relation IDs remain
+  available. Review callers that previously queried protected fields.
+- Previous values in gRPC metadata use `google.protobuf.Value`; integer values
+  outside its exact numeric range are encoded as decimal strings to preserve
+  precision.
+
 ## [0.51.1] - 2026-10-08
 
 ### Fixed

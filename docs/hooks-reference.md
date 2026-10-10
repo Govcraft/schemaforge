@@ -122,7 +122,7 @@ current runtime; two are reserved for future use.
 |---|---|---|---|---|---|---|
 | Before validate | `before_validate` | POST/PUT | yes | yes | yes | `create`, `update` |
 | Before change | `before_change` | POST/PUT | yes | yes | yes | `create`, `update` |
-| After change | `after_change` | POST/PUT | no (detached) | no | no | `create`, `update` |
+| After change | `after_change` | POST/PUT/PATCH | no (detached) | no | no | `create`, `update`, `patch` |
 | Before delete | `before_delete` | DELETE | yes | yes | n/a (no payload) | `delete` |
 | After delete | `after_delete` | DELETE | no (detached) | no | n/a | `delete` |
 | Before read | `before_read` | GET one, GET list, POST query | yes | yes | n/a (no payload) | `read`, `list`, `query` |
@@ -145,6 +145,16 @@ A few semantic notes:
   `before_read` only, with `operation` set to `list` or `query`
   respectively. `after_read` is per-entity and currently fires only
   on single-entity GETs.
+- **Change metadata.** On successful PUT and PATCH, `after_change` receives
+  `changed_fields`, a sorted list of fields whose persisted values differ
+  from the fetched pre-write snapshot, and `previous`, containing only the
+  prior values of those changed fields. This includes changes made by before
+  hooks and rules. A newly added field has no `previous` entry; an explicit
+  prior null is retained. Removed fields retain their previous value. No-op
+  writes have empty metadata. Failed writes never dispatch `after_change`.
+  Both collections are empty for create, delete, and other lifecycle events.
+  Hooks can decide whether to act from the request alone. GraphQL update
+  mutations use the same PATCH handler and receive the same metadata.
 - **`before_validate` vs `before_change`.** Both fire pre-persistence
   on POST/PUT. `before_validate` runs first, so it is the right hook
   to use when you need to compute or default a field before any
@@ -347,6 +357,27 @@ Two patterns to note:
   entity before persistence. Fields you leave at `None` are left
   untouched; fields you set win over whatever the client submitted.
 
+Generated `AfterChangeRequest` messages carry `repeated string changed_fields`
+at protobuf tag 4 and `map<string, google.protobuf.Value> previous` at tag 5.
+Previous values use the entity JSON representation, including nested objects,
+arrays, and explicit nulls. Protobuf numbers are doubles, so integers outside
+the exact range `[-2^53, 2^53]` are encoded as decimal strings to preserve their
+value. In-process `HookInvocation.previous` retains the original `DynamicValue`.
+
+If a schema has a business field with either metadata name or its protobuf
+JSON name, the generator chooses `schemaforge_changed_fields_2` or
+`schemaforge_previous_2`, increasing the suffix until the name is unique.
+The generated prompt lists the actual names. Business-field names and tags
+remain unchanged, and the dispatcher recognizes metadata by reserved tag and
+type, so existing descriptors with fields named `changed_fields` or `previous`
+keep receiving their business values.
+
+Existing hook descriptors continue to work and simply omit metadata. To opt
+in, regenerate the hook scaffold and rebuild its descriptor and service. Since
+existing `Cargo.toml` files are preserved, add the new well-known protobuf type
+dependency with `cargo add prost-types@0.14.4` before rebuilding an older
+scaffold. New scaffolds include that dependency automatically.
+
 Compile and run the hook service on its own port. It reads the
 `config.toml` the scaffold emitted alongside `Cargo.toml`, so run it
 from the project root (or point `ACTON_*` environment variables at the
@@ -399,6 +430,8 @@ either side independently.
 | `operation` | `string` | 1 | System — current operation name |
 | `user_id` | `optional string` | 2 | System — authenticated user's subject claim |
 | `entity_id` | `optional string` | 3 | System — entity id (absent on create) |
+| `changed_fields` | `repeated string` | 4 | System, `AfterChangeRequest` only |
+| `previous` | `map<string, google.protobuf.Value>` | 5 | System, `AfterChangeRequest` only |
 | *schema field* | *mapped type* | 100+ | One per declared schema field |
 
 Schema fields start at tag 100 so system fields stay stable as your
