@@ -44,6 +44,7 @@ struct TestService {
     behavior: Behavior,
     captured: tokio::sync::Mutex<Vec<CapturedRequest>>,
     after_count: tokio::sync::Mutex<usize>,
+    after_requests: tokio::sync::Mutex<Vec<TranslationAfterChangeRequest>>,
 }
 
 #[derive(Clone)]
@@ -90,9 +91,10 @@ impl TranslationHooks for TestService {
 
     async fn after_change(
         &self,
-        _request: Request<TranslationAfterChangeRequest>,
+        request: Request<TranslationAfterChangeRequest>,
     ) -> Result<Response<TranslationAfterChangeResponse>, Status> {
         *self.after_count.lock().await += 1;
+        self.after_requests.lock().await.push(request.into_inner());
         Ok(Response::new(TranslationAfterChangeResponse::default()))
     }
 }
@@ -105,6 +107,7 @@ async fn spawn_server(behavior: Behavior) -> (SocketAddr, Arc<TestService>, ones
         behavior,
         captured: tokio::sync::Mutex::new(Vec::new()),
         after_count: tokio::sync::Mutex::new(0),
+        after_requests: tokio::sync::Mutex::new(Vec::new()),
     });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -176,6 +179,8 @@ fn invocation(event: HookEvent) -> HookInvocation {
         user_id: Some("user:test".to_string()),
         entity_id: None,
         fields,
+        changed_fields: Vec::new(),
+        previous: Default::default(),
     }
 }
 
@@ -246,11 +251,64 @@ async fn after_change_round_trips() {
     };
     let dispatcher =
         TonicHookDispatcher::new(&cfg, TonicDispatcherConfig::default()).expect("dispatcher");
+    let mut call = invocation(HookEvent::AfterChange);
+    call.operation = "update".into();
+    call.changed_fields = vec![
+        "source_text".into(),
+        "tags".into(),
+        "nullable".into(),
+        "json".into(),
+        "counter".into(),
+    ];
+    call.previous = std::collections::BTreeMap::from([
+        (
+            "source_text".into(),
+            DynamicValue::Text("prior text".into()),
+        ),
+        (
+            "tags".into(),
+            DynamicValue::Array(vec![DynamicValue::Text("old".into())]),
+        ),
+        ("nullable".into(), DynamicValue::Null),
+        (
+            "json".into(),
+            DynamicValue::Json(serde_json::json!({"nested": [true, null, 2]})),
+        ),
+        ("counter".into(), DynamicValue::Integer(i64::MAX)),
+    ]);
     dispatcher
-        .call_after(&cfg.bindings[0], invocation(HookEvent::AfterChange))
+        .call_after(&cfg.bindings[0], call.clone())
         .await
         .expect("call");
     assert_eq!(*svc.after_count.lock().await, 1);
+    let requests = svc.after_requests.lock().await;
+    assert_eq!(requests[0].changed_fields, call.changed_fields);
+    use prost_types::value::Kind;
+    assert_eq!(
+        requests[0].previous["source_text"].kind,
+        Some(Kind::StringValue("prior text".into()))
+    );
+    assert_eq!(
+        requests[0].previous["nullable"].kind,
+        Some(Kind::NullValue(0))
+    );
+    assert_eq!(
+        requests[0].previous["counter"].kind,
+        Some(Kind::StringValue(i64::MAX.to_string()))
+    );
+    let Some(Kind::ListValue(tags)) = &requests[0].previous["tags"].kind else {
+        panic!("expected previous tags to be a protobuf list");
+    };
+    assert_eq!(tags.values[0].kind, Some(Kind::StringValue("old".into())));
+    let Some(Kind::StructValue(json)) = &requests[0].previous["json"].kind else {
+        panic!("expected previous JSON to be a protobuf struct");
+    };
+    let Some(Kind::ListValue(nested)) = &json.fields["nested"].kind else {
+        panic!("expected nested JSON list");
+    };
+    assert_eq!(nested.values[0].kind, Some(Kind::BoolValue(true)));
+    assert_eq!(nested.values[1].kind, Some(Kind::NullValue(0)));
+    assert_eq!(nested.values[2].kind, Some(Kind::NumberValue(2.0)));
     let _ = shutdown.send(());
 }
 
@@ -296,6 +354,8 @@ async fn before_change_array_field_dispatches_without_panic() {
         user_id: None,
         entity_id: None,
         fields,
+        changed_fields: Vec::new(),
+        previous: Default::default(),
     };
 
     dispatcher
@@ -347,6 +407,8 @@ async fn before_change_scalar_promoted_to_singleton_list() {
         user_id: None,
         entity_id: None,
         fields,
+        changed_fields: Vec::new(),
+        previous: Default::default(),
     };
 
     dispatcher

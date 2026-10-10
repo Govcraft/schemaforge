@@ -1291,6 +1291,8 @@ async fn run_file_before_hook(
         user_id: claims.map(|c| c.sub.clone()),
         entity_id,
         fields,
+        changed_fields: Vec::new(),
+        previous: BTreeMap::new(),
     };
     let _ = run_before_hook(dispatcher.as_ref(), &hooks_config, invocation)
         .await
@@ -1328,6 +1330,8 @@ async fn fire_file_after_hook(
         user_id: claims.map(|c| c.sub.clone()),
         entity_id,
         fields,
+        changed_fields: Vec::new(),
+        previous: BTreeMap::new(),
     };
     match state.actor::<HookDispatchActor>() {
         Some(actor) => {

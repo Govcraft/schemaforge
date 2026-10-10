@@ -285,7 +285,7 @@ pub fn authorize_field(
     direction: FieldDirection,
 ) -> Result<AuthzDecision, AuthzError> {
     authorize_field_resource(
-        store,
+        store.current(),
         claims,
         schema,
         FieldResource::Complete(entity),
@@ -304,7 +304,7 @@ pub(crate) fn authorize_input_field(
     field_name: &str,
 ) -> Result<AuthzDecision, AuthzError> {
     authorize_field_resource(
-        store,
+        store.current(),
         claims,
         schema,
         FieldResource::Input(entity),
@@ -325,7 +325,32 @@ pub(crate) fn authorize_filter_field(
     field_name: &str,
 ) -> Result<AuthzDecision, AuthzError> {
     authorize_field_resource(
-        store,
+        store.current(),
+        claims,
+        schema,
+        FieldResource::Placeholder,
+        field_name,
+        FieldDirection::Read,
+    )
+}
+
+/// Authorize a storage predicate only when field readability is independent of
+/// the record. Placeholder Allow alone cannot prove a concrete field is visible.
+pub(crate) fn authorize_query_field(
+    store: &Arc<PolicyStore>,
+    claims: Option<&Claims>,
+    schema: &SchemaDefinition,
+    field_name: &str,
+) -> Result<AuthzDecision, AuthzError> {
+    let snapshot = store.current();
+    if !super::read_scope::generated_field_read_is_record_independent(&snapshot, schema, field_name)
+    {
+        return Err(AuthzError::Request(
+            "field readability requires concrete record authorization".into(),
+        ));
+    }
+    authorize_field_resource(
+        snapshot,
         claims,
         schema,
         FieldResource::Placeholder,
@@ -337,20 +362,17 @@ pub(crate) fn authorize_filter_field(
 enum FieldResource<'a> {
     Complete(&'a Entity),
     Input(&'a Entity),
-    #[cfg(any(feature = "sse", test))]
     Placeholder,
 }
 
 fn authorize_field_resource(
-    store: &Arc<PolicyStore>,
+    snapshot: Arc<crate::authz::PolicyStoreSnapshot>,
     claims: Option<&Claims>,
     schema: &SchemaDefinition,
     resource: FieldResource<'_>,
     field_name: &str,
     direction: FieldDirection,
 ) -> Result<AuthzDecision, AuthzError> {
-    let snapshot = store.current();
-
     let raw_action = match direction {
         FieldDirection::Read => field_read_action_uid(schema.name.as_str(), field_name),
         FieldDirection::Write => field_write_action_uid(schema.name.as_str(), field_name),
@@ -378,7 +400,6 @@ fn authorize_field_resource(
     let (resource_entity, complete, resource_is_placeholder) = match resource {
         FieldResource::Complete(entity) => (build_resource_entity(schema, entity)?, true, false),
         FieldResource::Input(entity) => (build_resource_entity(schema, entity)?, false, false),
-        #[cfg(any(feature = "sse", test))]
         FieldResource::Placeholder => (build_resource_placeholder(schema)?, true, true),
     };
     let resource_uid = resource_entity.uid().clone();

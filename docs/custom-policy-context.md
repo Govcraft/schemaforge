@@ -6,7 +6,8 @@ Application actions and field actions receive a required Boolean request context
 |---|---|---|
 | No concrete entity, including a schema preflight | `true` | Synthetic defaults for required representable fields; optional fields absent |
 | A concrete entity supplied to the engine | `false` | That entity's represented fields |
-| A field read or write check | `false` | The concrete entity supplied for field authorization |
+| A concrete field read or write check | `false` | The entity supplied for field authorization |
+| A filter or sort field preflight | `true` | Synthetic defaults, as for a schema preflight |
 
 A schema preflight uses a Cedar resource UID such as `Notice::"_any"`. It supplies defaults because strict entity validation requires declared required attributes: empty strings for text, enum, file and single relations; zero for integer, float and datetime; false for Boolean; empty sets for arrays and multi-relations. Hidden and unrepresented fields remain absent. These values are not proposed or stored data. A concrete record can contain the same values and still has `resource_is_placeholder = false`.
 
@@ -88,7 +89,13 @@ when {
 
 Replace the relation ID with the actual restricted record ID. Relation attributes contain the referenced record's bare ID as a string. The schema must declare the `organization` relation, and an applicable permit is still required.
 
-Update and delete routes perform schema checks and concrete-resource checks. Field checks always receive an entity. The context flag describes only whether the individual engine call has a placeholder; it does not promise that the entity is persisted, contains proposed changes, or that another check will run later. Review the relevant route before assigning a policy to a different action.
+Update and delete routes perform schema checks and concrete-resource checks. Response and mutation field checks receive a concrete entity. Filter and sort preflights use placeholders. The context flag describes only whether the individual engine call has a placeholder; it does not promise that the entity is persisted, contains proposed changes, or that another check will run later. Review the relevant route before assigning a policy to a different action.
+
+## Filter and sort field access
+
+Collection filters and sorts, including REST list, POST query bodies, and GraphQL lists, require readable fields before they reach storage. Synchronous exports validate filters before materialization; asynchronous exports validate before accepting a job and again before executing it. REST hidden-field predicates return 403 for every caller, and GraphQL returns `FORBIDDEN`. Unknown REST sort fields return 400 `invalid_query`. Dotted relation paths return 403 because storage traversal does not authorize the related record or target field. Direct relation IDs and the intrinsic `id` remain available.
+
+Fields with `@field_access` require an allowed ReadField preflight, compatible concrete resource shapes, and a proof that every applicable field policy matches the generated record-independent rules. A custom policy applicable to that field action makes filtering and sorting return 403, even when its placeholder check allows the request. A synthetic value cannot prove that all concrete field values are readable. Unrelated action or schema policies do not disable query field access. These checks occur before pagination and total counts, including `limit=0` and `count=false`, without scanning records to infer field permissions.
 
 ## Diagnostics and manual Cedar callers
 

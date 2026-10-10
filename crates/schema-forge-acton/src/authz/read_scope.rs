@@ -40,27 +40,7 @@ pub(crate) fn generated_read_scope(
         return None;
     }
     let action = action_entity_uid(ActionVerb::Read, schema.name.as_str()).ok()?;
-    // An inherited action could make a syntactically unrelated policy apply.
-    let actions = snapshot.schema.action_entities().ok()?;
-    if actions.ancestors(&action)?.next().is_some() {
-        return None;
-    }
-    let source = generate_global_policies(&[])
-        .into_iter()
-        .chain(generate_cedar_policies(schema))
-        .map(|policy| policy.cedar_text)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let expected: PolicySet = source.parse().ok()?;
-    let mut expected = applicable_asts(&expected, &action, schema)?;
-    let actual = applicable_asts(&snapshot.policy_set, &action, schema)?;
-    if actual.len() != expected.len() {
-        return None;
-    }
-    for policy in actual {
-        let index = expected.iter().position(|expected| *expected == policy)?;
-        expected.swap_remove(index);
-    }
+    matches_generated_policies(snapshot, schema, &action)?;
     if !compatible_resource_shape(snapshot, schema) {
         return None;
     }
@@ -75,6 +55,52 @@ pub(crate) fn generated_read_scope(
             .collect();
         Some(CedarReadScope::TenantMembers(tenants))
     }
+}
+
+/// Certify field reads without inspecting synthetic placeholder attributes.
+/// Applicable custom policies require record evaluation and cannot safely be
+/// delegated to a storage predicate or ordering expression.
+pub(crate) fn generated_field_read_is_record_independent(
+    snapshot: &PolicyStoreSnapshot,
+    schema: &SchemaDefinition,
+    field_name: &str,
+) -> bool {
+    let Ok(action) = super::namespace::field_read_action_uid(schema.name.as_str(), field_name)
+        .parse::<EntityUid>()
+    else {
+        return false;
+    };
+    matches_generated_policies(snapshot, schema, &action).is_some()
+        && compatible_resource_shape(snapshot, schema)
+}
+
+fn matches_generated_policies(
+    snapshot: &PolicyStoreSnapshot,
+    schema: &SchemaDefinition,
+    action: &EntityUid,
+) -> Option<()> {
+    // An inherited action could make a syntactically unrelated policy apply.
+    let actions = snapshot.schema.action_entities().ok()?;
+    if actions.ancestors(action)?.next().is_some() {
+        return None;
+    }
+    let source = generate_global_policies(&[])
+        .into_iter()
+        .chain(generate_cedar_policies(schema))
+        .map(|policy| policy.cedar_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let expected: PolicySet = source.parse().ok()?;
+    let mut expected = applicable_asts(&expected, action, schema)?;
+    let actual = applicable_asts(&snapshot.policy_set, action, schema)?;
+    if actual.len() != expected.len() {
+        return None;
+    }
+    for policy in actual {
+        let index = expected.iter().position(|expected| *expected == policy)?;
+        expected.swap_remove(index);
+    }
+    Some(())
 }
 
 fn canonical_identity(value: &str) -> bool {
@@ -287,6 +313,24 @@ mod tests {
             r#"forbid(principal, action == Action::"UpdateNotice", resource is Notice);"#,
         );
         assert!(generated_read_scope(&snapshot, &schema, Some(&claims("reader"))).is_some());
+    }
+
+    #[test]
+    fn field_read_proof_requires_concrete_shape_compatibility() {
+        let current = schema(r#"title: text @field_access(read: ["reader"]) enabled: boolean"#);
+        let stale = schema(r#"title: text @field_access(read: ["reader"]) enabled: integer"#);
+        assert!(generated_field_read_is_record_independent(
+            &snapshot(&current, ""),
+            &current,
+            "title"
+        ));
+        // Placeholder omits enabled, so a stale optional type could otherwise
+        // allow the predicate while concrete response projection denies it.
+        assert!(!generated_field_read_is_record_independent(
+            &snapshot(&stale, ""),
+            &current,
+            "title"
+        ));
     }
 
     #[test]

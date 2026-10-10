@@ -33,7 +33,7 @@ use bytes::{Buf, BufMut};
 use http::uri::PathAndQuery;
 use prost_reflect::prost::Message as _;
 use prost_reflect::{
-    DescriptorPool, DynamicMessage, Kind, MessageDescriptor, ReflectMessage, Value,
+    DescriptorPool, DynamicMessage, Kind, MapKey, MessageDescriptor, ReflectMessage, Value,
 };
 use schema_forge_core::types::{DynamicValue, HookEvent};
 use tokio::sync::Mutex;
@@ -432,6 +432,38 @@ fn build_request(
 
     for field in descriptor.fields() {
         let name = field.name();
+        if invocation.event == HookEvent::AfterChange
+            && field.number() == 4
+            && field.is_list()
+            && matches!(field.kind(), Kind::String)
+        {
+            checked_set(
+                &mut msg,
+                name,
+                Value::List(
+                    invocation
+                        .changed_fields
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            )?;
+            continue;
+        }
+        if invocation.event == HookEvent::AfterChange && is_previous_metadata(&field) {
+            let values = invocation
+                .previous
+                .iter()
+                .map(|(name, value)| {
+                    let json = crate::conversions::dynamic_value_to_json(value);
+                    json_to_proto_value(descriptor.parent_pool(), &json)
+                        .map(|value| (MapKey::String(name.clone()), value))
+                })
+                .collect::<Result<HashMap<_, _>, _>>()?;
+            checked_set(&mut msg, name, Value::Map(values))?;
+            continue;
+        }
         match name {
             "operation" => {
                 checked_set(&mut msg, name, Value::String(invocation.operation.clone()))?;
@@ -457,6 +489,86 @@ fn build_request(
     }
 
     Ok(msg)
+}
+
+fn is_previous_metadata(field: &prost_reflect::FieldDescriptor) -> bool {
+    if field.number() != 5 || !field.is_map() {
+        return false;
+    }
+    let Kind::Message(entry) = field.kind() else {
+        return false;
+    };
+    entry.get_field(1).is_some_and(|key| matches!(key.kind(), Kind::String))
+        && entry.get_field(2).is_some_and(|value| {
+            matches!(value.kind(), Kind::Message(message) if message.full_name() == "google.protobuf.Value")
+        })
+}
+
+/// Encode an entity JSON value in the protobuf well-known Value shape.
+/// Protobuf numbers are doubles; large integers use decimal strings so the
+/// previous snapshot never silently rounds an identifier or counter.
+fn json_to_proto_value(
+    pool: &DescriptorPool,
+    json: &serde_json::Value,
+) -> Result<Value, HookError> {
+    let mut message = well_known_message(pool, "Value")?;
+    let (name, value) = match json {
+        serde_json::Value::Null => ("null_value", Value::EnumNumber(0)),
+        serde_json::Value::Bool(value) => ("bool_value", Value::Bool(*value)),
+        serde_json::Value::String(value) => ("string_value", Value::String(value.clone())),
+        serde_json::Value::Number(value) => {
+            const MAX_EXACT_INTEGER: u64 = 1 << 53;
+            if value
+                .as_i64()
+                .is_some_and(|value| value.unsigned_abs() > MAX_EXACT_INTEGER)
+                || value
+                    .as_u64()
+                    .is_some_and(|value| value > MAX_EXACT_INTEGER)
+            {
+                ("string_value", Value::String(value.to_string()))
+            } else {
+                let number = value.as_f64().ok_or_else(|| HookError::Protocol {
+                    message: format!(
+                        "previous value {value} cannot be encoded as a protobuf number"
+                    ),
+                })?;
+                ("number_value", Value::F64(number))
+            }
+        }
+        serde_json::Value::Array(values) => {
+            let mut list = well_known_message(pool, "ListValue")?;
+            let values = values
+                .iter()
+                .map(|value| json_to_proto_value(pool, value))
+                .collect::<Result<Vec<_>, _>>()?;
+            checked_set(&mut list, "values", Value::List(values))?;
+            ("list_value", Value::Message(list))
+        }
+        serde_json::Value::Object(values) => {
+            let mut object = well_known_message(pool, "Struct")?;
+            let values = values
+                .iter()
+                .map(|(name, value)| {
+                    json_to_proto_value(pool, value)
+                        .map(|value| (MapKey::String(name.clone()), value))
+                })
+                .collect::<Result<HashMap<_, _>, _>>()?;
+            checked_set(&mut object, "fields", Value::Map(values))?;
+            ("struct_value", Value::Message(object))
+        }
+    };
+    checked_set(&mut message, name, value)?;
+    Ok(Value::Message(message))
+}
+
+fn well_known_message(pool: &DescriptorPool, name: &str) -> Result<DynamicMessage, HookError> {
+    pool.get_message_by_name(&format!("google.protobuf.{name}"))
+        .map(DynamicMessage::new)
+        .ok_or_else(|| HookError::Protocol {
+            message: format!(
+                "hook descriptor is missing google.protobuf.{name} for previous values"
+            ),
+        })
 }
 
 /// Wrapper around [`DynamicMessage::try_set_field_by_name`] that translates a
@@ -670,6 +782,168 @@ impl Decoder for DynamicDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_descriptor_set() -> prost_types::FileDescriptorSet {
+        prost_types::FileDescriptorSet::decode(
+            include_bytes!(env!("TRANSLATION_HOOKS_DESCRIPTOR")).as_slice(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn old_descriptors_keep_business_fields_named_like_change_metadata() {
+        let mut set = test_descriptor_set();
+        let request = set
+            .file
+            .iter_mut()
+            .flat_map(|file| &mut file.message_type)
+            .find(|message| message.name.as_deref() == Some("TranslationAfterChangeRequest"))
+            .unwrap();
+        request
+            .field
+            .retain(|field| !matches!(field.number, Some(4 | 5)));
+        for (name, number, label) in [
+            (
+                "changed_fields",
+                103,
+                prost_types::field_descriptor_proto::Label::Repeated,
+            ),
+            (
+                "previous",
+                104,
+                prost_types::field_descriptor_proto::Label::Optional,
+            ),
+        ] {
+            request.field.push(prost_types::FieldDescriptorProto {
+                name: Some(name.into()),
+                number: Some(number),
+                label: Some(label.into()),
+                r#type: Some(prost_types::field_descriptor_proto::Type::String.into()),
+                ..Default::default()
+            });
+        }
+        let pool = DescriptorPool::from_file_descriptor_set(set).unwrap();
+        let descriptor = pool
+            .get_message_by_name("schema_forge_test.TranslationAfterChangeRequest")
+            .unwrap();
+        let invocation = HookInvocation {
+            schema: "Translation".into(),
+            event: HookEvent::AfterChange,
+            operation: "update".into(),
+            user_id: None,
+            entity_id: None,
+            fields: std::collections::BTreeMap::from([
+                (
+                    "changed_fields".into(),
+                    DynamicValue::Array(vec![DynamicValue::Text("business".into())]),
+                ),
+                (
+                    "previous".into(),
+                    DynamicValue::Text("business previous".into()),
+                ),
+            ]),
+            changed_fields: vec!["actual change".into()],
+            previous: Default::default(),
+        };
+        let request = build_request(&descriptor, &invocation).unwrap();
+        assert_eq!(
+            request
+                .get_field_by_name("changed_fields")
+                .unwrap()
+                .as_ref(),
+            &Value::List(vec![Value::String("business".into())])
+        );
+        assert_eq!(
+            request.get_field_by_name("previous").unwrap().as_ref(),
+            &Value::String("business previous".into())
+        );
+    }
+
+    #[test]
+    fn previous_numbers_preserve_large_integer_precision() {
+        let pool = DescriptorPool::from_file_descriptor_set(test_descriptor_set()).unwrap();
+        for (json, expected_field, expected) in [
+            (
+                serde_json::json!(1_u64 << 53),
+                "number_value",
+                Value::F64((1_u64 << 53) as f64),
+            ),
+            (
+                serde_json::json!((1_u64 << 53) + 1),
+                "string_value",
+                Value::String("9007199254740993".into()),
+            ),
+            (
+                serde_json::json!(i64::MIN),
+                "string_value",
+                Value::String(i64::MIN.to_string()),
+            ),
+            (
+                serde_json::json!(u64::MAX),
+                "string_value",
+                Value::String(u64::MAX.to_string()),
+            ),
+        ] {
+            let Value::Message(value) = json_to_proto_value(&pool, &json).unwrap() else {
+                panic!("expected protobuf Value message");
+            };
+            assert_eq!(
+                value.get_field_by_name(expected_field).unwrap().as_ref(),
+                &expected
+            );
+        }
+    }
+
+    #[test]
+    fn renamed_metadata_fields_are_encoded_by_tag_and_type() {
+        let mut set = test_descriptor_set();
+        let request = set
+            .file
+            .iter_mut()
+            .flat_map(|file| &mut file.message_type)
+            .find(|message| message.name.as_deref() == Some("TranslationAfterChangeRequest"))
+            .unwrap();
+        for field in &mut request.field {
+            match field.number {
+                Some(4) => field.name = Some("schemaforge_changed_fields_2".into()),
+                Some(5) => field.name = Some("schemaforge_previous_2".into()),
+                _ => {}
+            }
+        }
+        let pool = DescriptorPool::from_file_descriptor_set(set).unwrap();
+        let descriptor = pool
+            .get_message_by_name("schema_forge_test.TranslationAfterChangeRequest")
+            .unwrap();
+        let invocation = HookInvocation {
+            schema: "Translation".into(),
+            event: HookEvent::AfterChange,
+            operation: "patch".into(),
+            user_id: None,
+            entity_id: None,
+            fields: Default::default(),
+            changed_fields: vec!["source_text".into()],
+            previous: std::collections::BTreeMap::from([(
+                "source_text".into(),
+                DynamicValue::Null,
+            )]),
+        };
+        let request = build_request(&descriptor, &invocation).unwrap();
+        assert_eq!(
+            request
+                .get_field_by_name("schemaforge_changed_fields_2")
+                .unwrap()
+                .as_ref(),
+            &Value::List(vec![Value::String("source_text".into())])
+        );
+        let value = request.get_field_by_name("schemaforge_previous_2").unwrap();
+        let Value::Map(previous) = value.as_ref() else {
+            panic!("expected previous map");
+        };
+        let Value::Message(previous) = &previous[&MapKey::String("source_text".into())] else {
+            panic!("expected protobuf Value");
+        };
+        assert!(previous.has_field_by_name("null_value"));
+    }
 
     #[test]
     fn event_method_names() {

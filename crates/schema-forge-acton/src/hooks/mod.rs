@@ -207,6 +207,37 @@ pub struct HookInvocation {
     pub entity_id: Option<String>,
     /// Entity field snapshot at the moment of dispatch.
     pub fields: BTreeMap<String, DynamicValue>,
+    /// Sorted field names whose persisted values changed on update or patch.
+    /// Empty for creates, deletes, and all other lifecycle events.
+    pub changed_fields: Vec<String>,
+    /// Previous values of changed fields that existed before the write.
+    /// An absent key means the field was newly added; an explicit null is retained.
+    pub previous: BTreeMap<String, DynamicValue>,
+}
+
+impl HookInvocation {
+    /// Attach the changes from a pre-write snapshot to the persisted fields.
+    ///
+    /// Unchanged fields are excluded from both metadata collections. Removed
+    /// fields retain their previous value; newly added fields have no entry
+    /// in `previous`.
+    #[must_use]
+    pub fn with_changes(mut self, before: &BTreeMap<String, DynamicValue>) -> Self {
+        self.changed_fields = before
+            .keys()
+            .chain(self.fields.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter(|name| before.get(*name) != self.fields.get(*name))
+            .cloned()
+            .collect();
+        self.previous = self
+            .changed_fields
+            .iter()
+            .filter_map(|name| before.get(name).map(|value| (name.clone(), value.clone())))
+            .collect();
+        self
+    }
 }
 
 /// Outcome of a blocking (`before_*`) dispatch.
@@ -526,6 +557,8 @@ mod tests {
             user_id: None,
             entity_id: None,
             fields: BTreeMap::new(),
+            changed_fields: Vec::new(),
+            previous: BTreeMap::new(),
         }
     }
 
@@ -546,6 +579,41 @@ mod tests {
             required,
             descriptor_path: None,
         }
+    }
+
+    #[test]
+    fn change_metadata_tracks_additions_removals_and_explicit_nulls() {
+        let before = BTreeMap::from([
+            ("unchanged".into(), DynamicValue::Integer(7)),
+            ("removed".into(), DynamicValue::Text("old".into())),
+            ("nullable".into(), DynamicValue::Null),
+        ]);
+        let mut call = invocation("Translation", HookEvent::AfterChange);
+        call.fields = BTreeMap::from([
+            ("unchanged".into(), DynamicValue::Integer(7)),
+            ("added".into(), DynamicValue::Boolean(true)),
+            ("nullable".into(), DynamicValue::Text("now set".into())),
+        ]);
+        let call = call.with_changes(&before);
+        assert_eq!(call.changed_fields, ["added", "nullable", "removed"]);
+        assert_eq!(
+            call.previous,
+            BTreeMap::from([
+                ("nullable".into(), DynamicValue::Null),
+                ("removed".into(), DynamicValue::Text("old".into())),
+            ])
+        );
+    }
+
+    #[test]
+    fn change_metadata_is_empty_for_noop_updates() {
+        let mut call = invocation("Translation", HookEvent::AfterChange);
+        call.fields
+            .insert("source_text".into(), DynamicValue::Text("same".into()));
+        let before = call.fields.clone();
+        let call = call.with_changes(&before);
+        assert!(call.changed_fields.is_empty());
+        assert!(call.previous.is_empty());
     }
 
     #[tokio::test]
