@@ -51,7 +51,18 @@ async fn fixture(role: &str, custom_policy: &str) -> (Schema, ForgeGraphqlContex
             &schemas,
             Some(policies.path()),
             RoleRanks::empty(),
-            PrincipalClaimMappings::default(),
+            PrincipalClaimMappings::from_config(&BTreeMap::from([(
+                "suspended".into(),
+                schema_forge_acton::authz::principal_claims::PrincipalClaimConfigEntry {
+                    claim: None,
+                    claim_type:
+                        schema_forge_acton::authz::principal_claims::PrincipalClaimType::Bool,
+                    required: false,
+                    default: None,
+                    source: None,
+                },
+            )]))
+            .unwrap(),
         )
         .unwrap(),
     ));
@@ -163,6 +174,60 @@ async fn graphql_placeholder_allow_cannot_authorize_record_dependent_predicates(
     )
     .await;
     let response = serde_json::to_value(response).unwrap();
+    assert_eq!(
+        response["errors"][0]["extensions"]["code"], "FORBIDDEN",
+        "{response}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graphql_record_independent_custom_fences_allow_readable_predicates() {
+    for policy in [
+        r#"forbid(principal in Forge::Group::"restricted", action, resource);"#,
+        r#"forbid(principal, action, resource) when { principal has suspended && principal.suspended };"#,
+    ] {
+        let baseline = query(
+            "platform_admin",
+            policy,
+            "{ notes { items { restricted } } }",
+        )
+        .await;
+        assert!(baseline.errors.is_empty(), "{:?}", baseline.errors);
+        assert_eq!(
+            baseline.data.into_json().unwrap()["notes"]["items"][0]["restricted"],
+            "Secret"
+        );
+        for arguments in [
+            r#"filter: {restricted_eq: "Secret"}"#,
+            "sort: [{field: restricted}]",
+        ] {
+            let response = query(
+                "platform_admin",
+                policy,
+                &format!("{{ notes({arguments}) {{ count }} }}"),
+            )
+            .await;
+            let response: Value = serde_json::to_value(response).unwrap();
+            // The immutable backend rejects predicates; this proves the shared
+            // field boundary authorized the request and reached storage.
+            assert_eq!(
+                response["errors"][0]["extensions"]["code"], "INTERNAL_ERROR",
+                "{response}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graphql_matching_principal_fences_still_deny_field_queries() {
+    let policy = r#"forbid(principal in Forge::Group::"manager", action == Action::"ReadFieldNote_restricted", resource);"#;
+    let response = query(
+        "manager",
+        policy,
+        "{ notes(sort: [{field: restricted}]) { count } }",
+    )
+    .await;
+    let response: Value = serde_json::to_value(response).unwrap();
     assert_eq!(
         response["errors"][0]["extensions"]["code"], "FORBIDDEN",
         "{response}"

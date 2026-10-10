@@ -28,6 +28,14 @@ use tokio::sync::oneshot;
 use tower::ServiceExt;
 
 async fn fixture(role: &str, custom_policy: &str) -> Router {
+    fixture_with_claims(role, custom_policy, Default::default()).await
+}
+
+async fn fixture_with_claims(
+    role: &str,
+    custom_policy: &str,
+    custom: std::collections::HashMap<String, Value>,
+) -> Router {
     let schemas = schema_forge_dsl::parse(
         r#"
         @export(formats: [csv], bundle_files: false, max_rows: 100)
@@ -71,7 +79,18 @@ async fn fixture(role: &str, custom_policy: &str) -> Router {
             &schemas,
             Some(policies.path()),
             RoleRanks::empty(),
-            PrincipalClaimMappings::default(),
+            PrincipalClaimMappings::from_config(&BTreeMap::from([(
+                "suspended".into(),
+                schema_forge_acton::authz::principal_claims::PrincipalClaimConfigEntry {
+                    claim: None,
+                    claim_type:
+                        schema_forge_acton::authz::principal_claims::PrincipalClaimType::Bool,
+                    required: false,
+                    default: None,
+                    source: None,
+                },
+            )]))
+            .unwrap(),
         )
         .unwrap(),
     ));
@@ -112,7 +131,7 @@ async fn fixture(role: &str, custom_policy: &str) -> Router {
             aud: None,
             email: None,
             username: None,
-            custom: Default::default(),
+            custom,
         }))
         .with_state(service.state().clone())
 }
@@ -395,4 +414,176 @@ async fn export_job_execution_reauthorizes_its_filter_before_storage() {
     .await;
     assert!(matches!(result, Err(ForgeError::Forbidden { message })
         if message == "Not authorized to filter this field."));
+}
+
+async fn assert_readable_custom_fence(policy: &str) {
+    let app = fixture("platform_admin", policy).await;
+    let (status, baseline) = request(&app, "?fields=restricted&resolve=false", None).await;
+    assert_eq!(status, StatusCode::OK, "{policy}: {baseline}");
+    assert_eq!(
+        baseline["entities"][0]["fields"]["restricted"],
+        "Restricted secret"
+    );
+    for query in [
+        "?restricted=Ada&limit=0&count=false",
+        "?restricted__eq=Ada&limit=0&count=false",
+        "?sort=restricted&limit=0&count=false",
+    ] {
+        let (status, response) = request(&app, query, None).await;
+        assert_eq!(status, StatusCode::OK, "{policy}, {query}: {response}");
+    }
+    for body in [
+        json!({"filter":{"op":"startswith","field":"restricted","value":"A"},"limit":0,"count":false}),
+        json!({"sort":[{"field":"restricted","order":"desc"}],"limit":0,"count":false}),
+    ] {
+        let (status, response) = request(&app, "", Some(body)).await;
+        assert_eq!(status, StatusCode::OK, "{policy}: {response}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nonmatching_principal_fence_preserves_readable_queries() {
+    assert_readable_custom_fence(
+        r#"forbid(principal in Forge::Group::"restricted", action, resource);"#,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn principal_only_condition_preserves_readable_queries() {
+    assert_readable_custom_fence(
+        r#"forbid(principal, action, resource) when { principal has suspended && principal.suspended };"#,
+    ).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nonmatching_principal_scopes_can_exclude_record_dependent_fences() {
+    for principal in [
+        r#"principal == Forge::Principal::"other""#,
+        r#"principal in Forge::Group::"restricted""#,
+        r#"principal is Forge::Principal in Forge::Group::"restricted""#,
+    ] {
+        let policy = format!(
+            "forbid({principal}, action, resource is Note) when {{ !context.resource_is_placeholder && resource has restricted }};"
+        );
+        assert_readable_custom_fence(&policy).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn constant_field_forbids_still_deny_matching_callers() {
+    for policy in [
+        r#"forbid(principal in Forge::Group::"manager", action == Action::"ReadFieldNote_restricted", resource);"#,
+        r#"forbid(principal == Forge::Principal::"reader", action == Action::"ReadFieldNote_restricted", resource);"#,
+        r#"forbid(principal, action == Action::"ReadFieldNote_restricted", resource) when { principal has suspended && principal.suspended };"#,
+    ] {
+        let app = fixture_with_claims(
+            "manager",
+            policy,
+            [("suspended".into(), json!(true))].into(),
+        )
+        .await;
+        let (status, baseline) = request(&app, "?resolve=false", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(baseline["entities"][0]["fields"]
+            .get("restricted")
+            .is_none());
+        assert_denied(&app, "?restricted=Ada&limit=0&count=false", None).await;
+        assert_denied(&app, "", Some(json!({"sort":[{"field":"restricted"}]}))).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn principal_only_custom_permits_can_grant_query_field_access() {
+    let policy = r#"
+        permit(principal in Forge::Group::"member", action == Action::"ReadFieldNote_restricted", resource is Note)
+        when { principal.role_rank == 0 && principal.roles.contains("member") };
+    "#;
+    let app = fixture("member", policy).await;
+    let (status, baseline) = request(&app, "?resolve=false", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        baseline["entities"][0]["fields"]["restricted"],
+        "Restricted secret"
+    );
+    for body in [
+        json!({"filter":{"op":"eq","field":"restricted","value":"A"},"limit":0,"count":false}),
+        json!({"sort":[{"field":"restricted"}],"limit":0,"count":false}),
+    ] {
+        let (status, response) = request(&app, "", Some(body)).await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nested_record_context_and_entity_literal_reads_still_fail_closed() {
+    for policy in [
+        r#"forbid(principal, action == Action::"ReadFieldNote_restricted", resource is Note)
+            when { principal.role_rank < 0 || (resource has restricted && resource.restricted == "Secret") };"#,
+        r#"forbid(principal, action == Action::"ReadFieldNote_restricted", resource is Note)
+            when { if principal.role_rank < 0 then false else !context.resource_is_placeholder };"#,
+        r#"forbid(principal, action == Action::"ReadFieldNote_restricted", resource is Note)
+            when { Note::"_any" has restricted && Note::"_any".restricted == "Secret" };"#,
+        r#"forbid(principal, action == Action::"ReadFieldNote_restricted", resource == Note::"_any");"#,
+    ] {
+        let app = fixture("platform_admin", policy).await;
+        assert_denied(&app, "?restricted=Ada&limit=0&count=false", None).await;
+        assert_denied(&app, "?sort=restricted&limit=0&count=false", None).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_acceptance_uses_the_same_request_specific_field_proof() {
+    for policy in [
+        r#"forbid(principal in Forge::Group::"restricted", action, resource);"#,
+        r#"forbid(principal, action, resource) when { principal has suspended && principal.suspended };"#,
+    ] {
+        let app = fixture("platform_admin", policy).await;
+        for asynchronous in [false, true] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/schemas/Note/entities/export")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({
+                                "format":"csv", "async":asynchronous,
+                                "filter":{"op":"eq", "field":"restricted", "value":"A"}
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            // This limited fixture has no export rate limiter. Reaching that
+            // independent gate proves the safe filter passed authorization.
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "internal_error");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reflexive_principal_membership_cannot_skip_record_dependent_fences() {
+    for principal in [
+        r#"principal in Forge::Principal::"reader""#,
+        r#"principal is Forge::Principal in Forge::Principal::"reader""#,
+    ] {
+        let policy = format!(
+            "forbid({principal}, action == Action::\"ReadFieldNote_restricted\", resource is Note) when {{ !context.resource_is_placeholder }};"
+        );
+        let app = fixture("manager", &policy).await;
+        let (status, baseline) = request(&app, "?resolve=false", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(baseline["entities"][0]["fields"]
+            .get("restricted")
+            .is_none());
+        assert_denied(&app, "?restricted=Ada&limit=0&count=false", None).await;
+        assert_denied(&app, "?sort=restricted&limit=0&count=false", None).await;
+    }
 }

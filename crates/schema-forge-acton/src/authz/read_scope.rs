@@ -1,21 +1,24 @@
 //! Conservative proof for delegating generated Read authorization to storage.
 //!
 //! Policy IDs and annotations are not evidence: applicable policy ASTs must
-//! exactly match generated rules, and the captured Cedar schema must accept the
-//! complete family of row shapes certified by the backend.
+//! exactly match generated rules for Read-scope delegation. Field predicates may
+//! additionally use custom rules proven record-independent for the caller. The
+//! captured Cedar schema must accept every certified concrete row shape.
 
 use std::collections::{HashMap, HashSet};
 
 use acton_service::middleware::Claims;
 use cedar_policy::{
-    ActionConstraint, Entities, EntityUid, Policy, PolicySet, ResourceConstraint,
-    RestrictedExpression,
+    ActionConstraint, Entities, EntityUid, Policy, PolicySet, PrincipalConstraint,
+    ResourceConstraint, RestrictedExpression,
 };
 use schema_forge_backend::{auth::CedarReadScope, TenantRef};
 use schema_forge_core::types::{Cardinality, FieldType, SchemaDefinition};
 
 use super::{
-    adapters::{action_entity_uid, build_resource_placeholder},
+    adapters::{
+        action_entity_uid, build_principal_entities, build_resource_placeholder, principal_uid,
+    },
     namespace::ActionVerb,
     PolicyStoreSnapshot,
 };
@@ -57,21 +60,167 @@ pub(crate) fn generated_read_scope(
     }
 }
 
-/// Certify field reads without inspecting synthetic placeholder attributes.
-/// Applicable custom policies require record evaluation and cannot safely be
-/// delegated to a storage predicate or ordering expression.
-pub(crate) fn generated_field_read_is_record_independent(
+/// Certify field reads for this principal without inspecting synthetic record
+/// attributes. Generated rules must remain intact; additional matching policies
+/// must have record-invariant scopes and supported record-independent conditions.
+pub(crate) fn field_read_is_record_independent(
     snapshot: &PolicyStoreSnapshot,
     schema: &SchemaDefinition,
     field_name: &str,
+    claims: Option<&Claims>,
 ) -> bool {
-    let Ok(action) = super::namespace::field_read_action_uid(schema.name.as_str(), field_name)
+    compatible_resource_shape(snapshot, schema)
+        && field_policy_independence_proof(snapshot, schema, field_name, claims).is_some()
+}
+
+fn field_policy_independence_proof(
+    snapshot: &PolicyStoreSnapshot,
+    schema: &SchemaDefinition,
+    field_name: &str,
+    claims: Option<&Claims>,
+) -> Option<()> {
+    let action = super::namespace::field_read_action_uid(schema.name.as_str(), field_name)
         .parse::<EntityUid>()
-    else {
+        .ok()?;
+    let actions = snapshot.schema.action_entities().ok()?;
+    if actions.ancestors(&action)?.next().is_some() {
+        return None;
+    }
+    let (principal, entities) = match claims {
+        Some(claims) => (
+            principal_uid(claims).ok()?,
+            build_principal_entities(claims, &snapshot.role_ranks, &snapshot.principal_claims)
+                .ok()?,
+        ),
+        None => (
+            format!("{}::\"_anonymous\"", super::namespace::PRINCIPAL_TYPE)
+                .parse::<EntityUid>()
+                .ok()?,
+            Vec::new(),
+        ),
+    };
+    let entities = Entities::from_entities(entities, Some(&snapshot.schema)).ok()?;
+    let generated = generated_policies(schema)?;
+    let mut expected = applicable_asts(&generated, &action, schema)?;
+    for policy in snapshot
+        .policy_set
+        .policies()
+        .filter(|policy| can_apply(policy, &action, schema))
+    {
+        let ast = policy.to_json().ok()?;
+        if let Some(index) = expected.iter().position(|expected| *expected == ast) {
+            expected.swap_remove(index);
+            continue;
+        }
+        if principal_constraint_matches(&policy.principal_constraint(), &principal, &entities)
+            && !custom_field_policy_is_record_independent(policy, &ast)
+        {
+            return None;
+        }
+    }
+    expected.is_empty().then_some(())
+}
+
+fn principal_constraint_matches(
+    constraint: &PrincipalConstraint,
+    principal: &EntityUid,
+    entities: &Entities,
+) -> bool {
+    match constraint {
+        PrincipalConstraint::Any => true,
+        PrincipalConstraint::Eq(uid) => uid == principal,
+        // Cedar `in` is reflexive. Entities::is_ancestor_of only checks
+        // stored ancestors for a present entity in Cedar 4.9.1.
+        PrincipalConstraint::In(uid) => uid == principal || entities.is_ancestor_of(uid, principal),
+        PrincipalConstraint::Is(kind) => principal.type_name() == kind,
+        PrincipalConstraint::IsIn(kind, uid) => {
+            principal.type_name() == kind
+                && (uid == principal || entities.is_ancestor_of(uid, principal))
+        }
+    }
+}
+
+fn custom_field_policy_is_record_independent(policy: &Policy, ast: &serde_json::Value) -> bool {
+    // A record identity or membership head still depends on which record a
+    // predicate would select, even if its conditions only inspect the caller.
+    matches!(
+        policy.resource_constraint(),
+        ResourceConstraint::Any | ResourceConstraint::Is(_)
+    ) && ast
+        .get("conditions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|conditions| {
+            conditions.iter().all(|condition| {
+                matches!(
+                    condition.get("kind").and_then(serde_json::Value::as_str),
+                    Some("when" | "unless")
+                ) && condition
+                    .get("body")
+                    .is_some_and(record_independent_expression)
+            })
+        })
+}
+
+/// A closed whitelist of Cedar EST forms. Never search policy text: strings,
+/// annotations, and attribute names are not variable references. Direct caller
+/// attributes are fixed by the trusted adapter; other dereferences could alias
+/// the current resource even when they contain no `resource` variable.
+fn record_independent_expression(expression: &serde_json::Value) -> bool {
+    let Some(object) = expression.as_object().filter(|object| object.len() == 1) else {
         return false;
     };
-    matches_generated_policies(snapshot, schema, &action).is_some()
-        && compatible_resource_shape(snapshot, schema)
+    let Some((operator, operands)) = object.iter().next() else {
+        return false;
+    };
+    let independent = |key| operands.get(key).is_some_and(record_independent_expression);
+    match operator.as_str() {
+        // Cedar EST Value nodes are literal values, never variable expressions.
+        "Value" => true,
+        "Var" => matches!(operands.as_str(), Some("principal" | "action")),
+        "." | "has" => {
+            operands.get("left") == Some(&serde_json::json!({"Var": "principal"}))
+                && operands
+                    .get("attr")
+                    .is_some_and(serde_json::Value::is_string)
+        }
+        "!" | "neg" | "isEmpty" => independent("arg"),
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||" | "+" | "-" | "*" | "contains"
+        | "containsAll" | "containsAny" => independent("left") && independent("right"),
+        "in" => {
+            // Membership consults entity ancestry. Only the known principal or
+            // action can be its subject; arbitrary entity literals could alias
+            // a concrete resource supplied by a later authorization call.
+            operands
+                .get("left")
+                .and_then(|left| left.get("Var"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|variable| matches!(variable, "principal" | "action"))
+                && independent("left")
+                && independent("right")
+        }
+        "if-then-else" => independent("if") && independent("then") && independent("else"),
+        "Set" => operands
+            .as_array()
+            .is_some_and(|values| values.iter().all(record_independent_expression)),
+        "Record" => operands
+            .as_object()
+            .is_some_and(|values| values.values().all(record_independent_expression)),
+        "like" => independent("left"),
+        // Includes resource/context variables, slots, nested/dynamic entity
+        // attributes, tags, extensions, and future forms we have not proved.
+        _ => false,
+    }
+}
+
+fn generated_policies(schema: &SchemaDefinition) -> Option<PolicySet> {
+    generate_global_policies(&[])
+        .into_iter()
+        .chain(generate_cedar_policies(schema))
+        .map(|policy| policy.cedar_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .parse()
+        .ok()
 }
 
 fn matches_generated_policies(
@@ -84,13 +233,7 @@ fn matches_generated_policies(
     if actions.ancestors(action)?.next().is_some() {
         return None;
     }
-    let source = generate_global_policies(&[])
-        .into_iter()
-        .chain(generate_cedar_policies(schema))
-        .map(|policy| policy.cedar_text)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let expected: PolicySet = source.parse().ok()?;
+    let expected = generated_policies(schema)?;
     let mut expected = applicable_asts(&expected, action, schema)?;
     let actual = applicable_asts(&snapshot.policy_set, action, schema)?;
     if actual.len() != expected.len() {
@@ -319,17 +462,97 @@ mod tests {
     fn field_read_proof_requires_concrete_shape_compatibility() {
         let current = schema(r#"title: text @field_access(read: ["reader"]) enabled: boolean"#);
         let stale = schema(r#"title: text @field_access(read: ["reader"]) enabled: integer"#);
-        assert!(generated_field_read_is_record_independent(
+        assert!(field_read_is_record_independent(
             &snapshot(&current, ""),
             &current,
-            "title"
+            "title",
+            Some(&claims("reader"))
         ));
         // Placeholder omits enabled, so a stale optional type could otherwise
         // allow the predicate while concrete response projection denies it.
-        assert!(!generated_field_read_is_record_independent(
+        assert!(!field_read_is_record_independent(
             &snapshot(&stale, ""),
             &current,
-            "title"
+            "title",
+            Some(&claims("reader"))
+        ));
+    }
+
+    #[test]
+    fn replacing_generated_field_rule_with_safe_custom_rule_cannot_pass_proof() {
+        let schema = schema(r#"title: text @field_access(read: ["reader"])"#);
+        let mut snapshot = snapshot(&schema, "");
+        let action = super::super::namespace::field_read_action_uid("Notice", "title")
+            .parse::<EntityUid>()
+            .unwrap();
+        let generated_id = snapshot
+            .policy_set
+            .policies()
+            .find(|policy| policy.action_constraint() == ActionConstraint::Eq(action.clone()))
+            .unwrap()
+            .id()
+            .clone();
+        snapshot
+            .policy_set
+            .remove_static(generated_id.clone())
+            .unwrap();
+        // Reusing the generated ID and its @id annotation is not a proof that
+        // the generated role contract remains intact.
+        let replacement = Policy::parse(
+            Some(generated_id),
+            r#"
+            @id("forge.notice.field_title_read_reader")
+            permit(principal, action == Action::"ReadFieldNotice_title", resource is Notice)
+            when { principal.role_rank >= 0 };
+        "#,
+        )
+        .unwrap();
+        snapshot.policy_set.add(replacement).unwrap();
+        assert!(!field_read_is_record_independent(
+            &snapshot,
+            &schema,
+            "title",
+            Some(&claims("reader"))
+        ));
+    }
+
+    #[test]
+    fn custom_expression_proof_rejects_aliases_context_and_unknown_forms() {
+        for condition in [
+            r#"principal.link.title == "secret""#,
+            r#"principal.link has title"#,
+            r#"Notice::"some_record" has title"#,
+            r#"Notice::"some_record".title == "secret""#,
+            r#"Notice::"some_record" in principal"#,
+            r#"if principal.role_rank == 0 then true else resource has title"#,
+            r#"principal.role_rank == 0 || !context.resource_is_placeholder"#,
+        ] {
+            let policy: Policy =
+                format!("forbid(principal, action, resource) when {{ {condition} }};")
+                    .parse()
+                    .unwrap();
+            assert!(
+                !custom_field_policy_is_record_independent(&policy, &policy.to_json().unwrap()),
+                "{condition}"
+            );
+        }
+        assert!(!record_independent_expression(&serde_json::json!({
+            "futureOperator": {"arg": {"Var": "principal"}}
+        })));
+    }
+
+    #[test]
+    fn custom_expression_proof_distinguishes_literals_from_variable_references() {
+        let policy: Policy = r#"
+            @id("resource.context.resource_is_placeholder")
+            forbid(principal, action, resource is Notice)
+            when { principal.id == "resource" || principal.roles.contains("context") };
+        "#
+        .parse()
+        .unwrap();
+        assert!(custom_field_policy_is_record_independent(
+            &policy,
+            &policy.to_json().unwrap()
         ));
     }
 

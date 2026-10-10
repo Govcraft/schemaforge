@@ -7,6 +7,17 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-10-10
+
+### Fixed
+
+- Restore filtering and sorting on readable `@field_access` fields when
+  custom Cedar policies can be proven independent of the concrete record for
+  the current caller. Principal-scoped fences that cannot match the caller
+  and principal-only conditions no longer disable these queries. Policies
+  that could hide field values based on the record still fail closed before
+  storage evaluates filters, sorts, counts, or exports.
+
 ## [0.52.0] - 2026-10-10
 
 ### Added
