@@ -336,3 +336,63 @@ async fn sync_and_async_export_filters_cannot_probe_redacted_fields() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn export_job_execution_reauthorizes_its_filter_before_storage() {
+    use schema_forge_acton::routes::export::{prepare_export, ExportContext};
+    use schema_forge_acton::ForgeError;
+
+    let schema = schema_forge_dsl::parse(
+        r#"@access(read: ["member"]) schema Note {
+            secret: text @field_access(read: ["manager"])
+        }"#,
+    )
+    .unwrap()
+    .remove(0);
+    let store = Arc::new(PolicyStore::new(
+        PolicyStoreSnapshot::from_schemas(
+            std::slice::from_ref(&schema),
+            None,
+            RoleRanks::empty(),
+            PrincipalClaimMappings::default(),
+        )
+        .unwrap(),
+    ));
+    let service = ServiceBuilder::new()
+        .with_config(Config::<SchemaForgeConfig>::default())
+        .with_actor::<ForgeActor>()
+        .build();
+    let forge = service.state().actor::<ForgeActor>().unwrap();
+    // Deliberately leave storage uninitialized: the job must reject its now
+    // unreadable field before asking the actor to execute a backend query.
+    let claims = Claims {
+        sub: "user:reader".into(),
+        roles: vec!["member".into()],
+        perms: vec![],
+        exp: 9_999_999_999,
+        iat: None,
+        jti: None,
+        iss: None,
+        aud: None,
+        email: None,
+        username: None,
+        custom: Default::default(),
+    };
+    let context = ExportContext {
+        forge: &forge,
+        claims: Some(&claims),
+        tenant_config: &None,
+        policy_store: &store,
+        record_access_policy: &None,
+    };
+    let result = prepare_export(
+        &context,
+        &schema,
+        Some(&json!({"op":"startswith","field":"secret","value":"s"})),
+        None,
+        100,
+    )
+    .await;
+    assert!(matches!(result, Err(ForgeError::Forbidden { message })
+        if message == "Not authorized to filter this field."));
+}
