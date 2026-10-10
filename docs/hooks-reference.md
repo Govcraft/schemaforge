@@ -430,6 +430,8 @@ either side independently.
 | `operation` | `string` | 1 | System — current operation name |
 | `user_id` | `optional string` | 2 | System — authenticated user's subject claim |
 | `entity_id` | `optional string` | 3 | System — entity id (absent on create) |
+| `changed_fields` | `repeated string` | 4 | System, `AfterChangeRequest` only |
+| `previous` | `map<string, google.protobuf.Value>` | 5 | System, `AfterChangeRequest` only |
 | *schema field* | *mapped type* | 100+ | One per declared schema field |
 
 Schema fields start at tag 100 so system fields stay stable as your
