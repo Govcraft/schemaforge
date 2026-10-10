@@ -11,6 +11,98 @@ async fn null_filters_stable_pages_and_enum_migrations() {
     contract::exercise(&backend).await;
 }
 
+#[tokio::test]
+async fn prefix_filters_execute_with_escaped_values_and_filtered_counts() {
+    use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
+    use schema_forge_core::{
+        migration::DiffEngine,
+        query::{FieldPath, Filter, Query, SortOrder},
+        types::*,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let backend = schema_forge_surrealdb::test_support::connect("prefix", "prefix")
+        .await
+        .unwrap();
+    let schema = SchemaDefinition::new(
+        SchemaId::new(),
+        SchemaName::new("PrefixQuery").unwrap(),
+        vec![FieldDefinition::new(
+            FieldName::new("title").unwrap(),
+            FieldType::Text(TextConstraints::unconstrained()),
+        )],
+        vec![],
+    )
+    .unwrap();
+    backend
+        .apply_schema_change(
+            &schema.name,
+            &DiffEngine::create_new(&schema).steps,
+            Some(&schema),
+        )
+        .await
+        .unwrap();
+    for title in [
+        "Ada",
+        "Adam",
+        "Bea",
+        "O'Neil",
+        "O'Neal",
+        "OBrien",
+        r"Path\one",
+        r"Path\two",
+        "Path/three",
+    ] {
+        backend
+            .create(&Entity::new(
+                schema.name.clone(),
+                BTreeMap::from([("title".into(), DynamicValue::Text(title.into()))]),
+            ))
+            .await
+            .unwrap();
+    }
+    for (prefix, expected) in [
+        ("A", vec!["Ada", "Adam"]),
+        ("O'", vec!["O'Neal", "O'Neil"]),
+        (r"Path\", vec![r"Path\one", r"Path\two"]),
+        ("missing", vec![]),
+    ] {
+        let result = backend
+            .query(
+                &Query::new(schema.id.clone())
+                    .with_filter(Filter::starts_with(FieldPath::single("title"), prefix)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.total_count, Some(expected.len()), "{prefix}");
+        let titles: BTreeSet<_> = result
+            .entities
+            .iter()
+            .map(|entity| match entity.field("title") {
+                Some(DynamicValue::Text(title)) => title.as_str(),
+                other => panic!("unexpected title: {other:?}"),
+            })
+            .collect();
+        assert_eq!(titles, expected.into_iter().collect(), "{prefix}");
+    }
+    let page = backend
+        .query(
+            &Query::new(schema.id)
+                .with_filter(Filter::starts_with(FieldPath::single("title"), "A"))
+                .with_sort(FieldPath::single("title"), SortOrder::Ascending)
+                .with_limit(1)
+                .with_offset(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.total_count, Some(2));
+    assert_eq!(page.entities.len(), 1);
+    assert_eq!(
+        page.entities[0].field("title"),
+        Some(&DynamicValue::Text("Adam".into()))
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn competing_clients_cannot_both_replace_the_same_snapshot() {
     use schema_forge_backend::{Entity, EntityStore, SchemaBackend};
