@@ -339,6 +339,7 @@ edition = "2021"
 # bare `tonic::transport::Server`: nothing would authenticate the caller.
 acton-service = {{ version = "{SCAFFOLD_ACTON_SERVICE_VERSION}", features = ["grpc", "tls"] }}
 prost = "0.14"
+prost-types = "0.14.4"
 tokio = {{ version = "1", features = ["full"] }}
 tonic = "0.14"
 tonic-prost = "0.14"
@@ -576,12 +577,55 @@ struct ProtoField {
     repeated: bool,
 }
 
+/// Keep system metadata separate from legitimately named schema fields.
+fn change_metadata_names(fields: &[ProtoField]) -> (String, String) {
+    let unique = |base: &str| {
+        let mut name = base.to_string();
+        let mut suffix = 2;
+        while fields
+            .iter()
+            .any(|field| proto_json_name(&field.name) == proto_json_name(&name))
+        {
+            name = format!("schemaforge_{base}_{suffix}");
+            suffix += 1;
+        }
+        name
+    };
+    (unique("changed_fields"), unique("previous"))
+}
+
+fn proto_json_name(name: &str) -> String {
+    let mut capitalize = false;
+    name.chars()
+        .filter_map(|character| {
+            if character == '_' {
+                capitalize = true;
+                None
+            } else {
+                let character = if capitalize {
+                    character.to_ascii_uppercase()
+                } else {
+                    character
+                };
+                capitalize = false;
+                Some(character)
+            }
+        })
+        .collect()
+}
+
 fn render_proto(h: &SchemaHooks) -> Result<String, CliError> {
     let scalar_fields = scalar_proto_fields(&h.schema)?;
 
     let mut s = String::new();
     s.push_str("syntax = \"proto3\";\n\n");
     s.push_str(&format!("package {};\n\n", h.proto_package));
+    if h.events
+        .iter()
+        .any(|(event, _)| *event == HookEvent::AfterChange)
+    {
+        s.push_str("import \"google/protobuf/struct.proto\";\n\n");
+    }
     s.push_str(&format!(
         "// Generated from schema `{}`. Re-run `schema-forge hooks generate`\n",
         h.name
@@ -605,6 +649,13 @@ fn render_proto(h: &SchemaHooks) -> Result<String, CliError> {
         s.push_str("  string operation = 1;\n");
         s.push_str("  optional string user_id = 2;\n");
         s.push_str("  optional string entity_id = 3;\n");
+        if *event == HookEvent::AfterChange {
+            let (changed_fields, previous) = change_metadata_names(&scalar_fields);
+            s.push_str(&format!("  repeated string {changed_fields} = 4;\n"));
+            s.push_str(&format!(
+                "  map<string, google.protobuf.Value> {previous} = 5;\n"
+            ));
+        }
         let mut tag = 100;
         if is_file_event(*event) {
             // File-specific shape: entity-level scalars are omitted because file
@@ -926,6 +977,15 @@ fn render_prompt(h: &SchemaHooks, event: HookEvent, intent: &str) -> Result<Stri
     s.push_str("| operation | string | yes (system) |\n");
     s.push_str("| user_id | optional string | no (system) |\n");
     s.push_str("| entity_id | optional string | no (system) |\n");
+    if event == HookEvent::AfterChange {
+        let (changed_fields, previous) = change_metadata_names(&scalar_fields);
+        s.push_str(&format!(
+            "| {changed_fields} | repeated string | no (system) |\n"
+        ));
+        s.push_str(&format!(
+            "| {previous} | map<string, google.protobuf.Value> | no (system) |\n"
+        ));
+    }
     for f in &scalar_fields {
         let ty_display = if f.repeated {
             format!("repeated {}", f.proto_type)
@@ -938,6 +998,10 @@ fn render_prompt(h: &SchemaHooks, event: HookEvent, intent: &str) -> Result<Stri
             ty = ty_display,
             req = if f.required { "yes" } else { "no" },
         ));
+    }
+    if event == HookEvent::AfterChange {
+        let (changed_fields, previous) = change_metadata_names(&scalar_fields);
+        s.push_str(&format!("\nFor successful updates and patches, `{changed_fields}` lists the fields whose persisted values changed, including modifications by before hooks and rules. `{previous}` contains only changed fields that existed before the write, preserving explicit null values. Newly added fields have no previous entry. Both collections are empty on create and no-op writes. Decide whether to act from this request alone. Protobuf numbers are doubles; integers outside [-2^53, 2^53] are decimal strings to preserve their value.\n"));
     }
     s.push_str("\n## Response fields\n\n");
     s.push_str("- `abort_reason: optional string` — set to abort the operation.\n");
@@ -1465,6 +1529,26 @@ mod tests {
         Cardinality, EnumVariants, FieldDefinition, FieldName, FieldType, IntegerConstraints,
         SchemaDefinition, SchemaId, SchemaName, TextConstraints,
     };
+
+    #[test]
+    fn change_metadata_names_avoid_proto_json_collisions() {
+        let fields = ["changedFields", "schemaforge_changed_fields_2", "previous"]
+            .into_iter()
+            .map(|name| ProtoField {
+                name: name.into(),
+                proto_type: "string",
+                required: false,
+                repeated: false,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            change_metadata_names(&fields),
+            (
+                "schemaforge_changed_fields_3".into(),
+                "schemaforge_previous_2".into(),
+            )
+        );
+    }
 
     fn field(name: &str, ft: FieldType) -> FieldDefinition {
         FieldDefinition::new(FieldName::new(name).unwrap(), ft)
