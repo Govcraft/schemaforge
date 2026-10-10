@@ -343,8 +343,7 @@ pub(crate) fn authorize_query_field(
     field_name: &str,
 ) -> Result<AuthzDecision, AuthzError> {
     let snapshot = store.current();
-    if !super::read_scope::generated_field_read_is_record_independent(&snapshot, schema, field_name)
-    {
+    if !super::read_scope::field_read_is_record_independent(&snapshot, schema, field_name, claims) {
         return Err(AuthzError::Request(
             "field readability requires concrete record authorization".into(),
         ));
