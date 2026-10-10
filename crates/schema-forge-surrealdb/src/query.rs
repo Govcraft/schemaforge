@@ -160,7 +160,7 @@ pub fn filter_to_surql_with_schema(filter: &Filter, schema: Option<&SchemaDefini
         }
         Filter::StartsWith { path, value } => {
             format!(
-                "string::startsWith({}, '{}')",
+                "string::starts_with({}, '{}')",
                 field_path_to_surql(path),
                 escape_surql_string(value)
             )
@@ -427,7 +427,7 @@ mod tests {
         let sql = query_to_surql(&q, "Contact");
         assert_eq!(
             sql,
-            "SELECT * FROM Contact WHERE string::startsWith(name, 'J');"
+            "SELECT * FROM Contact WHERE string::starts_with(name, 'J');"
         );
     }
 

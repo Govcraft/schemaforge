@@ -7,7 +7,7 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
-## [0.52.1] - 2026-10-10
+## [0.52.2] - 2026-10-10
 
 ### Fixed
 
@@ -17,6 +17,8 @@ is pre-1.0; breaking changes bump the **minor** version per
   and principal-only conditions no longer disable these queries. Policies
   that could hide field values based on the record still fail closed before
   storage evaluates filters, sorts, counts, or exports.
+- Generate SurrealDB prefix filters with the supported `string::starts_with`
+  function, preventing backend parse failures and 502 responses.
 
 ## [0.52.0] - 2026-10-10
 

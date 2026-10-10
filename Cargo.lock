@@ -6829,7 +6829,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.52.1"
+version = "0.52.2"
 dependencies = [
  "acton-service",
  "assert_cmd",
@@ -6972,7 +6972,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-surrealdb"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "chrono",
  "schema-forge-backend",
