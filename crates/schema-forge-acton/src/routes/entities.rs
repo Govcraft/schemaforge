@@ -25,7 +25,7 @@ use crate::access::{
     inject_audit_columns_on_create, inject_audit_columns_on_update, inject_owner_on_create,
     inject_tenant_on_create, inject_tenant_scope, schema_permissions, stamp_root_tenant,
     strip_owner_on_update, strip_tenant_on_update, AccessAction, EntityPermissions,
-    FieldFilterDirection, OptionalClaims, SchemaPermissions,
+    FieldFilterDirection, OptionalClaims, QueryTenantScope, SchemaPermissions,
 };
 use crate::actor::ForgeActor;
 use crate::authz::{authorize, namespace::ActionVerb};
@@ -1554,6 +1554,24 @@ fn coerce_json_filter_value(
     }
 }
 
+async fn fetch_query_tenant_scope(
+    forge: &acton_service::prelude::ActorHandle,
+    claims: Option<&Claims>,
+    schema: &SchemaDefinition,
+) -> Result<QueryTenantScope, ForgeError> {
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetTenantConfig {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    Ok(QueryTenantScope::from_request(
+        claims,
+        &ask_forge(rx).await?,
+        schema,
+    ))
+}
+
 /// Shared collection query boundary: validate caller paths before storage can
 /// expose a hidden value through membership, count, or ordering. Related target
 /// policies are not evaluated by
@@ -1563,6 +1581,7 @@ pub(crate) fn authorize_query_path(
     claims: Option<&Claims>,
     schema: &SchemaDefinition,
     path: &FieldPath,
+    scope: &QueryTenantScope,
 ) -> Result<(), ForgeError> {
     let denied = || ForgeError::Forbidden {
         message: "Not authorized to filter this field.".into(),
@@ -1580,8 +1599,14 @@ pub(crate) fn authorize_query_path(
         })?;
     if field.is_hidden()
         || (field.field_access().is_some()
-            && !crate::authz::engine::authorize_query_field(store, claims, schema, path.root())
-                .is_ok_and(|decision| decision.is_allow()))
+            && !crate::authz::engine::authorize_query_field(
+                store,
+                claims,
+                schema,
+                path.root(),
+                scope,
+            )
+            .is_ok_and(|decision| decision.is_allow()))
     {
         return Err(denied());
     }
@@ -1594,15 +1619,16 @@ pub(crate) fn authorize_query_filter(
     claims: Option<&Claims>,
     schema: &SchemaDefinition,
     filter: &Filter,
+    scope: &QueryTenantScope,
 ) -> Result<(), ForgeError> {
     match filter {
         Filter::And { filters } | Filter::Or { filters } => {
             for filter in filters {
-                authorize_query_filter(store, claims, schema, filter)?;
+                authorize_query_filter(store, claims, schema, filter, scope)?;
             }
             Ok(())
         }
-        Filter::Not { filter } => authorize_query_filter(store, claims, schema, filter),
+        Filter::Not { filter } => authorize_query_filter(store, claims, schema, filter, scope),
         Filter::Eq { path, .. }
         | Filter::Ne { path, .. }
         | Filter::Gt { path, .. }
@@ -1611,7 +1637,7 @@ pub(crate) fn authorize_query_filter(
         | Filter::Lte { path, .. }
         | Filter::Contains { path, .. }
         | Filter::StartsWith { path, .. }
-        | Filter::In { path, .. } => authorize_query_path(store, claims, schema, path),
+        | Filter::In { path, .. } => authorize_query_path(store, claims, schema, path, scope),
         _ => Err(ForgeError::Forbidden {
             message: "Not authorized to filter this field.".into(),
         }),
@@ -1756,7 +1782,8 @@ async fn execute_entity_query(
         .actor::<ForgeActor>()
         .expect("ForgeActor not registered");
 
-    // Inject tenant scope filter
+    // Resolve configuration for related display/collection queries. The primary
+    // query already carries the exact scope used for its field preflight.
     let (tx, rx) = oneshot::channel();
     forge
         .send(GetTenantConfig {
@@ -1764,7 +1791,6 @@ async fn execute_entity_query(
         })
         .await;
     let tenant_config = ask_forge(rx).await?;
-    inject_tenant_scope(query, claims, &tenant_config, schema_def);
 
     // NOTE: the client `fields` projection is deliberately NOT pushed into the
     // DB query as a column selection. Record-level authorization
@@ -3242,6 +3268,8 @@ pub async fn list_entities(
         }
     }
 
+    let query_scope = fetch_query_tenant_scope(&forge, claims.as_ref(), &schema_def).await?;
+
     // Build a query
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
 
@@ -3268,7 +3296,13 @@ pub async fn list_entities(
         let sort_clauses =
             parse_sort_param(sort_str).map_err(|e| ForgeError::InvalidQuery { message: e })?;
         for (path, order) in sort_clauses {
-            authorize_query_path(&policy_store, claims.as_ref(), &schema_def, &path)?;
+            authorize_query_path(
+                &policy_store,
+                claims.as_ref(),
+                &schema_def,
+                &path,
+                &query_scope,
+            )?;
             query = query.with_sort(path, order);
         }
     }
@@ -3279,7 +3313,7 @@ pub async fn list_entities(
             message: errors.join("; "),
         })?;
     if let Some(f) = &filter {
-        authorize_query_filter(&policy_store, claims.as_ref(), &schema_def, f)?;
+        authorize_query_filter(&policy_store, claims.as_ref(), &schema_def, f, &query_scope)?;
         validate_filter(f, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
             message: errors
                 .iter()
@@ -3307,6 +3341,7 @@ pub async fn list_entities(
     // ?count=false opts out of the default-on total_count computation.
     let include_total = parse_truthy_flag(&params, "count");
 
+    query_scope.inject(&mut query);
     let response = execute_entity_query(
         &state,
         &schema_def,
@@ -3401,6 +3436,8 @@ pub async fn query_entities(
         }
     }
 
+    let query_scope = fetch_query_tenant_scope(&forge, claims.as_ref(), &schema_def).await?;
+
     // Build a query
     let mut query = schema_forge_core::query::Query::new(schema_def.id.clone());
 
@@ -3417,7 +3454,13 @@ pub async fn query_entities(
             let path = FieldPath::parse(&clause.field).map_err(|e| ForgeError::InvalidQuery {
                 message: format!("invalid sort field '{}': {e}", clause.field),
             })?;
-            authorize_query_path(&policy_store, claims.as_ref(), &schema_def, &path)?;
+            authorize_query_path(
+                &policy_store,
+                claims.as_ref(),
+                &schema_def,
+                &path,
+                &query_scope,
+            )?;
             let order = match clause.order.as_deref() {
                 Some("desc") => SortOrder::Descending,
                 Some("asc") | None => SortOrder::Ascending,
@@ -3438,7 +3481,13 @@ pub async fn query_entities(
                 message: errors.join("; "),
             }
         })?;
-        authorize_query_filter(&policy_store, claims.as_ref(), &schema_def, &filter)?;
+        authorize_query_filter(
+            &policy_store,
+            claims.as_ref(),
+            &schema_def,
+            &filter,
+            &query_scope,
+        )?;
         validate_filter(&filter, &schema_def).map_err(|errors| ForgeError::InvalidQuery {
             message: errors
                 .iter()
@@ -3472,6 +3521,7 @@ pub async fn query_entities(
         None
     };
 
+    query_scope.inject(&mut query);
     let response = execute_entity_query(
         &state,
         &schema_def,

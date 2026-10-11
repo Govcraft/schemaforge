@@ -9,15 +9,16 @@ use std::collections::{HashMap, HashSet};
 
 use acton_service::middleware::Claims;
 use cedar_policy::{
-    ActionConstraint, Entities, EntityUid, Policy, PolicySet, PrincipalConstraint,
-    ResourceConstraint, RestrictedExpression,
+    ActionConstraint, Authorizer, Context, Decision, Entities, EntityUid, Policy, PolicySet,
+    PrincipalConstraint, Request, ResourceConstraint, RestrictedExpression,
 };
 use schema_forge_backend::{auth::CedarReadScope, TenantRef};
 use schema_forge_core::types::{Cardinality, FieldType, SchemaDefinition};
 
 use super::{
     adapters::{
-        action_entity_uid, build_principal_entities, build_resource_placeholder, principal_uid,
+        action_entity_uid, build_principal_entities, build_query_resource_placeholder,
+        build_resource_placeholder, principal_uid,
     },
     namespace::ActionVerb,
     PolicyStoreSnapshot,
@@ -68,9 +69,11 @@ pub(crate) fn field_read_is_record_independent(
     schema: &SchemaDefinition,
     field_name: &str,
     claims: Option<&Claims>,
+    tenant: Option<&str>,
 ) -> bool {
-    compatible_resource_shape(snapshot, schema)
-        && field_policy_independence_proof(snapshot, schema, field_name, claims).is_some()
+    tenant.is_none_or(canonical_identity)
+        && compatible_resource_shape(snapshot, schema)
+        && field_policy_independence_proof(snapshot, schema, field_name, claims, tenant).is_some()
 }
 
 fn field_policy_independence_proof(
@@ -78,6 +81,7 @@ fn field_policy_independence_proof(
     schema: &SchemaDefinition,
     field_name: &str,
     claims: Option<&Claims>,
+    tenant: Option<&str>,
 ) -> Option<()> {
     let action = super::namespace::field_read_action_uid(schema.name.as_str(), field_name)
         .parse::<EntityUid>()
@@ -99,7 +103,28 @@ fn field_policy_independence_proof(
             Vec::new(),
         ),
     };
+    let mut entities = entities;
+    let resource = build_query_resource_placeholder(schema, tenant).ok()?;
+    let resource_uid = resource.uid();
+    entities.push(resource);
     let entities = Entities::from_entities(entities, Some(&snapshot.schema)).ok()?;
+    let request = Request::new(
+        principal.clone(),
+        action.clone(),
+        resource_uid,
+        Context::from_pairs([(
+            "resource_is_placeholder".into(),
+            RestrictedExpression::new_bool(true),
+        )])
+        .ok()?,
+        Some(&snapshot.schema),
+    )
+    .ok()?;
+    let condition_context = ConditionContext {
+        request,
+        entities,
+        tenant_bound: tenant.is_some(),
+    };
     let generated = generated_policies(schema)?;
     let mut expected = applicable_asts(&generated, &action, schema)?;
     for policy in snapshot
@@ -112,8 +137,11 @@ fn field_policy_independence_proof(
             expected.swap_remove(index);
             continue;
         }
-        if principal_constraint_matches(&policy.principal_constraint(), &principal, &entities)
-            && !custom_field_policy_is_record_independent(policy, &ast)
+        if principal_constraint_matches(
+            &policy.principal_constraint(),
+            &principal,
+            &condition_context.entities,
+        ) && !custom_field_policy_is_constant(policy, &ast, &condition_context)
         {
             return None;
         }
@@ -140,9 +168,11 @@ fn principal_constraint_matches(
     }
 }
 
-fn custom_field_policy_is_record_independent(policy: &Policy, ast: &serde_json::Value) -> bool {
-    // A record identity or membership head still depends on which record a
-    // predicate would select, even if its conditions only inspect the caller.
+fn custom_field_policy_is_constant(
+    policy: &Policy,
+    ast: &serde_json::Value,
+    context: &ConditionContext,
+) -> bool {
     matches!(
         policy.resource_constraint(),
         ResourceConstraint::Any | ResourceConstraint::Is(_)
@@ -154,11 +184,157 @@ fn custom_field_policy_is_record_independent(policy: &Policy, ast: &serde_json::
                 matches!(
                     condition.get("kind").and_then(serde_json::Value::as_str),
                     Some("when" | "unless")
-                ) && condition
-                    .get("body")
-                    .is_some_and(record_independent_expression)
+                ) && condition.get("body").is_some_and(|body| {
+                    matches!(
+                        prove_condition(body, context, context.tenant_bound),
+                        Some(ConditionTruth::Known(_))
+                    )
+                })
             })
         })
+}
+
+struct ConditionContext {
+    request: Request,
+    entities: Entities,
+    tenant_bound: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConditionTruth {
+    Known(bool),
+    /// A total Boolean, whose value may vary between unscoped tenants.
+    Unknown,
+}
+
+/// Evaluate only expressions certified independent, or tenant expressions whose
+/// presence is bound by enforcement. A single diagnostic error invalidates proof.
+fn evaluate_boolean(expression: &serde_json::Value, context: &ConditionContext) -> Option<bool> {
+    let policy = Policy::from_json(
+        None,
+        serde_json::json!({
+            "effect": "permit", "principal": {"op": "All"}, "action": {"op": "All"},
+            "resource": {"op": "All"}, "conditions": [{"kind": "when", "body": expression}]
+        }),
+    )
+    .ok()?;
+    let mut policies = PolicySet::new();
+    policies.add(policy).ok()?;
+    let response = Authorizer::new().is_authorized(&context.request, &policies, &context.entities);
+    if response.diagnostics().errors().next().is_some() {
+        return None;
+    }
+    Some(response.decision() == Decision::Allow)
+}
+
+fn tenant_attribute(expression: &serde_json::Value, operator: &str) -> bool {
+    expression.get(operator).is_some_and(|operands| {
+        operands.get("left") == Some(&serde_json::json!({"Var": "resource"}))
+            && operands.get("attr").and_then(serde_json::Value::as_str) == Some("_tenant")
+    })
+}
+
+fn guarantees_tenant_presence(expression: &serde_json::Value) -> bool {
+    tenant_attribute(expression, "has")
+        || expression.get("&&").is_some_and(|operands| {
+            ["left", "right"]
+                .iter()
+                .any(|key| operands.get(key).is_some_and(guarantees_tenant_presence))
+        })
+}
+
+/// Ordered, totality-aware Boolean reasoning. `error && false` is an error in
+/// Cedar; only total left operands can be absorbed by a constant right operand.
+fn prove_condition(
+    expression: &serde_json::Value,
+    context: &ConditionContext,
+    tenant_present: bool,
+) -> Option<ConditionTruth> {
+    if record_independent_expression(expression) {
+        return evaluate_boolean(expression, context).map(ConditionTruth::Known);
+    }
+    if tenant_attribute(expression, "has") {
+        return Some(if tenant_present {
+            ConditionTruth::Known(true)
+        } else {
+            ConditionTruth::Unknown
+        });
+    }
+    let object = expression.as_object().filter(|object| object.len() == 1)?;
+    let (operator, operands) = object.iter().next()?;
+    let left = || operands.get("left");
+    let right = || operands.get("right");
+    match operator.as_str() {
+        "==" | "!=" => {
+            let (left, right) = (left()?, right()?);
+            let tenant_and_literal = |tenant, literal: &serde_json::Value| {
+                tenant_attribute(tenant, ".")
+                    && literal
+                        .get("Value")
+                        .and_then(|value| value.get("__entity"))
+                        .is_some()
+            };
+            if !tenant_present
+                || !(tenant_and_literal(left, right) || tenant_and_literal(right, left))
+            {
+                return None;
+            }
+            if context.tenant_bound {
+                evaluate_boolean(expression, context).map(ConditionTruth::Known)
+            } else {
+                Some(ConditionTruth::Unknown)
+            }
+        }
+        "&&" | "||" => {
+            let (left, right) = (left()?, right()?);
+            let left_truth = prove_condition(left, context, tenant_present)?;
+            let conjunction = operator == "&&";
+            if left_truth == ConditionTruth::Known(!conjunction) {
+                return Some(left_truth);
+            }
+            let right_truth = prove_condition(
+                right,
+                context,
+                tenant_present || (conjunction && guarantees_tenant_presence(left)),
+            )?;
+            match (left_truth, right_truth) {
+                (ConditionTruth::Known(_), right) => Some(right),
+                (_, ConditionTruth::Known(value)) if value != conjunction => {
+                    Some(ConditionTruth::Known(value))
+                }
+                _ => Some(ConditionTruth::Unknown),
+            }
+        }
+        "!" => match prove_condition(operands.get("arg")?, context, tenant_present)? {
+            ConditionTruth::Known(value) => Some(ConditionTruth::Known(!value)),
+            ConditionTruth::Unknown => Some(ConditionTruth::Unknown),
+        },
+        "if-then-else" => {
+            let condition = operands.get("if")?;
+            match prove_condition(condition, context, tenant_present)? {
+                ConditionTruth::Known(value) => prove_condition(
+                    operands.get(if value { "then" } else { "else" })?,
+                    context,
+                    tenant_present || (value && guarantees_tenant_presence(condition)),
+                ),
+                ConditionTruth::Unknown => {
+                    let then_truth = prove_condition(
+                        operands.get("then")?,
+                        context,
+                        tenant_present || guarantees_tenant_presence(condition),
+                    )?;
+                    let else_truth =
+                        prove_condition(operands.get("else")?, context, tenant_present)?;
+                    Some(if then_truth == else_truth {
+                        then_truth
+                    } else {
+                        ConditionTruth::Unknown
+                    })
+                }
+            }
+        }
+        _ => None,
+    }
 }
 
 /// A closed whitelist of Cedar EST forms. Never search policy text: strings,
@@ -466,7 +642,8 @@ mod tests {
             &snapshot(&current, ""),
             &current,
             "title",
-            Some(&claims("reader"))
+            Some(&claims("reader")),
+            None
         ));
         // Placeholder omits enabled, so a stale optional type could otherwise
         // allow the predicate while concrete response projection denies it.
@@ -474,7 +651,8 @@ mod tests {
             &snapshot(&stale, ""),
             &current,
             "title",
-            Some(&claims("reader"))
+            Some(&claims("reader")),
+            None
         ));
     }
 
@@ -512,8 +690,43 @@ mod tests {
             &snapshot,
             &schema,
             "title",
-            Some(&claims("reader"))
+            Some(&claims("reader")),
+            None
         ));
+    }
+
+    fn test_condition_context(tenant: Option<&str>) -> ConditionContext {
+        test_condition_context_for_role(tenant, "reader")
+    }
+
+    fn test_condition_context_for_role(tenant: Option<&str>, role: &str) -> ConditionContext {
+        let schema = schema("title: text required @field_access(read: [\"reader\"])");
+        let snapshot = snapshot(&schema, "");
+        let reader = claims(role);
+        let resource = build_query_resource_placeholder(&schema, tenant).unwrap();
+        let request = Request::new(
+            principal_uid(&reader).unwrap(),
+            super::super::namespace::field_read_action_uid("Notice", "title")
+                .parse::<EntityUid>()
+                .unwrap(),
+            resource.uid(),
+            Context::from_pairs([(
+                "resource_is_placeholder".into(),
+                RestrictedExpression::new_bool(true),
+            )])
+            .unwrap(),
+            Some(&snapshot.schema),
+        )
+        .unwrap();
+        let mut entities =
+            build_principal_entities(&reader, &snapshot.role_ranks, &snapshot.principal_claims)
+                .unwrap();
+        entities.push(resource);
+        ConditionContext {
+            request,
+            entities: Entities::from_entities(entities, Some(&snapshot.schema)).unwrap(),
+            tenant_bound: tenant.is_some(),
+        }
     }
 
     #[test]
@@ -524,15 +737,19 @@ mod tests {
             r#"Notice::"some_record" has title"#,
             r#"Notice::"some_record".title == "secret""#,
             r#"Notice::"some_record" in principal"#,
-            r#"if principal.role_rank == 0 then true else resource has title"#,
-            r#"principal.role_rank == 0 || !context.resource_is_placeholder"#,
+            r#"if principal.role_rank > 0 then true else resource has title"#,
+            r#"principal.role_rank > 0 || !context.resource_is_placeholder"#,
         ] {
             let policy: Policy =
                 format!("forbid(principal, action, resource) when {{ {condition} }};")
                     .parse()
                     .unwrap();
             assert!(
-                !custom_field_policy_is_record_independent(&policy, &policy.to_json().unwrap()),
+                !custom_field_policy_is_constant(
+                    &policy,
+                    &policy.to_json().unwrap(),
+                    &test_condition_context(None)
+                ),
                 "{condition}"
             );
         }
@@ -550,9 +767,126 @@ mod tests {
         "#
         .parse()
         .unwrap();
-        assert!(custom_field_policy_is_record_independent(
+        assert!(custom_field_policy_is_constant(
             &policy,
-            &policy.to_json().unwrap()
+            &policy.to_json().unwrap(),
+            &test_condition_context(None)
+        ));
+    }
+
+    #[test]
+    fn tenant_boolean_proof_preserves_error_order_and_positive_presence_guards() {
+        let context = test_condition_context(None);
+        for (condition, expected) in [
+            (
+                r#"resource has _tenant && resource._tenant == Forge::Tenant::"shared" && false"#,
+                true,
+            ),
+            (
+                r#"resource._tenant == Forge::Tenant::"shared" && false"#,
+                false,
+            ),
+            (
+                r#"resource has _tenant && resource._tenant == Forge::Tenant::"shared" && principal.missing == "x" && false"#,
+                false,
+            ),
+            (r#"principal.missing == "x" && false"#, false),
+            (r#"false && principal.missing == "x""#, true),
+            (
+                r#"resource has _tenant && resource._tenant == Forge::Tenant::"shared" && false && principal.missing == "x""#,
+                true,
+            ),
+            (
+                r#"resource has _tenant && resource._tenant == Forge::Tenant::"shared" || true"#,
+                true,
+            ),
+            (
+                r#"resource has _tenant && resource._tenant == Forge::Tenant::"shared""#,
+                false,
+            ),
+        ] {
+            let policy: Policy =
+                format!("forbid(principal, action, resource) when {{ {condition} }};")
+                    .parse()
+                    .unwrap();
+            assert_eq!(
+                custom_field_policy_is_constant(&policy, &policy.to_json().unwrap(), &context),
+                expected,
+                "{condition}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_boolean_proofs_agree_with_cedar_across_the_unscoped_tenant_domain() {
+        let conditions = [
+            r#"resource has _tenant && resource._tenant == Forge::Tenant::"shared" && !(principal in Forge::Group::"platform_admin")"#,
+            r#"resource has _tenant && resource._tenant == Forge::Tenant::"shared" || principal in Forge::Group::"platform_admin""#,
+            r#"!(resource has _tenant && resource._tenant == Forge::Tenant::"shared" && principal in Forge::Group::"platform_admin")"#,
+            r#"if resource has _tenant then resource._tenant == Forge::Tenant::"shared" && false else false"#,
+            r#"if resource has _tenant && resource._tenant == Forge::Tenant::"shared" then principal in Forge::Group::"platform_admin" else principal in Forge::Group::"platform_admin""#,
+            r#"if principal in Forge::Group::"platform_admin" then false else resource has _tenant && resource._tenant == Forge::Tenant::"shared" && false"#,
+        ];
+        let mut certified = 0;
+        for role in ["reader", "platform_admin"] {
+            for condition in conditions {
+                let policy: Policy =
+                    format!("permit(principal, action, resource) when {{ {condition} }};")
+                        .parse()
+                        .unwrap();
+                let ast = policy.to_json().unwrap();
+                let body = &ast["conditions"][0]["body"];
+                if let Some(ConditionTruth::Known(expected)) =
+                    prove_condition(body, &test_condition_context_for_role(None, role), false)
+                {
+                    certified += 1;
+                    for tenant in [None, Some("shared"), Some("allowed"), Some("another")] {
+                        assert_eq!(
+                            evaluate_boolean(body, &test_condition_context_for_role(tenant, role)),
+                            Some(expected),
+                            "{role}, {tenant:?}, {condition}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            certified, 9,
+            "the table must exercise accepted proofs, not vacuously skip every case"
+        );
+    }
+
+    #[test]
+    fn tenant_bound_proof_rejects_identity_translation_and_certifies_all_tenant_values() {
+        let schema = schema("title: text required @field_access(read: [\"reader\"])");
+        let snapshot = snapshot(
+            &schema,
+            r#"forbid(principal, action, resource) when { resource has _tenant && resource._tenant == Forge::Tenant::"shared" };"#,
+        );
+        for tenant in ["shared", "allowed"] {
+            assert!(field_read_is_record_independent(
+                &snapshot,
+                &schema,
+                "title",
+                Some(&claims("reader")),
+                Some(tenant)
+            ));
+        }
+        for tenant in ["", "bad\\nidentity", "bad\"identity"] {
+            assert!(!field_read_is_record_independent(
+                &snapshot,
+                &schema,
+                "title",
+                Some(&claims("reader")),
+                Some(tenant)
+            ));
+        }
+        assert!(!field_read_is_record_independent(
+            &snapshot,
+            &schema,
+            "title",
+            Some(&claims("reader")),
+            None
         ));
     }
 

@@ -302,6 +302,15 @@ pub fn build_resource_entity(
 /// infer them from the default values. Concrete resources use false, even when
 /// their stored values happen to equal these defaults.
 pub fn build_resource_placeholder(schema: &SchemaDefinition) -> Result<CedarEntity, AdapterError> {
+    build_query_resource_placeholder(schema, None)
+}
+
+/// A typed query witness; tenant presence is certified by storage confinement.
+/// Parents remain empty, matching the concrete resource adapter.
+pub(crate) fn build_query_resource_placeholder(
+    schema: &SchemaDefinition,
+    tenant: Option<&str>,
+) -> Result<CedarEntity, AdapterError> {
     let raw = format!("{}::\"_any\"", schema.name.as_str());
     let uid = EntityUid::from_str(&raw).map_err(|e| AdapterError::InvalidIdentifier {
         value: raw,
@@ -323,6 +332,18 @@ pub fn build_resource_placeholder(schema: &SchemaDefinition) -> Result<CedarEnti
         }
     }
 
+    if let Some(tenant) = tenant {
+        let raw = format!("{TENANT_TYPE}::\"{tenant}\"");
+        let tenant_uid =
+            EntityUid::from_str(&raw).map_err(|error| AdapterError::InvalidIdentifier {
+                value: raw,
+                detail: error.to_string(),
+            })?;
+        attrs.insert(
+            "_tenant".into(),
+            RestrictedExpression::new_entity_uid(tenant_uid),
+        );
+    }
     CedarEntity::new(uid, attrs, HashSet::new()).map_err(|e| AdapterError::UnrepresentableValue {
         field: format!("placeholder:{}", schema.name.as_str()),
         detail: e.to_string(),

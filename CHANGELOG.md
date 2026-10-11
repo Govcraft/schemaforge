@@ -7,6 +7,17 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.52.3] - 2026-10-11
+
+### Fixed
+
+- Allow filters, sorts, and exports on readable `@field_access` fields when
+  tenant-dependent custom policies can be proved safe for every tenant in the
+  enforced query scope. Account for principal-only Boolean conditions that
+  safely exclude a policy for the caller, including platform administrators.
+  Preserve denials for forbidden tenants, record-dependent field policies,
+  and evaluation errors.
+
 ## [0.52.2] - 2026-10-10
 
 ### Fixed

@@ -353,53 +353,89 @@ pub fn inject_tenant_scope(
     tenant_config: &Option<TenantConfig>,
     schema: &SchemaDefinition,
 ) {
-    if !schema.is_tenanted() {
-        return;
+    QueryTenantScope::from_request(claims, tenant_config, schema).inject(query);
+}
+
+/// Trusted query confinement, captured once for both field proof and storage.
+/// Private fields prevent caller predicates from manufacturing a tenant proof.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct QueryTenantScope {
+    tenant_filter: Option<Filter>,
+    tenant_ids: Vec<String>,
+}
+
+impl QueryTenantScope {
+    pub(crate) fn from_request(
+        claims: Option<&Claims>,
+        tenant_config: &Option<TenantConfig>,
+        schema: &SchemaDefinition,
+    ) -> Self {
+        if !schema.is_tenanted() {
+            return Self::default();
+        }
+        let _config = match tenant_config {
+            Some(c) if c.is_enabled() => c,
+            _ => return Self::default(),
+        };
+        let claims = match claims {
+            Some(c) => c,
+            None => return Self::default(),
+        };
+        if claims.has_role(PLATFORM_ADMIN_ROLE) {
+            return Self::default();
+        }
+        let tenant_chain: Vec<TenantRef> = claims
+            .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
+            .unwrap_or_default();
+        if tenant_chain.is_empty() {
+            return Self::default();
+        }
+        // The Cedar adapter pushes every chain entry into `principal.parents`
+        // so `_tenant in principal` matches any chain entry; the query-time
+        // filter must do the same. The `tenant_scope` middleware has already
+        // narrowed `tenant_chain` to the per-request effective scope (active
+        // leaf + ancestors), so `IN <chain>` here filters by exactly the rows
+        // the policy would also allow.
+        let tenant_values: Vec<DynamicValue> = tenant_chain
+            .iter()
+            .map(|t| DynamicValue::Text(t.entity_id.clone()))
+            .collect();
+        let tenant_field = if is_tenant_root(schema) {
+            "id"
+        } else {
+            "_tenant"
+        };
+        let tenant_filter = if tenant_values.len() == 1 {
+            Filter::eq(
+                FieldPath::single(tenant_field),
+                tenant_values.into_iter().next().unwrap(),
+            )
+        } else {
+            Filter::in_set(FieldPath::single(tenant_field), tenant_values)
+        };
+        Self {
+            tenant_filter: Some(tenant_filter),
+            tenant_ids: tenant_chain
+                .into_iter()
+                .map(|tenant| tenant.entity_id)
+                .collect(),
+        }
     }
-    let _config = match tenant_config {
-        Some(c) if c.is_enabled() => c,
-        _ => return,
-    };
-    let claims = match claims {
-        Some(c) => c,
-        None => return,
-    };
-    if claims.has_role(PLATFORM_ADMIN_ROLE) {
-        return;
+
+    pub(crate) fn bound_tenants(&self) -> Option<&[String]> {
+        self.tenant_filter
+            .as_ref()
+            .map(|_| self.tenant_ids.as_slice())
     }
-    let tenant_chain: Vec<TenantRef> = claims
-        .custom_claim_as::<Vec<TenantRef>>("tenant_chain")
-        .unwrap_or_default();
-    if tenant_chain.is_empty() {
-        return;
+
+    pub(crate) fn inject(&self, query: &mut Query) {
+        if let Some(filter) = &self.tenant_filter {
+            query.filter = Some(match query.filter.take() {
+                Some(existing) => Filter::and(vec![existing, filter.clone()]),
+                None => filter.clone(),
+            });
+        }
     }
-    // The Cedar adapter pushes every chain entry into `principal.parents`
-    // so `_tenant in principal` matches any chain entry; the query-time
-    // filter must do the same. The `tenant_scope` middleware has already
-    // narrowed `tenant_chain` to the per-request effective scope (active
-    // leaf + ancestors), so `IN <chain>` here filters by exactly the rows
-    // the policy would also allow.
-    let tenant_values: Vec<DynamicValue> = tenant_chain
-        .iter()
-        .map(|t| DynamicValue::Text(t.entity_id.clone()))
-        .collect();
-    let tenant_field = if is_tenant_root(schema) {
-        "id"
-    } else {
-        "_tenant"
-    };
-    let tenant_filter = if tenant_values.len() == 1 {
-        Filter::eq(
-            FieldPath::single(tenant_field),
-            tenant_values.into_iter().next().unwrap(),
-        )
-    } else {
-        Filter::in_set(FieldPath::single(tenant_field), tenant_values)
-    };
-    query.filter = Some(match query.filter.take() {
-        Some(existing) => Filter::and(vec![existing, tenant_filter]),
-        None => tenant_filter,
-    });
 }
 
 /// Inject `_tenant` field into entity fields on creation.
@@ -1255,7 +1291,9 @@ mod tests {
         let claims = make_claims_with_tenant(&["member"], "organization_a");
         let config = make_enabled_tenant_config();
         let mut query = Query::new(schema.id.clone());
-        inject_tenant_scope(&mut query, Some(&claims), &config, &schema);
+        let scope = QueryTenantScope::from_request(Some(&claims), &config, &schema);
+        assert!(scope.bound_tenants().is_none());
+        scope.inject(&mut query);
         assert!(query.filter.is_none());
         let mut fields = BTreeMap::new();
         inject_tenant_on_create(&mut fields, Some(&claims), &config, &schema);
