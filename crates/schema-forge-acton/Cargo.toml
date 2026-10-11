@@ -1,6 +1,6 @@
 [package]
 name = "schema-forge-acton"
-version = "0.50.1"
+version = "0.50.2"
 edition = "2021"
 
 [dependencies]
@@ -182,4 +182,8 @@ required-features = ["postgres"]
 
 [[test]]
 name = "entity_get_projection"
+required-features = ["test-surrealdb"]
+
+[[test]]
+name = "tenant_query_field_authorization"
 required-features = ["test-surrealdb"]

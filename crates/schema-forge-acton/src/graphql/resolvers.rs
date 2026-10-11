@@ -9,8 +9,7 @@ use schema_forge_core::types::{DynamicValue, EntityId, SchemaDefinition, SchemaN
 use super::context::ForgeGraphqlContext;
 use super::input_types::filter_input_to_filter;
 use crate::access::{
-    check_schema_access, filter_entity_fields, inject_tenant_scope, AccessAction,
-    FieldFilterDirection,
+    check_schema_access, filter_entity_fields, AccessAction, FieldFilterDirection, QueryTenantScope,
 };
 use crate::authz::{authorize, namespace::ActionVerb};
 use crate::error::ForgeError;
@@ -112,6 +111,8 @@ pub async fn resolve_list_entities<'a>(
     let live_definition = request_schema(gql_ctx, schema_name).await?;
     let schema_def = &live_definition;
     let claims = gql_ctx.claims.as_ref();
+    let query_scope =
+        QueryTenantScope::from_request(claims, &gql_ctx.state.tenant_config, schema_def);
 
     check_schema_access(
         &gql_ctx.state.policy_store,
@@ -144,8 +145,14 @@ pub async fn resolve_list_entities<'a>(
                     message: errors.join("; "),
                 })
             })?;
-        authorize_query_filter(&gql_ctx.state.policy_store, claims, schema_def, &filter)
-            .map_err(forge_error_to_gql)?;
+        authorize_query_filter(
+            &gql_ctx.state.policy_store,
+            claims,
+            schema_def,
+            &filter,
+            &query_scope,
+        )
+        .map_err(forge_error_to_gql)?;
         validate_filter(&filter, schema_def).map_err(|errors| {
             forge_error_to_gql(ForgeError::InvalidQuery {
                 message: errors
@@ -178,6 +185,7 @@ pub async fn resolve_list_entities<'a>(
                             claims,
                             schema_def,
                             &path,
+                            &query_scope,
                         )
                         .map_err(forge_error_to_gql)?;
                         query = query.with_sort(path, order);
@@ -188,7 +196,7 @@ pub async fn resolve_list_entities<'a>(
     }
 
     // Inject tenant scope
-    inject_tenant_scope(&mut query, claims, &gql_ctx.state.tenant_config, schema_def);
+    query_scope.inject(&mut query);
 
     let result = gql_ctx
         .state

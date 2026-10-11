@@ -19,7 +19,7 @@
 //! workbook; ZIP is async-only because the multi-member archive (and any bundled
 //! file blobs) is staged and buffered before upload.
 //!
-//! Tenant injection ([`inject_tenant_scope`]) and per-field read stripping
+//! Tenant injection ([`crate::access::inject_tenant_scope`]) and per-field read stripping
 //! ([`filter_entity_fields`]) run identically to the normal query path, so the
 //! file can never contain a row or a field the caller could not already read one
 //! record at a time. Every request emits the AU-2 exfiltration audit trail
@@ -47,8 +47,8 @@ use tokio::sync::oneshot;
 use tracing::instrument;
 
 use crate::access::{
-    check_export_access, filter_entity_fields, inject_tenant_scope, FieldFilterDirection,
-    OptionalClaims,
+    check_export_access, filter_entity_fields, FieldFilterDirection, OptionalClaims,
+    QueryTenantScope,
 };
 use crate::actor::ForgeActor;
 use crate::config::SchemaForgeConfig;
@@ -373,6 +373,7 @@ fn parse_export_filter(
     claims: Option<&acton_service::middleware::Claims>,
     schema: &SchemaDefinition,
     filter_json: Option<&serde_json::Value>,
+    scope: &QueryTenantScope,
 ) -> Result<Option<schema_forge_core::query::Filter>, ForgeError> {
     filter_json
         .map(|json| {
@@ -382,7 +383,7 @@ fn parse_export_filter(
                         message: errors.join("; "),
                     }
                 })?;
-            crate::routes::entities::authorize_query_filter(store, claims, schema, &filter)?;
+            crate::routes::entities::authorize_query_filter(store, claims, schema, &filter, scope)?;
             validate_filter(&filter, schema).map_err(|errors| ForgeError::InvalidQuery {
                 message: errors
                     .iter()
@@ -508,11 +509,14 @@ pub async fn prepare_export(
         record_access_policy,
     } = ctx;
     let claims = *claims;
+    let query_scope = QueryTenantScope::from_request(claims, tenant_config, schema_def);
 
     // Build the query (an export is a query with no page limit). Cap the read at
     // max_rows + 1 so an over-cap result is detectable without draining the table.
     let mut query = Query::new(schema_def.id.clone()).without_total_count();
-    if let Some(filter) = parse_export_filter(policy_store, claims, schema_def, filter_json)? {
+    if let Some(filter) =
+        parse_export_filter(policy_store, claims, schema_def, filter_json, &query_scope)?
+    {
         query = query.with_filter(filter);
     }
     let probe_limit = usize::try_from(max_rows)
@@ -521,7 +525,7 @@ pub async fn prepare_export(
     query = query.with_limit(probe_limit);
 
     // Same tenant injection as the query path.
-    inject_tenant_scope(&mut query, claims, tenant_config, schema_def);
+    query_scope.inject(&mut query);
 
     // Execute.
     let (tx, rx) = oneshot::channel();
@@ -846,11 +850,20 @@ pub async fn export_entities(
         }
     }
 
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(GetTenantConfig {
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    let tenant_config = ask_forge(rx).await?;
+    let query_scope = QueryTenantScope::from_request(claims.as_ref(), &tenant_config, &schema_def);
     parse_export_filter(
         &policy_store,
         claims.as_ref(),
         &schema_def,
         body.filter.as_ref(),
+        &query_scope,
     )?;
 
     // Per-subject bulk-export rate limit. Export is an exfiltration surface, so a
@@ -898,13 +911,6 @@ pub async fn export_entities(
 
     // Resolve the tenant config + record-access policy once; both the sync and
     // async paths need them, and they are the same inputs the query path uses.
-    let (tx, rx) = oneshot::channel();
-    forge
-        .send(GetTenantConfig {
-            reply: ReplyChannel::new(tx),
-        })
-        .await;
-    let tenant_config = ask_forge(rx).await?;
 
     let (tx, rx) = oneshot::channel();
     forge

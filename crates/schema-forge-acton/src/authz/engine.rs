@@ -21,8 +21,8 @@ use schema_forge_backend::entity::Entity;
 use schema_forge_core::types::SchemaDefinition;
 
 use crate::authz::adapters::{
-    action_entity_uid, build_principal_entities, build_resource_entity, build_resource_placeholder,
-    principal_uid, AdapterError,
+    action_entity_uid, build_principal_entities, build_query_resource_placeholder,
+    build_resource_entity, build_resource_placeholder, principal_uid, AdapterError,
 };
 use crate::authz::namespace::{
     field_read_action_uid, field_write_action_uid, ActionVerb, PRINCIPAL_TYPE,
@@ -341,27 +341,44 @@ pub(crate) fn authorize_query_field(
     claims: Option<&Claims>,
     schema: &SchemaDefinition,
     field_name: &str,
+    scope: &crate::access::QueryTenantScope,
 ) -> Result<AuthzDecision, AuthzError> {
     let snapshot = store.current();
-    if !super::read_scope::field_read_is_record_independent(&snapshot, schema, field_name, claims) {
-        return Err(AuthzError::Request(
-            "field readability requires concrete record authorization".into(),
-        ));
+    let candidates: Vec<_> = match scope.bound_tenants() {
+        Some(tenants) => tenants.iter().map(|tenant| Some(tenant.as_str())).collect(),
+        None => vec![None],
+    };
+    let mut allowed = None;
+    for tenant in candidates {
+        if !super::read_scope::field_read_is_record_independent(
+            &snapshot, schema, field_name, claims, tenant,
+        ) {
+            return Err(AuthzError::Request(
+                "field readability requires concrete record authorization".into(),
+            ));
+        }
+        let decision = authorize_field_resource(
+            Arc::clone(&snapshot),
+            claims,
+            schema,
+            FieldResource::QueryWitness(tenant),
+            field_name,
+            FieldDirection::Read,
+        )?;
+        if !decision.is_allow() {
+            return Ok(decision);
+        }
+        allowed = Some(decision);
     }
-    authorize_field_resource(
-        snapshot,
-        claims,
-        schema,
-        FieldResource::Placeholder,
-        field_name,
-        FieldDirection::Read,
-    )
+    allowed.ok_or_else(|| AuthzError::Request("empty query tenant domain".into()))
 }
 
 enum FieldResource<'a> {
     Complete(&'a Entity),
     Input(&'a Entity),
+    #[cfg(any(feature = "sse", test))]
     Placeholder,
+    QueryWitness(Option<&'a str>),
 }
 
 fn authorize_field_resource(
@@ -399,7 +416,13 @@ fn authorize_field_resource(
     let (resource_entity, complete, resource_is_placeholder) = match resource {
         FieldResource::Complete(entity) => (build_resource_entity(schema, entity)?, true, false),
         FieldResource::Input(entity) => (build_resource_entity(schema, entity)?, false, false),
+        #[cfg(any(feature = "sse", test))]
         FieldResource::Placeholder => (build_resource_placeholder(schema)?, true, true),
+        FieldResource::QueryWitness(tenant) => (
+            build_query_resource_placeholder(schema, tenant)?,
+            true,
+            true,
+        ),
     };
     let resource_uid = resource_entity.uid().clone();
     let mut all_entities = principal_entities;
