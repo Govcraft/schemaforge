@@ -23,23 +23,69 @@ use tokio::sync::{oneshot, Mutex};
 // ReplyChannel — Clone-safe oneshot wrapper
 // ---------------------------------------------------------------------------
 
+type Completion<T> = Box<
+    dyn FnOnce(
+            &T,
+            Option<Arc<dyn crate::state::DynForgeBackend>>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync>>
+        + Send
+        + Sync,
+>;
+struct PendingReply<T> {
+    sender: oneshot::Sender<T>,
+    completion: Option<Completion<T>>,
+}
 /// A single-use reply channel that satisfies `Clone` (required by `ActonMessage`).
 ///
 /// Wraps a `tokio::sync::oneshot::Sender<T>` in `Arc<Mutex<Option<...>>>` so that
 /// `Clone` is trivially implemented (via `Arc::clone`). Only the first call to
 /// [`send`](ReplyChannel::send) delivers the value; subsequent calls are no-ops.
-pub struct ReplyChannel<T>(Arc<Mutex<Option<oneshot::Sender<T>>>>);
+pub struct ReplyChannel<T>(Arc<Mutex<Option<PendingReply<T>>>>);
 
 impl<T> ReplyChannel<T> {
     /// Create a new `ReplyChannel` from a `oneshot::Sender`.
     pub fn new(sender: oneshot::Sender<T>) -> Self {
-        Self(Arc::new(Mutex::new(Some(sender))))
+        Self(Arc::new(Mutex::new(Some(PendingReply {
+            sender,
+            completion: None,
+        }))))
     }
 
     /// Send a value through the channel. Only the first call delivers; subsequent
     /// calls are silently ignored (the sender has already been consumed).
     pub async fn send(self, value: T) {
-        if let Some(sender) = self.0.lock().await.take() {
+        self.send_with_backend(value, None).await;
+    }
+
+    /// Attach actor-owned post-commit work without changing mutation messages.
+    pub(crate) fn with_completion<F, Fut>(sender: oneshot::Sender<T>, completion: F) -> Self
+    where
+        F: FnOnce(&T, Option<Arc<dyn crate::state::DynForgeBackend>>) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: std::future::Future<Output = ()> + Send + Sync + 'static,
+    {
+        Self(Arc::new(Mutex::new(Some(PendingReply {
+            sender,
+            completion: Some(Box::new(move |value, backend| {
+                Box::pin(completion(value, backend))
+            })),
+        }))))
+    }
+
+    /// Run completion even if the HTTP receiver was dropped. Release the
+    /// single-use channel lock before awaiting any application work.
+    pub(crate) async fn send_with_backend(
+        self,
+        value: T,
+        backend: Option<Arc<dyn crate::state::DynForgeBackend>>,
+    ) {
+        let pending = self.0.lock().await.take();
+        if let Some(PendingReply { sender, completion }) = pending {
+            if let Some(completion) = completion {
+                completion(&value, backend).await;
+            }
             let _ = sender.send(value);
         }
     }
@@ -397,4 +443,27 @@ pub struct ProcessCreateIntent {
             schema_forge_backend::create_intent::CreateIntentError,
         >,
     >,
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn completion_runs_once_even_when_the_receiver_is_gone() {
+        let completed = Arc::new(AtomicUsize::new(0));
+        let observed = completed.clone();
+        let (tx, rx) = oneshot::channel();
+        let reply = ReplyChannel::with_completion(tx, move |value: &usize, _| {
+            let value = *value;
+            async move {
+                observed.fetch_add(value, Ordering::SeqCst);
+            }
+        });
+        drop(rx);
+        let second = reply.clone();
+        tokio::join!(reply.send(1), second.send(1));
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+    }
 }

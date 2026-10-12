@@ -55,6 +55,7 @@ enum Behavior {
     Abort(String),
     /// Pass-through (no modifications).
     PassThrough,
+    Delay(Duration),
 }
 
 #[tonic::async_trait]
@@ -85,6 +86,10 @@ impl TranslationHooks for TestService {
                 tags: Vec::new(),
             },
             Behavior::PassThrough => TranslationBeforeChangeResponse::default(),
+            Behavior::Delay(delay) => {
+                tokio::time::sleep(*delay).await;
+                TranslationBeforeChangeResponse::default()
+            }
         };
         Ok(Response::new(resp))
     }
@@ -93,6 +98,9 @@ impl TranslationHooks for TestService {
         &self,
         request: Request<TranslationAfterChangeRequest>,
     ) -> Result<Response<TranslationAfterChangeResponse>, Status> {
+        if let Behavior::Delay(delay) = self.behavior {
+            tokio::time::sleep(delay).await;
+        }
         *self.after_count.lock().await += 1;
         self.after_requests.lock().await.push(request.into_inner());
         Ok(Response::new(TranslationAfterChangeResponse::default()))
@@ -452,4 +460,42 @@ async fn unreachable_endpoint_yields_unavailable() {
         ),
         "unexpected error: {err:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_default_timeout_and_binding_override_apply_to_both_hook_directions() {
+    let (addr, _svc, shutdown) = spawn_server(Behavior::Delay(Duration::from_millis(100))).await;
+    let mut before = binding(addr, HookEvent::BeforeChange);
+    let mut after = binding(addr, HookEvent::AfterChange);
+    before.timeout_ms = None;
+    after.timeout_ms = None;
+    let cfg = HooksConfig {
+        enabled: true,
+        allow_plaintext: true,
+        default_timeout_ms: 20,
+        bindings: vec![before.clone(), after.clone()],
+        ..Default::default()
+    };
+    let dispatcher = TonicHookDispatcher::new(&cfg, TonicDispatcherConfig::default()).unwrap();
+    // Tonic's transport deadline and the outer timer race. Either reports
+    // failure; the old hard-coded 30s default would let both calls succeed.
+    assert!(dispatcher
+        .call_before(&before, invocation(HookEvent::BeforeChange))
+        .await
+        .is_err());
+    assert!(dispatcher
+        .call_after(&after, invocation(HookEvent::AfterChange))
+        .await
+        .is_err());
+    before.timeout_ms = Some(1000);
+    after.timeout_ms = Some(1000);
+    dispatcher
+        .call_before(&before, invocation(HookEvent::BeforeChange))
+        .await
+        .unwrap();
+    dispatcher
+        .call_after(&after, invocation(HookEvent::AfterChange))
+        .await
+        .unwrap();
+    shutdown.send(()).unwrap();
 }

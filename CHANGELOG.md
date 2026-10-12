@@ -7,6 +7,27 @@ is pre-1.0; breaking changes bump the **minor** version per
 
 ## [Unreleased]
 
+## [0.52.4] - 2026-10-11
+
+### Fixed
+
+- Honor `schema_forge.hooks.default_timeout_ms` for gRPC bindings without a
+  per-binding timeout, and enforce `max_concurrent_async` for background hooks.
+  Zero concurrency is treated as one to keep queued hooks making progress.
+- Await entity mutation replies without the former five-second deadline.
+  Slow creates, updates, patches, and deletes now acknowledge their actual
+  storage result. A lost actor reply returns 504 `mutation_outcome_unknown`,
+  directing callers to reconcile before retrying.
+- Run committed mutation hooks, audit events, and webhook dispatch from actor
+  completion, including after HTTP cancellation. Resolve runtime webhook
+  subscriptions directly through storage to avoid actor self-deadlocks.
+  Create-intent audit completion also survives cancelled requests.
+
+### Upgrade notes
+
+- Restart the service to apply hook concurrency configuration. Post-commit
+  dispatch remains process-local; this release does not add durable delivery.
+
 ## [0.52.3] - 2026-10-11
 
 ### Fixed

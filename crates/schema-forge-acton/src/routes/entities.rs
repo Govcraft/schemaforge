@@ -48,7 +48,7 @@ use std::sync::Arc;
 #[cfg(feature = "sse")]
 use crate::events::Notification;
 #[cfg(not(feature = "sse"))]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Notification;
 
 pub(super) fn mutation_notification(
@@ -140,6 +140,160 @@ pub(super) async fn ask_forge<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeErr
         .map_err(|_| ForgeError::Internal {
             message: "forge actor unavailable".into(),
         })
+}
+
+/// Mutations have no reply deadline: submission cannot cancel storage work.
+/// A lost reply is an unknown outcome, never evidence of a failed write.
+pub(super) async fn await_mutation<T>(rx: oneshot::Receiver<T>) -> Result<T, ForgeError> {
+    rx.await.map_err(|_| ForgeError::MutationOutcomeUnknown)
+}
+
+/// Actor-owned commit effects. Do not ask ForgeActor from this completion:
+/// its scheduler may be draining a batch or a serialized SSE mutation.
+struct MutationCompletion {
+    after_hook: Option<oneshot::Sender<DispatchHook>>,
+    state: AppState<SchemaForgeConfig>,
+    schema: SchemaDefinition,
+    claims: Option<Claims>,
+    headers: HeaderMap,
+    dispatcher: Option<Arc<dyn HookDispatcher>>,
+    hooks: HooksConfig,
+    operation: &'static str,
+    before: Option<BTreeMap<String, DynamicValue>>,
+    notification: Notification,
+}
+
+impl MutationCompletion {
+    /// Acquire bounded hook queue admission in the HTTP route, before storage
+    /// starts. Commit completion only fills this one-shot payload, so a full
+    /// hook mailbox can never make ForgeActor wait on hooks calling it back.
+    async fn prepare(mut self) -> Self {
+        let event = if self.operation == "delete" {
+            HookEvent::AfterDelete
+        } else {
+            HookEvent::AfterChange
+        };
+        if self.dispatcher.is_some()
+            && self.hooks.enabled
+            && self
+                .hooks
+                .binding_for(self.schema.name.as_str(), event)
+                .is_some()
+        {
+            if let Some(actor) = self.state.actor::<HookDispatchActor>() {
+                let (sender, receiver) = oneshot::channel();
+                self.after_hook = Some(sender);
+                actor
+                    .send(crate::hooks::dispatch_actor::DeferredHook::new(
+                        self.hooks.clone(),
+                        receiver,
+                    ))
+                    .await;
+            } else {
+                tracing::warn!(schema = %self.schema.name, "HookDispatchActor not registered; after-hook dispatch dropped");
+            }
+        }
+        self
+    }
+
+    async fn finish(self, entity: Entity, backend: Option<Arc<dyn crate::state::DynForgeBackend>>) {
+        let deleting = self.operation == "delete";
+        let event_type = if deleting {
+            "deleted"
+        } else if self.operation == "create" {
+            "created"
+        } else {
+            "updated"
+        };
+        if let (Some(dispatcher), Some(sender)) = (self.dispatcher, self.after_hook) {
+            complete_after_hook(
+                sender,
+                AfterHookCtx {
+                    dispatcher,
+                    hooks_config: self.hooks,
+                    schema: self.schema.clone(),
+                    event: if deleting {
+                        HookEvent::AfterDelete
+                    } else {
+                        HookEvent::AfterChange
+                    },
+                    operation: self.operation.into(),
+                    user_id: self.claims.as_ref().map(|c| c.sub.clone()),
+                },
+                &entity,
+                self.before.as_ref(),
+            );
+        }
+        let changed_fields = match &self.before {
+            Some(before) => changed_field_names(before, &entity.fields),
+            None if deleting => Vec::new(),
+            None => entity.fields.keys().cloned().collect(),
+        };
+        let audit_name = match self.operation {
+            "create" => "forge.entity.created",
+            "patch" => "forge.entity.patched",
+            "delete" => "forge.entity.deleted",
+            _ => "forge.entity.updated",
+        };
+        super::audit::log_forge_event(
+            &self.state,
+            self.claims.as_ref(),
+            &self.headers,
+            audit_name,
+            if deleting {
+                acton_service::audit::AuditSeverity::Warning
+            } else {
+                acton_service::audit::AuditSeverity::Informational
+            },
+            serde_json::json!({
+                "schema": self.schema.name.as_str(),
+                "entity_id": entity.id.as_str(),
+                "changed_fields": changed_fields,
+                "user": self.claims.as_ref().map(|c| &c.sub),
+            }),
+        )
+        .await;
+        let event = notification_event(&self.notification, || {
+            let subject = self.claims.as_ref().map(|c| c.sub.as_str());
+            match event_type {
+                "created" => {
+                    crate::webhook::WebhookEvent::from_create(&self.schema, &entity, subject)
+                }
+                "deleted" => crate::webhook::WebhookEvent::from_delete(
+                    self.schema.name.as_str(),
+                    entity.id.as_str(),
+                    subject,
+                ),
+                _ => crate::webhook::WebhookEvent::from_update(&self.schema, &entity, subject),
+            }
+        });
+        dispatch_webhook(
+            &self.state,
+            &self.schema,
+            event,
+            event_type,
+            backend.as_deref(),
+        )
+        .await;
+    }
+}
+
+fn mutation_reply<T, F>(
+    sender: oneshot::Sender<T>,
+    completion: MutationCompletion,
+    snapshot: F,
+) -> ReplyChannel<T>
+where
+    F: FnOnce(&T) -> Option<Entity> + Send + Sync + 'static,
+{
+    ReplyChannel::with_completion(sender, move |result, backend| {
+        let entity = snapshot(result);
+        sync_wrapper::SyncFuture::new(async move {
+            if let Some(entity) = entity {
+                completion.finish(entity, backend).await;
+            }
+        })
+    })
 }
 
 /// Crate-internal accessor for the compiled Cedar policy store, reused by the
@@ -330,8 +484,9 @@ async fn persist_entity_update(
     forge: &acton_service::prelude::ActorHandle,
     entity: Entity,
     expected: Option<EntityRevision>,
-    notification: &Notification,
+    completion: MutationCompletion,
 ) -> Result<(Entity, Option<EntityRevision>), ForgeError> {
+    let notification = completion.notification.clone();
     if let Some(expected) = expected {
         let (tx, rx) = oneshot::channel();
         send_mutation(
@@ -339,12 +494,19 @@ async fn persist_entity_update(
             UpdateEntityIf {
                 entity,
                 expected,
-                reply: ReplyChannel::new(tx),
+                reply: mutation_reply(
+                    tx,
+                    completion,
+                    |result: &Result<
+                        schema_forge_backend::conditional::VersionedEntity,
+                        ConditionalMutationError,
+                    >| result.as_ref().ok().map(|v| v.entity.clone()),
+                ),
             },
-            notification,
+            &notification,
         )
         .await?;
-        let result = ask_forge(rx).await?.map_err(conditional_error)?;
+        let result = await_mutation(rx).await?.map_err(conditional_error)?;
         Ok((result.entity, Some(result.revision)))
     } else {
         let (tx, rx) = oneshot::channel();
@@ -352,12 +514,18 @@ async fn persist_entity_update(
             forge,
             UpdateEntity {
                 entity,
-                reply: ReplyChannel::new(tx),
+                reply: mutation_reply(
+                    tx,
+                    completion,
+                    |result: &Result<Entity, schema_forge_backend::BackendError>| {
+                        result.as_ref().ok().cloned()
+                    },
+                ),
             },
-            notification,
+            &notification,
         )
         .await?;
-        Ok((ask_forge(rx).await?.map_err(ForgeError::from)?, None))
+        Ok((await_mutation(rx).await?.map_err(ForgeError::from)?, None))
     }
 }
 
@@ -481,7 +649,7 @@ async fn apply_read_hook(
     apply_before_hook(ctx, fields).await
 }
 
-/// Owned parameter bundle for [`fire_after_hook`].
+/// Owned parameter bundle for [`complete_after_hook`].
 ///
 /// Everything is owned and `'static`-friendly because the dispatch is
 /// handed off to [`HookDispatchActor`] for asynchronous execution under
@@ -495,16 +663,10 @@ struct AfterHookCtx {
     user_id: Option<String>,
 }
 
-/// Queue an `after_*` hook on the [`HookDispatchActor`] for detached
-/// dispatch. Honors the global `enabled` flag and per-schema binding
-/// presence inside the actor, so this helper itself is unconditional
-/// once a dispatcher exists.
-///
-/// Detached, not "fire-and-forget": the dispatch runs under acton
-/// supervision so in-flight hook calls participate in graceful shutdown
-/// and the runtime's concurrency budget.
-async fn fire_after_hook(
-    state: &AppState<SchemaForgeConfig>,
+/// Fill a hook reservation after successful storage completion. Sending a
+/// oneshot payload cannot wait for actor mailbox capacity.
+fn complete_after_hook(
+    sender: oneshot::Sender<DispatchHook>,
     ctx: AfterHookCtx,
     entity: &Entity,
     before: Option<&BTreeMap<String, DynamicValue>>,
@@ -522,28 +684,15 @@ async fn fire_after_hook(
     if let Some(before) = before {
         invocation = invocation.with_changes(before);
     }
-    match state.actor::<HookDispatchActor>() {
-        Some(actor) => {
-            actor
-                .send(DispatchHook {
-                    invocation,
-                    dispatcher: Some(ctx.dispatcher),
-                    config: ctx.hooks_config,
-                })
-                .await;
-        }
-        None => {
-            // Defensive fallback: if the dispatch actor wasn't wired
-            // into the service (e.g. a test that forgot to register
-            // it), log and drop. We deliberately do **not** spawn here
-            // — doing so would reintroduce the orphaned-task anti-
-            // pattern that issue #11 was filed against.
-            tracing::warn!(
-                schema = %invocation.schema,
-                event = ?invocation.event,
-                "HookDispatchActor not registered; after-hook dispatch dropped"
-            );
-        }
+    if sender
+        .send(DispatchHook {
+            invocation,
+            dispatcher: Some(ctx.dispatcher),
+            config: ctx.hooks_config,
+        })
+        .is_err()
+    {
+        tracing::warn!("reserved after-hook receiver unavailable after commit");
     }
 }
 
@@ -559,6 +708,7 @@ async fn dispatch_webhook(
     schema_def: &SchemaDefinition,
     event: crate::webhook::WebhookEvent,
     event_type: &str,
+    backend: Option<&dyn crate::state::DynForgeBackend>,
 ) {
     let webhook_config = &state.config().custom.schema_forge.webhooks;
     let dispatcher = match crate::webhook::get_dispatcher(webhook_config) {
@@ -591,63 +741,76 @@ async fn dispatch_webhook(
         });
     }
 
-    // 2. Runtime subscriptions via actor query
-    let forge = match state.actor::<ForgeActor>() {
-        Some(f) => f,
-        None => {
-            if !subs.is_empty() {
-                dispatcher.dispatch(event, subs);
-            }
-            return;
-        }
-    };
-
-    // Query WebhookSubscription entities for this schema
-    let (tx, rx) = oneshot::channel();
-    let ws_schema = SchemaName::new("WebhookSubscription");
-    if let Ok(ws_name) = ws_schema {
-        // First get the WebhookSubscription schema def to get its ID
-        let (stx, srx) = oneshot::channel();
-        forge
-            .send(crate::messages::GetSchema {
-                name: ws_name.as_str().to_string(),
-                reply: ReplyChannel::new(stx),
-            })
-            .await;
-
-        if let Ok(Some(ws_def)) = ask_forge(srx).await {
-            use schema_forge_core::query::{FieldPath, Filter, Query as CoreQuery};
-            let query = CoreQuery::new(ws_def.id.clone()).with_filter(Filter::and(vec![
-                Filter::eq(
-                    FieldPath::parse("target_schema").unwrap(),
-                    DynamicValue::Text(schema_def.name.as_str().to_string()),
-                ),
-                Filter::eq(
-                    FieldPath::parse("active").unwrap(),
-                    DynamicValue::Boolean(true),
-                ),
-            ]));
-
-            forge
-                .send(QueryEntities {
-                    query,
-                    reply: ReplyChannel::new(tx),
-                })
-                .await;
-
-            if let Ok(Ok(result)) = ask_forge(rx).await {
-                for entity in &result.entities {
-                    if let Some(sub) = resolve_runtime_subscription(entity, event_type) {
-                        subs.push(sub);
-                    }
-                }
-            }
-        }
+    match runtime_webhook_subscriptions(state, schema_def, backend).await {
+        Ok(result) => subs.extend(
+            result
+                .entities
+                .iter()
+                .filter_map(|entity| resolve_runtime_subscription(entity, event_type)),
+        ),
+        Err(error) => tracing::warn!(%error, "runtime webhook subscriptions unavailable"),
     }
 
     if !subs.is_empty() {
         dispatcher.dispatch(event, subs);
     }
+}
+
+/// Committed writes query storage directly to avoid a back-edge into their
+/// actor. A no-op PATCH runs in the route and may use the actor safely.
+async fn runtime_webhook_subscriptions(
+    state: &AppState<SchemaForgeConfig>,
+    schema: &SchemaDefinition,
+    backend: Option<&dyn crate::state::DynForgeBackend>,
+) -> Result<schema_forge_backend::entity::QueryResult, ForgeError> {
+    let name = SchemaName::new("WebhookSubscription").map_err(|error| ForgeError::Internal {
+        message: error.to_string(),
+    })?;
+    let forge = state.actor::<ForgeActor>();
+    let definition = if let Some(backend) = backend {
+        backend
+            .load_schema_metadata(&name)
+            .await
+            .map_err(ForgeError::from)?
+    } else if let Some(forge) = &forge {
+        let (tx, rx) = oneshot::channel();
+        forge
+            .send(GetSchema {
+                name: name.to_string(),
+                reply: ReplyChannel::new(tx),
+            })
+            .await;
+        ask_forge(rx).await?
+    } else {
+        None
+    };
+    let Some(definition) = definition else {
+        return Ok(schema_forge_backend::entity::QueryResult::new(vec![], None));
+    };
+    let query = schema_forge_core::query::Query::new(definition.id).with_filter(Filter::and(vec![
+        Filter::eq(
+            FieldPath::parse("target_schema").unwrap(),
+            DynamicValue::Text(schema.name.to_string()),
+        ),
+        Filter::eq(
+            FieldPath::parse("active").unwrap(),
+            DynamicValue::Boolean(true),
+        ),
+    ]));
+    if let Some(backend) = backend {
+        return backend.query(&query).await.map_err(ForgeError::from);
+    }
+    let forge = forge.ok_or_else(|| ForgeError::Internal {
+        message: "ForgeActor not registered".into(),
+    })?;
+    let (tx, rx) = oneshot::channel();
+    forge
+        .send(QueryEntities {
+            query,
+            reply: ReplyChannel::new(tx),
+        })
+        .await;
+    ask_forge(rx).await?.map_err(ForgeError::from)
 }
 
 /// Convert a WebhookSubscription entity to a ResolvedSubscription.
@@ -3108,13 +3271,15 @@ pub async fn create_entity(
         super::creator_membership::prepare(&state, &schema_def, &entity, claims.as_ref()).await?;
 
     if let Some(intent) = intent {
-        let changed_fields: Vec<_> = entity.fields.keys().cloned().collect();
-        let receipt =
-            super::create_intents::commit(&state, intent, entity, claims.as_ref(), membership)
-                .await?;
-        if receipt.created {
-            super::audit::log_forge_event(&state, claims.as_ref(), &headers, "forge.entity.created", acton_service::audit::AuditSeverity::Informational, serde_json::json!({"schema":schema,"intent_id":receipt.id.as_str(),"changed_fields":changed_fields,"entity_id":receipt.entity_id.as_ref().map(|id|id.as_str())})).await;
-        }
+        let receipt = super::create_intents::commit(
+            &state,
+            intent,
+            entity,
+            claims.as_ref(),
+            membership,
+            &headers,
+        )
+        .await?;
         return super::create_intents::result(state, schema, claims, headers, &receipt).await;
     }
 
@@ -3126,35 +3291,32 @@ pub async fn create_entity(
         CreateEntity {
             entity,
             membership,
-            reply: ReplyChannel::new(tx),
+            reply: mutation_reply(
+                tx,
+                MutationCompletion {
+                    after_hook: None,
+                    state: state.clone(),
+                    schema: schema_def.clone(),
+                    claims: claims.clone(),
+                    headers,
+                    dispatcher: hook_dispatcher,
+                    hooks: hooks_config,
+                    operation: "create",
+                    before: None,
+                    notification: notification.clone(),
+                }
+                .prepare()
+                .await,
+                |result: &Result<Entity, schema_forge_backend::BackendError>| {
+                    result.as_ref().ok().cloned()
+                },
+            ),
         },
         &notification,
     )
     .await?;
-    let mut created = ask_forge(rx).await?.map_err(ForgeError::from)?;
+    let mut created = await_mutation(rx).await?.map_err(ForgeError::from)?;
 
-    // after_change hook — handed off to HookDispatchActor for
-    // detached dispatch under acton supervision.
-    if let Some(dispatcher) = hook_dispatcher.clone() {
-        fire_after_hook(
-            &state,
-            AfterHookCtx {
-                dispatcher,
-                hooks_config: hooks_config.clone(),
-                schema: schema_def.clone(),
-                event: HookEvent::AfterChange,
-                operation: "create".to_string(),
-                user_id: claims.as_ref().map(|c| c.sub.clone()),
-            },
-            &created,
-            None,
-        )
-        .await;
-    }
-
-    let changed_fields: Vec<_> = created.fields.keys().cloned().collect();
-
-    // Filter read-restricted fields from response
     filter_entity_fields(
         &policy_store,
         &mut created,
@@ -3162,32 +3324,6 @@ pub async fn create_entity(
         claims.as_ref(),
         FieldFilterDirection::Read,
     );
-
-    // Audit: entity created
-    super::audit::log_forge_event(
-        &state,
-        claims.as_ref(),
-        &headers,
-        "forge.entity.created",
-        acton_service::audit::AuditSeverity::Informational,
-        serde_json::json!({
-            "schema": schema,
-            "entity_id": created.id.as_str(),
-            "changed_fields": changed_fields,
-            "user": claims.as_ref().map(|c| &c.sub),
-        }),
-    )
-    .await;
-
-    // Webhook: fire notifications
-    let webhook_event = notification_event(&notification, || {
-        crate::webhook::WebhookEvent::from_create(
-            &schema_def,
-            &created,
-            claims.as_ref().map(|c| c.sub.as_str()),
-        )
-    });
-    dispatch_webhook(&state, &schema_def, webhook_event, "created").await;
 
     Ok((
         StatusCode::CREATED,
@@ -4074,30 +4210,22 @@ pub async fn update_entity(
     check_field_constraints(&schema_def, &entity.fields)?;
 
     let notification = mutation_notification(claims.as_ref(), None);
-    let (mut updated, revision) =
-        persist_entity_update(&forge, entity, expected, &notification).await?;
-    let changed_fields = changed_field_names(&existing.fields, &updated.fields);
-
-    // after_change hook — handed off to HookDispatchActor for
-    // detached dispatch under acton supervision.
-    if let Some(dispatcher) = hook_dispatcher.clone() {
-        fire_after_hook(
-            &state,
-            AfterHookCtx {
-                dispatcher,
-                hooks_config: hooks_config.clone(),
-                schema: schema_def.clone(),
-                event: HookEvent::AfterChange,
-                operation: "update".to_string(),
-                user_id: claims.as_ref().map(|c| c.sub.clone()),
-            },
-            &updated,
-            Some(&existing.fields),
-        )
-        .await;
+    let completion = MutationCompletion {
+        after_hook: None,
+        state: state.clone(),
+        schema: schema_def.clone(),
+        claims: claims.clone(),
+        headers,
+        dispatcher: hook_dispatcher,
+        hooks: hooks_config,
+        operation: "update",
+        before: Some(existing.fields.clone()),
+        notification,
     }
-
-    // Filter read-restricted fields from response
+    .prepare()
+    .await;
+    let (mut updated, revision) =
+        persist_entity_update(&forge, entity, expected, completion).await?;
     filter_entity_fields(
         &policy_store,
         &mut updated,
@@ -4105,32 +4233,6 @@ pub async fn update_entity(
         claims.as_ref(),
         FieldFilterDirection::Read,
     );
-
-    // Audit: entity updated
-    super::audit::log_forge_event(
-        &state,
-        claims.as_ref(),
-        &headers,
-        "forge.entity.updated",
-        acton_service::audit::AuditSeverity::Informational,
-        serde_json::json!({
-            "schema": schema,
-            "entity_id": updated.id.as_str(),
-            "changed_fields": changed_fields,
-            "user": claims.as_ref().map(|c| &c.sub),
-        }),
-    )
-    .await;
-
-    // Webhook: fire notifications
-    let webhook_event = notification_event(&notification, || {
-        crate::webhook::WebhookEvent::from_update(
-            &schema_def,
-            &updated,
-            claims.as_ref().map(|c| c.sub.as_str()),
-        )
-    });
-    dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
 
     Ok((
         revision_headers(revision.as_ref())?,
@@ -4421,35 +4523,28 @@ pub async fn patch_entity(
     // A conditional no-op still reaches storage to compare the authorized
     // baseline atomically, and advances the revision on acceptance.
     let notification = mutation_notification(claims.as_ref(), None);
+    let completion = MutationCompletion {
+        after_hook: None,
+        state: state.clone(),
+        schema: schema_def.clone(),
+        claims: claims.clone(),
+        headers,
+        dispatcher: hook_dispatcher,
+        hooks: hooks_config,
+        operation: "patch",
+        before: Some(baseline_fields),
+        notification,
+    }
+    .prepare()
+    .await;
     let (mut updated, revision) = if delta.is_empty() && expected.is_none() {
+        completion.finish(existing.clone(), None).await;
         (existing, None)
     } else {
         let entity = Entity::with_id(entity_id, schema_name, delta);
         check_field_constraints(&schema_def, &entity.fields)?;
-        persist_entity_update(&forge, entity, expected, &notification).await?
+        persist_entity_update(&forge, entity, expected, completion).await?
     };
-
-    let changed_fields = changed_field_names(&baseline_fields, &updated.fields);
-
-    // after_change hook — dispatched via HookDispatchActor
-    if let Some(dispatcher) = hook_dispatcher.clone() {
-        fire_after_hook(
-            &state,
-            AfterHookCtx {
-                dispatcher,
-                hooks_config: hooks_config.clone(),
-                schema: schema_def.clone(),
-                event: HookEvent::AfterChange,
-                operation: "patch".to_string(),
-                user_id: claims.as_ref().map(|c| c.sub.clone()),
-            },
-            &updated,
-            Some(&baseline_fields),
-        )
-        .await;
-    }
-
-    // Filter read-restricted fields from response
     filter_entity_fields(
         &policy_store,
         &mut updated,
@@ -4457,32 +4552,6 @@ pub async fn patch_entity(
         claims.as_ref(),
         FieldFilterDirection::Read,
     );
-
-    // Audit: entity patched
-    super::audit::log_forge_event(
-        &state,
-        claims.as_ref(),
-        &headers,
-        "forge.entity.patched",
-        acton_service::audit::AuditSeverity::Informational,
-        serde_json::json!({
-            "schema": schema,
-            "entity_id": updated.id.as_str(),
-            "changed_fields": changed_fields,
-            "user": claims.as_ref().map(|c| &c.sub),
-        }),
-    )
-    .await;
-
-    // Webhook: fire notifications
-    let webhook_event = notification_event(&notification, || {
-        crate::webhook::WebhookEvent::from_update(
-            &schema_def,
-            &updated,
-            claims.as_ref().map(|c| c.sub.as_str()),
-        )
-    });
-    dispatch_webhook(&state, &schema_def, webhook_event, "updated").await;
 
     Ok((
         revision_headers(revision.as_ref())?,
@@ -4605,9 +4674,8 @@ pub async fn delete_entity(
     };
     // Hooks see the same snapshot that passed record authorization.
     let notification = mutation_notification(claims.as_ref(), Some(&existing));
-    let pre_delete_snapshot = Some(existing);
-    if let (Some(ref dispatcher), Some(snapshot)) = (&hook_dispatcher, &pre_delete_snapshot) {
-        let mut fields = snapshot.fields.clone();
+    if let Some(ref dispatcher) = hook_dispatcher {
+        let mut fields = existing.fields.clone();
         apply_before_hook(
             BeforeHookCtx {
                 dispatcher: dispatcher.as_ref(),
@@ -4623,6 +4691,20 @@ pub async fn delete_entity(
         .await?;
     }
 
+    let completion = MutationCompletion {
+        after_hook: None,
+        state: state.clone(),
+        schema: schema_def,
+        claims: claims.clone(),
+        headers,
+        dispatcher: hook_dispatcher,
+        hooks: hooks_config,
+        operation: "delete",
+        before: None,
+        notification: notification.clone(),
+    }
+    .prepare()
+    .await;
     if let Some(expected) = expected {
         let (tx, rx) = oneshot::channel();
         send_mutation(
@@ -4631,12 +4713,18 @@ pub async fn delete_entity(
                 schema: schema_name,
                 id: entity_id,
                 expected,
-                reply: ReplyChannel::new(tx),
+                reply: mutation_reply(
+                    tx,
+                    completion,
+                    move |result: &Result<(), ConditionalMutationError>| {
+                        result.as_ref().ok().map(|_| existing)
+                    },
+                ),
             },
             &notification,
         )
         .await?;
-        ask_forge(rx).await?.map_err(conditional_error)?;
+        await_mutation(rx).await?.map_err(conditional_error)?;
     } else {
         let (tx, rx) = oneshot::channel();
         send_mutation(
@@ -4644,57 +4732,19 @@ pub async fn delete_entity(
             DeleteEntity {
                 schema: schema_name,
                 id: entity_id,
-                reply: ReplyChannel::new(tx),
+                reply: mutation_reply(
+                    tx,
+                    completion,
+                    move |result: &Result<(), schema_forge_backend::BackendError>| {
+                        result.as_ref().ok().map(|_| existing)
+                    },
+                ),
             },
             &notification,
         )
         .await?;
-        ask_forge(rx).await?.map_err(ForgeError::from)?;
+        await_mutation(rx).await?.map_err(ForgeError::from)?;
     }
-
-    // after_delete hook — handed off to HookDispatchActor for
-    // detached dispatch under acton supervision.
-    if let (Some(dispatcher), Some(snapshot)) = (hook_dispatcher.clone(), pre_delete_snapshot) {
-        fire_after_hook(
-            &state,
-            AfterHookCtx {
-                dispatcher,
-                hooks_config: hooks_config.clone(),
-                schema: schema_def.clone(),
-                event: HookEvent::AfterDelete,
-                operation: "delete".to_string(),
-                user_id: claims.as_ref().map(|c| c.sub.clone()),
-            },
-            &snapshot,
-            None,
-        )
-        .await;
-    }
-
-    // Audit: entity deleted
-    super::audit::log_forge_event(
-        &state,
-        claims.as_ref(),
-        &headers,
-        "forge.entity.deleted",
-        acton_service::audit::AuditSeverity::Warning,
-        serde_json::json!({
-            "schema": schema,
-            "entity_id": id,
-            "user": claims.as_ref().map(|c| &c.sub),
-        }),
-    )
-    .await;
-
-    // Webhook: fire notifications
-    let webhook_event = notification_event(&notification, || {
-        crate::webhook::WebhookEvent::from_delete(
-            &schema,
-            &id,
-            claims.as_ref().map(|c| c.sub.as_str()),
-        )
-    });
-    dispatch_webhook(&state, &schema_def, webhook_event, "deleted").await;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -4705,6 +4755,20 @@ mod tests {
     use schema_forge_core::types::{
         Cardinality, FieldDefinition, FieldModifier, FieldName, SchemaId, TextConstraints,
     };
+
+    #[tokio::test]
+    async fn a_lost_mutation_reply_reports_an_unknown_outcome() {
+        let (sender, receiver) = oneshot::channel::<()>();
+        drop(sender);
+        assert_eq!(
+            await_mutation(receiver).await,
+            Err(ForgeError::MutationOutcomeUnknown)
+        );
+        assert_eq!(
+            ForgeError::MutationOutcomeUnknown.into_response().status(),
+            StatusCode::GATEWAY_TIMEOUT
+        );
+    }
 
     #[test]
     fn revision_condition_requires_exact_single_token_and_matching_baseline() {

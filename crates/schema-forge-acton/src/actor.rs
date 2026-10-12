@@ -451,7 +451,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let backend = actor.model.backend.clone();
         let request = ctx.message().clone();
         Reply::pending(async move {
-            let result = match backend {
+            let result = match backend.clone() {
                 Some(backend) => match &request.membership {
                     Some(membership) => {
                         backend
@@ -462,7 +462,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
                 },
                 None => Err(schema_forge_backend::create_intent::CreateIntentError::Unsupported),
             };
-            request.reply.send(result).await;
+            request.reply.send_with_backend(result, backend).await;
         })
     });
 
@@ -472,7 +472,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let membership = ctx.message().membership.clone();
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
-            let result = match backend {
+            let result = match backend.clone() {
                 Some(b) => match &membership {
                     Some(membership) => b.create_with_membership(&entity, membership).await,
                     None => b.create(&entity).await,
@@ -482,7 +482,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
                     Err(no_backend_error())
                 }
             };
-            reply.send(result).await;
+            reply.send_with_backend(result, backend).await;
         })
     });
 
@@ -523,7 +523,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let backend = actor.model.backend.clone();
         let request = ctx.message().clone();
         Reply::pending(async move {
-            let result = match backend {
+            let result = match backend.clone() {
                 Some(b) => b.update_if(&request.entity, &request.expected).await,
                 None => Err(
                     schema_forge_backend::conditional::ConditionalMutationError::Backend(
@@ -531,7 +531,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
                     ),
                 ),
             };
-            request.reply.send(result).await;
+            request.reply.send_with_backend(result, backend).await;
         })
     });
 
@@ -539,7 +539,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let backend = actor.model.backend.clone();
         let request = ctx.message().clone();
         Reply::pending(async move {
-            let result = match backend {
+            let result = match backend.clone() {
                 Some(b) => {
                     b.delete_if(&request.schema, &request.id, &request.expected)
                         .await
@@ -550,7 +550,7 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
                     ),
                 ),
             };
-            request.reply.send(result).await;
+            request.reply.send_with_backend(result, backend).await;
         })
     });
 
@@ -581,14 +581,14 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let entity = ctx.message().entity.clone();
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
-            let result = match backend {
+            let result = match backend.clone() {
                 Some(b) => b.update(&entity).await,
                 None => {
                     warn!("UpdateEntity received but no backend is configured");
                     Err(no_backend_error())
                 }
             };
-            reply.send(result).await;
+            reply.send_with_backend(result, backend).await;
         })
     });
 
@@ -598,14 +598,14 @@ fn configure_backend_operations(actor: &mut ManagedActor<Idle, ForgeActor>) {
         let id = ctx.message().id.clone();
         let reply = ctx.message().reply.clone();
         Reply::pending(async move {
-            let result = match backend {
+            let result = match backend.clone() {
                 Some(b) => b.delete(&schema, &id).await,
                 None => {
                     warn!("DeleteEntity received but no backend is configured");
                     Err(no_backend_error())
                 }
             };
-            reply.send(result).await;
+            reply.send_with_backend(result, backend).await;
         })
     });
 

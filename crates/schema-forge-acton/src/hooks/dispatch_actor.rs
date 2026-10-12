@@ -11,16 +11,17 @@
 //! The fix is a tiny dedicated actor whose only job is to receive a
 //! [`DispatchHook`] message and run [`run_after_hook`] under acton's
 //! scheduler. The actor uses `act_on` (read-only state, concurrent
-//! handler execution) so a slow hook endpoint can't block other
-//! dispatches — the runtime's high-water mark is the natural
-//! backpressure mechanism.
+//! handler execution). Configured semaphore admission bounds active calls;
+//! the runtime also bounds batches and buffers queued messages. A slow batch
+//! can apply backpressure to subsequent dispatches.
 //!
 //! Per-schema or per-endpoint pooling is a potential future
 //! optimization; one shared actor is sufficient for the current
 //! workload and removes the deadlock entirely because the actor never
 //! holds a lock on the trigger entity row.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::{oneshot, Mutex, Semaphore};
 
 use acton_service::prelude::*;
 use sync_wrapper::SyncFuture;
@@ -49,26 +50,74 @@ pub struct HookDispatchActor;
 // `InitForge` at boot and which therefore opts out.
 impl ActorExtension for HookDispatchActor {
     fn configure(actor: &mut ManagedActor<Idle, Self>) {
-        actor.act_on::<DispatchHook>(|_actor, ctx| {
+        // Configuration is immutable for an actor incarnation. Keep the unit
+        // actor's public construction compatible and initialize admission from
+        // the first dispatch, including after an actor restart.
+        let limit = Arc::new(OnceLock::<Arc<Semaphore>>::new());
+        let deferred_limit = limit.clone();
+        actor.act_on::<DispatchHook>(move |_actor, ctx| {
             let msg = ctx.message().clone();
-            // The acton-reactive `FutureBox` requires `Send + Sync`,
-            // but the `HookDispatcher` trait returns `BoxFuture<'_, T>`
-            // which is `Send` only (the `async_trait` default). Wrap
-            // the async block in `SyncFuture` to satisfy the bound;
-            // this is sound because `Future::poll` already requires
-            // exclusive access to the future via `Pin<&mut Self>`.
+            let semaphore = limit
+                .get_or_init(|| {
+                    Arc::new(Semaphore::new(
+                        msg.config
+                            .max_concurrent_async
+                            .clamp(1, Semaphore::MAX_PERMITS),
+                    ))
+                })
+                .clone();
+            Reply::pending(SyncFuture::new(run_dispatch(msg, semaphore)))
+        });
+        actor.act_on::<DeferredHook>(move |_actor, ctx| {
+            let message = ctx.message().clone();
+            let semaphore = deferred_limit
+                .get_or_init(|| {
+                    Arc::new(Semaphore::new(
+                        message
+                            .config
+                            .max_concurrent_async
+                            .clamp(1, Semaphore::MAX_PERMITS),
+                    ))
+                })
+                .clone();
             Reply::pending(SyncFuture::new(async move {
-                let Some(dispatcher) = msg.dispatcher else {
-                    warn!(
-                        schema = %msg.invocation.schema,
-                        event = ?msg.invocation.event,
-                        "DispatchHook received but no dispatcher is configured"
-                    );
-                    return;
-                };
-                run_after_hook(dispatcher.as_ref(), &msg.config, msg.invocation).await;
+                let receiver = message.receiver.lock().await.take();
+                if let Some(receiver) = receiver {
+                    if let Ok(dispatch) = receiver.await {
+                        run_dispatch(dispatch, semaphore).await;
+                    }
+                }
             }))
         });
+    }
+}
+
+async fn run_dispatch(message: DispatchHook, semaphore: Arc<Semaphore>) {
+    let Some(dispatcher) = message.dispatcher else {
+        warn!(schema = %message.invocation.schema, "hook dispatch received without a dispatcher");
+        return;
+    };
+    let Ok(_permit) = semaphore.acquire().await else {
+        warn!("after-hook admission closed");
+        return;
+    };
+    run_after_hook(dispatcher.as_ref(), &message.config, message.invocation).await;
+}
+
+/// Reserve hook queue admission before submitting a mutation. The actor waits
+/// for a commit payload, or exits if validation/submission/storage fails.
+/// The receiver has one owner; the wrapper only satisfies message cloning.
+#[derive(Clone, Debug)]
+pub(crate) struct DeferredHook {
+    pub config: HooksConfig,
+    receiver: Arc<Mutex<Option<oneshot::Receiver<DispatchHook>>>>,
+}
+impl DeferredHook {
+    pub(crate) fn new(config: HooksConfig, receiver: oneshot::Receiver<DispatchHook>) -> Self {
+        Self {
+            config,
+            receiver: Arc::new(Mutex::new(Some(receiver))),
+        }
     }
 }
 

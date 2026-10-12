@@ -40,6 +40,7 @@ example before reading anything else, jump to
    - 4.1 [Configuration](#41-configuration)
    - 4.2 [Observing dispatch](#42-observing-dispatch)
    - 4.3 [Failure modes](#43-failure-modes)
+   - 4.4 [Mutation completion and client disconnects](#44-mutation-completion-and-client-disconnects)
 5. [Evolving Hooks Over Time](#5-evolving-hooks-over-time)
    - 5.1 [Schema migration diffs](#51-schema-migration-diffs)
    - 5.2 [`hooks list` and `hooks diff`](#52-hooks-list-and-hooks-diff)
@@ -603,7 +604,7 @@ Top-level fields:
 |---|---|---|
 | `enabled` | `false` | Global kill-switch. When `false`, all hook annotations are ignored at runtime. Set this to `false` in local dev to run without hook services. |
 | `default_timeout_ms` | `30000` | Per-call timeout applied to any binding that does not set its own. Bumped from 5s in v0.13 (issue #11) so handlers that walk related rows or call back into SchemaForge have realistic headroom. |
-| `max_concurrent_async` | `100` | Upper bound on background after-hook dispatches. |
+| `max_concurrent_async` | `100` | Upper bound on active background after-hook dispatches. Queued work waits for admission; zero is treated as one. The actor runtime may impose a tighter limit. Restart to apply changes. |
 | `allow_plaintext` | `false` | Permit `http://` endpoints. Off by default because a hook payload carries entity fields, the triggering user's subject, and a replayable bearer credential. See [3.5](#35-securing-the-hook-transport). |
 | `client_identity` | *unset* | Client certificate SchemaForge presents to mutual-TLS hook services, and the anchors it verifies them against: `cert_path`, `key_path`, optional `root_ca_path` and `exclusive_roots`. Resolved at startup, so a bad key fails the boot rather than the first hooked write. |
 | `bindings` | `[]` | List of per-(schema, event) bindings. |
@@ -689,6 +690,18 @@ Two rules govern the matrix:
 Fire-and-forget events (`after_change`, `after_delete`) never affect
 the HTTP response. All failures are logged at `ERROR` and the client
 sees the operation as successful.
+
+### 4.4 Mutation completion and client disconnects
+
+Entity mutations wait for the actor's storage result without a reply deadline.
+Once submitted, a write can still commit if the HTTP client or a proxy stops
+waiting. Its after hook, audit event, and webhook dispatch run from actor
+completion, independently of the HTTP receiver. Delivery remains process-local;
+a process crash can still lose background work.
+
+If the actor reply channel closes, the API returns HTTP 504 with error code
+`mutation_outcome_unknown`. Reconcile the record or the same create intent before
+retrying. This response does not establish whether storage committed the write.
 
 ---
 

@@ -67,6 +67,9 @@ pub enum ForgeError {
         invite_id: String,
         accept_url: String,
     },
+    /// The mutation reply was lost after submission. Its outcome is unknown.
+    /// Maps to 504; callers must reconcile before retrying.
+    MutationOutcomeUnknown,
     /// Internal error. Maps to 500.
     Internal { message: String },
 }
@@ -141,6 +144,7 @@ impl fmt::Display for ForgeError {
             Self::InviteDeliveryFailed { .. } => {
                 write!(f, "Invitation created, but email delivery failed. Share the accept link to complete onboarding.")
             }
+            Self::MutationOutcomeUnknown => write!(f, "Mutation outcome is unknown. Reconcile the record or create intent before retrying."),
             Self::Internal { message } => {
                 write!(f, "internal error: {message}")
             }
@@ -173,6 +177,7 @@ impl ForgeError {
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::HookAborted { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Self::HookUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            Self::MutationOutcomeUnknown => StatusCode::GATEWAY_TIMEOUT,
             Self::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -199,6 +204,7 @@ impl ForgeError {
             Self::HookAborted { .. } => "hook_aborted",
             Self::HookUnavailable { .. } => "hook_unavailable",
             Self::InviteDeliveryFailed { .. } => "invite_delivery_failed",
+            Self::MutationOutcomeUnknown => "mutation_outcome_unknown",
             Self::Internal { .. } => "internal_error",
         }
     }
