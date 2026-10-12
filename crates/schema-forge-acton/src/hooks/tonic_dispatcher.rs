@@ -44,10 +44,7 @@ use tonic::{Request, Status};
 use tracing::{debug, warn};
 
 use super::credential::HookCredentialSource;
-use super::{
-    HookBinding, HookDispatcher, HookError, HookInvocation, HookOutcome, HooksConfig,
-    DEFAULT_HOOK_TIMEOUT_MS,
-};
+use super::{HookBinding, HookDispatcher, HookError, HookInvocation, HookOutcome, HooksConfig};
 
 /// gRPC metadata key carrying the bearer credential.
 ///
@@ -126,6 +123,7 @@ pub struct TonicHookDispatcher {
     /// Whether `http://` endpoints may be dialed. See
     /// [`HooksConfig::allow_plaintext`].
     allow_plaintext: bool,
+    default_timeout_ms: u32,
 }
 
 impl TonicHookDispatcher {
@@ -213,6 +211,7 @@ impl TonicHookDispatcher {
             channels: Mutex::new(HashMap::new()),
             tls,
             allow_plaintext: hooks.allow_plaintext,
+            default_timeout_ms: hooks.default_timeout_ms,
         })
     }
 
@@ -338,7 +337,7 @@ impl HookDispatcher for TonicHookDispatcher {
             endpoint = %binding.endpoint,
             "tonic dispatch (before)"
         );
-        let timeout = binding.timeout_ms.unwrap_or(DEFAULT_HOOK_TIMEOUT_MS);
+        let timeout = binding.timeout_ms.unwrap_or(self.default_timeout_ms);
         let response = self.invoke(binding, invocation, timeout).await?;
         Ok(decode_outcome(&response))
     }
@@ -354,7 +353,7 @@ impl HookDispatcher for TonicHookDispatcher {
             endpoint = %binding.endpoint,
             "tonic dispatch (after)"
         );
-        let timeout = binding.timeout_ms.unwrap_or(DEFAULT_HOOK_TIMEOUT_MS);
+        let timeout = binding.timeout_ms.unwrap_or(self.default_timeout_ms);
         let _ = self.invoke(binding, invocation, timeout).await?;
         Ok(())
     }

@@ -260,7 +260,7 @@ pub(crate) fn configure_actor(actor: &mut ManagedActor<Idle, ForgeActor>) {
                                         Ok(stored) => entity = stored,
                                         Err(error) => {
                                             tracing::warn!(%error, "committed create snapshot unavailable; no event will be published");
-                                            envelope.mutation.reply.send(result).await;
+                                            envelope.mutation.reply.send_with_backend(result, Some(backend.clone())).await;
                                             return;
                                         }
                                     }
@@ -285,7 +285,7 @@ pub(crate) fn configure_actor(actor: &mut ManagedActor<Idle, ForgeActor>) {
                                 }
                             }
                         }
-                        envelope.mutation.reply.send(result).await;
+                        envelope.mutation.reply.send_with_backend(result, Some(backend.clone())).await;
                     } else {
                         tracing::error!("event mutation received without backend");
                     }

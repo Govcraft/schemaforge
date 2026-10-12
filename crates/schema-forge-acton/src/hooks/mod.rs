@@ -27,10 +27,10 @@
 //!    operate on the already-defaulted/computed/validated field set and a
 //!    `@require` rejection short-circuits the write before any hook
 //!    round-trip.
-//! 2. **Detached (`after_*`)**: the route handler queues a
-//!    [`dispatch_actor::DispatchHook`] message on the
-//!    [`dispatch_actor::HookDispatchActor`] and returns immediately to
-//!    the caller. The actor runs the dispatch concurrently under
+//! 2. **Detached (`after_*`)**: the route reserves bounded queue space on
+//!    [`dispatch_actor::HookDispatchActor`] before submitting the mutation.
+//!    Actor-owned completion supplies the hook payload after storage succeeds,
+//!    including when the HTTP receiver has disconnected. The actor runs the dispatch under
 //!    acton-reactive supervision, so in-flight hook calls participate in
 //!    graceful shutdown and the runtime's backpressure budget. Errors
 //!    are logged.

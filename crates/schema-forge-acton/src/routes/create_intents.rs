@@ -89,38 +89,58 @@ pub(super) async fn process(
     state: &AppState<SchemaForgeConfig>,
     request: CreateIntentRequest,
 ) -> Result<CreateIntentReceipt, ForgeError> {
-    process_with_claims(state, request, None, None).await
+    process_with_claims(state, request, None, None, None).await
 }
 async fn process_with_claims(
     state: &AppState<SchemaForgeConfig>,
     request: CreateIntentRequest,
     claims: Option<&Claims>,
     membership: Option<Entity>,
+    headers: Option<&HeaderMap>,
 ) -> Result<CreateIntentReceipt, ForgeError> {
     let forge = state
         .actor::<ForgeActor>()
         .ok_or_else(|| error(CreateIntentError::Unsupported))?;
     let (tx, rx) = oneshot::channel();
     let notification = entities::mutation_notification(claims, None);
+    let audit = match &request {
+        CreateIntentRequest::Commit { scope, entity, .. } => Some((
+            scope.schema.name.to_string(),
+            entity.fields.keys().cloned().collect::<Vec<_>>(),
+        )),
+        _ => None,
+    };
+    let audit_state = state.clone();
+    let audit_claims = claims.cloned();
+    let audit_headers = headers.cloned().unwrap_or_default();
+    let reply = ReplyChannel::with_completion(
+        tx,
+        move |result: &Result<CreateIntentReceipt, CreateIntentError>, _| {
+            let receipt = result
+                .as_ref()
+                .ok()
+                .filter(|receipt| receipt.created)
+                .cloned();
+            sync_wrapper::SyncFuture::new(async move {
+                if let (Some(receipt), Some((schema, changed_fields))) = (receipt, audit) {
+                    super::audit::log_forge_event(&audit_state, audit_claims.as_ref(), &audit_headers,
+                    "forge.entity.created", acton_service::audit::AuditSeverity::Informational,
+                    serde_json::json!({"schema": schema, "intent_id": receipt.id.as_str(), "changed_fields": changed_fields, "entity_id": receipt.entity_id.as_ref().map(|id| id.as_str())})).await;
+                }
+            })
+        },
+    );
     entities::send_mutation(
         &forge,
         ProcessCreateIntent {
             request,
             membership,
-            reply: ReplyChannel::new(tx),
+            reply,
         },
         &notification,
     )
     .await?;
-    tokio::time::timeout(Duration::from_secs(5), rx)
-        .await
-        .map_err(|_| ForgeError::BackendUnavailable {
-            message: "Create outcome is uncertain. Reconcile this intent before retrying.".into(),
-        })?
-        .map_err(|_| ForgeError::BackendUnavailable {
-            message: "Create outcome is uncertain. Reconcile this intent before retrying.".into(),
-        })?
-        .map_err(error)
+    entities::await_mutation(rx).await?.map_err(error)
 }
 
 async fn scope(
@@ -344,6 +364,7 @@ pub(super) async fn commit(
     entity: Entity,
     claims: Option<&Claims>,
     membership: Option<Entity>,
+    headers: &HeaderMap,
 ) -> Result<CreateIntentReceipt, ForgeError> {
     process_with_claims(
         state,
@@ -355,6 +376,7 @@ pub(super) async fn commit(
         },
         claims,
         membership,
+        Some(headers),
     )
     .await
 }
