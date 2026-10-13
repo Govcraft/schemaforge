@@ -6743,7 +6743,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-acton"
-version = "0.50.3"
+version = "0.50.4"
 dependencies = [
  "acton-service",
  "arc-swap",
@@ -6829,7 +6829,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-cli"
-version = "0.52.4"
+version = "0.52.5"
 dependencies = [
  "acton-service",
  "assert_cmd",
@@ -6939,7 +6939,7 @@ dependencies = [
 
 [[package]]
 name = "schema-forge-postgres"
-version = "0.18.0"
+version = "0.18.1"
 dependencies = [
  "arc-swap",
  "chrono",

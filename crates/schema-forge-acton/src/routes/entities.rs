@@ -348,7 +348,10 @@ fn conditional_error(error: ConditionalMutationError) -> ForgeError {
             message: "The record changed. Reload it before trying again.".into(),
         },
         ConditionalMutationError::Backend(error) => match error {
-            schema_forge_backend::BackendError::EntityNotFound { .. } => ForgeError::from(error),
+            schema_forge_backend::BackendError::EntityNotFound { .. }
+            | schema_forge_backend::BackendError::ValidationFailed { .. } => {
+                ForgeError::from(error)
+            }
             schema_forge_backend::BackendError::UniqueViolation { .. } => ForgeError::Conflict {
                 reason: "unique_violation",
                 message: "The change conflicts with an existing record.".into(),
@@ -4842,6 +4845,24 @@ mod tests {
         ));
         assert!(matches!(error, ForgeError::BackendUnavailable { .. }));
         assert!(!error.to_string().contains("private database"));
+    }
+
+    #[test]
+    fn revision_validation_failures_preserve_actionable_status_and_reason() {
+        let error = conditional_error(ConditionalMutationError::Backend(
+            schema_forge_backend::BackendError::ValidationFailed {
+                field: "organization_payload_bytes".into(),
+                reason: "Organization storage is full. Remove unneeded data before saving.".into(),
+            },
+        ));
+        assert!(matches!(error, ForgeError::ValidationFailed { .. }));
+        assert!(error
+            .to_string()
+            .contains("Remove unneeded data before saving"));
+        assert_eq!(
+            error.into_response().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 
     #[test]
