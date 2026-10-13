@@ -14,14 +14,17 @@ is pre-1.0; breaking changes bump the **minor** version per
 - Return HTTP 422 `validation_failed` for PostgreSQL check-constraint violations
   (SQLSTATE 23514), preserving the named constraint and database rejection message.
   Transactional storage limits and other operator checks now provide actionable
-  validation feedback instead of an internal server error. Rejected conditional
+  validation feedback instead of an internal server error. Preserve typed
+  validation failures through the conditional-mutation HTTP boundary as well.
+  Rejected conditional
   writes still roll back their data and revision; uniqueness, foreign-key and
   transport error classifications remain unchanged.
 
 ### Upgrade notes
 
 - No schema or policy migration is required. PostgreSQL backend patch version is
-  0.18.1; other backend implementations are unchanged.
+  0.18.1 and Acton integration patch version is 0.50.4; other backend
+  implementations are unchanged.
 
 ## [0.52.4] - 2026-10-11
 

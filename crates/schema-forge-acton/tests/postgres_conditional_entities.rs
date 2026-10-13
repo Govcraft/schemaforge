@@ -76,7 +76,11 @@ async fn postgres_http_revisions_guard_updates_noops_races_and_deletes() {
             &app,
             target,
             method,
-            Some(initial.as_str()),
+            if method == "POST" {
+                None
+            } else {
+                Some(initial.as_str())
+            },
             serde_json::json!({"title":"Over quota","owner":"editor"}),
         )
         .await;
