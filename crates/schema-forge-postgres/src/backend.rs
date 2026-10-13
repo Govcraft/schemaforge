@@ -30,7 +30,8 @@ const PG_UNIQUE_VIOLATION: &str = "23505";
 
 /// Convert a write-time sqlx error into the right typed `BackendError`,
 /// promoting unique-constraint violations to `BackendError::UniqueViolation`
-/// so the HTTP layer can return a structured 409.
+/// so the HTTP layer can return a structured 409. Check constraints become
+/// validation failures (422) with the database's actionable rejection message.
 ///
 /// `schema` is the schema name the write targeted; the offending field is
 /// recovered from the constraint name (`uq_{table}_{field}`) when present,
@@ -42,6 +43,12 @@ pub(crate) fn map_write_error(err: sqlx::Error, schema: &str, context: &str) -> 
             return BackendError::ForeignKeyViolation {
                 schema: db_err.table().unwrap_or(schema).to_owned(),
                 constraint: db_err.constraint().unwrap_or("").to_owned(),
+            };
+        }
+        if db_err.code().as_deref() == Some("23514") {
+            return BackendError::ValidationFailed {
+                field: db_err.constraint().unwrap_or(schema).to_owned(),
+                reason: db_err.message().to_owned(),
             };
         }
         if db_err.code().as_deref() == Some(PG_UNIQUE_VIOLATION) {
@@ -1342,5 +1349,45 @@ mod unique_constraint_tests {
             extract_field_from_unique_constraint("uq_OtherTable_email", "Contact"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod write_error_tests {
+    use super::map_write_error;
+    use schema_forge_backend::error::BackendError;
+
+    #[test]
+    fn transport_failures_are_not_reclassified_as_validation() {
+        assert!(matches!(
+            map_write_error(sqlx::Error::PoolTimedOut, "World", "save"),
+            BackendError::QueryError { .. }
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires SCHEMAFORGE_TEST_POSTGRES_URL with a disposable PostgreSQL database"]
+    async fn native_check_violations_preserve_named_constraint_or_schema_and_reason() {
+        let url =
+            std::env::var("SCHEMAFORGE_TEST_POSTGRES_URL").expect("test PostgreSQL URL required");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        for (sql,field) in [
+            ("DO $$ BEGIN RAISE EXCEPTION 'Organization storage is full. Remove unneeded data before saving.' USING ERRCODE='23514', CONSTRAINT='organization_payload_bytes'; END $$", "organization_payload_bytes"),
+            ("DO $$ BEGIN RAISE EXCEPTION 'Organization storage is full. Remove unneeded data before saving.' USING ERRCODE='23514'; END $$", "World"),
+        ] {
+            let error=sqlx::query(sql).execute(&pool).await.unwrap_err();
+            match map_write_error(error,"World","save") {
+                BackendError::ValidationFailed {field:actual,reason} => {
+                    assert_eq!(actual,field);
+                    assert_eq!(reason,"Organization storage is full. Remove unneeded data before saving.");
+                }
+                other => panic!("expected validation failure, received {other:?}"),
+            }
+        }
+        pool.close().await;
     }
 }
