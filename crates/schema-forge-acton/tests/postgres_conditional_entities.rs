@@ -60,6 +60,44 @@ async fn postgres_http_revisions_guard_updates_noops_races_and_deletes() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["fields"]["title"], "Original");
     let initial = response_revision(&headers);
+    // An operator's transactional CHECK/trigger refusal is validation, even
+    // after before-change admission. Preserve its actionable reason and rollback.
+    sqlx::raw_sql(r#"CREATE FUNCTION refuse_storage_growth() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.title='Over quota' THEN RAISE EXCEPTION 'Organization storage is full. Remove unneeded data before saving.' USING ERRCODE='23514', CONSTRAINT='organization_payload_bytes'; END IF; RETURN NEW; END $$; CREATE TRIGGER storage_growth BEFORE INSERT OR UPDATE ON "Note" FOR EACH ROW EXECUTE FUNCTION refuse_storage_growth();"#).execute(backend.pool()).await.unwrap();
+    for method in ["PATCH", "PUT", "POST"] {
+        let target = if method == "POST" {
+            "/schemas/Note/entities"
+        } else {
+            &path
+        };
+        let (status, headers, body) = request(
+            &app,
+            target,
+            method,
+            Some(initial.as_str()),
+            serde_json::json!({"title":"Over quota","owner":"editor"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"], "validation_failed");
+        assert_eq!(body["message"], "validation failed: field 'organization_payload_bytes': Organization storage is full. Remove unneeded data before saving.");
+        assert!(!headers.contains_key("entity-revision"));
+        let unchanged = request(&app, &path, "GET", None, serde_json::json!({})).await;
+        assert_eq!(unchanged.0, StatusCode::OK);
+        assert_eq!(unchanged.2["fields"]["title"], "Original");
+        assert_eq!(response_revision(&unchanged.1), initial);
+        let rejected: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM \"Note\" WHERE title='Over quota'")
+                .fetch_one(backend.pool())
+                .await
+                .unwrap();
+        assert_eq!(rejected, 0);
+    }
+    sqlx::raw_sql(
+        r#"DROP TRIGGER storage_growth ON "Note"; DROP FUNCTION refuse_storage_growth();"#,
+    )
+    .execute(backend.pool())
+    .await
+    .unwrap();
     // A conditional write must preserve ordinary uniqueness semantics, and a
     // rejected write must roll back both fields and the revision marker.
     let occupied = Entity::with_id(
